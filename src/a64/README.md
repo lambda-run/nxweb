@@ -305,7 +305,7 @@ npm run a64:extra            # feature tests: fault pcs, code ranges, cntpct yie
 npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py), then 30,000
                              #         cases in memory64 and 30,000 with code and memory window above 4 GB
     python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N] [--mem64 | --hi] [--total N]
-npm run a64:fuzz:mem64       # the full 338,000 cases in memory64, and again above 4 GB
+npm run a64:fuzz:mem64       # the full 368,000 cases in memory64, and again above 4 GB
 npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out, then again with
                              #         budget=50, without wasm tail calls, on a shared memory; in memory64; in
                              #         memory64 with the images linked at 0x1_8000_0000 (test/a64/guests/out_hi,
@@ -426,6 +426,10 @@ state still coming from Unicorn.
   such CASPs never interleave, so a pair is never half exchanged (the loads are done once before the lock is taken,
   so an address that traps does so without holding it). LDAPR/LDAPUR/STLUR are atomic loads / stores like LDAR/STLR.
   As for the exclusives, an atomic access on a shared memory traps when its address is not aligned to its size.
+- DotProd (ARMv8.2): SDOT/UDOT, vector (`Vd.2S/4S, Vn.8B/16B, Vm.8B/16B`) and by element (`Vm.4B[0..3]`, Vm in
+  v0..v31): two widening byte multiplies (`i16x8.extmul_low/high_i8x16_s/u`, the products fit 16 bits), pairwise
+  widening adds to 32 bits, an even/odd lane shuffle and an add into Vd; the 2S forms clear the upper half. Other
+  element sizes stay unallocated.
 
 ## Known gaps
 
@@ -457,11 +461,11 @@ Behavioural differences:
 
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
-- Gate 1: 169 classes x 2000 cases = 338000 cases, 0 failures; again with `--strictnan --shared --seed 5`, 0 failures.
-- Gate 2 (Node): 75 guest images, 75 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
-  `--precise 2`, `--cntyield` and warm from the translation cache. Feature tests: 9 of 9.
-- Gate 2 (Chromium, Worker): 75 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
-  (569 units from the Cache API on the warm pass, 0 instructions translated); feature tests 9 of 9.
+- Gate 1: 184 classes x 2000 cases = 368000 cases, 0 failures; again with `--strictnan --shared --seed 5`, 0 failures.
+- Gate 2 (Node): 86 guest images, 86 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
+  `--precise 2`, `--cntyield` and warm from the translation cache (75 images, earlier run). Feature tests: 23 of 23.
+- Gate 2 (Chromium, Worker): 86 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
+  (718 units from the Cache API on the warm pass, 0 instructions translated); feature tests 23 of 23.
 - Runtime (`npm run rt:test`, `rt:browser`): 25 of 25 and 31 of 31 after the matching edits in `rt_layout.ts`
   (three a64 ranges, `A64` export) and `rt_runtime.ts` (layout option, `fillPcMap` for the stub region).
 - Speed, shared corpus, 15 interleaved runs each, total run time min / median ms: default 351 / 495;

@@ -140,3 +140,8 @@ E("rcpc_ldapr", "size:2 111000 1 0 1 11111 1 100 00 Rn:5 Rt:5", base="Rn")
 E("rcpc2_ldapur_stlur", "size:2 011001 opc:2 0 imm9:9 00 Rn:5 Rt:5", base="Rn",
   fix={"imm9": [0, 8, 16, 24, 32, 64, 120, 512 - 8, 512 - 16, 512 - 64, 512 - 128]},
   filt=lambda f: not (f["opc"] == 2 and f["size"] == 3) and not (f["opc"] == 3 and f["size"] >= 2))
+
+
+# ------------------------------------------------------------------------------ DotProd
+E("dotprod_vec", "0 Q:1 U:1 01110 10 0 Rm:5 1 0010 1 Rn:5 Rd:5")                     # SDOT / UDOT Vd.2S/4S, Vn.8B/16B, Vm
+E("dotprod_elem", "0 Q:1 U:1 01111 10 L:1 M:1 Rm:4 1110 H:1 0 Rn:5 Rd:5")            # SDOT / UDOT Vd.2S/4S, Vn, Vm.4B[H:L]
