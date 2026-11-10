@@ -122,7 +122,6 @@ test("lifecycle: what each state allows, and the trace", () => {
   refused("unload in Unloaded", () => b.x.ld_unload(h), "Unloaded");
   b.ld.map(h, base); b.ld.relocate(h);
   refused("relocate in Relocated", () => b.x.ld_relocate(h), "Relocated");
-  refused("pin in Relocated", () => b.x.ld_pin(h), "Relocated");
   b.ld.unload(h);                                     // Relocated -> Unloaded
   b.ld.map(h, base); b.ld.relocate(h); b.ld.activate(h);
   refused("activate in Active", () => b.x.ld_activate(h), "Active");
@@ -144,8 +143,19 @@ test("lifecycle: what each state allows, and the trace", () => {
     "module#0 Unloaded -Map-> Mapped", "module#0 Mapped -Relocate-> Relocated", "module#0 Relocated -Unload-> Unloaded",
     "module#0 Unloaded -Map-> Mapped", "module#0 Mapped -Relocate-> Relocated", "module#0 Relocated -Activate-> Active", "module#0 Active -Unload-> Unloaded",
     "module#0 Unloaded -Map-> Mapped", "module#0 Mapped -Relocate-> Relocated", "module#0 Relocated -Activate-> Active", "module#0 Active -Pin-> Pinned"], "trace");
+  // a module of the start set: pinned as soon as it is relocated (its file is let go of before its init functions
+  // run); Mapped is too early
+  const h2 = b.ld.parse(b.put("main", file("main.nso")));
+  b.ld.map(h2, b.place(b.ld.get(h2, Info.ImageSize)));
+  eq(b.x.ld_pin(h2), ERR_STATE, "pin in Mapped");
+  b.ld.relocate(h2);
+  ok(b.ld.get(h2, Info.FilePtr) !== 0, "a relocated module refers to its file");
+  b.ld.pin(h2);
+  eq([b.ld.state(h2), b.ld.get(h2, Info.FilePtr)], ["Pinned", 0], "pinned from Relocated: the file is let go of");
+  eq([b.x.ld_activate(h2), b.x.ld_unload(h2)], [ERR_STATE, ERR_STATE], "a pinned module is neither activated nor unloaded");
+  ok(b.ld.lookup("sdk_add") !== undefined && readTrace(b.x).some(r => formatRecord(r, machines) === "module#1 Relocated -Pin-> Pinned"), "the trace has Relocated -Pin-> Pinned");
   // handles that do not exist
-  for (const bad of [-1, 1, 4096, 0x7FFFFFFF]) {
+  for (const bad of [-1, 2, 4096, 0x7FFFFFFF]) {
     eq([b.x.ld_map(bad, base), b.x.ld_relocate(bad), b.x.ld_activate(bad), b.x.ld_pin(bad), b.x.ld_unload(bad), b.x.ld_state(bad), b.x.ld_get(bad, Info.Base)],
       [ERR_ARG, ERR_ARG, ERR_ARG, ERR_ARG, ERR_ARG, -1, 0], `handle ${bad}`);
   }

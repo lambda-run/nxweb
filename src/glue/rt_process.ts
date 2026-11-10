@@ -17,6 +17,7 @@ import type { Runtime } from "./rt_runtime.ts";
 
 export interface ProcessWant {
   heap?: number; alias?: number; stack?: number;        // bytes of address space the profile reserves (address_space)
+  code?: number;                                        // bytes of the start set's images (nsoImageBytes of each file): the code region grows past its 252 MB when they need it
   appPool?: number; memUsed?: number; sysResource?: number; programId?: bigint; mapLimit?: boolean; switch2?: boolean;
 }
 export interface ProcessLayout {
@@ -29,10 +30,30 @@ const MB = 1 << 20, GB = 1024 * MB, up = (v: number, a: number) => Math.ceil(v /
 export const SPACE = { codeBase: 0x0800_0000, codeSize: 0x0FC0_0000, tlsBase: 0x17C0_0000, tlsSize: 0x0040_0000, lo: 0x1800_0000, hi: 0xFFFF_0000, aliasMax: 0xE000_0000 };
 export const DEFAULTS = { heap: 0x6000_0000, alias: 0x77FF_0000, stack: 0x1000_0000, appPool: 0xCD50_0000, memUsed: 0x0400_0000 };
 
+// What the code region holds besides the start set's images: modules loaded at run time, host-allocated blocks (the
+// audio arena, JIT environments, font work buffers), one free page after each
+export const CODE_SPARE = 64 * MB;
+// The image size an NSO file's header declares (text .. the end of the bss, in pages); 0 when it is not an NSO. Only
+// to size the code region before the process exists: the loader validates the header when the file is loaded.
+export function nsoImageBytes(file: Uint8Array): number {
+  if (file.length < 0x100 || file[0] !== 0x4E || file[1] !== 0x53 || file[2] !== 0x4F || file[3] !== 0x30) return 0;
+  const dv = new DataView(file.buffer, file.byteOffset, 0x100);
+  let end = 0;
+  for (let i = 0; i < 3; i++) end = Math.max(end, dv.getUint32(0x14 + 16 * i, true) + dv.getUint32(0x18 + 16 * i, true));
+  return up(end + dv.getUint32(0x3C, true), 0x1000);
+}
+
 export function layoutFor(w: ProcessWant = {}): ProcessLayout {
-  const room = SPACE.hi - SPACE.lo, pool = w.appPool ?? DEFAULTS.appPool, used = w.memUsed ?? DEFAULTS.memUsed;
+  // the code region: 252 MB, or what the images need (plus a free page each and the spare), in 2 MB steps. The
+  // thread-local region follows it and the heap region starts after that, so a larger code region is address space
+  // the heap, stack and alias regions do not have
+  const lo = Math.min(Math.max(SPACE.lo, up(SPACE.codeBase + (w.code ?? 0) + CODE_SPARE + SPACE.tlsSize, 2 * MB)), SPACE.hi - 512 * MB);
+  const tlsBase = lo - SPACE.tlsSize, codeSize = tlsBase - SPACE.codeBase;
+  const images = lo > SPACE.lo ? w.code ?? 0 : 0;   // the images are committed from the pool too: with a larger code region, that much less is left for the heap and the alias region
+  const room = SPACE.hi - lo, pool = w.appPool ?? DEFAULTS.appPool, used = w.memUsed ?? DEFAULTS.memUsed;
   const gb = (v: number) => (v / GB).toFixed(2) + " GB";
-  let heap = up(w.heap ?? DEFAULTS.heap, 2 * MB), alias = up(w.alias ?? DEFAULTS.alias, 0x10000), stack = up(w.stack ?? DEFAULTS.stack, 2 * MB);
+  // no profile: the default regions, the alias region less what a larger code region takes
+  let heap = up(w.heap ?? DEFAULTS.heap, 2 * MB), alias = up(w.alias ?? Math.max(256 * MB, DEFAULTS.alias - (lo - SPACE.lo)), 0x10000), stack = up(w.stack ?? DEFAULTS.stack, 2 * MB);
   const asked = { heap, alias, stack };
   let fit: ProcessLayout["fit"] = "profile", note = "";
   // the heap can never be set past pool - used: address space beyond it is never touched
@@ -46,19 +67,20 @@ export function layoutFor(w: ProcessWant = {}): ProcessLayout {
     if (asked.alias >= asked.heap) {
       heap = Math.min(heap, asked.heap);
       alias = Math.min(asked.alias, room - stack - heap);   // all the address space there is: the SDK's virtual address manager spreads over what it is told
-      if (alias < Math.min(asked.alias, pool)) { fit = "short"; heap = Math.min(heap, 128 * MB); alias = room - stack - heap; }
+      if (alias < Math.min(asked.alias, pool - images)) { fit = "short"; heap = Math.min(heap, 128 * MB); alias = room - stack - heap; }
     } else {
       alias = Math.min(alias, asked.alias, Math.max(256 * MB, room - stack - heap));
       if (heap + alias + stack > room) { fit = "short"; alias = 256 * MB; heap = room - stack - alias; }
     }
   }
   heap = Math.floor(heap / (2 * MB)) * 2 * MB; stack = Math.floor(stack / (2 * MB)) * 2 * MB;
-  const heapBase = SPACE.lo, stackBase = heapBase + heap, aliasBase = stackBase + stack;
+  const heapBase = lo, stackBase = heapBase + heap, aliasBase = stackBase + stack;
   let aliasSize = Math.min(alias, SPACE.hi - aliasBase, SPACE.aliasMax);
   aliasSize = Math.floor(aliasSize / 0x10000) * 0x10000;
   if (fit !== "profile") note = `the profile reserves heap ${gb(asked.heap)}, alias ${gb(asked.alias)}, stack ${gb(asked.stack)} with a pool of ${gb(pool)}; this process has heap ${gb(heap)}, alias ${gb(aliasSize)}, stack ${gb(stack)}` +
     (fit === "pool" ? ": everything the pool lets the game commit fits, with less spare address space than nxnative gives it" : ": the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)");
-  return { codeBase: SPACE.codeBase, codeSize: SPACE.codeSize, tlsBase: SPACE.tlsBase, tlsSize: SPACE.tlsSize, heapBase, heapSize: heap, stackBase, stackSize: stack, aliasBase, aliasSize,
+  if (lo > SPACE.lo) note = `code region ${(codeSize / MB).toFixed(0)} MB for ${((w.code ?? 0) / MB).toFixed(0)} MB of module images` + (note ? "; " + note : "");
+  return { codeBase: SPACE.codeBase, codeSize, tlsBase, tlsSize: SPACE.tlsSize, heapBase, heapSize: heap, stackBase, stackSize: stack, aliasBase, aliasSize,
     appPool: fit === "short" ? Math.min(pool, room - stack) : pool, memUsed: used, sysResource: w.sysResource ?? 0, programId: w.programId ?? 0n, flags: (w.mapLimit ? 1 : 0) | (w.switch2 ? 2 : 0), fit, note };
 }
 
@@ -71,9 +93,9 @@ export interface ProcessSettings {
   hle: { opmode?: number; perfBoost?: boolean; allocBigAlign?: boolean; gameEnv?: string; launchSpec?: string; displayVersion?: string };
 }
 // apply: the profile's keys; space: its address_space record (bytes); npdm / displayVersion: from the hand-off
-export function settingsFor(apply: ProfileApply = {}, o: { space?: { heap_region?: number; alias_region?: number; stack_region?: number }; stackSize?: number; displayVersion?: string | null; programId?: string } = {}): ProcessSettings {
+export function settingsFor(apply: ProfileApply = {}, o: { space?: { heap_region?: number; alias_region?: number; stack_region?: number }; stackSize?: number; displayVersion?: string | null; programId?: string; code?: number } = {}): ProcessSettings {
   const id = apply.program_id ?? o.programId ?? apply.title_id;
-  const layout = layoutFor({ heap: o.space?.heap_region, alias: o.space?.alias_region, stack: o.space?.stack_region, appPool: num(apply.app_pool), memUsed: num(apply.mem_used), sysResource: num(apply.sys_resource),
+  const layout = layoutFor({ code: o.code, heap: o.space?.heap_region, alias: o.space?.alias_region, stack: o.space?.stack_region, appPool: num(apply.app_pool), memUsed: num(apply.mem_used), sysResource: num(apply.sys_resource),
     programId: id && /^[0-9a-fA-F]{1,16}$/.test(id) ? BigInt("0x" + id) : 0n, mapLimit: apply.mem_map_limit === "on" || apply.mem_map_limit === "1" });
   const hle: ProcessSettings["hle"] = {};
   if (apply.op_mode) hle.opmode = apply.op_mode === "handheld" ? 0 : 1;

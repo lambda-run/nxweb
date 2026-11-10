@@ -1,7 +1,7 @@
 // Builds the runtime's test modules (clang aarch64 -> ld.lld -> tools/elf2nso.py, LZ4 compressed with hashes: the
 // loader's toolchain and linker script) into build/runtime/guests, and loads everything a test run needs.
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, mkdirSync, existsSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT, OUT, build } from "../../src/runtime/host/build.mts";
 import type { CorpusGuest } from "./cases.ts";
@@ -64,6 +64,12 @@ export function shaderArtifacts(): { library: boolean; translator: boolean; why:
 }
 export const haveNvn = (): boolean => existsSync(join(NVN_INCLUDE, "nvn.h"));
 
+// modules stored without compression (elf2nso.py's own LZ4 is Python: too slow for tens of megabytes). large: the
+// module far larger than the fixed file staging range; the test fills and compresses it (large_nso.ts)
+export const STORED_MODULES: Record<string, [src: string, ...flags: string[]]> = { large: ["large.c"] };
+// RT_HUGE=1 (Node only): the target size, a 256 MB file with a 512 MB image
+export const HUGE = { ro: 252, data: 60, bss: 200, heap: 300 };
+if (process.env.RT_HUGE === "1") STORED_MODULES.huge = ["large.c", `-DRO_MB=${HUGE.ro}`, `-DDATA_MB=${HUGE.data}`, `-DBSS_MB=${HUGE.bss}`, `-DHEAP_MB=${HUGE.heap}`];
 // modules built as NRO files (loaded at run time through nn::ro)
 export const NRO_MODULES: Record<string, string> = { plug: "plug.c" };
 export function buildModules(): void {
@@ -75,6 +81,13 @@ export function buildModules(): void {
     run("clang", [...CFLAGS, ...flags, "-c", join(SRC, src), "-o", o(name + ".o")]);
     run("ld.lld", [...LDFLAGS, o("crt0.o"), o(name + ".o"), o("svc.o"), "-o", o(name + ".so")]);
     run("python3", [join(ROOT, "tools", "elf2nso.py"), o(name + ".so"), o(name + ".nso"), "--lz4"]);
+  }
+  for (const [name, [src, ...flags]] of Object.entries(STORED_MODULES)) {
+    if (existsSync(o(name + ".nso")) && statSync(o(name + ".nso")).mtimeMs > Math.max(...[src, "rt.h", "crt0.S", "svc.S"].map(f => statSync(join(SRC, f)).mtimeMs))) continue;   // 64 MB: built once
+    run("clang", [...CFLAGS, ...flags, "-c", join(SRC, src), "-o", o(name + ".o")]);
+    run("ld.lld", [...LDFLAGS, o("crt0.o"), o(name + ".o"), o("svc.o"), "-o", o(name + ".so")]);
+    run("python3", [join(ROOT, "tools", "elf2nso.py"), o(name + ".so"), o(name + ".nso")]);
+    rmSync(o(name + ".o")); rmSync(o(name + ".so"));
   }
   for (const [name, src] of Object.entries(NRO_MODULES)) {
     run("clang", [...CFLAGS, "-c", join(SRC, src), "-o", o(name + ".o")]);
@@ -126,6 +139,7 @@ export function loadEnv(): MoreEnv {
     nso: name => new Uint8Array(readFileSync(join(GUESTS, name + ".nso"))),
     file: name => new Uint8Array(readFileSync(join(GUESTS, name))),
     haveGfxGuests: haveNvn(),
+    huge: process.env.RT_HUGE === "1" ? { stored: () => new Uint8Array(readFileSync(join(GUESTS, "huge.nso"))), ...HUGE } : undefined,
     profiles: () => readdirSync(join(ROOT, "src", "prepare", "profiles")).filter(f => /^[0-9A-Fa-f]{16}\.json$/.test(f)).map(f => { const p = JSON.parse(readFileSync(join(ROOT, "src", "prepare", "profiles", f), "utf8")); return { id: p.title_id, apply: p.apply, space: p.address_space }; }),
     guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : undefined,
     corpus,

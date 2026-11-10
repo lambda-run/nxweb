@@ -73,9 +73,16 @@ one answer: the runtime refuses a second registration.
 ## State machines
 
 40 machines in the kit today (kit 2, loader 1, kernel 3, runtime 1, gfx 8, fs 6, hle 15, audio 3, prepare 1), each
-with a generated diagram in `docs/machines`; `kit:test` takes all 396 transitions.
+with a generated diagram in `docs/machines`; `kit:test` takes all 397 transitions.
 
 ## What "open" means for running a game
+
+Module file size is no longer one of them: a start set that does not fit the runtime's 16 MB staging range is
+staged in the process's own heap, stack and alias regions while it is loaded and released before the first guest
+instruction, and the code region is sized from the images (`src/runtime/README.md`, "File staging"). Tested with a
+synthetic 41.6 MB NSO in `rt:test` and `rt:browser`, and by hand (`RT_HUGE=1`) with a 256 MB file whose image is
+512 MB; no real game file was tried. Still fixed: the pc map's leaf arena holds about 20 MB of *executed* code
+(326 leaves of 64 KB; past it the translator throws), and the entry bitmap covers the first 256 MB of the code region.
 
 In the order a real game would hit them: containers (NSP / XCI / NCA: the prepare step takes extracted folders
 only); a real SDK in the guest (rtld's part is played by the loader, but nn::os objects, TLS and SystemEvents have

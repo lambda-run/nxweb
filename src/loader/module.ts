@@ -669,7 +669,9 @@ export function activate(h: i32): i32 {
   return m.inst.step(ModuleE.Activate) ? OK : ERR_STATE;
 }
 
-// The module stays for good: Active -> Pinned. The loader forgets the file, whose memory the embedder may now reuse.
+// The module stays for good: Active -> Pinned, or Relocated -> Pinned (a module of the process's start set, which is
+// never unloaded: its file is let go of before its init functions run). The loader forgets the file, whose memory the
+// embedder may now reuse.
 export function pin(h: i32): i32 {
   const m = modOf(h);
   if (!changetype<usize>(m)) return ERR_ARG;

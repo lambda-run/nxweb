@@ -53,7 +53,7 @@ anything runs):
 | kernel static | 0x0080_0000 | 0x0180_0000 | `src/kernel` static data; 14 MB of it is one kit instance per alias page (an alias region of up to 3.5 GB) |
 | gfx static | 0x0180_0000 | 0x0190_0000 | `src/gfx` static data |
 | gfx arena | 0x0190_0000 | 0x0390_0000 | `gfx_init(arena, gfx_arena_bytes())` |
-| file staging | 0x0390_0000 | 0x0490_0000 | NSO / NRO file bytes, which the loader needs in memory until a module is pinned (16 MB); its free tail is scratch for hashing and entry lists |
+| file staging | 0x0390_0000 | 0x0490_0000 | module file bytes when they are small (16 MB): the start set of a small program until it is pinned, modules loaded at run time; its free tail is scratch for hashing and entry lists. A larger start set is staged in the guest's own regions: "File staging" below |
 | fs static | 0x0490_0000 | 0x04A0_0000 | `src/fs` static data |
 | fs arena | 0x04A0_0000 | 0x0510_0000 | `fs_init`: RomFS tables of the mounted images, save trees (7 MB) |
 | a64 translator | 0x0510_0000 | 0x0610_0000 | the translator's static data and buffers |
@@ -65,6 +65,38 @@ anything runs):
 | host stubs | 0x07FC_0000 | 0x0800_0000 | the loader's stub region: 65536 stubs of 4 bytes |
 | code | 0x0800_0000 | | modules, mapped one after the other with a free page between them; above them `hostAlloc` pages |
 | heap, stack region, alias region | 0x1800_0000 | 0xFFFF_0000 | per process: the default (heap 1.5 GB, stack region 256 MB at 0x7800_0000, alias 1.87 GB) or the split chosen from the game's profile ("The address space per game") |
+
+**File staging: a module file of any size.** The loader needs each file in linear memory until its module is
+pinned, and a game's `main` is 20 to 150 MB on disk or more. The fixed range stays 16 MB (a range sized for the
+largest game would be address space and memory every program pays for). `loadNso` adds up the files of the start
+set, each on a page:
+
+- they fit the fixed range: staged there, as before;
+- they do not: the memory is grown and they are staged **from the base of the process's heap region on**, across the
+  stack and alias regions when the heap region is small (the three follow each other without a gap in a layout made
+  by `layoutFor`; the default: 0x1800_0000 .. 0xFFFF_0000). Nothing is mapped there while the process is loaded, and
+  it is memory the game commits anyway, so no address space is reserved and the pages are used again by its heap.
+  One log line says so (`runtime: N bytes of module files are staged from the heap region's base ... on`).
+
+The modules of a start set are **pinned as soon as they are relocated** (`Relocated → Pinned` in the module machine:
+they are never unloaded, so nothing maps them from the file again), then the fixed range is free again and what was
+staged in the guest's regions is zeroed, before the main thread's stack is mapped and before any guest instruction
+runs: the guest cannot see the bytes, and SetHeapSize and the mappings find the zeroes the kernel expects of memory
+it never handed out. A load that fails cleans up the same way. The table above stays the one description of the
+host area (`STAGING` in `rt_layout.ts` names the rule); the host-area guard is untouched, since the staged bytes are
+written by the host and gone before the guest runs.
+
+What remains as limits, each a load fault with its figures (`[RED] fault: load failed: ...`), never a cut file:
+the files together must fit the guest's data regions and the host must let the memory grow that far (`the linear
+memory cannot grow from .. to ..`); every image must fit the **code region**, which is 252 MB by default and is
+sized per game by `layoutFor({ code })` (the page and the hand-off pass the images' sizes from the NSO headers,
+`nsoImageBytes`; a larger code region is address space the heap, stack and alias regions do not have); the
+loader's own bounds (a segment below 2 GB, an image below 4 GB). A module loaded at run time (`loadModule`) that
+does not fit the fixed range is staged in `hostAlloc` pages of the code region, where it stays (a reload maps it
+again). Measured: a 41.6 MB file (72 MB image) loads in about 0.5 s under Node; with `RT_HUGE=1`, a 256 MB file
+with a 512 MB image loads in 2.4 s on `layoutFor({ code: 512 MB })` (code region 578 MB, heap region 1.5 GB) and
+runs to completion. The translator's entry bitmap still covers the first 256 MB of the code region only: function
+entries the loader knows beyond it are not marked (those functions are found when they are first called).
 
 How each module gets its place: `asc --importMemory --zeroFilledMemory --memoryBase <range.lo>` (`host/build.mts`;
 the translator and helpers through `src/a64/host/build.mts`, which `npm run a64:build` runs too: the bases come from
@@ -161,7 +193,10 @@ By the test (`layout per game`, which runs `settingsFor` over all 153 profiles):
 what they reserve; per game **44 fit as reserved, 95 more fit everything their pool lets them commit, 14 cannot**
 (listed by title id in the test's output). "Fits" is arithmetic on the profiles: no game has run. A `short` process
 gets what there is and one red line. The kernel's alias page table was raised from 2 GB to 3.5 GB (14 MB of the
-kernel's static range, taken from file staging, which is 16 MB now).
+kernel's static range, taken from file staging, which is 16 MB now; larger start sets are staged in the guest's
+own regions, see "File staging"). With `code` (the images' bytes) the code region grows past its 252 MB in 2 MB
+steps (images + 64 MB spare), the heap region starts after it, and the images count against the pool when the
+split is chosen; without a profile the default alias region gives up what the code region takes.
 
 **memory64, for the 14.** Measured and found:
 
@@ -195,12 +230,12 @@ There is no SDK and no rtld in the guest; the runtime plays both.
 1. `loadNso([main, dep1, dep2, ...])`: load order is the symbol lookup order; the first module is the main module.
    Files are staged, parsed, mapped from 0x0800_0000 with a free page between them, relocated against each other and
    the host functions; each image is told to the kernel (`kernel_module_add`), the code window of the translator is
-   the span of all images, the main stack is mapped (`kernel_map_stack`) and the main thread created.
+   the span of all images, the modules are pinned and the staged files released, the main stack is mapped (`kernel_map_stack`) and the main thread created.
 2. The main thread first runs the **init functions, as guest calls on the main thread's stack**: for each module
    after the first in load order, then for the first module: `DT_INIT` if there is one, then the `init_array`
    entries in order. (A dependency's initializers have run before the main module's.) x30 of each call is the
    `<rt.start>` host stub, so every return comes back to the runtime, which makes the next call.
-3. Then the modules are activated and pinned, and the main module is entered at its **first instruction** (the
+3. Then the main module (pinned with the others when the load ended, before the init functions) is entered at its **first instruction** (the
    loader's `entry`) with **x0 = 0, x1 = the main thread's handle**, x2..x29 = 0, sp = the top of its stack,
    x30 = 0xFFFF_FFF0, `tpidrro_el0` = its ThreadLocalRegion, `tpidr_el0` = its TLS block (the kernel's initial state).
 4. Returning from the entry (pc = 0xFFFF_FFF0) is a clean exit: the **fini functions** run on the main thread as
@@ -565,7 +600,17 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 | `load` | the loader or the kernel refused a file | none |
 | `host` | an exception in glue or in a host function | last written back |
 
-## Verified (`npm run rt:test`: 50 tests under Node; `npm run rt:browser`: 60 in Chromium)
+## Verified (`npm run rt:test`: 52 tests under Node; `npm run rt:browser`: 62 in Chromium)
+
+Large module files (`more_cases.ts`, `large_nso.ts`, `src/large.c`; Node and Chromium): a synthetic NSO of 41.6 MB
+made in the test (text and 24 MB of data LZ4 compressed, 40 MB of read-only data stored, three hashes checked,
+72 MB image) is staged in the guest's regions, loaded and run: the guest checks every word of both segments, its
+bss, and that 96 MB of heap read zero; the same on a per-game layout and across a 32 MB heap region; a small
+program still uses the fixed range and grows nothing. Refused with their figures: files that fit no staging
+space, an image larger than the code region that is left, the file cut short, one flipped bit in the stored
+40 MB, a run-time module file that fits neither the fixed range nor the code region. `RT_HUGE=1 npm run rt:test --
+"target size"` builds and runs the same guest as a 256 MB file with a 512 MB image (Node only, not part of the
+default run: 330 MB of build output).
 
 New in the integration round (`test/runtime/int_cases.ts` and the cases named):
 
@@ -720,6 +765,10 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
   audio module's static data above it do not, text and read-only data are writable, an address at or above 4 GB
   wraps (contract). A host function that hands the guest a pointer into another module's static data (graphics, the
   file system) would fault under the guard: none is known.
+- **Code size beyond the files**: a module file and its image can be large now ("File staging"), but the pc map's
+  leaf arena (rt_layout.ts "pc map") holds 326 leaves of 64 KB, about 20 MB of code that was actually translated;
+  past it `a64: the pc map's leaf arena is full` is thrown. A game that executes more code than that needs the leaves
+  allocated outside the fixed table. The entry bitmap covers the first 256 MB of the code region.
 - **Address space**: 14 of nxnative's 153 profiles do not fit a 32-bit memory (see "The address space per game");
   "fits" for the other 139 is arithmetic, no game has run. A profile's `mem_reserve`-style keys beyond the split,
   frame-step patches and the other "needs" of a profile are listed by the page and not applied.

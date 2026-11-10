@@ -173,7 +173,8 @@ async function take(list: FileList | File[]) {
   }
   if (!nso.length) return;
   nso.sort((a, b) => Number(b.name === "main") - Number(a.name === "main"));   // the main module first
-  worker.postMessage({ type: "load", files: nso, shaders: shaderLib, nxsl: shaderNxsl, rom });
+  // the module files are handed over, not copied: a game's main module is tens to hundreds of megabytes
+  worker.postMessage({ type: "load", files: nso, shaders: shaderLib, nxsl: shaderNxsl, rom }, nso.map(f => f.bytes.buffer as ArrayBuffer));
 }
 ($("files") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
 ($("shaders") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);

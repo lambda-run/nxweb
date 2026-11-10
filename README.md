@@ -12,12 +12,12 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 
 | Area | State (from the tests' own summary lines) |
 |---|---|
-| State machine kit (`src/kit`) | Working: 40 machines, `kit:test` 98 tests, 396 of 396 transitions exercised |
+| State machine kit (`src/kit`) | Working: 40 machines, `kit:test` 99 tests, 397 of 397 transitions exercised |
 | ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs (61 images) |
 | ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), 75 test images pass in four configurations in Node and in Chromium; translation cache; an option that makes guest accesses to host memory trap |
 | Module loader (`src/loader`) | Working, 68 tests (no real game file tried) |
 | Kernel core (`src/kernel`) | Working, 63 tests |
-| Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 50 end-to-end tests under Node, 60 in Chromium: multi-threaded NSO modules, run-time modules (NRO), faults with exact pcs (host memory guarded by default), restart without reload, a per-game address-space layout, a robustness sweep (64 threads for 30 s of guest time, 500 module reloads, 2000 frames) |
+| Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 52 end-to-end tests under Node, 62 in Chromium: multi-threaded NSO modules, module files of any size (a 40 MB one in the tests), run-time modules (NRO), faults with exact pcs (host memory guarded by default), restart without reload, a per-game address-space layout, a robustness sweep (64 threads for 30 s of guest time, 500 module reloads, 2000 frames) |
 | NVN on WebGPU (`src/gfx`) | Working for 333 of 743 NVN functions (14 Node tests, 42 browser scenes); a translated guest draws through it in the page |
 | Shaders (`tools/shaders`, `src/shaders`) | Chain works on hand-assembled Maxwell programs, offline and in the page (translated in a Worker, cached); no game shader has been through it |
 | File system (`src/fs`) | Working and attached: RomFS images, crash-safe saves on OPFS; 66 tests, 7 in the browser |

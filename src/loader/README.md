@@ -59,7 +59,8 @@ modules relocated before it that it defines are bound to it; when it is unloaded
 **A stub** is the 4 bytes at `stubBase + 4 * id`, holding `UDF #id`. The translator or the embedder recognizes a call
 by its address (`ld_stub_id`); if the word is ever translated, `unimpl(pc, insn)` reports it.
 
-**Lifecycle**: `New → Parsed → Mapped → Relocated → Active → Pinned`, `Unload` from Mapped, Relocated or Active,
+**Lifecycle**: `New → Parsed → Mapped → Relocated → Active → Pinned`, `Relocated → Pinned` directly for a module of
+the process's start set (its file is let go of before its init functions run), `Unload` from Mapped, Relocated or Active,
 `Unloaded → Mapped` again, `Refused` from New, Parsed or Unloaded with the reason as its data. Every map writes the
 whole image from the file and zeroes the bss, and the record refers to the file in every state that can reach a map;
 only Pin and Refuse let go of it and both are final. So the case nxnative's survey suspected on its JIT-plugin reload
@@ -74,7 +75,7 @@ path (a reload with no pristine copy) has no path in the table.
 - Forced and weaker take-overs, stub address and id both ways, unresolved imports by name, undefined weak symbols,
   protected symbols, the unused forced name report, a full stub region, DT_INIT and init_array order, export lookup.
 - Run-time load, unload, reload at another base with data restored and bss zeroed; a file damaged between unload and
-  reload; what each state refuses; all 12 transitions of the machine; every way a base can be wrong.
+  reload; what each state refuses; all 13 transitions of the machine; every way a base can be wrong.
 - 31 header and layout faults, each refused for its reason with its red line. Every truncation of four files (23,566),
   every single bit of three files (97,656) and 12,000 random mutations, each through parse, map, relocate, queries,
   unload and reload beside an intact module: no trap, no read past the file (it ends where memory ends), no write
