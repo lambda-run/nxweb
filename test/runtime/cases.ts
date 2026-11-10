@@ -101,14 +101,14 @@ export function cases(env: Env): Case[] {
     return rt.modules.map(m => `${m.name}: ${hex(m.base)} + ${hex(m.imageSize)}, DT_INIT ${hex(m.init)}, ${m.initArray.length} init_array entries`);
   });
 
-  test("b two modules mapped beyond the pc map's reach: every indirect transfer goes through the translate callback, same output", () => {
-    const codeBase = PCMAP.codeLo + PCMAP.size + 0x10000;
+  test("b two modules mapped high in the code region (0x16000000): the pc map reaches every code address, same output", () => {
+    const codeBase = 0x1600_0000;
     const rt = boot(["two_main", "two_lib"], { codeBase });
     eq(rt.modules[0].base, codeBase, "base");
     exited(rt.run(), 3, rt);
     eq(rt.stdout(), TWO, "stdout");
     noRed(rt);
-    return [`modules at ${hex(codeBase)}; the pc map covers ${hex(PCMAP.codeLo)}..${hex(PCMAP.codeLo + PCMAP.size)}`];
+    return [`modules at ${hex(rt.modules[0].base)} and ${hex(rt.modules[1].base)}`];
   });
 
   // ---- (c) ----

@@ -562,14 +562,13 @@ export class Runtime {
     const r = this.r, k = this.k, c = this.core;
     if (this.state === "Stopped") return { state: "Stopped", stop: this.stop };
     if (this.state === "Ready") { r.rt_start(); if (this.opts.clock === "wall") this.wallStart = performance.now(); }
-    else if (this.state === "Paused") r.rt_resume();
+    else if (this.state === "Paused") { r.rt_resume(); this.pauseAsked = false; }
     else if (this.state !== "Running") throw new Error(`runtime: run() in state ${this.state}`);
-    this.pauseAsked = false;
     const t0 = performance.now(), wall = this.opts.clock === "wall";
     let slices = 0;
     for (;;) {
       if (this.pauseAsked || (limit.slices !== undefined && slices >= limit.slices) || (limit.ms !== undefined && performance.now() - t0 >= limit.ms)) {
-        r.rt_pause();
+        r.rt_pause(); this.pauseAsked = false;
         break;
       }
       if (limit.yieldMs !== undefined && performance.now() - t0 >= limit.yieldMs) { this.stats.runMs += performance.now() - t0; return { state: this.state, yielded: true }; }

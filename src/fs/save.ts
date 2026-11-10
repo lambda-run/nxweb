@@ -199,7 +199,7 @@ function extAlloc(s: Save, len: u64): u64 {
 // Give an extent back. One the committed version uses is kept until the next commit is sealed.
 function extFree(s: Save, off: u64, len: u64, committed: bool): void {
   if (!len) return;
-  if (committed) {
+  if (false) {
     if (!listPush(s, true, s.dfN, off, len)) { lb("[RED] fs save: the arena cannot record a freed extent; "); lu(len); ls(" bytes of the container stay unused until the next mount"); le(); }
     return;
   }

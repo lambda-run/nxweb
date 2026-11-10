@@ -10,15 +10,20 @@ linear memory, loads NSO files, and runs guest threads in a loop that the kernel
 | `src/glue/rt_runtime.ts` | `Runtime`: memory, instances, loading, the run loop, host-call dispatch, fault capture. No Node APIs |
 | `src/runtime/index.ts` | Runtime core (AssemblyScript, in the shared memory): the `process` machine, the fault report, the deterministic clock's arithmetic, the range-table check |
 | `src/runtime/defs/process.json` | The process lifecycle (diagram: `docs/machines/process.md`) |
-| `src/runtime/host/build.mts` | `npm run rt:build`: `build/runtime/{rt,kernel,loader,translator,helpers}.wasm` |
+| `src/glue/rt_gfx.ts` | NVN attached to a process: recorder instance, NVN stubs, the waits on the GPU, frame pacing |
+| `src/glue/rt_hle.ts` | nn::vi and nn::hid take-overs, the input state (live and scripted) |
+| `src/runtime/host/build.mts` | `npm run rt:build`: `build/runtime/{rt,kernel,loader,gfx,translator,helpers}.wasm` |
 | `test/runtime/cases.ts` | The end-to-end tests, shared by Node (`run.mts`) and the browser Worker (`web/worker.ts`, `browser.mts`) |
 | `test/runtime/src/` | The test modules (C and assembly), built into NSOs by `harness.mts` |
+| `test/runtime/gfx_cases.ts` | The graphics tests (null replayer under Node, WebGPU and pixel readback in the browser) |
 | `test/runtime/all.mts` | The root `npm test` |
+| `web/` | The page: `index.html`, `main.ts` (page), `worker.ts` (runtime), `build.mts`, `serve.mts` |
 
 ```
 npm run rt:test [-- <filter>]      # Node
 npm run rt:browser [-- <filter>]   # headless Chromium through Playwright, in a Worker
 npm test                           # kit, loader, kernel, a64 guests, runtime
+npm run web                        # build build/web and serve the page on http://localhost:8080 (COOP/COEP set)
 ```
 
 ## Memory
@@ -31,17 +36,25 @@ hole, an overlap or an empty range before anything runs):
 | Range | From | To | Holds |
 |---|---|---|---|
 | null guard | 0x0000_0000 | 0x0001_0000 | nothing; a guest null pointer reads zeroes here |
-| rt static | 0x0001_0000 | 0x0010_0000 | `src/runtime` static data (75 KiB used): process machine, fault record, clock, scratch, kit trace |
-| loader static | 0x0010_0000 | 0x0020_0000 | `src/loader` static data (110 KiB used) |
+| rt static | 0x0001_0000 | 0x0010_0000 | `src/runtime` static data: process machine, fault record, clock, scratch, kit trace |
+| loader static | 0x0010_0000 | 0x0020_0000 | `src/loader` static data |
 | loader arena | 0x0020_0000 | 0x0080_0000 | module records, export tables, names (`ld_init`) |
-| kernel static | 0x0080_0000 | 0x0120_0000 | `src/kernel` static data (8.5 MiB used: thread records with their context blocks, handle table, 8 MiB of alias page states) |
-| gfx static | 0x0120_0000 | 0x0130_0000 | reserved for `src/gfx` static data (its `--memoryBase`); gfx is not instantiated by the runtime yet |
-| gfx arena | 0x0130_0000 | 0x0230_0000 | reserved: the 16 MB of `gfx_init(arena, bytes)` |
-| file staging | 0x0230_0000 | 0x0430_0000 | NSO file bytes, which the loader needs in memory until a module is pinned |
-| pc map | 0x0430_0000 | 0x07FC_0000 | the translator's pc map: one `u32` per guest instruction of 0x07FC_0000 .. 0x0B88_0000 |
+| kernel static | 0x0080_0000 | 0x0120_0000 | `src/kernel` static data (8.5 MiB used) |
+| gfx static | 0x0120_0000 | 0x0130_0000 | `src/gfx` static data (`--memoryBase` of `build/runtime/gfx.wasm`) |
+| gfx arena | 0x0130_0000 | 0x0330_0000 | `gfx_init(arena, gfx_arena_bytes())`: 24 MB today, 32 MB kept |
+| file staging | 0x0330_0000 | 0x0530_0000 | NSO file bytes, which the loader needs in memory until a module is pinned |
+| a64 translator | 0x0530_0000 | 0x0630_0000 | the translator's static data and buffers |
+| a64 helpers | 0x0630_0000 | 0x0631_0000 | the helpers' static data |
+| a64 entry bits | 0x0631_0000 | 0x06B1_0000 | one bit per instruction of the code region |
+| pc map | 0x06B1_0000 | 0x07FC_0000 | two-level pc map: first level, zero leaf, a 64 KB leaf per touched 64 KB of code |
 | host stubs | 0x07FC_0000 | 0x0800_0000 | the loader's stub region: 65536 stubs of 4 bytes |
 | code | 0x0800_0000 | | modules, mapped one after the other with a free page between them |
 | stack | 0x7800_0000 | 0x7810_0000 | the main thread's stack (1 MB by default), the first mapping of the kernel's stack region |
+
+The four a64 rows and their use in `rt_runtime.ts` were put in by the a64 owner while this round was written (the
+translator and helpers now import the one memory, and the pc map is two-level and covers every guest address); the
+paragraphs below on the pc map's cost and on the translator's private memory describe the round-1 state and are
+theirs to replace when that work is verified. The gfx ranges are this round's.
 
 How each module gets its place: `asc --importMemory --zeroFilledMemory --memoryBase <range.lo>`
 (`host/build.mts`). The kernel and the loader have no heap (`--runtime stub`, static data only), so "static data ends
@@ -187,10 +200,81 @@ rt.run();
 goes through the module's PLT or GOT. It does not reach a call the compiler bound inside the module (clang's default
 for a function defined in the same file: the test modules are built with `-fsemantic-interposition` for this reason).
 
+## Graphics (`rt_gfx.ts`)
+
+`new RtGfx(rt, gfxModule, { device, canvas, nextFrame })` before `loadNso`. It instantiates the recorder
+(`build/runtime/gfx.wasm`, static data in "gfx static", `gfx_init` on "gfx arena") in the process's memory and the
+WebGPU replayer (`gfx_host.ts`) in the same JavaScript context (a Worker with an OffscreenCanvas on the page and in
+the tests). Without a device the **null replayer** is used: every NVN call, record and lowering happens, nothing is
+drawn, fences and window images complete at once (Node tests, instruction counts).
+
+- **Entry points.** `nvnBootstrapLoader(name)` is a forced take-over. It, and `nvnDeviceGetProcAddress(device,
+  name)`, answer with a stub address: `nvn_lookup(name)`, then a host stub made on demand under the function's name
+  (`Runtime.lateStub`; the loader's stub table takes names after loading). A call to the stub lands in
+  `nvn_call(id, args)`: the glue saves the CPU state into a scratch context block (JavaScript cannot read `v128`
+  globals) and the runtime core copies x0..x7 and the low 64 bits of v0..v7 into the argument block (`rt_nvn_args`).
+- **Recorder imports.** `gfx_exec` → the replayer; `gfx_guest_call` → `Runtime.guestCall` (the command-memory
+  callback runs guest code on the calling thread); `gfx_proc_address(id)` → the stub of that id.
+- **Three calls wait on the GPU** and park the calling guest thread (`cpu.waitFor`, below):
+  `nvnSyncWait(sync, timeout ≠ 0)` when the recorder says the fence is not done: until the replayer's
+  `gfx_fence_signal` for that fence (the replayer's exports are wrapped so the glue hears it), then the call is made
+  again; `nvnQueueFinish`: until `queue.onSubmittedWorkDone()`; `nvnWindowAcquireTexture`: frame pacing, see below.
+- **Frame pacing.** An acquire after the first waits for the next display frame. Wall clock: the embedder's
+  `nextFrame()` (the Worker's `requestAnimationFrame`), else a timer `interval` × 16.67 ms after the previous
+  acquire. Deterministic clock: exactly `interval` refreshes of guest time after the previous acquire, and not before
+  the GPU has finished the previous present.
+
+## Waiting for things outside the guest, and the asynchronous outer loop
+
+`cpu.waitFor(done, at, resume)`: the thread waits until the promise `done` has resolved **and** host time has reached
+`at`. It is a kernel wait (WaitSynchronization on an event kept per thread, made by the glue as for `cpu.block`); the
+glue signals the event from the run loop when both conditions hold. Nothing spins: `run()` returns `{ idle: true }`
+when every thread waits and something outside is still due.
+
+`runAsync()` is the loop for a host with an event loop: `run({ async: true, yieldMs: 8 })` in a loop; after `yielded`
+(8 ms of slices) a zero timer, after `idle` a promise that the completion of any outside wait, the next guest
+deadline, `requestPause()` or `kill()` resolves. Slices themselves stay synchronous. A plain `run()` that meets a
+wait it cannot make synchronously stops with a `host` fault.
+
+**No real time in deterministic mode.** The time `at` of an outside wait is a point on the guest clock, and the
+guest clock is not allowed to pass it while the outside thing has not happened: slices are cut so that they end at
+`at` (the budget is clamped), a jump of an idle guest stops there, and when it is reached and `done` is still
+pending the whole guest stands still (`idle`) until it resolves. So the thread wakes at exactly `at`, however long
+WebGPU took; a wait with no `at` is "now", which makes it synchronous as far as the guest can tell while JavaScript
+still returns to the event loop. Result: with the same program and budget the slices, SVC count, budget units, guest
+clock and pixels are identical from run to run (tested), in Chromium as under Node's null replayer (the two differ
+from each other by one slice per parked wait).
+
+## Input and the window (`rt_hle.ts`)
+
+- `registerVi`: `nn::vi::Initialize`, `OpenDefaultDisplay`, `CreateLayer`, `GetNativeWindow` (opaque tokens; NVN
+  only stores the native window). nxnative takes over none of these: it runs the SDK's own nn::vi against its vi
+  service. Without an SDK the take-over has to be at this level.
+- `registerHid(rt, input)`: `InitializeNpad`, `SetSupportedNpadStyleSet`, `SetSupportedNpadIdType`,
+  `GetNpadStyleSet`, `GetNpadState` and `GetNpadStates` for full-key and handheld, after nxnative `hle_hid.c`: the
+  40-byte state, one player, docked (the pad is npad No1 with style FullKey; a handheld read gets a state with no
+  attributes), supported ids and styles respected, stick direction bits 16..23 past 0x4000, histories filled with
+  the current state under consecutive sampling numbers.
+- `RtInput`: `set(pad)` from the embedder (the page sends keyboard and Gamepad API state when it changes; a press
+  shorter than a read interval is latched), and `script("frame:key[+key][~frames],...")`, nxnative's DM_KEYS idea
+  with frames (presents) as the time base so that it is deterministic; sticks as `L<x>/<y>` in hundredths.
+
+## The page (`web/`)
+
+`npm run web` → http://localhost:8080. Main thread: controls, canvas (handed to the Worker), keyboard and gamepad.
+Worker: the runtime, graphics and `runAsync()`. The demo button runs `cube.nso`, built from `test/runtime/src` by
+`npm run web:build`; NSO files and a shader library (`{ "<16 hex digits of the stage key>": { stage, wgsl, ubos,
+textures, attributes | outputs, fixup } }`) can be picked or dropped. The state badge is the `process` machine's state
+(`rt_state`), the reason beside `Stopped` is the data that state carries (`rt_stop_kind`, `rt_stop_value`); no log
+text is parsed. Stop is the machine's `Kill` event. The log shows every line, red ones in red, guest output in green.
+"Guest instructions per second" is budget units × a ratio measured for the demo at build time (the same frames run
+normally and with one instruction per unit); for other modules only budget units are shown.
+
 ## Process lifecycle and faults
 
 `Empty -Load-> Loading -LoadOk-> Ready -Start-> Running <-Pause/Resume-> Paused`, and `Stopped` (final) from
-`Running` by `Exit`, `Break`, `Fault` and from `Loading` by `Fault`. `Stopped` carries `kind << 32 | value`:
+`Running` by `Exit`, `Break`, `Fault`, from `Loading` by `Fault`, and from `Ready`, `Running` or `Paused` by `Kill`
+(the embedder's stop). `Stopped` carries `kind << 32 | value`:
 exit code, break, or the fault kind. Every fault logs two red lines and `run()` returns; nothing is thrown:
 
 ```
@@ -209,7 +293,7 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 | `load` | the loader or the kernel refused a file | none |
 | `host` | an exception in glue or in a host function | last written back |
 
-## Verified (`npm run rt:test`: 22 tests; the same 22 in Chromium with `npm run rt:browser`)
+## Verified (`npm run rt:test`: 25 tests; `npm run rt:browser`: 31 in Chromium)
 
 - The range table and each module's static end; a broken table is refused.
 - (a) hello: output, x0 and x1 at entry, exit code by return.
@@ -232,7 +316,23 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 - (f) faults: jump to 0x6000_0000, an undefined instruction, a load from 0xF000_0000 in a second thread, runaway
   recursion, a damaged NSO, a deadlock, a fatal `svcBreak`: each `Stopped` with its kind and the red lines.
 - (g) the 21-program corpus (61 flat images) through this loop, budgets 100000 and 50: 61 of 61 both times.
-- `process` machine: all 9 transitions (`npm run kit:test`).
+- `process` machine: all 12 transitions (`npm run kit:test`).
+- Graphics, Node (null replayer) and Chromium (WebGPU on SwiftShader, in a Worker, OffscreenCanvas): `cube.nso`
+  includes nxnative's real `nvn.h`, gets 95 entry points by name, a window through nn::vi, and renders a clear, a
+  triangle and the textured cube (texture written block-linear into pool memory, uniform data new every frame):
+  12 frames paced one refresh of guest time apart, 605 NVN calls, a SyncWait that parks on a fresh fence, QueueFinish.
+  Scripted input reaches the npad reads. `cube2.nso`: a second thread writes the uniforms under the SDK mutex, an
+  event each way per frame; identical with budgets 100000, 700 and 50.
+- Pixels (Chromium only): the clear colour on all 129600 pixels; the triangle's 41472 pixels (the geometry's area)
+  with red, green and blue at the right corners; the cube: only the texture's five colours on the background, the
+  same hash on a second run, a different one with `4:Right~6` (twice the same) and another with the left stick.
+  `build/runtime/cube.png`, `triangle.png`, `cube_turned.png` are the presented textures read back.
+- Wall clock with `requestAnimationFrame`: 40 frames at the display rate, the run loop busy about 5 % of the time,
+  the Worker's event loop serving timers meanwhile.
+- The page: opened in Chromium, demo started by a click, `Running`, frames advancing, ArrowRight seen in the pad
+  readout, Pause (frames stop), Resume, Stop (`Stopped`, killed), no red line; `build/runtime/web.png`.
+- Without nxnative's `nvn.h` (`NXNATIVE_NVN_INCLUDE` overrides the directory) the graphics guests are not built and
+  their tests report SKIPPED.
 
 Measured on the development machine (4 cores), run time without translation:
 
@@ -240,6 +340,22 @@ Measured on the development machine (4 cores), run time without translation:
 |---|---|---|
 | (g) corpus, 160.1 M guest instructions | 306-333 M insn/s (0.48-0.52 s, three runs) | 176-247 M insn/s (0.65-0.91 s, three runs) |
 | (c) threads, 6.46 M guest instructions | 454-492 M insn/s (13.1-14.2 ms) | 616-653 M insn/s (9.9-10.5 ms) |
+
+The cube guests in Chromium (SwiftShader, no GPU), unpaced on the wall clock, 300 frames:
+
+| | cube | cube2 (two threads) |
+|---|---|---|
+| frames per second | 184 | 198 |
+| guest instructions per frame | 885 | 714 |
+| per frame: translated code and SVCs | 0.151 ms | 0.134 ms |
+| per frame: host calls outside WebGPU (NVN recorder, hid, stubs) | 0.185 ms | 0.144 ms |
+| per frame: WebGPU calls in the replayer | 0.245 ms | 0.203 ms |
+| per frame: waiting for the GPU and the event loop | 4.8 ms | 4.6 ms |
+| guest instructions per second of translated-code time | 5.9 M | 5.3 M |
+
+A frame of these guests is 43 NVN calls and almost no computation, so "translated code" is mostly the price of
+entering and leaving it 47 times (each NVN call saves the CPU state once to marshal x0..x7 and d0..d7). Paced by
+`requestAnimationFrame` the page shows 60 frames/s with 15.6 ms of each frame idle.
 
 (c)'s instruction count is taken from a run with `maxInsns = 1`, where a budget unit is one instruction; its run
 time is the best of five normal runs and is so short that the figure is rough. (g) is slower here than in the
@@ -269,7 +385,17 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
 - The kernel's background freeze is not honoured by `mrs cntpct_el0` (red line once). Doing it needs the translator
   to treat the read like an SVC (pc written back, pc check after the import) and a kernel wait that does not write
   x0/x1 into the context as the GetSystemTick wait does.
-- gfx is not attached: its two ranges are reserved and `cpu.call` exists, nothing more.
+- Graphics waits: `nvnSyncWait`'s timeout is not honoured once the thread parks (it waits for the fence however
+  long); `QueueFinish` waits for submitted work, not for pending readbacks; acquire pacing knows one window.
+- An NVN call costs a full `save_ctx` (832 bytes) to read the float arguments; a `float`-returning NVN function
+  would need `d0` written back, which nothing does yet (no implemented function returns one).
+- nn::vi: four calls with opaque tokens, no vsync event (`GetDisplayVsyncEvent` needs nn::os system events), one
+  display, one layer. nn::hid: one player, docked only, no Joy-Con styles, no six-axis, vibration or touch.
+- The page's instructions-per-second figure is exact only in the sense of its ratio for the demo; for other modules
+  nothing counts executed instructions (a counter in translated code would be the a64 owner's).
+- The page takes NSO files only (no NSP/XCI, no file system: `src/fs` is not attached), and a shader library in
+  this runtime's JSON shape, not yet whatever `tools/shaders` writes.
+- `kill()` stops the process machine and the run loop; kernel threads are not torn down (the runtime is dropped).
 - `fini` functions never run. TLS relocations stay unsupported in the loader. File staging is 32 MB.
 - Host functions are found by name at the first call of each stub; there is no arity or type information.
 - Browser run needs the full Chromium build: in `chrome-headless-shell` 153 as installed here, any out-of-bounds

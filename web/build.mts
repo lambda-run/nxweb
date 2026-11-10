@@ -16,12 +16,14 @@ export async function buildWeb(): Promise<void> {
   for (const n of ["rt", "kernel", "loader", "translator", "helpers", "gfx"]) copyFileSync(join(OUT, n + ".wasm"), join(WEB, "wasm", n + ".wasm"));
   if (!haveNvn()) { writeFileSync(join(WEB, "demo", "demo.json"), "{}"); console.error("[RED] web:build: the demo guest needs nxnative's nvn.h and was not built: the demo button will fail"); return; }
   copyFileSync(join(GUESTS, "cube.nso"), join(WEB, "demo", "cube.nso"));
-  // the same 120 frames twice on the null replayer: once normally (budget units), once with one instruction per unit
+  // the same frames on the null replayer, normally (budget units) and with one instruction per unit
   const env = loadEnv(), files = [{ name: "cube", bytes: new Uint8Array(readFileSync(join(GUESTS, "cube.nso"))) }];
-  const units = async (o: object) => { const p = await bootGfx(env, files, { frames: 120, ...o }); await p.rt.runAsync(); if (p.rt.state !== "Stopped") throw new Error("web:build: the demo did not finish"); return p.rt.units; };
-  const normal = await units({}), insns = await units({ maxInsns: 1, budget: 1 << 20 });
+  // per-frame steady state: the difference between 240 and 120 frames, so that start-up does not count
+  const units = async (frames: number, o: object) => { const p = await bootGfx(env, files, { frames, ...o }); await p.rt.runAsync(); if (p.rt.state !== "Stopped") throw new Error("web:build: the demo did not finish"); return p.rt.units; };
+  const one = { maxInsns: 1, budget: 1 << 20 };
+  const normal = await units(240, {}) - await units(120, {}), insns = await units(240, one) - await units(120, one);
   writeFileSync(join(WEB, "demo", "demo.json"), JSON.stringify({ instructionsPerUnit: insns / normal, frames: 120, instructions: insns, budgetUnits: normal }));
-  console.log(`web:build: build/web ready; demo: ${insns} guest instructions and ${normal} budget units in 120 frames (${(insns / normal).toFixed(2)} instructions per unit)`);
+  console.log(`web:build: build/web ready; demo: ${insns} guest instructions and ${normal} budget units per 120 frames in steady state (${(insns / normal).toFixed(1)} instructions per unit, ${Math.round(insns / 120)} per frame)`);
 }
 if (process.argv[1] && import.meta.filename === process.argv[1]) {
   try { await buildWeb(); } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }

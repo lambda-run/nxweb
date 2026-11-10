@@ -729,7 +729,7 @@ function opCreate(path: u64, size: i64, type: u8): i64 {
   if (svBusy(s)) return FS_RETRY;
   if (!rN) return RES_PATH_EXISTS;   // the root
   const parent = svWalk(s, PB0, rN - 1);
-  if (parent < 0 || !s.nodes || nType(s, parent) != N_DIR) return RES_PATH_NOT_FOUND;
+  if (parent < 0 || (s.nodes && nType(s, parent) != N_DIR)) return RES_PATH_NOT_FOUND;
   const c = compPtr(PB0, rN - 1), len = <u32>load<u16>(c);
   if (nodeChild(s, parent, c + 2, len) >= 0) return RES_PATH_EXISTS;
   if (!svWritable(s)) return roLog(path);

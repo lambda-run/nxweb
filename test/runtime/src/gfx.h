@@ -232,6 +232,12 @@ static int frame_begin(int depth_test, const float *clear, int w, int h) {
   int idx = -1;
   nvnWindowAcquireTexture(&g_win, &g_sync, &idx);            // parks this thread until the next display frame
   nvnSyncWait(&g_sync, 1000000000ull);                       // and until the image is the game's
+  // command and control memory for this frame: the two halves of the pool in turn, as a double-buffered game does
+  static u32 flip; static u8 *control;
+  if (!control) control = galloc(2 * 4096, 16);
+  flip ^= 1;
+  nvnCommandBufferAddCommandMemory(&g_cmd, &g_cmdpool.obj, flip * (g_cmdpool.size / 2), g_cmdpool.size / 2);
+  nvnCommandBufferAddControlMemory(&g_cmd, control + flip * 4096, 4096);
   nvnCommandBufferBeginRecording(&g_cmd);
   nvnCommandBufferSetTexturePool(&g_cmd, &g_texpool); nvnCommandBufferSetSamplerPool(&g_cmd, &g_samppool);
   const NVNtexture *target = &g_wtex[idx];
