@@ -105,7 +105,8 @@ released at the latest when the limit is reached.
 (needs the threads feature; use the `.shared.wasm` translator and helpers). LDXR/LDAXR are atomic loads, STXR is
 `atomic.rmw.cmpxchg` against the value the load saw (after the address check), LDAR/STLR are atomic loads/stores.
 A 128-bit STXP is two exchanges with a roll-back of the first when the second loses (not atomic as a pair).
-Atomic accesses trap on a misaligned address. CPU state stays in per-instance globals, so each Worker has its own.
+Atomic accesses trap on a misaligned address. DMB and DSB are `atomic.fence` (on an unshared memory, and for ISB,
+nothing). CPU state stays in per-instance globals, so each Worker has its own.
 
 **cntpct as a yield point (`cntYield: true`, default off).** `mrs xN, cntpct_el0 / cntvct_el0` becomes: write back,
 `pc` = the instruction itself, call `cntpct`, pc check, reload, then use the returned value. The embedder may park:

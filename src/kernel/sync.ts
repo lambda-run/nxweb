@@ -11,7 +11,11 @@ import { guestNs, guestTicks } from "./clock";
 
 export const PENDING: u64 = u64.MAX_VALUE;   // block(): the thread now waits; its result comes later
 let wseq: u64 = 0;
-export function syncInit(): void { wseq = 0; }
+// A lower bound of every waiting thread's deadline (guest ns). block() is the only place a deadline is set, and it
+// lowers the bound; a wait that ends otherwise leaves it too low, which costs one scan. expire() scans the threads
+// only when the bound has come, and then makes it exact.
+let minDl: u64 = FOREVER;
+export function syncInit(): void { wseq = 0; minDl = FOREVER; }
 
 // ---- retained synchronization objects: type << 16 | index ----
 // @ts-ignore: decorator
@@ -42,6 +46,7 @@ export function block(t: KThread, kind: u32, ns: i64): u64 {
   if (ns == 0) return R_TIMEOUT;
   const now = guestNs();
   t.deadline = ns < 0 || <u64>ns > FOREVER - now ? FOREVER : now + <u64>ns;
+  if (t.deadline < minDl) minDl = t.deadline;
   t.m.step(KthreadE.Block, kind);
   schedLeft(t);
   return PENDING;
@@ -165,6 +170,7 @@ export function nextDeadline(): u64 {
 // condition wait leaves the lock's queue the same way, as in nxnative.
 export function expire(): void {
   const now = guestNs();
+  if (now < minDl) return;   // no deadline has come: nothing to scan
   for (;;) {
     let b: KThread | null = null;
     for (let i = 0; i < MAX_THREADS; i++) {
@@ -172,7 +178,8 @@ export function expire(): void {
       if (!t.used || !t.waitKind || t.deadline > now) continue;
       if (b == null || t.deadline < b.deadline || (t.deadline == b.deadline && t.wseq < b.wseq)) b = t;
     }
-    if (b == null) return;
+    if (b == null) break;
     wake(b, R_TIMEOUT);
   }
+  minDl = nextDeadline();
 }
