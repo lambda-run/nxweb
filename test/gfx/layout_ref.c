@@ -36,6 +36,8 @@ int main(void) {
     S(PROG, prog_t); O(PROG, prog_t, magic); O(PROG, prog_t, nstage); O(PROG, prog_t, sd); O(PROG, prog_t, serial);
     S(SYNC, sync_t); O(SYNC, sync_t, magic);
     S(WB, win_builder_t); O(WB, win_builder_t, dev); O(WB, win_builder_t, native); O(WB, win_builder_t, ntex); O(WB, win_builder_t, interval); O(WB, win_builder_t, tex); O(WB, win_builder_t, nactive);
+    S(EVB, ev_builder_t); O(EVB, ev_builder_t, pool); O(EVB, ev_builder_t, off);
+    S(EV, ev_t); O(EV, ev_t, magic); O(EV, ev_t, val); O(EV, ev_t, pool); O(EV, ev_t, off);
     S(WIN, win_t); O(WIN, win_t, magic); O(WIN, win_t, native); O(WIN, win_t, ntex); O(WIN, win_t, interval); O(WIN, win_t, next); O(WIN, win_t, crop); O(WIN, win_t, tex); O(WIN, win_t, presents);
     O(WIN, win_t, nactive);
     S(CMD, cmd_t); O(CMD, cmd_t, magic); O(CMD, cmd_t, cur); O(CMD, cmd_t, nvn_flag10); O(CMD, cmd_t, end); O(CMD, cmd_t, begin); O(CMD, cmd_t, cb); O(CMD, cmd_t, cb_data); O(CMD, cmd_t, dev);

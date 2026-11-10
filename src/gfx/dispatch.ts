@@ -410,6 +410,24 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnSyncFinalize: syncFinalize(P(a, 0)); return 0;
     case F.nvnSyncSetDebugLabel: return 0;
     case F.nvnSyncWait: return syncWait(P(a, 0), X(a, 1));
+    // Events: a 32-bit word in a memory pool the game gave as storage (nxnative ev_t); the CPU and command buffers write it
+    case F.nvnEventBuilderSetDefaults: memory.fill(P(a, 0), 0, O.EVB_SIZE); return 0;
+    case F.nvnEventBuilderSetStorage: store<u64>(P(a, 0), X(a, 1), O.EVB_pool); store<u64>(P(a, 0), X(a, 2), O.EVB_off); return 0;
+    case F.nvnEventBuilderGetStorage: { const b = P(a, 0), o = P(a, 1); if (o) store<u64>(o, load<u64>(b, O.EVB_off)); return load<u64>(b, O.EVB_pool); }
+    case F.nvnEventBuilderGetMemoryPool: return load<u64>(P(a, 0), O.EVB_pool);
+    case F.nvnEventBuilderGetMemoryOffset: return load<u64>(P(a, 0), O.EVB_off);
+    case F.nvnEventInitialize: {
+      const e = P(a, 0), b = P(a, 1), pool = <usize>load<u64>(b, O.EVB_pool);
+      if (!pool || !load<u64>(pool, O.POOL_mem)) { L.red("EventInitialize has no storage"); L.end(); return 0; }
+      store<u32>(e, O.MAGIC_EVENT); store<u64>(e, load<u64>(pool, O.POOL_mem) + load<u64>(b, O.EVB_off), O.EV_val);
+      store<u64>(e, pool, O.EV_pool); store<u64>(e, load<u64>(b, O.EVB_off), O.EV_off);
+      return 1;
+    }
+    case F.nvnEventFinalize: store<u32>(P(a, 0), 0); return 0;
+    case F.nvnEventGetMemoryPool: return load<u64>(P(a, 0), O.EV_pool);
+    case F.nvnEventGetMemoryOffset: return load<u64>(P(a, 0), O.EV_off);
+    case F.nvnEventGetValue: return load<u32>(<usize>load<u64>(P(a, 0), O.EV_val));
+    case F.nvnEventSignal: C.eventPublish(<usize>load<u64>(P(a, 0), O.EV_val), I(a, 1), <u32>I(a, 2)); return 0;
     case F.nvnQueueBuilderSetDefaults: {
       const b = P(a, 0), d = load<u64>(b);
       memory.fill(b, 0, O.QB_SIZE); store<u64>(b, d);
@@ -455,6 +473,11 @@ export function call(fn: i32, a: usize): u64 {
       return 0;
     }
     case F.nvnWindowBuilderSetPresentInterval: store<i32>(P(a, 0), I(a, 1), O.WB_interval); return 0;
+    // The first n of the swap chain's textures are handed out (0 or more than there are: all of them)
+    case F.nvnWindowBuilderSetNumActiveTextures: store<i32>(P(a, 0), I(a, 1), O.WB_nactive); return 0;
+    case F.nvnWindowBuilderGetNumActiveTextures: { const b = P(a, 0), n = load<i32>(b, O.WB_ntex), k = load<i32>(b, O.WB_nactive); return k > 0 && (k < n || !n) ? k : n; }
+    case F.nvnWindowSetNumActiveTextures: store<i32>(P(a, 0), I(a, 1), O.WIN_nactive); return 0;
+    case F.nvnWindowGetNumActiveTextures: { const w = P(a, 0), n = load<i32>(w, O.WIN_ntex), k = load<i32>(w, O.WIN_nactive); return k > 0 && k < n ? k : n; }
     case F.nvnWindowBuilderGetPresentInterval: return <u64><u32>load<i32>(P(a, 0), O.WB_interval);
     case F.nvnWindowBuilderGetNativeWindow: return load<u64>(P(a, 0), O.WB_native);
     case F.nvnWindowInitialize: return windowInitialize(P(a, 0), P(a, 1));
@@ -614,6 +637,8 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferGetCopyRowStride: return load<u64>(P(a, 0), O.CMD_copy_row);
     case F.nvnCommandBufferGetCopyImageStride: return load<u64>(P(a, 0), O.CMD_copy_image);
     case F.nvnCommandBufferFenceSync: C.fenceSync(P(a, 0), X(a, 1)); return 0;
+    case F.nvnCommandBufferSignalEvent: C.signalEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 5)); return 0;
+    case F.nvnCommandBufferWaitEvent: C.waitEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 3)); return 0;
     case F.nvnCommandBufferBindStorageBuffer: C.bindStorageBuffer(P(a, 0), I(a, 1), I(a, 2), X(a, 3), X(a, 4)); return 0;
     case F.nvnCommandBufferBindStorageBuffers: { const rg = P(a, 4); for (let i = 0, n = I(a, 3); i < n; i++) C.bindStorageBuffer(P(a, 0), I(a, 1), I(a, 2) + i, load<u64>(rg + (<usize>i << 4)), load<u64>(rg + (<usize>i << 4), 8)); return 0; }
     case F.nvnCommandBufferBindImage: store<u64>(RANGE, X(a, 3)); C.bindTextures(P(a, 0), I(a, 1), I(a, 2), 1, RANGE, O.OP_BIND_IMG); return 0;

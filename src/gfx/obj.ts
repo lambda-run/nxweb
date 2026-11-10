@@ -6,6 +6,7 @@
 
 export const MAGIC_DEV: u32 = 0x00564544;    // 'D','E','V',0
 export const MAGIC_QUEUE: u32 = 0x55455551;  // 'Q','U','E','U'
+export const MAGIC_EVENT: u32 = 0x544e5645;  // 'E','V','N','T'
 export const MAGIC_POOL: u32 = 0x4c4f4f50;   // 'P','O','O','L'
 export const MAGIC_TEX: u32 = 0x00584554;    // 'T','E','X',0
 export const MAGIC_SAMP: u32 = 0x00504d53;   // 'S','M','P',0
@@ -171,6 +172,14 @@ export const WB_interval: usize = 20;
 export const WB_tex: usize = 24;
 export const WB_nactive: usize = 56;
 export const WB_SIZE: usize = 64;
+export const EVB_pool: usize = 0;
+export const EVB_off: usize = 8;
+export const EVB_SIZE: usize = 16;
+export const EV_magic: usize = 0;
+export const EV_val: usize = 8;
+export const EV_pool: usize = 16;
+export const EV_off: usize = 24;
+export const EV_SIZE: usize = 32;
 export const WIN_magic: usize = 0;
 export const WIN_native: usize = 8;
 export const WIN_ntex: usize = 16;
