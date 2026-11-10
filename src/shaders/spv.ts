@@ -63,6 +63,9 @@ export interface Binding {
   size?: number;       // buffers: bytes the WGSL type covers = the least the host may bind
   dim?: "2d" | "2d-array" | "cube" | "cube-array" | "3d";
   sampleType?: "float" | "depth" | "sint" | "uint";
+  // tex: a bindless texture. The handle is not a bound slot's: it is the 32-bit word at byte `offset` of game uniform slot `ubo` (texture ID in the low 20 bits,
+  // sampler ID in the high 12), read by the host at each draw; `sampler`: a second word ORed into it, or the sampler ID as a constant (nxnative tex_ubo / samp_ubo)
+  handle?: { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } };
   name: string;        // the translator's name of the variable, for the reader
 }
 export interface FixResult {
@@ -395,10 +398,31 @@ function imageInfo(c: Ctx, image: number): { dim: Binding["dim"]; sampleType: Bi
 // 5. Bindings from the translator's names (the interface nxnative's reflection reads too, dmsh_build.py reflect / decode_tex):
 //   support_buffer; <p>_c<bank> uniform bank (3..16 = game uniform slot bank - 3, 25 = bound sizes, 1 = own constants, 0 / 2 = driver segments);
 //   <p>_t..._tcb_<HANDLE> a texture whose handle is the driver table's word HANDLE & 0x3fff (type in HANDLE >> 28: 0 = combined)
+//   <p>_t..._cb<SLOTS>_<HANDLE> bindless (nxnative dmsh_build.py decode_ubo_tex): the handle is word HANDLE & 0x3fff of the game's uniform bank SLOTS & 0xffff
+//     (3..16 = uniform slot bank - 3). Type 0: that word holds texture and sampler. Type 1: the sampler is in word (HANDLE >> 14) & 0x3fff of bank (SLOTS >> 16) - 1
+//     (the same bank when that is 0). Type 3: the sampler is the constant ID (HANDLE >> 14) & 0x3fff.
+//     Such a texture is given a texture slot no bound texture of the shader uses (the lowest free ones, in the order of the variables), and the binding of that slot
+const TEX_NAME = /^[a-z]+_t\w*?_(?:cb(\d+)|tcb)_([0-9A-F]+)$/;
+function bindlessHandle(name: string, slots: number, h: number): NonNullable<Binding["handle"]> {
+  const tb = slots & 0xffff, sb = slots >>> 16 ? (slots >>> 16) - 1 : tb, o0 = (h & 0x3fff) * 4, o1 = ((h >>> 14) & 0x3fff) * 4, type = h >>> 28;
+  if (tb < 3 || tb > 16) throw new Error(`texture ${name}: its handle is in uniform bank ${tb}, which is not one of the game's uniform slots: not placed`);
+  if (type === 0) return { ubo: tb - 3, offset: o0 };
+  if (type === 3) return { ubo: tb - 3, offset: o0, sampler: { id: o1 / 4 } };
+  if (type === 1 && sb >= 3 && sb <= 16) return { ubo: tb - 3, offset: o0, sampler: { ubo: sb - 3, offset: o1 } };
+  if (type === 1 && sb === 2) throw new Error(`texture ${name}: a bindless texture whose sampler is a separate sampler of the driver table (c2 + 0x${o1.toString(16)}): not placed yet (src/gfx has no separate samplers)`);
+  throw new Error(`texture ${name}: a bindless handle of type ${type} (sampler bank ${sb}): not placed`);
+}
 function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep"): Binding[] {
   const st = STAGE_INDEX[stage], out: Binding[] = [];
   const set = (id: number, group: number, binding: number) => { if (mode === "nxweb") { c.setDecoration(id, Dec.DescriptorSet, group); c.setDecoration(id, Dec.Binding, binding); } };
   const where = (id: number, group: number, binding: number) => mode === "nxweb" ? { group, binding } : { group: c.decoration(id, Dec.DescriptorSet) ?? 0, binding: c.decoration(id, Dec.Binding) ?? 0 };
+  // the texture slots the shader's bound textures take: bindless textures go to the others
+  const taken = new Set<number>();
+  if (mode === "nxweb") for (const v of c.m.insts) if (v.op === Op.Variable && samplerOf.has(v.w[1])) {
+    const m = TEX_NAME.exec(c.names.get(v.w[1]) ?? "");
+    if (m && (m[1] === undefined || (+m[1] & 0xffff) === 2)) taken.add((((parseInt(m[2], 16) & 0x3fff) * 4) - C2_TEX) / 8);
+  }
+  const freeSlot = (name: string) => { for (let s = 0; s < 32; s++) if (!taken.has(s)) { taken.add(s); return s; } throw new Error(`texture ${name}: bindless, and the shader's 32 texture slots are all taken`); };
   for (const v of c.m.insts.filter(i => i.op === Op.Variable)) {
     const id = v.w[1], sc = v.w[2], name = c.names.get(id) ?? "";
     if (sc === SC.StorageBuffer || (sc === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))) throw new Error(`storage buffer ${name}: not placed yet (src/gfx has no storage buffers)`);
@@ -418,19 +442,23 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
     } else if (sc === SC.UniformConstant) {
       if (samplerOf.has(id)) {
         const info = imageInfo(c, (v as any).image), sv = samplerOf.get(id)!;
-        let slot: number;
+        let slot: number, handle: Binding["handle"];
         if (mode === "keep") slot = ((c.decoration(id, Dec.Binding) ?? 0) - st * 64) >> 1;
         else {
-          const m = /^[a-z]+_t\w*?_(?:cb(\d+)|tcb)_([0-9A-F]+)$/.exec(name);
+          const m = TEX_NAME.exec(name);
           if (!m) throw new Error(`texture ${name || id}: not a name the translator gives`);
           const h = parseInt(m[2], 16), byte = (h & 0x3fff) * 4, type = h >>> 28;
-          if (m[1] !== undefined && (+m[1] & 0xffff) !== 2) throw new Error(`texture ${name}: its handle is in the game's uniform buffer (bindless), not placed yet`);
-          if (type !== 0) throw new Error(`texture ${name}: a separate texture and sampler (handle type ${type}), not placed yet`);
-          if (byte < C2_TEX || byte >= C2_SEPTEX || (byte - C2_TEX) % 8) throw new Error(`texture ${name}: handle word at c2 + 0x${byte.toString(16)} is not a combined texture slot`);
-          slot = (byte - C2_TEX) / 8;
+          if (m[1] !== undefined && (+m[1] & 0xffff) !== 2) {
+            handle = bindlessHandle(name, +m[1], h); slot = freeSlot(name);
+            const sm: any = handle.sampler;
+            c.notes.push(`texture ${name} is bindless: slot ${slot} takes its handle from uniform slot ${handle.ubo} + 0x${handle.offset.toString(16)}${sm ? ("id" in sm ? `, sampler ID ${sm.id}` : `, its sampler from uniform slot ${sm.ubo} + 0x${sm.offset.toString(16)}`) : ""} at each draw`);
+          } else if (type !== 0) throw new Error(`texture ${name}: a separate texture and sampler (handle type ${type}), not placed yet`);
+          else if (byte < C2_TEX || byte >= C2_SEPTEX || (byte - C2_TEX) % 8) throw new Error(`texture ${name}: handle word at c2 + 0x${byte.toString(16)} is not a combined texture slot`);
+          else slot = (byte - C2_TEX) / 8;
           if (slot >= 32) throw new Error(`texture ${name}: combined slot ${slot} is past the 32 the binding convention has room for`);
         }
-        const t = { kind: "tex" as const, reg: slot, ...where(id, 1, st * 64 + slot * 2), ...info, name };
+        const t: Binding = { kind: "tex" as const, reg: slot, ...where(id, 1, st * 64 + slot * 2), ...info, name };
+        if (handle) t.handle = handle;
         set(id, t.group, t.binding); out.push(t);
         const s = { kind: "samp_tex" as const, reg: slot, ...where(sv, 1, st * 64 + slot * 2 + 1), sampleType: info.sampleType, name: c.names.get(sv)! };
         set(sv, s.group, s.binding); out.push(s);

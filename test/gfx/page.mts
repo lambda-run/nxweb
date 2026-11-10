@@ -3,7 +3,8 @@
 import { Env } from "./env.mts";
 import { scenes as scenes1, T } from "./scenes.mts";
 import { scenes2 } from "./scenes2.mts";
-const scenes = [...scenes1, ...scenes2];
+import { scenes3 } from "./scenes3.mts";
+const scenes = [...scenes1, ...scenes2, ...scenes3];
 import { GfxHost } from "../../src/glue/gfx_host.ts";
 
 async function main() {
@@ -14,7 +15,7 @@ async function main() {
   // every feature the replayer can use and the adapter's own limits, as an embedder should ask (GfxHost.deviceDescriptor)
   const dd = GfxHost.deviceDescriptor(adapter), want = dd.requiredFeatures;
   const device = await adapter.requestDevice(dd);
-  const limits = ["maxUniformBuffersPerShaderStage", "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage", "maxStorageTexturesPerShaderStage", "maxDynamicUniformBuffersPerPipelineLayout", "maxVertexAttributes", "maxVertexBuffers"]
+  const limits = ["maxUniformBuffersPerShaderStage", "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage", "maxStorageTexturesPerShaderStage", "maxDynamicUniformBuffersPerPipelineLayout", "maxVertexAttributes", "maxVertexBuffers", "maxBindGroups"]
     .map(l => `${l} ${adapter.limits[l]} (${device.limits[l]} granted)`).join(", ");
   const wasm = await WebAssembly.compileStreaming(fetch("/build/gfx/gfx.wasm"));
   const only = new URLSearchParams(location.search).get("only");

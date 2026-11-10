@@ -45,7 +45,10 @@ export interface ShaderInfo {
   entry?: string;
   ubos?: number[];
   uboSize?: Record<string, number>;   // slot -> bytes the WGSL type covers: at least that is bound, zero past what the game bound
-  textures?: { slot: number; dim?: "2d" | "2d-array" | "cube" | "3d" | "cube-array"; depth?: boolean; sampleType?: "float" | "unfilterable-float" | "sint" | "uint" }[];
+  // `handle`: a bindless slot. The shader samples the binding of `slot`; which texture and sampler that is stands in the game's uniform data, read at each draw:
+  // the u32 at byte `offset` of this stage's uniform slot `ubo` (texture ID in the low 20 bits, sampler ID in the high 12). `sampler`: another word ORed into
+  // it (the texture in one, the sampler in the other), or the sampler ID as a constant of the shader. A slot with a handle ignores nvnCommandBufferBindTexture
+  textures?: { slot: number; dim?: "2d" | "2d-array" | "cube" | "3d" | "cube-array"; depth?: boolean; sampleType?: "float" | "unfilterable-float" | "sint" | "uint"; handle?: TextureHandle }[];
   attributes?: number[];   // vertex: locations read
   attributeTypes?: Record<string, VinClass>;   // vertex: the class each input is declared with
   // vertex: the module to use when the bound attribute formats have other classes than declared. Either texts by
@@ -59,6 +62,7 @@ export interface ShaderInfo {
   images?: { slot: number; format: string; access?: "write-only" | "read-only" | "read-write"; dim?: "2d" | "2d-array" | "3d" }[];
   extra?: { kind: string; group: number; binding: number; size?: number }[];   // the chain's other bindings: only "support" is provided
 }
+export interface TextureHandle { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } }
 export interface GfxHostOptions {
   canvas?: any;
   log?: (line: string) => void;
@@ -68,6 +72,9 @@ export interface GfxHostOptions {
   uniformArena?: boolean;
   // Device loss: called for a new GPUDevice after GPUDevice.lost; without it restore() must be called by the embedder
   requestDevice?: () => Promise<GPU>;
+  // Upper bounds on the device's limits as the replayer sees them (name -> value, e.g. maxSampledTexturesPerShaderStage: 16): a pipeline that needs more
+  // fails with the replayer's own red line, as on a device that has no more. For tests, and to see what a smaller device would refuse
+  limits?: Record<string, number>;
 }
 
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
@@ -95,7 +102,7 @@ const FEATURES = ["texture-compression-bc", "texture-compression-astc", "rg11b10
   "dual-source-blending", "float32-filterable", "clip-distances"];
 const LIMITS = ["maxUniformBuffersPerShaderStage", "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage", "maxStorageTexturesPerShaderStage",
   "maxDynamicUniformBuffersPerPipelineLayout", "maxVertexAttributes", "maxVertexBuffers", "maxColorAttachmentBytesPerSample", "maxBindingsPerBindGroup", "maxInterStageShaderVariables", "maxBufferSize",
-  "maxStorageBufferBindingSize", "maxUniformBufferBindingSize", "maxTextureDimension2D", "maxTextureArrayLayers"];
+  "maxStorageBufferBindingSize", "maxUniformBufferBindingSize", "maxTextureDimension2D", "maxTextureArrayLayers", "maxBindGroups", "maxBindGroupsPlusVertexBuffers"];
 const UA_CHUNK = 1 << 20, UA_ALIGN = 256;
 
 const FULLSCREEN_VS = `
@@ -219,7 +226,10 @@ export class GfxHost {
     if (this.device.onuncapturederror) this.device.onuncapturederror = null;
     return n;
   }
-  private limit(name: string, fallback: number): number { const v = this.device.limits?.[name]; return typeof v === "number" ? v : fallback; }
+  private limit(name: string, fallback: number): number {
+    const v = this.device.limits?.[name], n = typeof v === "number" ? v : fallback, clamp = this.opts.limits?.[name];
+    return typeof clamp === "number" ? Math.min(n, clamp) : n;
+  }
 
   // The recorder's imports that belong to the replayer; the embedder adds env.log, env.gfx_guest_call, env.gfx_proc_address
   imports() { return { gfx_exec: (ptr: number, len: number) => this.exec(ptr >>> 0, len >>> 0) }; }
@@ -285,8 +295,23 @@ export class GfxHost {
     const unknown = (info.extra ?? []).filter(e => e.kind !== "support");
     if (unknown.length) { this.log(`[RED] shader ${keyHex} needs bindings the replayer does not provide (${unknown.map(e => e.kind).join(", ")}): not registered`); return -1; }
     const support = info.support || (info.extra ?? []).some(e => e.kind === "support"), st = info.stage === "vertex" ? 0 : info.stage === "fragment" ? 1 : 2;
-    new Uint8Array(this.memory.buffer, r, 144).fill(0);
-    let depth = 0;
+    new Uint8Array(this.memory.buffer, r, 400).fill(0);
+    let depth = 0, bindless = 0;
+    for (const t of info.textures ?? []) {
+      const h = t.handle;
+      if (!h) continue;
+      // the record's entry of the slot (src/gfx/shader.ts RF_blh): kind, uniform slot, byte offset; the sampler's uniform slot and offset, or its ID
+      const word = (w: { ubo: number; offset: number }) => Number.isInteger(w.ubo) && w.ubo >= 0 && w.ubo < 14 && Number.isInteger(w.offset) && w.offset >= 0 && w.offset < 65536 && w.offset % 4 === 0;
+      const sm: any = h.sampler, id = sm && "id" in sm;
+      if (!(t.slot >= 0 && t.slot < 32) || !word(h) || (sm && (id ? !(Number.isInteger(sm.id) && sm.id >= 0 && sm.id < 4096) : !word(sm)))) {
+        this.log(`[RED] shader ${keyHex}: texture slot ${t.slot} has a handle the replayer cannot read (${JSON.stringify(h)}; uniform slots 0..13, byte offsets in words below 65536, sampler IDs below 4096): not registered`); return -1;
+      }
+      const e = r + 144 + t.slot * 8;
+      dv.setUint8(e, !sm ? 0 : id ? 3 : 1); dv.setUint8(e + 1, h.ubo); dv.setUint16(e + 2, h.offset, true);
+      dv.setUint8(e + 4, sm && !id ? sm.ubo : 0); dv.setUint16(e + 6, sm ? (id ? sm.id : sm.offset) : 0, true);
+      bindless |= 1 << t.slot;
+    }
+    dv.setUint32(r + 140, bindless >>> 0, true);
     for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? "2d"))); if (t.depth) depth |= 1 << t.slot; }
     dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0)) >>> 0, true); dv.setUint32(r + 8, bit((info.textures ?? []).map(t => t.slot)), true);
     dv.setUint32(r + 12, bit(st === 0 ? info.attributes : info.outputs), true); dv.setUint32(r + 16, depth >>> 0, true);
@@ -647,14 +672,22 @@ export class GfxHost {
   // it fails here with the numbers (its draws are then skipped) instead of as a validation error with none
   private overLimits(id: number, stages: { info: ShaderInfo; st: number }[], fixup: boolean): boolean {
     let over = false;
+    const red = (who: string, n: number, what: string, max: number, limit: string, per: string) => {
+      over = true;
+      this.log(`[RED] pipeline ${id}: ${who} needs ${n} ${what}; this WebGPU device allows ${max}${per} (${limit}): ${n - max} over. The pipeline cannot be built, its draws are skipped`);
+    };
     for (const { info: s, st } of stages) {
-      const counts: [string, number, number][] = [
-        ["uniform buffers", (s.ubos?.length ?? 0) + (s.support ? 1 : 0) + (st === 0 && fixup ? 1 : 0), this.limit("maxUniformBuffersPerShaderStage", 12)],
-        ["sampled textures", s.textures?.length ?? 0, this.limit("maxSampledTexturesPerShaderStage", 16)], ["samplers", s.textures?.length ?? 0, this.limit("maxSamplersPerShaderStage", 16)],
-        ["storage buffers", s.storage?.length ?? 0, this.limit("maxStorageBuffersPerShaderStage", 8)], ["storage textures", s.images?.length ?? 0, this.limit("maxStorageTexturesPerShaderStage", 4)]];
-      if (st === 0) counts.push(["vertex attributes", s.attributes?.length ?? 0, this.limit("maxVertexAttributes", 16)]);
-      for (const [what, n, max] of counts) if (n > max) { over = true; this.log(`[RED] pipeline ${id}: the ${["vertex", "fragment", "compute"][st]} shader ${this.shaders.find(x => x?.info === s)?.key ?? ""} uses ${n} ${what}, this WebGPU device allows ${max} a stage: the pipeline cannot be built, its draws are skipped`); }
+      const counts: [string, number, string, number][] = [
+        ["uniform buffers", (s.ubos?.length ?? 0) + (s.support ? 1 : 0) + (st === 0 && fixup ? 1 : 0), "maxUniformBuffersPerShaderStage", 12],
+        ["sampled textures", s.textures?.length ?? 0, "maxSampledTexturesPerShaderStage", 16], ["samplers", s.textures?.length ?? 0, "maxSamplersPerShaderStage", 16],
+        ["storage buffers", s.storage?.length ?? 0, "maxStorageBuffersPerShaderStage", 8], ["storage textures", s.images?.length ?? 0, "maxStorageTexturesPerShaderStage", 4]];
+      if (st === 0) counts.push(["vertex attributes", s.attributes?.length ?? 0, "maxVertexAttributes", 16]);
+      const who = `the ${["vertex", "fragment", "compute"][st]} shader ${this.shaders.find(x => x?.info === s)?.key ?? ""}`;
+      for (const [what, n, limit, fallback] of counts) { const max = this.limit(limit, fallback); if (n > max) red(who, n, what, max, limit, " a stage"); }
     }
+    // bind groups: 0 buffers, 1 textures and images, 2 the position fix-up
+    const groups = fixup ? 3 : 2, maxGroups = this.limit("maxBindGroups", 4);
+    if (groups > maxGroups) red("its layout", groups, "bind groups", maxGroups, "maxBindGroups", "");
     return over;
   }
   private pipeFailed(id: number) { this.stats.pipelinesFailed++; this.x.gfx_pipeline_done(id, 0); }

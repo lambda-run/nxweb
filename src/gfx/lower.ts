@@ -19,8 +19,8 @@ import { Inst } from "../kit/machine";
 import { GFX_PASS, GfxPassE, GfxPassS } from "../kit/gen/tables";
 import * as O from "./obj";
 import * as H from "./hostops";
-import { texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
-import { progShader, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags } from "./shader";
+import { dpoolBase, texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
+import { progShader, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID } from "./shader";
 import { fmtClass, fmtCanon, fmtTwin } from "./fmt";
 import * as PK from "./pipeline";
 import { syncFence } from "./sync";
@@ -72,8 +72,8 @@ let dirty: u32 = D_ALL;
 let curPipe: i32 = -1, curVs: i32 = -1, curFs: i32 = -1;
 
 // Counters the tests and the README's numbers read (gfx_stat)
-let nPasses: u32 = 0, nDraws: u32 = 0, nSkipped: u32 = 0, nSnapshots: u32 = 0, nClearRects: u32 = 0, nSubmits: u32 = 0, nDispatches: u32 = 0, nComputePasses: u32 = 0, nMirrored: u32 = 0;
-export function stat(i: i32): u32 { return i == 0 ? nPasses : i == 1 ? nDraws : i == 2 ? nSkipped : i == 3 ? nSnapshots : i == 4 ? nClearRects : i == 5 ? nSubmits : i == 13 ? nDispatches : i == 14 ? nComputePasses : i == 15 ? nMirrored : 0; }
+let nPasses: u32 = 0, nDraws: u32 = 0, nSkipped: u32 = 0, nSnapshots: u32 = 0, nClearRects: u32 = 0, nSubmits: u32 = 0, nDispatches: u32 = 0, nComputePasses: u32 = 0, nMirrored: u32 = 0, nBindless: u32 = 0;
+export function stat(i: i32): u32 { return i == 0 ? nPasses : i == 1 ? nDraws : i == 2 ? nSkipped : i == 3 ? nSnapshots : i == 4 ? nClearRects : i == 5 ? nSubmits : i == 13 ? nDispatches : i == 14 ? nComputePasses : i == 15 ? nMirrored : i == 16 ? nBindless : 0; }
 export function passState(): i32 { return pass().state; }
 
 let onceMask: u64 = 0;
@@ -245,6 +245,30 @@ function clearDepthStencil(r: usize): void {
 // ---- draws ----
 // @ts-ignore: decorator
 @inline function texHandle(stage: u32, slot: u32): u64 { return load<u64>(TEXH + (<usize>(stage * 32 + slot) << 3)); }
+// Bindless handles (nxnative nvn_mtl.m ubo_handle, ubo_tex_id, ubo_samp_id). A slot the reflection marks bindless takes
+// its handle from the uniform data bound to the same stage when the draw is lowered: guest memory then holds what the
+// GPU would read (inline updates and buffer copies are made in stream order, memWrite). A slot that is not bound, or
+// bound shorter than the word, reads 0: no texture. The IDs are those of the pools set when the draw runs, so the
+// pools' numbering bases are added here, as BindTexture adds them when it is recorded
+let texBase: i32 = 0, sampBase: i32 = 0;
+function uboWord(st: u32, reg: u32, off: u32): u32 {
+  if (reg >= 16) return 0;
+  const b = UBO + (<usize>(st * 16 + reg) << 4), addr = load<u64>(b), size = load<u64>(b, 8);
+  return addr && <u64>off + 4 <= size ? load<u32>(<usize>addr + off) : 0;
+}
+// @ts-ignore: decorator
+@inline function hasBindless(id: i32): bool { return id >= 0 && load<u32>(libRefl(id), RF_bl) != 0; }
+// The handle (texture ID | sampler ID << 20, pool bases added) of texture slot `slot` of stage st, whose shader's record is rf
+function slotHandle(st: u32, rf: usize, slot: u32): u64 {
+  if (!((load<u32>(rf, RF_bl) >> slot) & 1)) return texHandle(st, slot);
+  const e = rf + RF_blh + (<usize>slot << 3), kind = load<u8>(e);
+  let h = uboWord(st, load<u8>(e, 1), load<u16>(e, 2));
+  if (kind == BL_OR) h |= uboWord(st, load<u8>(e, 4), load<u16>(e, 6));
+  let tid = <u64>(h & 0xfffff), sid = <u64>(h >> 20);
+  if (tid) tid += <u64>texBase;
+  if (kind == BL_SAMPLER_ID) sid = <u64>load<u16>(e, 6); else if (sid) sid += <u64>sampBase;
+  return tid | sid << 20;
+}
 // The live serial a handle's texture ID names, 0 for none
 function handleSerial(h: u64): u64 {
   const e = texDesc(<u32>(h & 0xfffff));
@@ -264,10 +288,11 @@ function snapped(serial: u64): bool {
 function feedback(): bool {
   let n = 0, fresh = false;
   for (let st: u32 = 0; st < 2; st++) {
-    let m = load<u32>(libRefl(st ? curFs : curVs), RF_tex);
+    const rf = libRefl(st ? curFs : curVs);
+    let m = load<u32>(rf, RF_tex);
     for (let slot: u32 = 0; m; slot++, m >>= 1) {
       if (!(m & 1)) continue;
-      const s = handleSerial(texHandle(st, slot));
+      const s = handleSerial(slotHandle(st, rf, slot));
       if (!s || !isTarget(s)) continue;
       let k = 0; while (k < n && load<u64>(FB + (<usize>k << 3)) != s) k++;
       if (k == n && n < 9) { store<u64>(FB + (<usize>n << 3), s); n++; if (!snapped(s)) fresh = true; }
@@ -369,6 +394,7 @@ function emitState(): void {
     }
   }
   if (dirty & D_UBO) { emitUbos(0, curVs); emitUbos(1, curFs); emitStorage(0, curVs); emitStorage(1, curFs); }
+  if ((dirty & D_UBO) && (hasBindless(curVs) || hasBindless(curFs))) dirty |= D_TEX;      // the handles are uniform data
   if (dirty & D_TEX) { emitTexs(0, curVs); emitTexs(1, curFs); }
   if (dirty & D_BLENDC) memory.copy(H.hostRec(H.H_BLEND_COLOR, 24) + 8, BLENDC, 16);
   if (dirty & D_STREF) store<u32>(H.hostRec(H.H_STENCIL_REF, 16), stRef, 8);
@@ -401,10 +427,12 @@ function emitSupport(st: u32): void {
   for (let i: usize = 0; i < 73; i++) store<f32>(p + 192 + (i << 4), 1);
 }
 function emitTexs(st: u32, id: i32): void {
-  let m = load<u32>(libRefl(id), RF_tex);
+  const rf = libRefl(id);
+  let m = load<u32>(rf, RF_tex);
   for (let slot: u32 = 0; m; slot++, m >>= 1) {
     if (!(m & 1)) continue;
-    const h = texHandle(st, slot), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h);
+    if ((load<u32>(rf, RF_bl) >> slot) & 1) nBindless++;
+    const h = slotHandle(st, rf, slot), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h);
     if (serial) contentNeed(serial);       // may upload it now
     const r = H.hostRec(H.H_TEX, 48);
     if (!serial && once(7)) { L.red("a draw samples texture ID "); L.u(h & 0xfffff); L.str(" (stage "); L.u(st); L.str(" slot "); L.u(slot); L.str("), which names no live texture: it reads as empty"); L.end(); }
@@ -674,7 +702,10 @@ function exec(p: usize, depth: i32): void {
       case O.OP_DRAW: draw(a, size, false); break;
       case O.OP_DRAW_IDX: draw(a, size, true); break;
       case O.OP_BARRIER: if (load<i32>(a)) passBreak(); break;
-      case O.OP_SET_TEX_POOL: case O.OP_SET_SAMP_POOL: break;     // the pools' numbering bases were added when the binds were recorded
+      // The pools' numbering bases were added to bound handles when the binds were recorded; handles read from uniform
+      // data (slotHandle) take the bases of the pools set here
+      case O.OP_SET_TEX_POOL: { const b = dpoolBase(load<u64>(a), true); if (b != texBase) { texBase = b; dirty |= D_TEX; } break; }
+      case O.OP_SET_SAMP_POOL: { const b = dpoolBase(load<u64>(a), false); if (b != sampBase) { sampBase = b; dirty |= D_TEX; } break; }
       case O.OP_COPY_B2T: copyB2T(a, size); break;
       case O.OP_COPY_T2T: copyT2T(a); break;
       case O.OP_COPY_T2B: copyT2B(a, size); break;

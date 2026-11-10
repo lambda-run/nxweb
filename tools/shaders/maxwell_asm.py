@@ -20,7 +20,7 @@ OP = dict(ald=TOP('1110111111011'), ast=TOP('1110111111110'), ldc=TOP('111011111
           ffma=TOP('010110011'), mov32i=TOP('000000010000'), ipa=TOP('11100000'), tex=TOP('11000'), kil=TOP('111000110011'), exit=TOP('111000110000'),
           fsetp=TOP('010110111011'), mufu=TOP('0101000010000'), lop=TOP('0101110001000'), shl=TOP('0101110001001'), shr=TOP('0101110000101'),
           popc=TOP('0101110000001'), f2i=TOP('0101110010110'), i2f=TOP('0101110010111'), iadd=TOP('0101110000010'), fmnmx=TOP('0101110001100'),
-          tld=TOP('11011100'), txq=TOP('1101111101001'), lop32i=TOP('000001'))
+          tld=TOP('11011100'), texb=TOP('1101111010'), txq=TOP('1101111101001'), lop32i=TOP('000001'))
 
 def f32(x): return struct.unpack('<I', struct.pack('<f', x))[0]
 def g(pred=PT): return pred << 16
@@ -36,6 +36,7 @@ def mov32i(rd, imm): return OP['mov32i'] | (imm & 0xffffffff) << 20 | g() | 15 <
 def ipa(rd, attr, mul=None): return OP['ipa'] | (1 if mul is not None else 0) << 54 | RZ << 39 | attr << 28 | (RZ if mul is None else mul) << 20 | g() | RZ << 8 | rd
 def mufu(rd, ra, fn): return OP['mufu'] | fn << 20 | g() | ra << 8 | rd                                                       # fn: 0 cos, 1 sin, 4 rcp, 5 rsq, 8 sqrt
 def tex(rd, ra, handle, dim=2, mask=15): return OP['tex'] | handle << 36 | mask << 31 | dim << 28 | RZ << 20 | g() | ra << 8 | rd   # TEX Rd.., coordinates in Ra.., c[2] word `handle`
+def texb(rd, ra, rh, dim=2, mask=15): return OP['texb'] | mask << 31 | dim << 28 | rh << 20 | g() | ra << 8 | rd                             # TEXB: bindless, the handle is in register Rh
 def tld(rd, ra, handle, dim=2, mask=15): return OP['tld'] | handle << 36 | mask << 31 | dim << 28 | RZ << 20 | g() | ra << 8 | rd   # TLD: texel fetch, level 0
 def txq(rd, ra, handle, mask=3): return OP['txq'] | handle << 36 | mask << 31 | 1 << 22 | g() | ra << 8 | rd                  # TXQ dimensions, level in Ra
 def fsetp(pd, ra, rb, cmp): return OP['fsetp'] | cmp << 48 | PT << 39 | rb << 20 | g() | ra << 8 | pd << 3 | PT               # P<pd> = Ra <cmp> Rb (1 lt, 4 gt, 2 eq)
@@ -106,6 +107,13 @@ PROGRAMS['ps_ops'] = dict(stage='ps', imap=[0x0a], facts=dict(tex={'1': '2d'}, f
     mov32i(6, 3), shl(14, 4, 6), shr(15, 14, 6), lop(14, 14, 15, 2), popc(14, 14), iadd(14, 14, 8), i2f(14, 14),
     mufu(15, 0, 1), mufu(16, 1, 8), fmax(15, 15, 16),
     fadd(0, 10, 14), fadd(1, 11, 15), fmul(2, 12, 15), mov32i(3, f32(1.0))])
+
+# Pixel: bindless. The texture handle is not a bound slot's: it is read from the game's own uniform data, c[5] (uniform slot 2) byte 0x28, and the texture
+# sampled through it at generic input 0. The translator traces the handle to that word and names the texture after it (fp_t_cb5_A)
+PROGRAMS['ps_bindless'] = dict(stage='ps', imap=[0x0a], facts=dict(fout={'0': 'float'}), insts=[
+    ipa(4, 0x7c), mufu(4, 4, 4), ipa(0, 0x80, 4), ipa(1, 0x84, 4),
+    ldc(10, 5, 0x28),
+    texb(0, 0, 10)])
 
 def main(out):
     out = Path(out); out.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ game files ─ shader_split.py (nxnative) ─▶ control section + code area per
 ```
 
 Everything right of `shader_split.py` ran here, offline and inside a page (`npm run shaders:test`, results below).
-**No game shader has been through it**: there are none in this environment. What ran is three Maxwell programs
+**No game shader has been through it**: there are none in this environment. What ran is four Maxwell programs
 assembled by hand (`maxwell_asm.py`) and 43 GLSL shaders written to look like the translator's output.
 
 | File | What |
@@ -66,7 +66,12 @@ npm: `shaders:naga` (build the wasm), `shaders:asm`, `shaders:xlate`, `shaders:l
   host must look up per draw: `tex_ubo` / `samp_ubo`. Handles the translator cannot trace become arrays indexed by the
   handle's IDs (2^20 textures, 2^12 samplers) which `pool_arrays` turns into pointers into the game's whole texture
   and sampler pools (`tex_pool`, `tex_htab`, `tex_c2a`). Metal argument buffers can hold that; **WebGPU has no
-  unbounded binding arrays** (64 KB uniform limit, sampled textures per stage 16 by default). This has no answer yet.
+  unbounded binding arrays** (64 KB uniform limit, sampled textures per stage 16 by default).
+  Here: a single handle in a uniform slot (`tex_ubo` / `samp_ubo`, handle types 0, 1 with the sampler word in a
+  uniform slot, 3) is placed. The pass gives the texture the lowest texture slot no bound texture of the shader
+  uses and reports `handle: { ubo, offset, sampler? }` on that slot; the host reads the handle at each draw
+  (src/gfx/README.md "Bindless textures"). Arrays of handles and pools are refused ("an array of combined
+  samplers"), as is a bindless texture whose sampler is a separate sampler of `c[2]`: no answer.
 - **Vertex inputs.** `Location l` = NVN attribute `l` (generic attribute `a[0x80 + 16 l]`). Declared float unless the
   answer table says sint / uint. Maxwell's fetch puts the format's converted bits in a register; Metal and WebGPU
   both require the declared class to match the bound format, which is pipeline state, not shader state.
@@ -112,7 +117,7 @@ naga's SPIR-V reader and WGSL writer refuse the translator's output as it comes.
 | 4 | `Unsupported builtin value: PointSize` on every vertex shader | Ryujinx writes `gl_PointSize = 1` in every vertex shader; WGSL has no point size | Stores to point size, clip and cull distances removed (naga then omits the members). Non-constant point size and any clip distance: a note (a loss). |
 | 5 | `invalid id` on every combined sampler | naga has no combined image samplers; WGSL neither | **Splitting rule**: the variable keeps its id, name and decorations and becomes the texture; a sampler variable `<name>_samp` is added; each `OpLoad` of the pair becomes load texture, load sampler, `OpSampledImage`. **Numbering**: combined slot `s` of stage `st` → texture `@group(1) @binding(st*64 + 2s)`, sampler `+1`. Depth images give `texture_depth_*` + `sampler_comparison` (naga infers it from the comparison instructions). |
 | 6 | 64 KB uniform blocks | `vec4 data[4096]` whatever is read; WebGPU requires the bound range to cover the type, and 65,536 is exactly the default `maxUniformBufferBindingSize` | Bound-size table (`c25`) → private constant of all ones; unused uniforms removed; each block cut after the last vector read at a constant index (a computed index keeps 4096). The reflection carries `uboSize`. |
-| 7 | Bindings | Set 0 with running numbers | From the names: `<p>_c<3+r>` → `@group(0) @binding(st*16 + r)`; `support_buffer` → `st*16 + 14`; `c1` → `@group(3) @binding(st*16)`, `c0` / `c2` → `+1` / `+2`; textures as in 5. Bindless, separate, image, storage, array-of-sampler variables are errors ("not placed yet"). |
+| 7 | Bindings | Set 0 with running numbers | From the names: `<p>_c<3+r>` → `@group(0) @binding(st*16 + r)`; `support_buffer` → `st*16 + 14`; `c1` → `@group(3) @binding(st*16)`, `c0` / `c2` → `+1` / `+2`; textures as in 5. A bindless texture (`<p>_t…_cb<bank>_<handle>`, bank 3..16) takes a free texture slot and a `handle` in the record. Separate, image, storage, array-of-sampler variables are errors ("not placed yet"). |
 | 8 | Origin and depth | run-time state in NVN | Vertex: `@group(2) @binding(0)` one `vec4f`; before every return of the entry point `pos.y *= fix.y; pos.z = pos.z*fix.z + pos.w*fix.w` (`src/gfx/README.md` item 4). |
 | 9 | `'textureSample' must only be called from uniform control flow` (Chromium, not naga) | WGSL's derivative uniformity analysis; Maxwell samples under predicates | `diagnostic(off, derivative_uniformity);` at the top of every fragment module. Derivatives there are then undefined, as on the hardware. |
 
@@ -140,7 +145,7 @@ Fails, **and Ryujinx emits it** (so real shaders will hit it):
 | Storage buffers, `imageLoad` / `imageStore`, image atomics | the pass (not placed) | Bindings in `src/gfx` first. WebGPU: no storage images of most formats, no image atomics at all, fragment-stage storage writes need care; atomics exist only on `atomic<u32/i32>` in storage buffers. |
 | Buffer textures, 1D textures | the pass | The 2D-rows treatment nxnative gives buffer textures (`tbuf_as_2d`), in the pass and the host. |
 | Multisampled textures | the pass | A binding kind (`texture_multisampled_2d`), small. |
-| Arrays of samplers (bindless tables) | the pass | See section 2: no design yet. |
+| Arrays of samplers (bindless tables: handle arrays, pools) | the pass | See section 2: no design; WebGPU's core has no binding arrays. Single bindless handles are placed. |
 | Integer texture through a filtering sample | naga validation | Rewrite to `textureLoad` at the nearest texel in the pass. |
 | 64-bit floats | the pass | Translate with `softfloat64` first, as nxnative does. |
 | Subgroup operations, `OpControlBarrier` shuffles | the pass (error) | nxnative lowers a few by hand; nothing here. |
@@ -163,7 +168,7 @@ Fails, Ryujinx does not emit it (so it does not matter): add-with-carry, `frexp`
 | `dmsh_alpha` | alpha test | WebGPU has none either: a discard against a uniform, as the gfx README anticipates. Ryujinx can emit it (`AlphaTestCompare`), but as a translation-time constant; a uniform-driven variant needs a pass. |
 | `dmsh_logic` | logic ops | No WebGPU form without reading the target. |
 | `dmsh_fetch` | framebuffer fetch (tile memory) | No WebGPU form; `src/gfx` already snapshots. |
-| `pool_arrays`, htab, c2a | bindless | No design; the hard one. |
+| `pool_arrays`, htab, c2a | bindless tables | No design; the hard one. Single handles in uniform slots need no fix-up and are placed (section 2). |
 | `dmsh_geometry`, `dmsh_meshstage`, `tg_spill`, atomics | stages and memory Metal lacks | Each needs its own answer; several have none in WebGPU 1.0. |
 
 ## 6. The library (`src/shaders/library.ts`)
@@ -263,17 +268,20 @@ Measured here (x86-64 Linux, Node 22, Chromium on SwiftShader; three small stage
    shadow inputs for a quarter of one game's replay time).
 9. The fragment-coordinate argument above, on a game with a lower-left window.
 
-## 8. Test results (`npm run shaders:test`, 26 tests, 0 failed)
+## 8. Test results (`npm run shaders:test`, 27 tests, 0 failed)
 
 Node: SPIR-V round trip (43 modules); garbage refused by the reader, by naga; corpus against `expect.json` (27 convert,
 16 refused, each with the expected reason); `spirv-val` on 38 rewritten modules; uniform shrinking (96 bytes for
 `data[0]`, `data[5]`; 65,536 for a computed index); sampler split and numbering; fix-up placement; losses as notes;
-extended multiply arithmetic; library round trip, damage, `registerAll`; Maxwell keys = sha256; **translator: 3 of 3
+extended multiply arithmetic; library round trip, damage, `registerAll`; Maxwell keys = sha256; **translator: 4 of 4
 hand-assembled programs translated, its output passes `spirv-val`; random bytes, an empty file and a missing file each
-refused with one `[RED]` line and exit status 1, no crash or hang**; the Maxwell library with nxweb's bindings.
+refused with one `[RED]` line and exit status 1, no crash or hang**; the Maxwell library with nxweb's bindings, among them a
+bindless program (`TEXB` with its handle loaded from `c[5]`: the translator names the texture `fp_t_cb5_A`, the pass
+reports `handle: { ubo: 2, offset: 0x28 }` on slot 0 and `registerAll` passes it on); the pass on the other bindless
+names (two words, constant sampler ID) and its refusals (sampler in `c[2]`, a bank that is no uniform slot).
 
 Chromium (headless, WebGPU on SwiftShader): Tint compiles 25 of 27 corpus modules (2 need device features), 2 of 2
-end-to-end, 3 of 3 Maxwell-derived. **Rendered and read back, 3,720 pixels compared with values computed in the test,
+end-to-end, 4 of 4 Maxwell-derived. **Rendered and read back, 3,720 pixels compared with values computed in the test,
 tolerance 1/255**, for each of: GLSL-derived shaders, upper-left / near 0; the same, lower-left / near −w (fix-up
 `(1, −1, 0.5, 0.5)`, picture mirrored); **Maxwell-derived shaders** (hand-assembled code → Ryujinx → pass → naga →
 library → WebGPU) in both modes. The check is shown to fail on a mirrored picture. The pass and naga run in the page

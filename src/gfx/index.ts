@@ -88,7 +88,8 @@ export function gfx_image_state(window: usize, index: i32): i32 { return imageSt
 export function gfx_pass_state(): i32 { return passState(); }
 // 0 passes begun, 1 draws issued, 2 draws skipped, 3 snapshots, 4 clears drawn as triangles, 5 submissions, 6 host stream hand-overs, 7 host-lent command segments
 // 8 texture uploads, 9 KB uploaded, 10 sampled hashes taken, 11 full hashes taken, 12 textures found changed,
-// 13 compute dispatches, 14 compute passes, 15 buffer-to-texture copies made in the texture's storage
+// 13 compute dispatches, 14 compute passes, 15 buffer-to-texture copies made in the texture's storage,
+// 16 texture handles taken from uniform data (bindless slots bound)
 export function gfx_stat(i: i32): u32 { return i >= 13 ? stat(i) : i >= 8 ? texStat(i - 8) : i == 6 ? hostExecs() : i == 7 ? hostSegsLent() : stat(i); }
 // Block-linear storage of one level and layer to linear rows (toLinear) or back; desc = nvn_texdesc. -1: no such storage
 export function gfx_deswizzle(desc: usize, level: u32, layer: u32, storage: usize, linear: usize, pitch: u32, toLinear: i32): i32 { return deswizzle(desc, level, layer, storage, linear, pitch, toLinear != 0); }
@@ -98,9 +99,9 @@ export function gfx_hash(ptr: usize, len: u32): f64 { return <f64>(hashFull(ptr,
 export function gfx_bench_sample(tex: usize, n: u32): u32 { return <u32>benchSample(tex, n); }
 export function gfx_tex_state(tex: usize): i32 { return contentState(load<u64>(tex, 120)); }
 export function gfx_tex_layout(desc: usize, out: usize): void { texLayout(desc, out); }
-// The end of the module's static data (it starts at the --memoryBase of the build), and 256 bytes the embedder may use
+// The end of the module's static data (it starts at the --memoryBase of the build), and 512 bytes the embedder may use
 // to pass a record in (a reflection record for gfx_shader_register)
 export function gfx_static_end(): usize { return __heap_base; }
-const SCRATCH: usize = memory.data(256);
+const SCRATCH: usize = memory.data(512);
 export function gfx_scratch(): usize { return SCRATCH; }
 export function gfx_tex_level_offset(desc: usize, level: u32): u32 { return <u32>texLevelOffset(desc, level); }

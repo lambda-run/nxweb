@@ -16,7 +16,7 @@ export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions 
   const reflection: Reflection = {
     stage: f.stage, entry: "main",
     ubos: cb.map(b => b.reg!).sort((a, b) => a - b),
-    textures: tex.map(t => ({ slot: t.reg!, dim: t.dim!, depth: t.sampleType === "depth" })).sort((a, b) => a.slot - b.slot),
+    textures: tex.map(t => ({ slot: t.reg!, dim: t.dim!, depth: t.sampleType === "depth", ...(t.handle ? { handle: t.handle } : {}) })).sort((a, b) => a.slot - b.slot),
     fixup: f.bindings.some(b => b.kind === "fixup"),
     uboSize: Object.fromEntries(cb.map(b => [b.reg, b.size ?? 0])),
     extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank })),

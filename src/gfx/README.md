@@ -201,6 +201,7 @@ second vertex entry point. WebGPU has no negative viewport, so the split here is
   | `ubos: [i]`, `uboSize: { i: bytes }` | `@group(0) @binding(st*16 + i)` | binds exactly `uboSize[i]` bytes (16 up): the game's bytes up to the size it bound, **zero past it**. Without `uboSize` the bound size is used |
   | `extra: [{ kind: "support" }]` (or `support: true`) | `@group(0) @binding(st*16 + 14)` | Ryujinx's support buffer, 1392 bytes, std140: `viewport_inverse` (2/w, 2/h, 1, 0) at 144, `viewport_size` (w, h, 1, 1) at 160, `render_scale[73]` all 1 from 192, the rest 0 (nothing is BGRA-swapped, no alpha test, no transform feedback); follows the viewport |
   | `textures: [{ slot, dim, depth, sampleType? }]` | texture `@group(1) @binding(st*64 + 2*slot)`, sampler `+1` | `dim` 2d, 2d-array, cube, 3d, cube-array; `depth` → `texture_depth_*` with a comparison sampler (the game's compare function, LEQUAL when it set none); `sampleType` sint / uint / unfilterable-float → a non-filtering sampler |
+  | `textures: [{ slot, …, handle: { ubo, offset, sampler? } }]` | the same binding of `slot` | a **bindless** slot: the recorder reads the handle from uniform data at each draw ("Bindless textures"); `BindTexture` on that slot is ignored |
   | `storage: [{ slot, write }]` | `@group(0) @binding(128 + st*16 + slot)`, `var<storage, read>` or `read_write` | the range of `nvnCommandBufferBindStorageBuffer`; written ranges are read back (above) |
   | `images: [{ slot, format, access, dim }]` | `@group(1) @binding(256 + st*8 + slot)`, `texture_storage_*` | the texture of `nvnCommandBufferBindImage`, one level; the texture becomes GPU-owned when written |
   | `attributes: [l]`, `attributeTypes: { l: float \| sint \| uint }`, `variants` / `variant()` | `@location(l)` = NVN attribute `l` | see "Vertex input classes" |
@@ -225,8 +226,30 @@ chain translating on demand). With none: one red line naming the key, the bound 
 
 ### Limits
 
-`GfxHost.deviceDescriptor(adapter)` asks for the adapter's own limits. WebGPU's defaults against what a stage may
-declare (14 uniform blocks + support buffer + fix-up, 32 textures, 16 storage buffers, 8 images):
+nxnative has no such limits to meet: every binding of a shader is an entry of a Metal argument buffer (`nvn_refl.h`
+`NVN_REFL_MAXARG` 768 a shader), so a stage binds as many buffers and textures as NVN allows. WebGPU counts them a
+stage. What is done here, in this order:
+
+1. `GfxHost.deviceDescriptor(adapter)` asks for the adapter's own limits (`requiredLimits` = `adapter.limits` for
+   the per-stage binding counts, `maxBindGroups`, `maxBindGroupsPlusVertexBuffers`, `maxBindingsPerBindGroup`,
+   dynamic uniform offsets, vertex attributes and buffers, buffer and binding sizes, texture sizes). WebGPU grants
+   the defaults unless asked.
+2. A pipeline's bind group layouts hold only what its shaders' reflection lists (`groupLayouts`): a uniform block,
+   texture, storage buffer or image a stage does not use is not bound and does not count, whatever the game bound.
+3. A pipeline that still needs more than the device has is refused by the replayer before WebGPU sees it
+   (`overLimits`): one red line a limit with the stage, the shader's key, the count, the device's number, the
+   WebGPU limit's name and the excess,
+   `[RED] pipeline 653: the fragment shader 1f… needs 13 uniform buffers; this WebGPU device allows 12 a stage
+   (maxUniformBuffersPerShaderStage): 1 over. The pipeline cannot be built, its draws are skipped`. The pipeline is
+   `Failed` and its draws are skipped; no WebGPU validation error is raised. Checked: uniform buffers (game slots +
+   support buffer + the vertex fix-up), sampled textures, samplers, storage buffers, storage textures, vertex
+   attributes, bind groups (2, or 3 with the fix-up).
+
+`GfxHostOptions.limits` (name → value) lowers the limits as the replayer sees them: the tests use it, and it shows
+what a smaller device would refuse.
+
+WebGPU's defaults against what a stage may declare (14 uniform blocks + support buffer + fix-up, 32 textures, 16
+storage buffers, 8 images):
 
 | Limit | Default | SwiftShader here (Chromium 153) | Needed at most |
 |---|---|---|---|
@@ -236,13 +259,53 @@ declare (14 uniform blocks + support buffer + fix-up, 32 textures, 16 storage bu
 | maxStorageTexturesPerShaderStage | 4 | 4 | 8 |
 | maxDynamicUniformBuffersPerPipelineLayout | 8 | 8 | 31: the ones beyond the limit are bound at fixed offsets (works, costs a bind group a draw) |
 | maxVertexAttributes, maxVertexBuffers | 16, 8 | 16, 8 | 16, 16 |
+| maxBindGroups | 4 | 4 | 3 |
 
-Only SwiftShader was measured. Desktop adapters in Chromium are expected to report the same three per-stage numbers
-(Dawn has long capped them at the defaults whatever the hardware); other browsers may grant more. **Not verified here.**
-A pipeline whose shader exceeds a limit cannot exist on that device: the replayer says so with the numbers
-(`[RED] pipeline 653: the fragment shader … uses 13 uniform buffers, this WebGPU device allows 12 a stage`), reports
-it `Failed`, and its draws are skipped; no WebGPU validation error is raised. Making such a shader work is the
-chain's (several uniform blocks behind one binding; textures in arrays): see the requests at the end.
+Only SwiftShader was measured, and it grants no more than the defaults for uniform buffers, textures and samplers:
+**a stage that uses 13 or more uniform buffers or 17 or more textures has never drawn here**; on this adapter it
+takes the red line above (the scene for it draws where a device allows the counts and checks the line where it does
+not). What other adapters report is not known here. Making such a stage fit a device at the defaults is not done:
+it needs the shader chain to change the module (several uniform blocks behind one binding; nothing in WebGPU's core
+puts several textures behind one binding), see the requests at the end.
+
+### Bindless textures
+
+NVN lets a shader sample through a handle (texture ID | sampler ID << 20, IDs of the texture and sampler pools set
+with `nvnCommandBufferSetTexturePool` / `SetSamplerPool`) that the game keeps in its own uniform data instead of
+binding it to a slot. nxnative (`nvn_mtl.m` `ubo_handle`, `ubo_tex_id`, `ubo_samp_id`; reflection kinds `tex_ubo` /
+`samp_ubo` of `dmsh_abi.h`): the translator traces each such handle to a word of a uniform slot, the shader keeps an
+ordinary texture and sampler argument, and at each draw the host reads the word from the bound uniform memory, adds
+the bases of the pools then set, and puts that texture and sampler into the argument buffer. That maps to WebGPU
+as it is, and is what is ported:
+
+- The reflection marks a texture slot with `handle: { ubo, offset, sampler? }` (record `RF_bl`, `RF_blh` in
+  `shader.ts`): the handle is the u32 at byte `offset` of uniform slot `ubo` of the same stage. `sampler: { ubo,
+  offset }`: a second word ORed into it (handle type 1: the texture in one word, the sampler in the other, either
+  order); `sampler: { id }`: the sampler is a constant ID of the shader (type 3; no pool base, as nxnative's `SAMPI`).
+- `lower.ts` `slotHandle` resolves it when the draw or dispatch is lowered. Guest memory then holds what the GPU
+  would read at that place of the stream: `UpdateUniformBuffer` and `CopyBufferToBuffer` are made in stream order.
+  The result is an ordinary texture binding record (`H_TEX`): the replayer knows nothing of it. The uniform slot
+  need not be one the shader reads as a block.
+- Handles are looked at again whenever uniform bindings or uniform memory changed (`D_UBO`), a pool was set, or
+  textures were bound. A handle that names a target of the open pass takes the pass machine's `Feedback` path like a
+  bound one (the target is copied, the copy sampled). The handles are not part of the pipeline key.
+- A uniform slot that is not bound, or bound shorter than the word, gives handle 0: no texture (the slot reads
+  transparent black), red once.
+
+**Not supported** (each is refused by the shader chain by name, so its key reads as missing; nothing is faked):
+
+- **Arrays of handles indexed at run time** (`tex_htab` / `samp_htab`: element k = the handle at `off + 8k` of a
+  uniform slot; `tex_c2a`: a run of the driver table) and **whole pools indexed by ID** (`tex_pool` / `samp_pool`,
+  what nxnative's `pool_arrays` builds for a handle the translator could trace to no word). Both need an array of
+  textures behind one binding with an index only the GPU knows. WebGPU's core has no binding arrays; with them the
+  size would still be bounded by the per-stage texture limit (16 by default) where nxnative's tables hold hundreds.
+- A bindless texture whose sampler is a separate sampler of the driver table (type 1 with the sampler word in
+  `c2`): there are no separate samplers here yet.
+- Bindless images and buffer textures (`img_ubo`, `tbuf_ubo`), storage buffer addresses kept in uniform data
+  (`sbuf_ubo`).
+- A handle word that a compute shader wrote in the same submission: the read-back lands in guest memory after the
+  submission was lowered, so the draw sees the old word (nxnative reads the current value and says so red; here
+  nothing notices).
 
 ## Uploads and bind groups (replayer)
 
@@ -303,7 +366,7 @@ text names guest addresses, so a capture is for reading, not for replaying.
 
 ## Verified (`npm run gfx:test`, headless Chromium, WebGPU on SwiftShader; `npm run kit:test` for the tables)
 
-14 Node tests and 42 browser scenes, about 285,000 checks.
+14 Node tests and 46 browser scenes, about 327,000 checks.
 
 - **Layout**: 268 offsets and sizes equal `nvn_obj.h` compiled by gcc (`test/gfx/layout_ref.c`), except the listed
   departures; all objects fit NVN's reserved sizes; state-object bit-fields; the size of 41 recorded commands through
@@ -340,7 +403,16 @@ text names guest addresses, so a capture is for reading, not for replaying.
   - vertex input classes: float and RGBA8UI layouts on one shader (variant), no variant (skipped, the request line,
     `Failed`), the embedder's hook;
   - limits: a fragment stage with as many uniform blocks as the device allows (8 dynamic + 4 fixed offsets on
-    SwiftShader) draws their sum; one more fails with the numbers and no WebGPU error;
+    SwiftShader) draws their sum; one more fails with the numbers and no WebGPU error; with the limits clamped
+    (`limits`: 5 uniform buffers, 4 textures and samplers a stage) stages at the limits draw their sums and stages 2
+    over fail with three lines naming `maxUniformBuffersPerShaderStage`, `maxSampledTexturesPerShaderStage`,
+    `maxSamplersPerShaderStage` and "2 over"; clamped to 2 bind groups, the fix-up's third group fails by name; a
+    stage with 14 uniform blocks and one with 17 textures on the device as it is (**on SwiftShader both take the red
+    line; the drawing branch of that scene has never run**);
+  - bindless: handles in a uniform slot the shader does not read (one word; texture word + sampler word in another
+    slot; a constant sampler ID against the word's own), rewritten in memory between frames and by an inline update
+    between two draws of one pass, IDs of a second texture pool (its base), a handle naming the target of the pass
+    (one snapshot, no WebGPU error), a slot bound shorter than the word (reads empty, one red line);
   - compute: a dispatch (clear pending) writes vertices into a storage buffer from a uniform and a read-only storage
     buffer, the next draw uses the range as its vertex buffer, the fence waits for the read-back and guest memory has
     the vertices; a storage image written before any pass and sampled; an indirect dispatch between two draws that
@@ -394,6 +466,8 @@ Downsample(TextureView).
   binding either); the depth resolve takes sample 0, the stencil is not resolved; sample counts other than 4.
 - Depth clamp needs the feature `depth-clip-control` (red once without it).
 - Queues with an origin different from the device's.
+- Bindless: arrays of handles and whole pools indexed at run time, and the other kinds listed under "Bindless
+  textures". Per-stage limits: a stage over the device's limits does not draw ("Limits").
 - Adjacency and patch primitives; separate textures / samplers; transform feedback; counters and events;
   tessellation, geometry; indirect counts written by the GPU.
 - One viewport and scissor (more is red once: WebGPU has one); stencil masks and reference of the front face for both
@@ -415,4 +489,6 @@ Downsample(TextureView).
   images at `@group(1) @binding(256 + st*8 + i)` and report them as `storage` / `images`; let `registerAll` pass
   compute entries and entries whose only `extra` is the support buffer; emit vertex input variants (`variants`, or
   translate on `onShaderVariant`) and, likewise, integer colour outputs; report `sampleType` for integer textures;
-  a plan for stages over 12 uniform blocks or 16 textures on devices at the default limits.
+  for stages over 12 uniform blocks on devices at the default limits, several blocks behind one binding (the host
+  would bind one buffer holding them at fixed places); for stages over 16 textures, and for handle arrays and pools,
+  there is no plan that WebGPU's core allows.
