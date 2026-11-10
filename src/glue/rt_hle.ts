@@ -64,11 +64,14 @@ export function registerVi(rt: Runtime): void {
   rt.register({ name: "_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE", forced: true, fn: cpu => out(cpu, NATIVE_WINDOW) });
 }
 
-export function registerHid(rt: Runtime, input: RtInput): void {
+// handheld(): whether the console is in handheld mode now (the take-over table's operation mode, hle_opmode() == 0):
+// then the pad is the Handheld npad with style Handheld, as nxnative; default docked.
+export function registerHid(rt: Runtime, input: RtInput, o: { handheld?: () => boolean } = {}): void {
   let sampling = 1 << 16, styles = 0xFFFF_FFFF, ids = 0x3FF;
   const idBit = (id: number) => id < 8 ? 1 << id : id === NPAD_HANDHELD ? 1 << 8 : id === 0x10 ? 1 << 9 : 0;
   // docked: the pad is npad No1 as a full-key controller; nothing is connected as Handheld
-  const styleOf = (id: number) => id === NPAD_NO1 && (ids & idBit(id)) && (styles & STYLE_FULLKEY) ? STYLE_FULLKEY : 0;
+  const styleOf = (id: number) => o.handheld?.() ? (id === NPAD_HANDHELD && (ids & idBit(id)) && (styles & STYLE_HANDHELD) ? STYLE_HANDHELD : 0)
+    : id === NPAD_NO1 && (ids & idBit(id)) && (styles & STYLE_FULLKEY) ? STYLE_FULLKEY : 0;
   const fill = (cpu: HostCpu, at: number, id: number, style: number) => {
     const dv = cpu.dv();
     for (let i = 0; i < 40; i += 8) dv.setBigUint64(at + i, 0n, true);

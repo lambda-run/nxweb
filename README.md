@@ -10,15 +10,22 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 ![The demo page running a translated test module that draws a spinning cube through NVN on WebGPU](docs/images/web-demo.png)
 
 
-| Area | State |
+| Area | State (from the tests' own summary lines) |
 |---|---|
-| State machine kit (`src/kit`) | Working, tests pass |
-| ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs |
-| ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), all 75 test programs pass in Node and Chromium |
-| Module loader (`src/loader`) | Working, tests pass (no real game file tried) |
-| Kernel core (`src/kernel`) | Working, tests pass |
-| Runtime (`src/runtime`, `src/glue/rt_*`) | Working: translator + loader + kernel on one memory; multi-threaded NSO test modules run in Node and Chromium |
-| NVN on WebGPU (`src/gfx`) | Working in isolation: 302 of 743 NVN functions, 22 browser scenes pass |
+| State machine kit (`src/kit`) | Working: 38 machines. `kit:test` 85 tests pass; 347 of 362 transitions are exercised (the 15 missing belong to machines an owner is still adding) |
+| ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs (61 images) |
+| ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), 75 test images pass in four configurations in Node and in Chromium; translation cache; optional trap on host-area accesses |
+| Module loader (`src/loader`) | Working, 68 tests (no real game file tried) |
+| Kernel core (`src/kernel`) | Working, 63 tests |
+| Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 39 end-to-end tests under Node, RTB_COUNT in Chromium: multi-threaded NSO modules, run-time modules (NRO), faults with exact pcs, restart without reload |
+| NVN on WebGPU (`src/gfx`) | Working for 333 of 743 NVN functions; a translated guest draws through it in the page |
+| Shaders (`tools/shaders`, `src/shaders`) | Chain works on hand-assembled Maxwell programs, offline and in the page (translated in a Worker, cached); no game shader has been through it |
+| File system (`src/fs`) | Working and attached: RomFS images, crash-safe saves on OPFS; 66 tests, 7 in the browser |
+| SDK take-overs (`src/hle`) | 768 names of 16 nxnative host files, attached to the runtime; a guest calls a spread of them |
+| Audio (`src/audio`) | In progress, not attached |
+
+How the pieces fit: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What of nxnative is ported, cut or open:
+[docs/PORTING-STATUS.md](docs/PORTING-STATUS.md).
 
 Start with [docs/CONTRACT.md](docs/CONTRACT.md). Generated state diagrams are in [docs/machines](docs/machines).
 
@@ -27,4 +34,5 @@ npm install
 pip install unicorn capstone     # reference emulator, tests only
 npm run web                      # the page above, on http://localhost:8080
 npm test                         # needs clang with the aarch64 target and ld.lld
+npm run rt:browser               # the same and more in headless Chromium (Playwright)
 ```

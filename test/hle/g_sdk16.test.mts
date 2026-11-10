@@ -61,7 +61,7 @@ test("nfc / nfp (t_nfc): library states, one device that never finds a tag, outp
   assert.equal(h.call("_ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE", handle).x0, 0n); assert.equal(devState(), 0);
   h.call("_ZN2nn3nfp8FinalizeEv"); assert.equal(lib(), 0); h.call("_ZN2nn3nfp10InitializeEv"); assert.equal(lib(), 1);
   assert.equal(h.guestCalls.length, 0, "no SDK service path is called");
-  h.npad = 0x20; const id = h.alloc(8, 0xEE);
+  h.host.setOpmode(0); const id = h.alloc(8, 0xEE);   // handheld: player 1's controller is the Handheld npad (hid.ts)
   assert.equal(h.call("_ZN2nn3nfp9GetNpadIdEPjRKNS0_12DeviceHandleE", id, handle).x0, 0n); assert.deepEqual([h.u32(id), h.u32(id + 4)], [0x20, 0xEEEEEEEE], "the controller connected now");
   const n = h.alloc(8, 0xEE); assert.equal(h.call("_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm", 0, n, handle, 16).x0, BigInt(115 | 97 << 9)); assert.equal(h.u64(n), 0n);
   const ch = h.alloc(2, 0xEE); h.call("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", handle, ch, 0, 0, 0); assert.deepEqual([...h.read(ch, 2)], [0, 0xEE]);

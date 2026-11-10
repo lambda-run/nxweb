@@ -28,9 +28,13 @@ export class AudioDeviceMain {
   private ran = false;          // it has run since it was last asked
   private dumps: ((d: { dump: Float32Array; frames: number; sampleRate: number; underrun: number; callbacks: number }) => void)[] = [];
   private send: Send; private o: AudioDeviceMainOptions;
+  // Resolves when the context and its worklet exist (or could not be made)
+  opened: Promise<void>;
+  private openDone!: () => void;
 
   constructor(send: Send, o: AudioDeviceMainOptions = {}) {
     this.send = send; this.o = o;
+    this.opened = new Promise(r => { this.openDone = r; });
     const target = o.gestureTarget === undefined ? (typeof document !== "undefined" ? document : null) : o.gestureTarget;
     if (target) for (const type of ["pointerdown", "keydown", "touchend"]) target.addEventListener(type, () => this.gesture(), { capture: true, passive: true } as AddEventListenerOptions);
     if (o.watchVisibility !== false && typeof document !== "undefined") document.addEventListener("visibilitychange", () => this.setHidden(document.hidden));
@@ -62,10 +66,12 @@ export class AudioDeviceMain {
       this.node.connect(ctx.destination);
       ctx.onstatechange = () => this.report();
       this.send({ audio: { ev: "open", rate: ctx.sampleRate, baseLatency: ctx.baseLatency ?? 0 } });
-      if (this.wanted) this.start();
+      // Where autoplay is allowed a new context runs at once: it only runs while an output wants it
+      if (this.wanted) this.start(); else if (ctx.state === "running") void ctx.suspend().catch(() => { /* closed */ });
     } catch (e) {
       this.send({ audio: { ev: "open", rate: 0, error: String(e) } });
     }
+    this.openDone();
   }
   private state(s: number): void { this.send({ audio: { ev: "state", state: s, context: this.ctx?.state ?? "none" } }); }
   private report(): void {

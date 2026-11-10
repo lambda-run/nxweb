@@ -2,6 +2,7 @@
 export * from "../kit/exports";
 import { arenaInit, arenaUsed, arenaSize, redTotal, NEVER } from "./base";
 import { FN_COUNT, NAMES } from "./names";
+import { AUDIO_OUT } from "../kit/gen/tables";
 import * as dev from "./dev";
 import * as out from "./out";
 import * as mix from "./mix";
@@ -103,6 +104,8 @@ export function audio_red_total(): u32 { return redTotal(); }
 export function audio_arena_used(): usize { return arenaUsed(); }
 export function audio_arena_size(): usize { return arenaSize(); }
 export function audio_out_max(): i32 { return out.AOMAX; }
+// The kit's machine id of audio_out in this build (for reading the kit trace)
+export function audio_out_machine(): u32 { return AUDIO_OUT; }
 // One output by slot (0..audio_out_max): -1 when the slot is free, else its audio_out state
 export function audio_out_state(i: i32): i32 { return i >= 0 && i < out.AOMAX && out.outAt(i).used ? out.outAt(i).state : -1; }
 // which: 0 id, 1 pending buffers, 2 released and not taken back, 3 appended, 4 released, 5 taken back, 6 event

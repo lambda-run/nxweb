@@ -23,13 +23,14 @@ const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: ROOT
 export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
   hello: ["hello.c"], two_main: ["two_main.c"], two_lib: ["two_lib.c"], threads: ["threads.c"], race: ["race.c"], heap: ["heap.c"],
   host_main: ["host_main.c"], host_lib: ["host_lib.c"],
-  fsg: ["fsg.c"], ro_main: ["ro_main.c"], fini: ["fini.c"], clock: ["clock.c"], fault_null: ["fault.c", "-DMODE=6"], fault_host: ["fault.c", "-DMODE=7"],
+  fsg: ["fsg.c"], hleg: ["hleg.c"], ro_main: ["ro_main.c"], fini: ["fini.c"], clock: ["clock.c"], fault_null: ["fault.c", "-DMODE=6"], fault_host: ["fault.c", "-DMODE=7"],
   fault_jump: ["fault.c", "-DMODE=1"], fault_undef: ["fault.c", "-DMODE=2"], fault_load: ["fault.c", "-DMODE=3"], fault_stack: ["fault.c", "-DMODE=4"], break: ["fault.c", "-DMODE=5"],
 };
 
 // nxnative's nvn.h is not in this repository: the graphics guests include it from the reference clone
 // (NXNATIVE_NVN_INCLUDE overrides the directory). Without it they are not built and their tests are skipped.
-export const NVN_INCLUDE = process.env.NXNATIVE_NVN_INCLUDE ?? "/home/user/nxnative/dm/gfx/nvn/include";
+export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
+export const NVN_INCLUDE = process.env.NXNATIVE_NVN_INCLUDE ?? join(NXNATIVE, "dm", "gfx", "nvn", "include");
 export const GFX_MODULES: Record<string, [src: string, ...flags: string[]]> = { cube: ["cube.c"], cube2: ["cube2.c"], mx: ["mx.c"], mx_bad: ["mx.c", "-DBAD"] };
 // The hand-assembled Maxwell programs of tools/shaders (python only), as C arrays for the mx guests, and their keys
 export const MAXWELL = join(OUT, "maxwell");
@@ -47,7 +48,7 @@ export function shaderArtifacts(): { library: boolean; translator: boolean; why:
   const has = (cmd: string) => { try { execFileSync(cmd, ["--version"], { stdio: "ignore" }); return true; } catch { return false; } };
   const lib = () => existsSync(join(SHADER_OUT, "maxwell.nxsl")), tr = () => existsSync(join(SHADER_OUT, "xlate_wasm", "_framework", "dotnet.js")) && existsSync(join(SHADER_OUT, "nx_naga.wasm"));
   const npm = (script: string) => { try { execFileSync("npm", ["run", "-s", script], { cwd: ROOT, stdio: ["ignore", "ignore", "inherit"] }); return true; } catch { return false; } };
-  const nx = existsSync(join(process.env.NXNATIVE ?? "/home/user/nxnative", "dm", "gfx", "tools", "dmsh_xlate"));
+  const nx = existsSync(join(NXNATIVE, "dm", "gfx", "tools", "dmsh_xlate"));
   let why = "";
   if ((!lib() || !tr()) && process.env.RT_SHADERS_BUILD !== "0") {
     if (!has("dotnet") || !nx) why = `dotnet is not on PATH or the nxnative checkout (NXNATIVE) is not there`;
@@ -121,7 +122,7 @@ export function loadEnv(): MoreEnv {
     return { name, side, image: new Uint8Array(readFileSync(join(dir, side.image))), expected: new Uint8Array(readFileSync(join(dir, side.expected_stdout))) };
   });
   return {
-    mods: { rt: mod("rt"), kernel: mod("kernel"), loader: mod("loader"), translator: mod("translator"), helpers: mod("helpers"), gfx: mod("gfx"), fs: mod("fs") },
+    mods: { rt: mod("rt"), kernel: mod("kernel"), loader: mod("loader"), translator: mod("translator"), helpers: mod("helpers"), gfx: mod("gfx"), fs: mod("fs"), hle: mod("hle") },
     nso: name => new Uint8Array(readFileSync(join(GUESTS, name + ".nso"))),
     file: name => new Uint8Array(readFileSync(join(GUESTS, name))),
     haveGfxGuests: haveNvn(),

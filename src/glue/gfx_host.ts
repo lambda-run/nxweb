@@ -81,8 +81,10 @@ const DIMS = ["2d", "2d-array", "cube", "3d", "cube-array"], CLASSES: VinClass[]
 interface Tex { serial: number; target: number; format: number; flags: number; samples: number; width: number; height: number; depth: number; levels: number;
   gpu?: GPU; snap?: GPU; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
 interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo"; dyn: boolean; write: boolean }
-interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number }
+interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
+  dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU }
 interface Chunk { buf: GPU; staging: Uint8Array; used: number }
+interface UaSlot { c: Chunk; off: number; size: number }
 interface GpuRange { addr: number; size: number; buf: GPU; hash: number; pending: number }
 
 // The one reinterpretation WebGPU allows a view: the sRGB twin of the texture's format
@@ -431,9 +433,9 @@ export class GfxHost {
   private uaCur: Chunk | null = null;
   private uaDone: Chunk[] = [];
   private uaPool: Chunk[] = [];
-  private uaSeen = new Map<string, { c: Chunk; off: number }>();
+  private uaSeen = new Map<number, UaSlot>();     // by address * 2^17 + bound size: the slot a range has in this epoch
   private uaAlign = UA_ALIGN;
-  private uaAlloc(size: number): { c: Chunk; off: number } {
+  private uaAlloc(size: number): UaSlot {
     let c = this.uaCur;
     if (!c || c.used + size > UA_CHUNK) {
       if (c) this.uaDone.push(c);
@@ -443,7 +445,7 @@ export class GfxHost {
     c.used = (off + size + this.uaAlign - 1) & ~(this.uaAlign - 1);
     c.staging.fill(0, off, off + size);
     this.stats.uniformSlots++;
-    return { c, off };
+    return { c, off, size };
   }
   private uaWrite() {
     if (this.uaCur) { this.uaDone.push(this.uaCur); this.uaCur = null; }
@@ -470,9 +472,9 @@ export class GfxHost {
         this.red("ubogpu", "a uniform range lies in memory a compute pass wrote and is not aligned to 256 bytes: it is bound from guest memory, which has the old content until the read-back lands");
       }
     }
-    const key = u ? (u.data ? "" : `${u.addr}:${u.size}:${size}`) : `0:0:${size}`;
-    let s = key ? this.uaSeen.get(key) : undefined;
-    if (!s) {
+    const key = u ? (u.data ? -1 : u.addr * 131072 + Math.min(u.size, 131071)) : 0;
+    let s = key >= 0 ? this.uaSeen.get(key) : undefined;
+    if (!s || s.size < size) {
       s = this.uaAlloc(size);
       if (u?.data) s.c.staging.set(u.data.subarray(0, Math.min(size, u.data.length)), s.off);
       else if (u && u.addr && u.size) {
@@ -481,7 +483,7 @@ export class GfxHost {
         if (n <= 64) { const m = this.u8, d = s.c.staging; for (let k = 0, a = u.addr, o = s.off; k < n; k++) d[o + k] = m[a + k]; }
         else s.c.staging.set(this.u8.subarray(u.addr, u.addr + n), s.off);
       }
-      if (key) this.uaSeen.set(key, s);
+      if (key >= 0) this.uaSeen.set(key, s);
     }
     return { buf: s.c.buf, off: s.off, size };
   }
@@ -563,7 +565,7 @@ export class GfxHost {
     this.endPass();
     this.pass = this.encoder().beginRenderPass(desc);
     this.passInfo = { colorFmt, depthFmt, samples, w: dv.getUint32(p + 24, true), h: dv.getUint32(p + 28, true), targets };
-    this.cur = null; this.bindDirty = true; this.ubo.clear(); this.tex.clear();
+    this.cur = null; this.bindDirty = true; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
     this.stats.passes++;
   }
 
@@ -664,7 +666,7 @@ export class GfxHost {
     this.pipes.set(id, pipe);
     if (this.overLimits(id, stages, !!vs.fixup)) { this.pipeFailed(id); return; }
     const { layouts, g0 } = this.groupLayouts(stages, !!vs.fixup);
-    pipe.layouts = layouts; pipe.g0 = g0;
+    pipe.layouts = layouts; pipe.g0 = g0; pipe.dynOnly = g0.length > 0 && g0.every(s => s.dyn);
     // Vertex inputs of another class than the shader declares (flag 2, decided by the recorder): the module must be a variant
     const vmod = flags & 2 ? this.variantModule(vsId, classes) : this.module(vsId);
     if (!vmod) { this.pipeFailed(id); return; }
@@ -763,7 +765,7 @@ export class GfxHost {
         else e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: r.off, size: r.size } });
       } else {
         const s = this.ssbo.get(b.st * 16 + b.i), r = s && this.storageBuffer(s.addr, s.size, b.write);
-        if (!r) { this.red("nossbo", "a dispatch uses a storage buffer slot with nothing (or nothing valid) bound: a zeroed buffer is bound"); e0.push({ binding: b.binding, resource: { buffer: this.scratchStorage(), offset: 0, size: 65536 } }); continue; }
+        if (!r) { this.red("nossbo", "a draw or dispatch uses a storage buffer slot with nothing (or nothing valid) bound: a zeroed buffer is bound"); e0.push({ binding: b.binding, resource: { buffer: this.scratchStorage(), offset: 0, size: 65536 } }); continue; }
         if (r.off % 256) this.red("ssboalign", "a storage range inside memory a compute pass wrote is not aligned to 256 bytes: WebGPU cannot bind it at that offset");
         e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: r.off, size: r.size } });
       }
@@ -782,8 +784,16 @@ export class GfxHost {
         g1.push({ binding: 256 + st * 8 + m.slot, resource: this.view(tx, tx.gpu, b!.view, m.dim ?? (tx.gpu.dimension === "3d" ? "3d" : "2d"), true) });
       }
     }
-    this.pass.setBindGroup(0, this.group(layouts[0], e0), offs);
-    this.pass.setBindGroup(1, this.group(layouts[1], g1));
+    // With every buffer of group 0 at a dynamic offset the group changes only when the arena moves to another chunk:
+    // the last one is kept with the pipeline and compared, no key is built
+    let g0: GPU | undefined;
+    if (c.dynOnly) {
+      const l = c.last0;
+      if (l && l.bufs.length === e0.length) { g0 = l.group; for (let k = 0; k < e0.length; k++) if (l.bufs[k] !== e0[k].resource.buffer || l.sizes[k] !== e0[k].resource.size) { g0 = undefined; break; } }
+      if (!g0) { g0 = this.group(layouts[0], e0); c.last0 = { bufs: e0.map(x => x.resource.buffer), sizes: e0.map(x => x.resource.size), group: g0 }; }
+    } else g0 = this.group(layouts[0], e0);
+    this.pass.setBindGroup(0, g0, offs);
+    this.pass.setBindGroup(1, g1.length ? this.group(layouts[1], g1) : (c.empty1 ??= this.group(layouts[1], g1)));
     if (layouts[2]) {
       const key = this.fix.join(",");
       let g = this.fixGroups.get(key);
@@ -1032,8 +1042,8 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.END_PASS: { const targets = !this.computePass && this.pass ? this.passInfo?.targets : undefined; this.endPass(); if (this.cap && targets) this.captureTargets(targets); break; }
         case H.BEGIN_COMPUTE: this.endPass(); this.pass = this.encoder().beginComputePass(); this.computePass = true; this.cur = null; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); this.stats.computePasses++; break;
         case H.DISPATCH: this.dispatch(dv, p); break;
-        case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (dv.getUint32(p + 28, true) & 1) !== 0 }); break;
-        case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null }); break; }
+        case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (dv.getUint32(p + 28, true) & 1) !== 0 }); this.bindDirty = true; break;
+        case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null }); this.bindDirty = true; break; }
         case H.BUF_READBACK: this.bufReadback(this.u64(dv, p + 8), dv.getUint32(p + 16, true)); break;
         case H.UBO_DATA: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: 0, size: 0, need: 0, data: this.u8.slice(p + 24, p + 24 + dv.getUint32(p + 16, true)) }); this.bindDirty = true; break;
         case H.VIEWPORT: this.pass.setViewport(dv.getFloat32(p + 8, true), dv.getFloat32(p + 12, true), dv.getFloat32(p + 16, true), dv.getFloat32(p + 20, true), dv.getFloat32(p + 24, true), Math.max(dv.getFloat32(p + 24, true), dv.getFloat32(p + 28, true))); break;
@@ -1051,7 +1061,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.STENCIL_REF: this.pass.setStencilReference(dv.getUint32(p + 8, true)); break;
         case H.DRAW: case H.DRAW_IDX: {
           if (!this.cur || this.computePass) break;
-          if (this.bindDirty) this.bind();
+          if (this.bindDirty && !this.bind()) break;
           const conv = dv.getUint32(p + (op === H.DRAW ? 24 : 28), true);
           if (conv) { this.drawConverted(dv, p, op === H.DRAW_IDX, conv); this.stats.draws++; break; }
           if (op === H.DRAW) this.pass.draw(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 8, true), dv.getUint32(p + 20, true));
@@ -1107,16 +1117,16 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   }
 
   // ---- frame capture (debugging aid; nxnative: DM_NVN_PASSDUMP and the capture modes of nvn_capture.inc) ----
-  // The host stream from now to the next present (or `submissions` flushes when the game does not present) as text:
+  // The host stream from now to the next present as text:
   // one line a pass, pipeline request, binding, draw, copy; and with png (the default) each render target of each
   // pass as a PNG, read back when the pass ends. Reading back submits what was encoded so far, which changes nothing
   // the game sees but costs time: a capture frame is slow. Resolves when the frame has been presented and read.
-  private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; left: number; records: number; dispatches: number; done: (c: Capture) => void } | null = null;
-  captureFrame(opts: { png?: boolean; submissions?: number } = {}): Promise<Capture> {
+  private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; records: number; dispatches: number; done: (c: Capture) => void } | null = null;
+  captureFrame(opts: { png?: boolean } = {}): Promise<Capture> {
     if (this.cap) return Promise.reject(new Error("a capture is already running"));
     return new Promise<Capture>(done => {
       this.cap = { lines: [`nxweb frame capture: canvas ${this.canvasFormat}, uniform arena ${this.uniformArena ? "on" : "off"}, host caps ${this.caps}, ${this.textures.size} live textures, ${this.pipes.size} pipelines`],
-        images: [], state: { pass: 0, draws: 0, inPass: 0 }, png: opts.png ?? true, left: opts.submissions ?? 0, records: 0, dispatches: 0, done };
+        images: [], state: { pass: 0, draws: 0, inPass: 0 }, png: opts.png ?? true, records: 0, dispatches: 0, done };
     });
   }
   private capCtx = {
@@ -1127,7 +1137,6 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     const c = this.cap!;
     c.records++; if (op === H.DISPATCH) c.dispatches++;
     c.lines.push(describeRecord(op, dv, p, this.capCtx, c.state));
-    if (op === H.FLUSH && c.left > 0 && --c.left === 0) queueMicrotask(() => { if (this.cap === c) this.captureEnd(); });
   }
   private captureTargets(targets: { name: string; serial: number; level: number; layer: number }[]) {
     const c = this.cap!;

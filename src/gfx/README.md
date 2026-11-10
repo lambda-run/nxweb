@@ -20,24 +20,56 @@ game ──nvn_call──▶ dispatch.ts ─▶ cmd.ts ── records ──▶ 
 | `obj.ts` | Guest object layouts and record formats (nxnative `nvn_obj.h`). |
 | `cmd.ts` | Recording: segments, JUMP, the out-of-memory callback, host-lent segments. |
 | `lower.ts` | Submit: the walk (CALL, JUMP), current state, the render pass machine, draws, copies. |
-| `pipeline.ts` | Pipeline key and cache. `shader.ts`: shader keys and library. `sync.ts`, `window.ts`, `tables.ts`, `texlayout.ts` (nxnative `nvn_tex.c`), `sha256.ts`, `arena.ts`, `log.ts`. |
-| `defs/*.json` | The five machines: `gfx_cmdbuf`, `gfx_pass`, `gfx_pipeline`, `gfx_image`, `gfx_sync` (diagrams in `docs/machines/`). |
+| `pipeline.ts` | Pipeline key and cache (render and compute). `shader.ts`: shader keys, library, reflection record. `sync.ts`, `window.ts`, `tables.ts`, `texlayout.ts` (nxnative `nvn_tex.c`), `sha256.ts`, `arena.ts`, `log.ts`. |
+| `texcontent.ts`, `fmt.ts`, `astc.ts` | Texture content from guest memory; format classes, sRGB twins and conversions of formats WebGPU lacks; the ASTC decoder. |
+| `device.ts` | The host device as a machine: loss and recovery. |
+| `defs/*.json` | The seven machines: `gfx_cmdbuf`, `gfx_pass`, `gfx_pipeline`, `gfx_image`, `gfx_sync`, `gfx_texture`, `gfx_device` (diagrams in `docs/machines/`). |
+| `src/glue/gfx_host.ts`, `gfx_formats.ts`, `gfx_capture.ts` | The replayer, its format table, and the frame capture's text and PNG writer. |
 | `names.txt`, `host/gen_names.mts`, `gen/names.ts` | The 743 NVN names (nxnative `names.txt`) and the generated lookup table. |
 
 ## Interface to the rest of nxweb
 
-- `nvn_lookup(namePtr) -> id` (‑1 for a name NVN does not have, red). `nvn_call(id, argsPtr) -> x0`: `argsPtr` is x0..x7
+- `nvn_lookup(namePtr) -> id` (‑1 for a name NVN does not have, red); `nvn_name(id) -> ptr` the other way (NUL-terminated,
+  static memory, valid until the next `nvn_name`; 0 for no such id). `nvn_call(id, argsPtr) -> x0`: `argsPtr` is x0..x7
   (8 × u64) then d0..d7 (8 × f64) as the guest passed them; float arguments are the low 32 bits of their d register.
-  No implemented function returns a float yet; one that does will write d0 back at `argsPtr + 64`.
-- `gfx_init(arena, bytes)` once: 16 MB (`gfx_arena_bytes()`) of linear memory for the tables. Static data sits at the
-  build's `--memoryBase` (64 KB) up to `gfx_static_end()`. Memory is imported (`env.memory`).
+- **Floats.** `nvn_abi(id)` (and `nvn_abi_table()`: one byte an id, `nvn_count()` of them, to read once): bits 0–3 = how
+  many of d0..d7 the function reads (0 for 326 of the 332 implemented functions: the embedder then need not marshal any),
+  bit 4 = its result is a float: after `nvn_call` it is at `argsPtr + 64` (low 32 bits, the rest zero) and the embedder
+  copies those 8 bytes to d0. The table is generated from `dispatch.ts` (`FL(a, i)`, `RETF`) and checked against the
+  prototypes of nxnative's `nvn_protos.h`.
+- `gfx_init(arena, bytes)` once: `gfx_arena_bytes()` of linear memory for the tables (**31 MB** today; ask, do not
+  assume). Static data sits at the build's `--memoryBase` (64 KB) up to `gfx_static_end()`. Memory is imported (`env.memory`).
 - Imports: `env.log(ptr, len)`, `env.gfx_exec(ptr, len)` (the replayer), `env.gfx_guest_call(fn, x0..x3) -> x0` (the
   command memory callback runs guest code), `env.gfx_proc_address(id) -> address` (for `nvnDeviceGetProcAddress`).
-- Fences for the kernel: `gfx_fence_done(n)`, `gfx_fence_word()` (address of a u64: the highest fence done),
-  `gfx_sync_fence(sync)`. `nvnSyncWait` never blocks: it returns ALREADY_SIGNALED or TIMEOUT_EXPIRED.
-- Shader library: `GfxHost.registerShader(key, { stage, wgsl, ubos, textures, attributes | outputs })`. WGSL convention:
-  `@group(0) @binding(stage*16 + i)` uniform buffer i (stage 0 vertex, 1 fragment); `@group(1) @binding(stage*64 + slot*2)`
-  texture, `+1` its sampler; vertex `@location(l)` = NVN attribute l; fragment `@location(i)` = colour target i.
+- **The replayer** `new GfxHost(device, memory, { canvas, log, requestDevice, uniformArena, forceAstcDecode })`,
+  `host.attach(exports)` (tells the recorder what the device can take: `gfx_host_caps`), `host.imports()`.
+  `GfxHost.deviceDescriptor(adapter)` is what to pass to `adapter.requestDevice`: every feature the replayer can use
+  that the adapter has, and the per-stage limits raised to the adapter's (see "Limits").
+- **Hooks** (instead of wrapping exports): `host.onFence(n)`, `host.onImage(window, index, what)` (0 queued, 1 shown),
+  `host.onDeviceLost(info)`, `host.onDeviceRestored(texturesGone)`, `host.onShaderVariant(key, classes)`.
+  `host.fence(n)` is a promise for fence `n` (null when it is done). An embedder that runs the recorder with no device
+  signals through `host.signalFence(n)` / `host.imageEvent(w, i, what)` itself, and the hooks and promises work the same.
+- Fences: a number in submission order. Fence `n` is done when the GPU has finished everything submitted before it
+  **and every read-back issued before it (texture or storage buffer) has landed in guest memory**. `gfx_fence_done(n)`,
+  `gfx_fence_word()` (address of a u64: the highest fence done), `gfx_fence_last()`, `gfx_sync_fence(sync)`.
+- **`nvnSyncWait(sync, timeoutNs)`** never blocks. The recorder's answer and what the embedder does:
+
+  | State at the call | x0 | `gfx_wait_fence()` | Embedder |
+  |---|---|---|---|
+  | never fenced | 2 TIMEOUT_EXPIRED | 0 | returns 2 (as nxnative) |
+  | fence done | 0 ALREADY_SIGNALED (1 CONDITION_SATISFIED when an earlier call of this wait parked) | 0 | returns it |
+  | fence pending, timeout 0 | 2 | 0 | returns 2 |
+  | fence pending, timeout ≠ 0 | 2, the sync is now `Parked` | n | parks the thread on `host.fence(n)`; **finite**: also on its own timer of `timeoutNs` guest nanoseconds; **infinite** (`~0`, anything it treats as forever): no timer |
+
+  Woken by the fence, the embedder makes the call again (any timeout): 1. Woken by its timer, it makes the call again
+  **with timeout 0**: 2, and the sync is pending again (1 if the fence completed in between). A parked thread is never
+  left on a dead device: on a loss every pending fence completes.
+- **`nvnQueueFinish`** flushes and puts a fence behind everything; the call returns at once. The embedder parks the
+  thread on `host.fence(gfx_finish_fence())`: everything submitted is then done and every read-back has landed.
+- Device loss: `gfx_device_lost()`, `gfx_device_restored()`, `gfx_device_state()` (0 Live, 1 Lost) are the replayer's
+  to call; the embedder supplies `requestDevice` (or calls `host.restore(device)`).
+- Shader library: `host.registerShader(keyHex, info)`, `info` = the shader chain's reflection record plus `wgsl`
+  (below). Frame capture: `host.captureFrame()` (below).
 
 ## Records: where they match nxnative and where they depart
 
@@ -50,21 +82,26 @@ Object layouts and sizes likewise, including the bit-fields of the state objects
 Departs:
 - **`cmd_t`**: the `recording` word is unused; the state is a `gfx_cmdbuf` instance at +112 (object 128 bytes, NVN reserves 160).
   A command outside a recording is refused (red) and not written; nxnative writes it, where no handle owns it.
-- **`sync_t`**: `{magic, gfx_sync instance}` (24 bytes) instead of `{magic, fenced, fence}`.
+- **`sync_t`**: `{magic, gfx_sync instance}` (24 bytes) instead of `{magic, fenced, fence}`. A wait with a timeout that
+  must park is a state (`Parked`), so that the call made again after the park answers CONDITION_SATISFIED.
 - **`win_t`**: four `gfx_image` instances where nxnative keeps its pacing clock and present tickets; same size.
 - **Lowering** is new: nxnative replays records straight into Metal. Here the walk produces a second, flat stream
   (`hostops.ts`) so that the pass machine and every decision stay in AssemblyScript.
 - **Shader key** is always computed at `ProgramSetShaders` (nxnative defers when the code is not yet in a pool).
 - **Host-lent segments** come from an 8 MB arena inside linear memory (records hold pointers), not from malloc.
-- **QueueFinish** flushes and returns; nothing blocks in a browser turn. Acquire likewise takes the next image in turn
-  even when it is still queued.
+- **QueueFinish** flushes, issues a fence and returns; nothing blocks in a browser turn (the embedder waits on the
+  fence). Acquire likewise takes the next image in turn even when it is still queued.
+- **CopyBufferToTexture** into a texture whose storage holds its content is made in the storage at submit, not on the
+  GPU (below). nxnative mirrors into the storage and copies on the GPU.
+- **Compute**: `p_dispatch.caller` is not recorded (nothing here locates a dispatcher by call site).
 - UpdateUniformBuffer / CopyBufferToBuffer are done on guest memory in stream order (the replayer is flushed first,
   then told to drop its uploads); they do not end the pass.
 - One lowering state for all queues (nxnative: one per queue).
 
-## The render pass machine (`gfx_pass`)
+## The pass machine (`gfx_pass`)
 
-WebGPU fixes attachments and load actions at pass begin, cannot clear inside a pass, and rejects sampling an attachment.
+WebGPU fixes attachments and load actions at pass begin, cannot clear inside a pass, rejects sampling an attachment,
+and has compute passes as a pass kind of their own.
 
 | NVN | Machine | Stream |
 |---|---|---|
@@ -73,13 +110,23 @@ WebGPU fixes attachments and load actions at pass begin, cannot clear inside a p
 | Clear, scissored or masked | → Open | `H_CLEAR_RECT`: a triangle inside the pass |
 | Draw | → Open | `H_BEGIN_PASS` with the pending clears, then only the state that changed |
 | Draw that samples one of its targets | Feedback → TargetsSet, then Draw | `H_SNAPSHOT` (copy), reopen with load, sample the copy; later draws of that pass reuse it |
-| Texture copy, fence, present, non-zero Barrier | Break | ends the pass |
+| DispatchCompute(Indirect) | → Compute (ComputeUnset before any targets) | the render pass ends (pending clears land first), `H_BEGIN_COMPUTE`; consecutive dispatches share the compute pass; a draw after it reopens the render pass with load |
+| Texture copy, Downsample, fence, present, non-zero Barrier; a copy into or out of a current target | Break | ends the pass |
 | End of QueueSubmitCommands | Submit | ends the pass, `H_FLUSH` |
 
-Pipelines (`gfx_pipeline`): key = shaders + vertex layout + blend, depth-stencil, raster state + target formats. First
-use → `Building`: the replayer starts `createRenderPipelineAsync` and builds synchronously for the draw that needs it
+A pass that ends (either kind) is followed by `H_BUF_READBACK` for each storage range its shaders write: the bytes go
+back to guest memory when the GPU is done (fences wait for it), and until then the replayer serves binds inside such
+a range (storage, vertex, index, uniform at a 256-byte offset) from the GPU's copy. A written range whose guest
+bytes changed since the GPU's copy was made is uploaded again (the game wrote new input).
+
+Pipelines (`gfx_pipeline`): key = shaders + vertex layout + the class of each bound attribute format + blend,
+depth-stencil and raster state (with depth clamp) + target formats; a compute pipeline's key is its shader. First
+use → `Building`: the replayer starts `create…PipelineAsync` and builds synchronously for the draw that needs it
 now; `Ready` or `Failed` comes back through `gfx_pipeline_done`. Draws of a failed pipeline are skipped (red once).
 A shader key missing from the library: `[RED] shader <key> is not in the shader map` once, its draws skipped.
+A render target view whose format is not the texture's or its sRGB twin is rendered in the texture's own format, in
+the key and in the attachment alike (red once). Multisampled targets have 4 samples whatever NVN asked (2, 8 and 16:
+red once); `nvnCommandBufferDownsample` is a pass with a resolve target for colour and a draw of sample 0 for depth.
 
 ## Texture content from guest memory (`texcontent.ts`, machine `gfx_texture`)
 
@@ -103,6 +150,27 @@ Failure modes, accepted: a CPU write that touches no probed byte and is not flus
 (later if more than 1 MB of textures are due at once); a CPU write into a `GpuOwned` texture's storage is never seen;
 a texture changed while a submission that already used it is lowered keeps the old content for that submission.
 
+**Staged** (a fourth state): `CopyBufferToTexture` and `WriteTexels` into a texture that is not `GpuOwned` write the
+texels into its block-linear storage in stream order (what a later ReadTexels, CopyTextureToBuffer or upload sees),
+and the next use uploads; no GPU copy is made, so a game that fills a texture level by level at load uploads it once.
+If the submission already used the texture, what was encoded so far is submitted first, so earlier draws keep the
+old texels. A Staged texture that becomes a target or a copy destination is uploaded before the GPU writes it.
+
+**Formats WebGPU cannot be given directly** are converted row by row on upload (`fmt.ts`, `texcontent.ts send`):
+
+| Guest format | Host texture | How |
+|---|---|---|
+| DEPTH16, DEPTH24, DEPTH32F, DEPTH24_STENCIL8, DEPTH32F_STENCIL8, STENCIL8 | the same depth format | depth as f32 rows, drawn into the depth attachment (WebGPU writes depth32float and depth24plus no other way); stencil as bytes into the stencil aspect. D24: depth in the upper 24 bits, stencil in the low 8; D32F_S8: a float, then a word with the stencil in its low byte (assumed from the hardware's formats, not checked against a console) |
+| RGBA4, RGB5, RGB5A1, RGB565, BGR565, BGR5, BGR5A1, A1BGR5 | rgba8unorm | unpacked; red at bit 0 in guest memory for the RGB ones, as nxnative reads them |
+| R16, RG16, RGBA16 and their SN forms | the 16-bit normalized format with `texture-formats-tier1`, else r16float / rg16float / rgba16float | to half floats (11 significant bits: a loss, noted) |
+| ASTC 4x4 … 12x12, linear and sRGB | the ASTC format with `texture-compression-astc`, else rgba8unorm(-srgb) | decoded on the CPU (`astc.ts`) |
+
+**ASTC** (`astc.ts`, about 340 lines, written from the specification): 2D blocks, LDR, all 14 block sizes, 1–4 partitions,
+dual plane, void extent; the 8-bit result is the top byte of the 16-bit interpolation (the `decode_unorm8` mode), sRGB
+endpoints expanded with 0x80. An illegal block is opaque magenta, as are the texels of a partition with an HDR
+endpoint mode. Measured in Node on this machine: 10–28 million texels a second (4x4 to 12x12), so a 2048×2048 texture
+takes about 0.2–0.4 s once.
+
 `WriteTexels` writes into the storage (next use uploads) or, for a `GpuOwned` texture, straight to the GPU.
 `ReadTexels` reads the storage; of a `GpuOwned` texture it is red and writes nothing (WebGPU readback is asynchronous).
 `CopyTextureToBuffer` is a CPU copy in stream order when the storage holds the content; otherwise a GPU readback that
@@ -117,46 +185,137 @@ second vertex entry point. WebGPU has no negative viewport, so the split here is
   scissor rectangles are used as given; front face is inverted in the pipeline key; present flips the blit. Before
   each pass's draws the replayer gets `H_FIXUP = (1, ysign, zscale, zoffset)`: `ysign` −1 for lower-left, else 1;
   `(zscale, zoffset)` = (0.5, 0.5) for NEAR_IS_MINUS_W, (1, 0) for NEAR_IS_ZERO.
-- **A translated WGSL module must**:
-  1. Uniform buffer `i` of a stage: `@group(0) @binding(stage*16 + i)` (stage 0 vertex, 1 fragment), a struct of at most the bound size.
-  2. Texture slot `s` (the slot of `nvnCommandBufferBindTexture`): `@group(1) @binding(stage*64 + s*2)`, its sampler at `+1`
-     (`sampler_comparison` with a `texture_depth_*` when declared `depth`).
-  3. Vertex inputs `@location(l)` = NVN attribute index `l`, typed to match the attribute's format class (float / sint / uint).
-     Fragment outputs `@location(i)` = colour target `i`.
-  4. Vertex stage, last thing before returning the position: `struct NxFix { fix: vec4f }` at `@group(2) @binding(0)`, then
-     `pos.y *= nx.fix.y; pos.z = pos.z * nx.fix.z + pos.w * nx.fix.w;` and declare `fixup: true`. Nothing else may depend on the modes
-     (`gl_FragCoord.y` and `dFdy` users must multiply by `nx.fix.y` too if the chain exposes it to fragment stages: not bound there yet).
-  5. Come with a reflection record: `{ stage, entry, ubos: [i…], textures: [{ slot, dim: 2d | 2d-array | cube | 3d, depth }…],
-     attributes: [l…] (vertex) | outputs: [i…] (fragment), fixup }`, registered under the stage's key (`GfxHost.registerShader`).
-  Alpha test, when ported, will need the fragment stage to discard against a replayer-supplied reference: not specified yet.
+- **A translated WGSL module** comes with the chain's reflection record (`src/shaders/library.ts` `Reflection`), which
+  `registerShader` consumes in full. `st` = 0 vertex, 1 fragment, 2 compute:
+
+  | Record | WGSL binding | What the host does |
+  |---|---|---|
+  | `ubos: [i]`, `uboSize: { i: bytes }` | `@group(0) @binding(st*16 + i)` | binds exactly `uboSize[i]` bytes (16 up): the game's bytes up to the size it bound, **zero past it**. Without `uboSize` the bound size is used |
+  | `extra: [{ kind: "support" }]` (or `support: true`) | `@group(0) @binding(st*16 + 14)` | Ryujinx's support buffer, 1392 bytes, std140: `viewport_inverse` (2/w, 2/h, 1, 0) at 144, `viewport_size` (w, h, 1, 1) at 160, `render_scale[73]` all 1 from 192, the rest 0 (nothing is BGRA-swapped, no alpha test, no transform feedback); follows the viewport |
+  | `textures: [{ slot, dim, depth, sampleType? }]` | texture `@group(1) @binding(st*64 + 2*slot)`, sampler `+1` | `dim` 2d, 2d-array, cube, 3d, cube-array; `depth` → `texture_depth_*` with a comparison sampler (the game's compare function, LEQUAL when it set none); `sampleType` sint / uint / unfilterable-float → a non-filtering sampler |
+  | `storage: [{ slot, write }]` | `@group(0) @binding(128 + st*16 + slot)`, `var<storage, read>` or `read_write` | the range of `nvnCommandBufferBindStorageBuffer`; written ranges are read back (above) |
+  | `images: [{ slot, format, access, dim }]` | `@group(1) @binding(256 + st*8 + slot)`, `texture_storage_*` | the texture of `nvnCommandBufferBindImage`, one level; the texture becomes GPU-owned when written |
+  | `attributes: [l]`, `attributeTypes: { l: float \| sint \| uint }`, `variants` / `variant()` | `@location(l)` = NVN attribute `l` | see "Vertex input classes" |
+  | `outputs: [i]` (fragment) | `@location(i)` = colour target `i` | targets the shader does not write get write mask 0 |
+  | `fixup: true` (vertex) | `struct NxFix { fix: vec4f }` at `@group(2) @binding(0)` | last thing before returning the position: `pos.y *= nx.fix.y; pos.z = pos.z * nx.fix.z + pos.w * nx.fix.w` |
+
+  Any other `extra` kind (c1, driver segments) is refused at registration with a red line: the key then reads as
+  missing and its draws are skipped. Fragment coordinates need no fix-up (the chain's README argues it; the support
+  buffer gives render scale 1). Alpha test, when ported, needs the fragment stage to discard against the support
+  buffer's `alpha_test`, which is 0 today.
+
+### Vertex input classes
+
+WebGPU puts the class of a vertex input (float, sint, uint) in the shader text and requires the bound format to
+match; in NVN the format is state. The recorder puts the class of every bound attribute format in the pipeline key
+and compares it with `attributeTypes`. Equal (or no `attributeTypes`): the module as registered. Different: the key
+says "variant", and the replayer needs another module for that shader: `info.variants["0:float,1:uint"]` (every
+location read, ascending), or `info.variant(classes)`, or the embedder's `host.onShaderVariant(key, classes)` (the
+chain translating on demand). With none: one red line naming the key, the bound and the declared classes (the
+**request to the shader chain**), the pipeline is `Failed`, its draws are skipped. NVN's `*_UI2F` / `*_I2F` formats
+(integers converted to float by the fetch) have no WebGPU vertex format at all: red, the pipeline fails.
+
+### Limits
+
+`GfxHost.deviceDescriptor(adapter)` asks for the adapter's own limits. WebGPU's defaults against what a stage may
+declare (14 uniform blocks + support buffer + fix-up, 32 textures, 16 storage buffers, 8 images):
+
+| Limit | Default | SwiftShader here (Chromium 153) | Needed at most |
+|---|---|---|---|
+| maxUniformBuffersPerShaderStage | 12 | 12 | 16 (vertex), 15 |
+| maxSampledTexturesPerShaderStage, maxSamplersPerShaderStage | 16, 16 | 16, 16 | 32 |
+| maxStorageBuffersPerShaderStage | 8 | 10 | 16 |
+| maxStorageTexturesPerShaderStage | 4 | 4 | 8 |
+| maxDynamicUniformBuffersPerPipelineLayout | 8 | 8 | 31: the ones beyond the limit are bound at fixed offsets (works, costs a bind group a draw) |
+| maxVertexAttributes, maxVertexBuffers | 16, 8 | 16, 8 | 16, 16 |
+
+Only SwiftShader was measured. Desktop adapters in Chromium are expected to report the same three per-stage numbers
+(Dawn has long capped them at the defaults whatever the hardware); other browsers may grant more. **Not verified here.**
+A pipeline whose shader exceeds a limit cannot exist on that device: the replayer says so with the numbers
+(`[RED] pipeline 653: the fragment shader … uses 13 uniform buffers, this WebGPU device allows 12 a stage`), reports
+it `Failed`, and its draws are skipped; no WebGPU validation error is raised. Making such a shader work is the
+chain's (several uniform blocks behind one binding; textures in arrays): see the requests at the end.
 
 ## Uploads and bind groups (replayer)
 
-A bound range (vertex, index or uniform data: an address and a size) keeps its GPU buffer across submissions. At its
-first use after guest memory may have changed (new submission, `H_MEM_DIRTY`, a readback landing) the recorder hashes
-its bytes (`gfx_hash`, the whole range: vertex data cannot be sampled safely) and the buffer is written only when the
-hash differs; a range that changed while commands not yet submitted still reference its buffer gets another buffer.
-Bind groups are cached by the buffers, views and samplers they bind. Measured, 1000 draws each with its own two
-uniform ranges (SwiftShader machine, two runs): 14.7–18.3 ms a submission before (2002 buffer writes, 1001 bind
-groups), 6.2–8.1 ms unchanged after (0 writes, 0 bind groups, 2002 hashes), 2.3–4.3 ms with 100 ranges changing.
-Not done: one large buffer with dynamic offsets for uniform blocks, which would also remove the per-range hash.
+**Uniform data** goes through one large buffer (`uniformArena`, the default): every range a draw or dispatch binds is
+copied into a staging array at a 256-byte-aligned slot (only the bytes the shader's block covers, zero past what the
+game bound), the array is written to its GPU buffer once at the flush (1 MB chunks), and group 0 is bound with dynamic
+offsets: one bind group serves every draw of a pipeline, with no GPU buffer and no hash per range. A range bound again
+while guest memory cannot have changed reuses its slot (a camera block shared by 1000 draws is copied once).
+
+Measured, 1000 draws each with its own two uniform ranges, median ms a submission (recorder + replayer, SwiftShader
+machine, three runs of the scene; the numbers move by ±1 ms between runs):
+
+| | nothing changed | 100 ranges changed | 1000 changed | |
+|---|---|---|---|---|
+| a buffer a range, all written every submission (the first implementation) | 6.6–7.5 | 5.4–6.8 | 5.8–5.9 | 2002 buffer writes, 1000 bind groups |
+| a buffer a range, hashed (before; `uniformArena: false`) | 2.2–2.5 | 2.4–3.6 | 2.5–3.3 | 2002 hashes, a buffer write a changed range |
+| one buffer, dynamic offsets (now) | 2.1–3.4 | 2.0–2.3 | 2.0–2.1 | 2 hashes, 1 write of 500 KB |
+| ranges bound 4096 bytes long, hashed | 4.3–4.9 | 7.4–8.7 | 8.1–8.8 | 7.8 MB hashed a submission |
+| ranges bound 4096 bytes long, one buffer | 2.1–2.2 | 2.0–2.1 | 2.2–3.1 | 1 write of 500 KB |
+
+So: the per-range hash is gone and the cost no longer depends on how much changed or how long the game binds its
+ranges; for small ranges that never change the gain is within the noise (the first version of the arena was slower
+than the hashed path there, until slots were keyed by number and the bind group kept with the pipeline).
+
+**Vertex and index data** keep a GPU buffer a bound range across submissions. At its first use after guest memory may
+have changed (new submission, `H_MEM_DIRTY`, a read-back landing) the recorder hashes its bytes (`gfx_hash`, the whole
+range: vertex data cannot be sampled safely) and the buffer is written only when the hash differs; a range that
+changed while commands not yet submitted still reference its buffer gets another buffer. Bind groups of textures are
+cached by the views and samplers they bind.
 
 Loops, fans, quads, quad strips and polygons are drawn through a 32-bit index buffer the replayer builds and keeps
-(by primitive, range or index hash). Indirect draws and indirect-count multi-draws read their arguments from guest
-memory at submit and become direct draws (a count the GPU writes in the same submission is not supported).
+(by primitive, range or index hash). Indirect draws, indirect dispatches and indirect-count multi-draws read their
+arguments from guest memory at submit and become direct ones (a count the GPU writes in the same submission is not
+supported).
+
+## Device loss (`gfx_device`, `device.ts`)
+
+`GPUDevice.lost` → the replayer logs red, calls `gfx_device_lost` (Live → Lost), completes every pending fence (no
+guest thread waits on a dead device), calls `onDeviceLost`, and asks the embedder for a new device (`requestDevice`).
+Until it comes, submissions are lowered as usual and executed against the dead device, which accepts every call and
+draws nothing. With the new device (`restore`): every GPU object is dropped; `gfx_device_restored` (Lost → Live)
+sends every texture `Lost` (Uploaded → Unknown: uploaded again from guest memory at its next use; Staged stays;
+GpuOwned stays and is empty) and every pipeline `Reset` (requested again from its key). What only the GPU held —
+render targets, copy destinations, images — is gone until the game writes it again: one red line with the count.
+Read-backs in flight at the loss never land (guest memory keeps its old bytes).
+
+## Frame capture (`host.captureFrame({ png })`, `gfx_capture.ts`)
+
+After nxnative's `DM_NVN_PASSDUMP`: the host stream from the call to the next present as text, one line an event
+with a letter in front (`T` texture, `K` pipeline requested with its whole key decoded, `P` pass begin / end, `D`
+draw or dispatch, `C` clear rectangle, `B` copy / resolve / snapshot / read-back, `U` texel upload, `F` fence / flush,
+`M` memory changed, `S` present), bindings and state indented under their pass, shaders by key; and a PNG of every
+render target of every pass, read back when the pass ends (colour formats of 8 bits, half and float, RGB10A2; depth16
+and depth32float as grey). Returns `{ text, images: [{ name, pass, target, serial, width, height, format, png }], … }`.
+A captured frame is slow (each pass is submitted and read) and otherwise unchanged. `npm run gfx:test` leaves an
+example in `build/gfx/capture/`. Not mirrored from nxnative: the binary capture for replay (`nvn_capture.inc`); the
+text names guest addresses, so a capture is for reading, not for replaying.
 
 ## Verified (`npm run gfx:test`, headless Chromium, WebGPU on SwiftShader; `npm run kit:test` for the tables)
 
-- **Layout**: 268 offsets and sizes equal `nvn_obj.h` compiled by gcc (`test/gfx/layout_ref.c`), except the two listed
+14 Node tests and 42 browser scenes, about 285,000 checks.
+
+- **Layout**: 268 offsets and sizes equal `nvn_obj.h` compiled by gcc (`test/gfx/layout_ref.c`), except the listed
   departures; all objects fit NVN's reserved sizes; state-object bit-fields; the size of 41 recorded commands through
   `GetCommandMemoryUsed`; texture storage size / alignment / level offsets equal `nvn_tex.c` over 420 shapes;
   `DeviceGetInteger` equals nxnative's table.
 - **Recording**: handles, empty recording, BeginRecording re-entered, the callback (arguments, size asked, JUMP
-  placement), callback that adds nothing and no callback (host-lent segment); all 743 names resolve.
+  placement), callback that adds nothing and no callback (host-lent segment); all 743 names resolve, and `nvn_name`
+  gives each back.
+- **ABI**: `nvn_abi` against the 331 prototypes of nxnative's `nvn_protos.h` that are implemented (6 read floats, 4
+  return one; two take a float they ignore); a float result read back through `args + 64`.
 - **Deswizzler**: 18 textures (2D with mips, non-power-of-two, arrays, cubes, 3D, BC1/BC3/BC7, packaged layouts; 112
   levels and layers) laid out by an independent Python implementation (`test/gfx/swizzle_ref.py`: own layout, one byte
   at a time) come out identical and swizzle back identical; WriteTexels / ReadTexels regions over storage.
-- **Scenes** (30, pixels read back with `copyTextureToBuffer`, expected values computed in the test): clear only;
+- **ASTC**: 119 images compressed and decoded by astcenc (`test/gfx/astc_ref.py`, the `astc-encoder-py` module; all 14
+  block sizes, linear and sRGB, three encoder qualities, every partition count with and without a second plane, void
+  extents) and 1536 blocks of random bytes: **178,000 texels, every one equal** (illegal blocks: the error colour
+  here, NaN → 255 in astcenc's 8-bit output). In a scene: the decoded host texture equals astcenc byte for byte for
+  10 textures, and 7 of them drawn next to the same texture on a device that has ASTC differ by at most 3 of 255.
+  Without the Python module both print SKIPPED.
+- **Scenes** (pixels read back with `copyTextureToBuffer`, expected values computed in the test): clear only;
   per-vertex colour; indexed textured quad nearest / linear; uniform animation + UpdateUniformBuffer + CopyBufferToBuffer;
   depth test on DEPTH32F / D24S8 / DEPTH16 with a scissored depth clear; blending; scissored and masked clears in a pass;
   full clear mid-pass; render to texture; self-sampling draw; CALL; buffer→texture, texture→texture (also scaled), mips
@@ -164,33 +323,87 @@ memory at submit and become direct draws (a count the GPU writes in the same sub
   command memory exhaustion; pipeline cache and failure; fences, syncs, window images; pool-backed textures uploaded
   and compared level by level; the content-tracking heuristics including their blind spot; WriteTexels;
   CopyTextureToBuffer on the CPU and from the GPU; 100 textures; both origin / depth conventions with culling;
-  1000 draws (upload and bind group caching, counted); fans, quads, quad strips, polygons, line loops, indirect and
-  multi-draws; two-sided stencil and polygon offset; sampler compare, lod clamp, anisotropy; an sRGB view.
+  fans, quads, quad strips, polygons, line loops, indirect and multi-draws; two-sided stencil and polygon offset;
+  sampler compare, lod clamp, anisotropy; an sRGB view. And, new:
+  - the embedder interface: `nvnSyncWait` with timeout 0, finite (parked, then expired by the timer's call; parked,
+    then woken) and infinite; `nvnQueueFinish`'s fence completing only after a read-back landed; the hooks;
+  - the reflection record: a block of 80 bytes bound with 16 (the rest reads zero) and in full; the support buffer
+    following two viewports;
+  - vertex input classes: float and RGBA8UI layouts on one shader (variant), no variant (skipped, the request line,
+    `Failed`), the embedder's hook;
+  - limits: a fragment stage with as many uniform blocks as the device allows (8 dynamic + 4 fixed offsets on
+    SwiftShader) draws their sum; one more fails with the numbers and no WebGPU error;
+  - compute: a dispatch (clear pending) writes vertices into a storage buffer from a uniform and a read-only storage
+    buffer, the next draw uses the range as its vertex buffer, the fence waits for the read-back and guest memory has
+    the vertices; a storage image written before any pass and sampled; an indirect dispatch between two draws that
+    reads one image's texture and stores another; a storage buffer read by a fragment shader;
+  - multisampling: a 4-sample colour and depth target resolved by Downsample (edge pixels are quarter coverages,
+    depth read back), 8 samples rendered with 4 (one red line); depth clamp on and off;
+  - CopyBufferToTexture made in the storage (no pass break, ReadTexels sees it, a copy into a texture in use keeps
+    the earlier draws' texels); DEPTH16 / DEPTH24 / DEPTH32F / D24S8 / D32FS8 from memory through a comparison sampler,
+    read back where WebGPU allows, the stencil from memory kept when the texture becomes a target; seven packed
+    16-bit formats and R16;
+  - cube, 2D array, 3D and cube array textures sampled, every face / layer / slice; a render target view of a
+    foreign format (red, rendered in the texture's format, no WebGPU error) and of the sRGB twin;
+  - the uniform arena against the per-range paths (the table above), same pixels;
+  - device loss: `device.destroy()`, a frame and a fence given to the dead device, the fence completing, a new
+    device, the texture uploaded again and the same pipeline built again, same pixels;
+  - frame capture: the text (matched line by line) and both PNGs, decoded by the browser and compared with the
+    targets.
+- **Machines**: every transition of the seven `gfx_*` tables is walked in `test/gfx/gfx.machine.test.mts`
+  (`npm run kit:test`); the scenes themselves take 65 of the 90.
 - **Demo**: `npm run gfx:demo`, `test/gfx/demo.html`; the test run saves `build/gfx/demo.png`.
 
 ## NVN functions
 
-743 names: **310 implemented, 11 empty by design** (nxnative's list: debug groups, patch size, depth bounds, scratch
-memory), **422 red stubs** (`[RED] nvnXxx unimplemented` once, return 0). nxnative implements 489.
+743 names: **332 implemented, 11 empty by design** (nxnative's list: debug groups, patch size, depth bounds, scratch
+memory), **400 red stubs** (`[RED] nvnXxx unimplemented` once, return 0). nxnative implements 489.
 Implemented / total by object: DeviceBuilder 3/3, Device 19/61, QueueBuilder 9/23, Queue 10/16, MemoryPoolBuilder 7/8,
 MemoryPool 9/10, TexturePool 7/9, SamplerPool 8/9, BufferBuilder 6/7, Buffer 10/11, TextureBuilder 30/44, TextureView
-9/14, Texture 21/31, SamplerBuilder 13/25, Sampler 3/15, Program 4/34, Sync 4/6, WindowBuilder 7/20, Window 9/18,
-CommandBuffer 71/214, Blend 7/15, Color 5/7, ChannelMask 2/3, Multisample 7/26, Polygon 9/9, DepthStencil 11/13,
+11/14, Texture 21/31, SamplerBuilder 17/25, Sampler 10/15, Program 4/34, Sync 4/6, WindowBuilder 7/20, Window 9/18,
+CommandBuffer 80/214, Blend 7/15, Color 5/7, ChannelMask 2/3, Multisample 7/26, Polygon 9/9, DepthStencil 11/13,
 VertexAttrib 5/5, VertexStream 5/5, Event(Builder) 0/11, other (NVN2, debug, raw) 0/71. The exact set is the
-`case F.` lines of `dispatch.ts`.
+`case F.` lines of `dispatch.ts`. Since the last count: the sampler getters (four return a float), TextureView
+GetFormat / GetTarget, BindStorageBuffer(s), BindImage(s), DispatchCompute(Indirect), SetDepthClamp,
+Downsample(TextureView).
 
 ## Gaps
 
-- Texture content: sparse (virtual-pool) textures, ASTC, RGB5 / RGBA4 / 16-bit-norm formats, depth textures uploaded
-  from memory, multisampled storage; ReadTexels of GPU-written textures; the blind spots listed above.
-- `gl_FragCoord` / derivative sign under a lower-left origin (fix-up is bound to the vertex stage only); queues with
-  an origin different from the device's.
-- Adjacency and patch primitives; compute; storage buffers; images; separate textures / samplers; transform
-  feedback; counters and events; multisample resolve; tessellation, geometry; indirect counts written by the GPU.
+- Texture content: sparse (virtual-pool) textures; three-channel formats (RGB8, RGB16F, RGB32F as textures: WebGPU has
+  none); BC on a device without `texture-compression-bc` (not decoded); HDR ASTC and 3D ASTC blocks; multisampled
+  storage; ReadTexels of GPU-written textures; the blind spots listed above. **A block-compressed texture whose size
+  is not a multiple of its block** (BC, and ASTC on a device that has it) is created padded to whole blocks, as WebGPU
+  demands: normalized coordinates then stretch by up to a block (ASTC decoded on the CPU is exact).
+- Formats the host converts: copies between guest memory and the GPU's copy of such a texture (CopyBufferToTexture
+  into, CopyTextureToBuffer out of a GPU-written RGB565 target and the like) are dropped, red once; 16-bit
+  normalized textures lose precision as half floats without `texture-formats-tier1`.
+- Compute and storage: a shader that samples a texture it also stores to (WebGPU refuses the dispatch); storage
+  ranges that overlap without one containing the other keep separate GPU copies; a uniform range inside a
+  GPU-written range must sit at a multiple of 256 bytes from its start; storage images only of WebGPU's storage
+  formats and one level; storage written by a vertex or fragment stage is lowered but has no scene; atomics, buffer
+  textures, `nvnCommandBufferClearBuffer` / `ClearTexture` are not there.
+- Multisampling: sampling a multisampled texture in a shader (`texture_multisampled_2d`: the chain has no such
+  binding either); the depth resolve takes sample 0, the stencil is not resolved; sample counts other than 4.
+- Depth clamp needs the feature `depth-clip-control` (red once without it).
+- Queues with an origin different from the device's.
+- Adjacency and patch primitives; separate textures / samplers; transform feedback; counters and events;
+  tessellation, geometry; indirect counts written by the GPU.
 - One viewport and scissor (more is red once: WebGPU has one); stencil masks and reference of the front face for both
-  (WebGPU has one of each); no logic op, alpha test, polygon mode line / point, advanced blend, depth clamp,
-  primitive restart index. WebGPU has no border colour (clamp to edge is used) and no view swizzle (red once); a view
-  can reinterpret only between a format and its sRGB twin (anything else: red once, the texture's format).
-  A viewport larger than its target is clipped (red once).
-- Device loss is not handled.
-- Virtual (sparse) memory pools; `QueueFinish` and acquire pacing wait for the kernel.
+  (WebGPU has one of each); no logic op, alpha test, polygon mode line / point, advanced blend, primitive restart
+  index. WebGPU has no border colour (clamp to edge is used) and no view swizzle (red once); a view can reinterpret
+  only between a format and its sRGB twin. A viewport larger than its target is clipped (red once).
+- Device loss: what only the GPU held is lost; frames between the loss and the new device are not drawn.
+- Virtual (sparse) memory pools; acquire pacing waits for the kernel.
+
+## Requests to other owners
+
+- **Runtime** (`rt_gfx.ts`): `adapter.requestDevice(GfxHost.deviceDescriptor(adapter))`; `host.onFence` / `onImage` /
+  `host.fence(n)` in place of the wrapped `gfx_fence_signal` (and `host.signalFence` from the null replayer);
+  `gfx_wait_fence()` and the timeout-0 call for `nvnSyncWait`; `gfx_finish_fence()` for `nvnQueueFinish`;
+  `nvn_abi_table()` to skip d0..d7 and to copy `args + 64` back for the four float results; `requestDevice` for
+  device loss; `host.captureFrame()` behind a key or a URL switch.
+- **Shader chain** (`tools/shaders`, `src/shaders`): place storage buffers at `@group(0) @binding(128 + st*16 + i)` and
+  images at `@group(1) @binding(256 + st*8 + i)` and report them as `storage` / `images`; let `registerAll` pass
+  compute entries and entries whose only `extra` is the support buffer; emit vertex input variants (`variants`, or
+  translate on `onShaderVariant`) and, likewise, integer colour outputs; report `sampleType` for integer textures;
+  a plan for stages over 12 uniform blocks or 16 textures on devices at the default limits.

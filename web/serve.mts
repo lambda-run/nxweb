@@ -18,7 +18,8 @@ export function serve(port: number): Promise<{ server: Server; url: string }> {
   return new Promise(r => server.listen(port, "127.0.0.1", () => r({ server, url: `http://localhost:${(server.address() as any).port}/` })));
 }
 if (process.argv[1] && import.meta.filename === process.argv[1]) {
-  try { if (!process.argv.includes("--no-build")) await buildWeb(); } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }
+  // --no-build serves what is there: refused when its modules were built from other kit tables than today's
+  try { if (!process.argv.includes("--no-build")) await buildWeb(); else (await import("../src/runtime/host/build.mts")).checkBuilt(); } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }
   const { url } = await serve(Number(process.env.PORT ?? 8080));
   console.log(`nxweb: ${url}   (${url}?demo starts the built-in demo)`);
 }

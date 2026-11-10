@@ -8,11 +8,8 @@ import { seBind, seSignal, seBinding, seSignalBinding, seHandle } from "./syseve
 import { breakDown, tSec, tMin, tHour, tMday, tMon, tYear, zoneAt, ZONE } from "./cal";
 import { userNow } from "./time";
 import { exitRequest } from "./lifecycle";
+import { hidConnectedNpad } from "./hid";   // the controller the NFC device is on
 
-// The controller the NFC device is on (nxnative hle_hid.c hle_hid_connected_npad)
-// @ts-ignore: decorator
-@external("env", "hle_connected_npad")
-declare function connectedNpad(): u32;
 // A vsync event was handed out: the embedder calls hle_vsync_tick(binding) at every vertical blank until that returns 0
 // @ts-ignore: decorator
 @external("env", "hle_vsync_event")
@@ -154,7 +151,7 @@ export function h_nfp_List(a: usize): u64 {
   if (max >= 1) { store<u64>(out, 0x4e465030); store<i32>(n, 1); }   // 'NFP0'
   return 0;
 }
-export function h_nfp_NpadId(a: usize): u64 { store<u32>(P(a, 0), connectedNpad()); return 0; }
+export function h_nfp_NpadId(a: usize): u64 { store<u32>(P(a, 0), hidConnectedNpad()); return 0; }
 export function h_nfp_Start(a: usize): u64 { nfpState = 1; return 0; }
 export function h_nfp_Stop(a: usize): u64 { nfpState = 0; return 0; }
 export function h_nfp_State(a: usize): u64 { return <u64>nfpState; }

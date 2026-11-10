@@ -22,6 +22,7 @@ export function ld_stub_addr(id: u32): u32 { return L.stubAddr(id); }
 export function ld_stub_id(addr: u64): i32 { return L.stubId(addr); }
 export function ld_stub_overflow(): u32 { return L.stubOverflowCount(); }
 export function ld_check_forced(): u32 { return L.checkForced(); }
+export function ld_force_strict(on: i32): void { L.forceStrict(on != 0); }
 
 // modules
 export function ld_parse(file: u32, len: u32, opts: u32): i32 { return L.parse(file, len, opts); }

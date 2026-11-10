@@ -7,8 +7,8 @@ import { seBind, seSignal } from "./sysevent";
 import { appletEnter, appletLeave } from "./oe";
 import { setErrno } from "./net";
 
-const SEEN: usize = memory.data(1024);   // one byte per entry: its red line was logged
-export function opsInit(): void { memory.fill(SEEN, 0, 1024); }
+const SEEN: usize = memory.data(2048);   // one byte per entry: its red line was logged
+export function opsInit(): void { memory.fill(SEEN, 0, 2048); }
 
 export function runOps(id: i32, off: u32, a: usize): u64 {
   let p = OPS + (<usize>off << 2);
@@ -27,7 +27,7 @@ export function runOps(id: i32, off: u32, a: usize): u64 {
       case 2: memory.fill(P(a, load<u32>(p, 4)), 0, load<u32>(p, 8)); p += 12; break;
       case 3: appletEnter(STRINGS + load<u32>(p, 4)); applets++; p += 8; break;
       case 4: {
-        if (id < 1024 && !load<u8>(SEEN + <usize>id)) { store<u8>(SEEN + <usize>id, 1); ls(); pz(STRINGS + load<u32>(p, 4)); le(); }
+        if (id < 2048 && !load<u8>(SEEN + <usize>id)) { store<u8>(SEEN + <usize>id, 1); ls(); pz(STRINGS + load<u32>(p, 4)); le(); }
         p += 8; break;
       }
       case 5: setErrno(<i32>load<u32>(p, 4)); p += 8; break;

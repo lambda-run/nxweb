@@ -4,7 +4,7 @@
 // x0..x7 and d0..d7. Nothing here reaches into the recorder. Works in Node and in the browser.
 export interface GuestImports { gfx_exec(ptr: number, len: number): void }
 export const GUEST_BASE = 0x0200_0000;      // the "game" lives from 32 MB up
-export const ARENA_BASE = 0x0010_0000;      // the recorder's tables: 16 MB from 1 MB (its static data is at 64 KB)
+export const ARENA_BASE = 0x0010_0000;      // the recorder's tables (gfx_arena_bytes(): 31 MB) from 1 MB up to the game; its static data is at 64 KB
 
 export class Guest {
   memory: WebAssembly.Memory;

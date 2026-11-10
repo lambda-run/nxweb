@@ -18,6 +18,8 @@ function fill(e: Env, cmd: number, tex: number, w: number, h: number, bytes: Arr
 const solid = (w: number, h: number, c: number[]) => Uint8Array.from({ length: w * h * 4 }, (_, i) => c[i & 3]);
 // The states of the pipelines the recorder has (ids are slots of its hash table): 1 Building, 2 Ready, 3 Failed
 const pipeStates = (e: Env) => Array.from({ length: 2048 }, (_, k) => e.g.x.gfx_pipeline_state(k) as number).filter(v => v >= 0).sort();
+// Waits until no pipeline is still being built (createRenderPipelineAsync takes as long as it takes)
+async function pipesBuilt(e: Env) { for (let k = 0; k < 1000 && pipeStates(e).includes(1); k++) await new Promise(r => setTimeout(r, 10)); await e.settle(); }
 const halfToFloat = (h: number) => { const ex = (h >> 10) & 31, m = h & 1023; return (h & 0x8000 ? -1 : 1) * (ex === 0 ? m * 2 ** -24 : (1 + m / 1024) * 2 ** (ex - 15)); };
 
 export const scenes2: Scene[] = [
@@ -107,7 +109,7 @@ export const scenes2: Scene[] = [
     t.eq(asked, ['16:{"0":"float","1":"uint"}'], "the hook was asked once, with the key and the classes");
     const red = e.g.red();
     t.ok(red.length === 1 && /is bound with attribute classes 0:float,1:uint, but declares 0:float,1:float: WebGPU needs a variant/.test(red[0]), `one red line, the request to the shader chain: ${red}`);
-    t.eq(e.host.stats.errors, 0, "no WebGPU validation error"); await e.settle();
+    t.eq(e.host.stats.errors, 0, "no WebGPU validation error"); await pipesBuilt(e);
     t.eq(pipeStates(e), [2, 2, 2, 3], "four pipelines (the key carries the classes): three Ready, the one without a variant Failed");
   } },
 
@@ -134,12 +136,12 @@ export const scenes2: Scene[] = [
       t.rect(img, 32, 0, 64, 64, BLACK, "one block over the limit: the draw is skipped");
       const red = e.g.red();
       t.ok(red.length === 1 && new RegExp(`uses ${max + 1} uniform buffers, this WebGPU device allows ${max} a stage`).test(red[0]), `one red line with the numbers: ${red}`);
-      await e.settle(); t.eq(pipeStates(e), [2, 3], "that pipeline is Failed, the other Ready");
+      await pipesBuilt(e); t.eq(pipeStates(e), [2, 3], "that pipeline is Failed, the other Ready");
     } else console.log("this device allows 14 or more uniform buffers a stage: nothing a game binds can exceed it");
     t.eq(e.host.stats.errors, 0, "no WebGPU validation error");
   } },
 
-  { name: "compute: a dispatch writes a storage buffer that the next draw uses as its vertex buffer and that lands in guest memory; storage images; dispatches between draws", async run(e, t) {
+  { name: "compute: a dispatch writes a storage buffer that the next draw uses as its vertex buffer and that lands in guest memory; storage images; dispatches between draws; a storage buffer read by a fragment shader", async run(e, t) {
     const G = e.G, cmd = G.cmd, x = e.g.x, cquad = await e.computeProgram("cs_quad"), cimage = await e.computeProgram("cs_image"), cinv = await e.computeProgram("cs_invert");
     const flat = await e.program("vs_quad", "fs_ubo"), tprog = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST), sync = e.g.alloc(SIZEOF.SYNC);
     G.c("SyncInitialize", [sync, G.dev]);
@@ -156,9 +158,11 @@ export const scenes2: Scene[] = [
     G.c("CommandBufferFenceSync", [cmd, sync, 0, 0]);
     e.finish(i);
     t.eq(Array.from(new Float32Array(e.g.memory.buffer, verts, 4)), [0, 0, 0, 0], "guest memory still has the old content right after the submit");
+    t.eq(G.c("SyncWait", [sync, ALL]), 2, "the fence waits for the read-back (still pending in the turn of the submit)");
+    const landed = e.host.fence(x.gfx_wait_fence());
     let img = await e.read();
     t.rect(img, 32, 16, 64, 48, RED, "the quad the compute shader placed (x 0..1, y -0.5..0.5)"); t.rect(img, 0, 0, 32, 64, BLACK, "left of it"); t.rect(img, 32, 0, 64, 16, BLACK, "above"); t.rect(img, 32, 48, 64, 64, BLACK, "below");
-    t.eq(G.c("SyncWait", [sync, ALL]), 2, "the fence waits for the read-back"); await e.host.fence(x.gfx_wait_fence());
+    await landed; t.eq(G.c("SyncWait", [sync, ALL]), 1, "the parked wait ends");
     t.eq(Array.from(new Float32Array(e.g.memory.buffer, verts, 16)), [0, -0.5, 0, 1, 1, -0.5, 1, 1, 0, 0.5, 0, 0, 1, 0.5, 1, 0], "the vertices landed in guest memory");
     t.eq([e.stat(13), e.stat(14), e.stat(0), e.host.stats.bufferReadbacks], [1, 1, 2, 1], "one dispatch in one compute pass between the clear's pass and the draw's; one buffer read back");
     // frame 2: a storage image written before any pass; then, between two draws, a dispatch that reads it and writes another
@@ -178,7 +182,16 @@ export const scenes2: Scene[] = [
     for (const [px, py] of [[0, 0], [9, 30], [31, 63], [16, 16]]) { const tx = Math.floor(px / 2), ty = Math.floor(py / 4); t.px(img, px, py, [b8(tx / 15), b8(ty / 15), 128, 255], "the image the first dispatch stored", 1); }
     for (const [px, py] of [[32, 0], [41, 30], [63, 63]]) { const tx = Math.floor((px - 32) / 2), ty = Math.floor(py / 4); t.px(img, px, py, [255 - b8(tx / 15), 255 - b8(ty / 15), 127, 255], "its inverse, stored by the dispatch between the draws", 1); }
     t.eq([e.stat(13), e.stat(14), e.stat(0)], [3, 3, 4], "three dispatches, each a compute pass; the render pass was split around the second");
-    t.eq([x.gfx_tex_state(a), x.gfx_tex_state(b)], [2, 2], "images written by compute are GPU-owned"); t.noRed(e);
+    t.eq([x.gfx_tex_state(a), x.gfx_tex_state(b)], [2, 2], "images written by compute are GPU-owned");
+    // frame 3: a storage buffer read by a fragment shader
+    const table = G.put(new Float32Array([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 0, 1])), fprog = await e.program("vs_quad", "fs_table");
+    i = G.acquire(e.win);
+    G.begin(); e.frame(cmd, e.wtex[i], fprog); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferBindStorageBuffer", [cmd, STAGE.FRAGMENT, 0, table, 64]);
+    [2, 3].forEach((k, n) => { G.c("CommandBufferSetViewport", [cmd, n * 32, 0, 32, 64]); G.c("CommandBufferBindUniformBuffer", [cmd, STAGE.FRAGMENT, 0, ubo(e, [k, 0, 0, 0]), 16]); e.drawQuad(cmd); });
+    e.finish(i);
+    img = await e.read();
+    t.rect(img, 0, 0, 32, 64, BLUE, "table entry 2 from the storage buffer"); t.rect(img, 32, 0, 64, 64, [255, 255, 0, 255], "table entry 3");
+    t.noRed(e);
   } },
 
   { name: "multisample targets resolved by Downsample (colour and depth), 8 samples rendered with 4; depth clamp", async run(e, t) {
@@ -429,7 +442,7 @@ export const scenes2: Scene[] = [
     const frame = (k: number) => { e.frame(cmd, e.wtex[k], prog); G.clear(cmd, [0, 0, 0, 1]); e.bindTexture(cmd, tx.id, nearest); e.drawQuad(cmd); };
     frame(i); e.finish(i);
     const check = async (what: string) => { const img = await e.read(); t.rect(img, 0, 0, 32, 32, texels[0], `${what}: top left`); t.rect(img, 32, 0, 64, 32, texels[1], `${what}: top right`); t.rect(img, 0, 32, 32, 64, texels[2], `${what}: bottom left`); t.rect(img, 32, 32, 64, 64, texels[3], `${what}: bottom right`); };
-    await check("before the loss"); await e.settle();
+    await check("before the loss"); await pipesBuilt(e);
     t.eq([x.gfx_device_state(), x.gfx_tex_state(tx.tex), pipeStates(e)], [0, 1, [2]], "Live; the texture Uploaded; the pipeline Ready");
     // the loss, with a fence pending and a frame submitted before anyone knows
     const restored = new Promise<number>(res => { e.host.onDeviceRestored = n => res(n); }), lostInfo: string[] = [];
@@ -448,7 +461,7 @@ export const scenes2: Scene[] = [
     const up0 = e.stat(8);
     i = G.acquire(e.win);
     G.begin(); frame(i); e.finish(i);
-    await check("after the loss, on the new device"); await e.settle();
+    await check("after the loss, on the new device"); await pipesBuilt(e);
     t.eq([e.stat(8) - up0, x.gfx_tex_state(tx.tex), pipeStates(e), e.host.stats.pipelinesAsync], [1, 1, [2], 2], "the texture was uploaded again from guest memory; the same pipeline entry was built again on the new device");
     const red = e.g.red();
     t.ok(red.length === 2 && /^\[RED\] WebGPU device lost \(destroyed\)/.test(red[0]) && /the GPU device was lost: \d+ textures the GPU had written/.test(red[1]), `two red lines, the loss and what could not be brought back: ${JSON.stringify(red)}`);

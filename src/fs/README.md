@@ -286,8 +286,9 @@ and then match nothing; a path of 1024 bytes fails.
 
 ## Gaps
 
-- **Not wired into the runtime.** Dispatching host stubs to `fs_call`, parking threads on pending / retry and
-  giving the module a range of `rt_layout.ts` are the runtime owner's; the shared-memory build is tested.
+- **Wired into the runtime** by `src/glue/rt_fs.ts` (ranges "fs static" and "fs arena" of `rt_layout.ts`, the 73
+  names as host functions, parking on pending / retry; `src/runtime/README.md`). The page attaches a standard RomFS
+  image and OPFS saves keyed by the main module's id; add-on content and the program id are not set there yet.
 - **No save device for the main thread** (no synchronous access handles there). The interface allows one.
 - **One writer.** A second tab mounts the save read-only.
 - **Durability rests on `flush`.** The kill and reload cases are verified in Chromium; a power loss is verified

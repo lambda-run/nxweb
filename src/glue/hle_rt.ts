@@ -6,10 +6,10 @@
 //
 // hleSharedModule is build/hle/hle.shared.wasm built by hleBuildShared(out, base) (src/hle/host/build.mts) with its
 // static data in a range of the host area the runtime owner gives it (about 400 KB; see src/hle/README.md "Requests").
-// NOT RUN YET: this file is type-checked against the runtime's interfaces but no test loads a guest through it;
-// test/hle drives the same HleHost through a fake outside. What it cannot do with today's Runtime is listed in
-// src/hle/README.md.
+// Run by test/runtime (more_cases.ts, "hle": the guest hleg.c calls take-overs of oe, time, account, nifm, socket
+// and libc by their mangled names); test/hle drives the same HleHost through a fake outside.
 import type { Runtime, HostCpu, HostResult } from "./rt_runtime.ts";
+import { range } from "./rt_layout.ts";
 import { HleHost, type HleEnv, type HleEntry, type HleResult, type TextRequest } from "./hle_host.ts";
 
 // The front end's side: everything is optional; without it the take-overs answer as nxnative does windowless
@@ -51,7 +51,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     timeZone: t => front.timeZone?.(t) ?? jsZone(t),
     entropy: out => { for (let i = 0; i < out.length; i += 65536) crypto.getRandomValues(out.subarray(i, Math.min(out.length, i + 65536)) as Uint8Array<ArrayBuffer>); },
     eventNew: () => { const p = o.scratch ?? ((rt.r.rt_scratch_ptr() >>> 0) + 3080); const r = rt.k.kernel_event_new(p) >>> 0; return { r, w: new DataView(rt.memory.buffer).getUint32(p, true) }; },
-    eventSignal: h => rt.k.kernel_event_signal(h) !== 0,
+    eventSignal: h => { const ok = rt.k.kernel_event_signal(h) !== 0; rt.requestWake(); return ok; },
     eventClear: h => rt.k.kernel_event_clear(h) !== 0,
     eventDupReadable: h => rt.k.kernel_event_dup_readable(h) >>> 0,
     guestSym,
@@ -61,7 +61,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     },
     moduleOf: a => rt.modules.findIndex(m => a >= BigInt(m.base) && a < BigInt(m.base + m.imageSize)),
     stubAddr: (id, name) => BigInt(rt.lateStub(name, cpu => invoke(cpu, id))),
-    hostAlloc: n => { const a = front.hostAlloc?.(n) ?? 0n; if (!a) rt.log(`[RED] hle: no host memory for ${n} bytes (HleFront.hostAlloc)`); return a; },
+    hostAlloc: n => { const a = front.hostAlloc?.(n) ?? BigInt(rt.hostAlloc(Number(n))); if (!a) rt.log(`[RED] hle: no host memory for ${n} bytes`); return a; },
     clockFreeze: (reason, on) => rt.freezeClock(reason, on),
     textRequest: req => { if (front.textRequest) front.textRequest(req, t => { host.textAnswer(t); }); else host.textAnswer({ noWindow: true }); },
     webOpen: (p, c, h, d, pu) => front.webOpen?.(p, c, h, d, pu) ?? 2,
@@ -72,20 +72,26 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     nativeImageBlank: (w, h) => front.nativeImageBlank?.(w, h) ?? 0, nativeImageBlankFree: h => front.nativeImageBlankFree?.(h),
     exitRequest: (reason, value, bytes) => {
       if (front.exitRequest) front.exitRequest(reason, value, bytes, () => host.exitDone());
-      else { rt.kill(); host.exitDone(); }
+      else {
+        // the process machine's Exit: 0 for a shutdown the host asked for or a program handing over, 1 for an abort
+        rt.requestExit(reason === "abort" ? 1 : 0); host.exitDone();
+      }
     },
   };
   host = new HleHost(module, env, rt.memory);
   if (o.config) host.config(o.config);
+  rt.onHandleClosed(h => host.handleClosed(h));
+  rt.expectOutsideEvents();   // the front end's reports (focus, operation mode, an answer) signal events the guest waits on
+  const st = range("hle static");
+  if (rt.r.rt_static_check(97, BigInt(st.lo), BigInt(st.hi), BigInt(host.x.hle_static_end() >>> 0))) throw new Error("runtime: the hle module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
 
   const finish = (cpu: HostCpu, id: number, r: HleResult): HostResult => {
     if (r.wait) {
       const pend = host.pending(id);
       return cpu.block(r.wait.handle, r.wait.timeoutNs, (how, c) => { cur = c; try { return finish(c, id, host.resume(pend, how)); } finally { cur = null; } });
     }
-    // The process is ending (an abort, ExecuteProgram): the thread must not go on. Unverified: the runtime has no
-    // "this thread never continues" result for a host function; giving the core up is the nearest thing today
-    if (r.noReturn) return cpu.jump(0xFFFF_FFE0);
+    // The process is ending (an abort, ExecuteProgram): the thread must not go on
+    if (r.noReturn) return cpu.never();
     if (r.x1 !== undefined) cpu.setX(1, r.x1);
     if (r.d0 !== undefined) setD0(cpu, r.d0);
     return r.x0;

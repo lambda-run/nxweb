@@ -204,16 +204,23 @@ function hostRef(id: u32, m: Mod): u64 {
 }
 
 // nxnative's force_check: forced take-overs that no module referred to. Each is logged red; returns how many.
+// Forced names no module refers to. A table of take-overs serves every game, so most of its names are unreferenced
+// by any one of them: as in nxnative, that is one summary line (`force: N entries hit, M not referenced by this
+// game`) and a red line per name only when the embedder asked to be strict (forceStrict; nxnative DM_FORCE_STRICT,
+// for the tests of a table against the one game it was written for). Returns M.
+let strictForced: bool = false;
+export function forceStrict(on: bool): void { strictForced = on; }
 export function checkForced(): u32 {
   context(0, 0);
-  let n: u32 = 0;
+  let n: u32 = 0, hit: u32 = 0;
   for (let id: u32 = 0; id < hostCount; id++) {
     const r = hostRec(id);
-    if (load<u32>(r, 20) == HOST_FORCE && !load<u32>(r, 12)) {
-      red(); puts("forced take-over entry with no reference at all: "); putn(<usize>load<u32>(r), load<u32>(r, 4)); emit();
-      n++;
-    }
+    if (load<u32>(r, 20) != HOST_FORCE) continue;
+    if (load<u32>(r, 12)) { hit++; continue; }
+    if (strictForced) { red(); puts("forced take-over entry with no reference at all: "); putn(<usize>load<u32>(r), load<u32>(r, 4)); emit(); }
+    n++;
   }
+  if (n && !strictForced) { info(); puts("force: "); putu(hit); puts(" entries hit, "); putu(n); puts(" not referenced by this game"); emit(); }
   return n;
 }
 

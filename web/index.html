@@ -36,8 +36,9 @@
   <div class="panel row">
     <button id="demo">Run the built-in demo (spinning cube)</button>
     <label class="file">NSO files…<input id="files" type="file" multiple></label>
-    <label class="file">Shader library…<input id="shaders" type="file" accept=".json"></label>
-    <div id="drop">or drop NSO files (main first, or a file named main) and an optional shader library (.json) here</div>
+    <label class="file">Shader library…<input id="shaders" type="file" accept=".nxsl,.json"></label>
+    <label class="file">RomFS image…<input id="rom" type="file" accept=".romfs,.img,.istorage"></label>
+    <div id="drop">or drop NSO files (main first, or a file named main), an optional shader library (.nxsl) and a RomFS image (.romfs, .img) here</div>
   </div>
   <div class="panel row">
     <span>Process</span><span id="state" data-state="Empty">Empty</span><span id="why"></span>
@@ -57,6 +58,7 @@
       <dt>Input</dt><dd id="pad">–</dd>
       <dt>Modules</dt><dd id="mods">–</dd>
       <dt>Graphics</dt><dd id="gpu">–</dd>
+      <dt>Code, shaders, files</dt><dd id="more">–</dd>
     </dl></div>
   </div>
   <div class="panel"><pre id="log"></pre></div>

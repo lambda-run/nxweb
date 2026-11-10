@@ -37,6 +37,10 @@ set.forcedUnused          // forced names no module referred to (each logged red
 ld.hostFunctions()        // the stub table: [{ id, name, kind, stub, refs, firstModule }]
 ld.stubId(addr)           // guest address -> host function id, or -1;  ld.stubAddr(id) the other way
 ld.lookup("nnMain")       // first exported definition in load order, or undefined;  ld.lookupIn(handle, name)
+ld.codeEntries(h, out, cap) // function entries of a relocated module for a translator: function symbols, DT_INIT /
+                          // DT_FINI, init and fini arrays, relative relocations (RELA and RELR) into the text
+ld.forceStrict(true)      // a red line per forced name no module refers to; default: one summary line
+                          // (`force: N entries hit, M not referenced by this game`), as nxnative
 for (const m of set.modules) ld.activate(m.handle);   // after the init calls ran;  ld.pin(handle) for modules that stay
 ```
 

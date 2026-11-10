@@ -32,6 +32,7 @@ worker.onmessage = ev => {
     $("split").textContent = m.split ?? "–";
     $("mods").textContent = m.modules ?? "–";
     $("gpu").textContent = m.gpu ?? "–";
+    $("more").textContent = m.more ?? "–";
   }
 };
 ($("demo") as HTMLButtonElement).onclick = () => worker.postMessage({ type: "demo" });
@@ -40,19 +41,22 @@ $("resume").onclick = () => worker.postMessage({ type: "resume" });
 $("stop").onclick = () => worker.postMessage({ type: "stop" });
 
 // ---- files ----
-let shaderLib: string | undefined;
+let shaderLib: string | undefined, shaderNxsl: Uint8Array | undefined, rom: File | undefined;
 async function take(list: FileList | File[]) {
   const files = Array.from(list), nso: { name: string; bytes: Uint8Array }[] = [];
   for (const f of files) {
-    if (f.name.endsWith(".json")) { shaderLib = await f.text(); addLog([{ text: `page: shader library ${f.name} (${shaderLib.length} bytes) will be used for the next load`, kind: "" }]); }
+    if (/\.nxsl$/i.test(f.name)) { shaderNxsl = new Uint8Array(await f.arrayBuffer()); addLog([{ text: `page: shader library ${f.name} (${shaderNxsl.length} bytes) will be consulted first at the next load`, kind: "" }]); }
+    else if (/\.(romfs|img|istorage)$/i.test(f.name)) { rom = f; addLog([{ text: `page: RomFS image ${f.name} (${f.size} bytes) is the rom device of the next load`, kind: "" }]); }
+    else if (f.name.endsWith(".json")) { shaderLib = await f.text(); addLog([{ text: `page: shader library ${f.name} (${shaderLib.length} bytes) will be used for the next load`, kind: "" }]); }
     else nso.push({ name: f.name.replace(/\.nso$/i, ""), bytes: new Uint8Array(await f.arrayBuffer()) });
   }
   if (!nso.length) return;
   nso.sort((a, b) => Number(b.name === "main") - Number(a.name === "main"));   // the main module first
-  worker.postMessage({ type: "load", files: nso, shaders: shaderLib });
+  worker.postMessage({ type: "load", files: nso, shaders: shaderLib, nxsl: shaderNxsl, rom });
 }
 ($("files") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
 ($("shaders") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
+($("rom") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
 const drop = $("drop");
 for (const t of ["dragenter", "dragover"]) document.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); });
 for (const t of ["dragleave", "drop"]) document.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); });

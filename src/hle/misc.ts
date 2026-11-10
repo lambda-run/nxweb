@@ -4,6 +4,8 @@
 import { X, W, I, P, setX1, guestSym, moduleOf, stubAddr, envGuestSym, ls, ps, pi, le, red, zero, sput } from "./base";
 import { seBind } from "./sysevent";
 import { COUNT } from "./gen/table";
+import { INT_JIT_RESOLVE, INT_JIT_PANIC, INT_JIT_ABORT, INT_JIT_UNEXPECTED, INT_JIT_MEMCPY, INT_JIT_MEMMOVE, INT_JIT_MEMSET, jitResolve, jitPanic, jitAbort, jitUnexpected } from "./jit";
+import { lib_memcpy, lib_memmove, lib_memset } from "./libc";
 
 // ---------- aoc: the owned add-on content indices (ascending). nxnative lists the numeric subdirectories of
 // DM_AOC_DIR at the first query; here the embedder sets the list (export hle_aoc_set) ----------
@@ -42,13 +44,20 @@ export function h_ec_GetPurchased(a: usize): u64 { seBind(EV_PURCHASE, 0); retur
 // each slot of the SDK's (_ZTVN2nn3ngc15ProfanityFilterE) is matched by address with the class's methods and given
 // the host's version; others return 0. The host's versions are internal take-overs (ids from COUNT up), reached
 // through stubs the embedder makes (import hle_stub_addr).
-export const INT_NGC_ZERO = 0, INT_NGC_NONE = 1, INT_NGC_CHECK = 2, INT_NGC_MASK = 3, INTERNAL_COUNT = 4;
+export const INT_NGC_ZERO = 0, INT_NGC_NONE = 1, INT_NGC_CHECK = 2, INT_NGC_MASK = 3, INTERNAL_COUNT = 11;   // 4..10: the JIT plugin's helpers (jit.ts)
 function ngcCheck(masks: usize, n: u64): u64 { for (let i: u64 = 0; masks && i < n; i++) store<u32>(masks + (<usize>i << 2), 0); return 0; }
 function ngcMask(masked: usize): u64 { if (masked) store<i32>(masked, 0); return 0; }
 export function internalCall(k: i32, a: usize): u64 {
   switch (k) {
     case INT_NGC_CHECK: return ngcCheck(P(a, 1), X(a, 4));
     case INT_NGC_MASK: return ngcMask(P(a, 1));
+    case INT_JIT_RESOLVE: return jitResolve(P(a, 0));
+    case INT_JIT_PANIC: return jitPanic(a);
+    case INT_JIT_ABORT: return jitAbort(a);
+    case INT_JIT_UNEXPECTED: return jitUnexpected(a);
+    case INT_JIT_MEMCPY: return lib_memcpy(a);
+    case INT_JIT_MEMMOVE: return lib_memmove(a);
+    case INT_JIT_MEMSET: return lib_memset(a);
     default: return 0;   // ngc_v_zero, ngc_v_none
   }
 }

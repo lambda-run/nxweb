@@ -29,8 +29,8 @@ index 1 is `stop` (sets `budget = -1`, which makes every frame unwind and `run()
 `while (pc < 0xFFFF_FF00 && budget >= 0) call_indirect(pcmap[pc])`.
 
 **Memory.** The translator and the helpers import the embedder's one linear memory (`asc --importMemory
---zeroFilledMemory --memoryBase`, root `a64:build` script; the bases are the "a64 translator" and "a64 helpers"
-ranges of `src/glue/rt_layout.ts`, and `A64Host` refuses to start when the binaries and the layout disagree or the
+--zeroFilledMemory --memoryBase`; `npm run a64:build` is `src/a64/host/build.mts`, which takes the bases from the
+"a64 translator" and "a64 helpers" ranges of `src/glue/rt_layout.ts`, and `A64Host` refuses to start when the binaries and the layout disagree or the
 data would not fit). Guest code is read where it lies; there is no private copy. Everything the translator keeps is
 static data plus buffers taken from its own bump allocator at start (15.4 MB: 8 MB unit output, 2 MB function body,
 2 MB side table, the rest tables); it never grows the memory. `translator.shared.wasm` / `helpers.shared.wasm` are
@@ -111,6 +111,14 @@ Atomic accesses trap on a misaligned address. CPU state stays in per-instance gl
 `pc` = the instruction itself, call `cntpct`, pc check, reload, then use the returned value. The embedder may park:
 set `pc` to 0xFFFF_FFE0 inside the import (its return value is ignored), let everything unwind, and later resume at
 the saved pc; the read is then executed again. Off, it is a plain call with nothing written back.
+
+**Guard (`guardBase`, default 0 = off; the runtime turns it on).** Guest data accesses below `guardBase` trap: the
+address is `wrap(addr) - guardBase` and every memory instruction carries the offset `guardBase` (`aw`, `mem`,
+`vmem`, `moff` in `emit.ts`), so a lower address reaches 4 GB or more in the engine's unwrapped effective-address
+computation. One subtraction per access, no branch; DC ZVA does a one-byte guarded load before its `memory.fill`.
+With 0 the emitted bytes are what they were. Measured by the runtime on the shared corpus: about +5 % run time
+(runs between +2 % and +10 % on a busy machine; `src/runtime/README.md`). The pc map, `save_ctx` / `load_ctx` and
+the helpers are host accesses and are not biased.
 
 **Fault pcs.** Default (no run-time cost): every unit carries a side table (module byte offset -> guest pc, 8 bytes
 per instruction, kept by the glue) and a name section (`f_<hex pc>` per function). `host.faultFromError(e)` reads

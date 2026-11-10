@@ -1,6 +1,7 @@
 // The in-page shader translator's Worker (a module Worker): nxnative's translator driver over Ryujinx.Graphics.Shader
 // published for browser-wasm (tools/shaders/build_xlate_wasm.sh; the .NET runtime interprets it), then the SPIR-V
 // pass (src/shaders/spv.ts) and naga as WebAssembly. One stage per request:
+//   (over a BroadcastChannel named like the Worker, see the end of the file)
 //   in:  { init: { framework, naga } }  once: where `_framework/dotnet.js` and nx_naga.wasm are served
 //        { id, key, control, code }     a stage as the game passed it (control section, code area)
 //   out: { id, wgsl, reflection } | { id, error }
@@ -53,13 +54,20 @@ async function translate(key: string, control: Uint8Array, code: Uint8Array) {
   const c = convertStage(naga, spv, { bindings: "nxweb" });
   return { wgsl: c.wgsl, reflection: c.reflection };
 }
+// Requests do not come as messages to the Worker itself: the .NET runtime, started in a Worker, never finishes its
+// start once the Worker's own `message` event has fired (measured in Chromium 153). They come over a
+// BroadcastChannel whose name is the Worker's name; { ready: true } says the channel is listened to.
+const channel = new BroadcastChannel((self as any).name);
 let chain: Promise<unknown> = Promise.resolve();
-self.onmessage = (ev: MessageEvent) => {
+channel.onmessage = (ev: MessageEvent) => {
   const m = ev.data;
+  if (m.ready || m.wgsl !== undefined || m.error !== undefined) return;
   if (m.init) { ready = start(m.init); ready.catch(() => { /* reported per request */ }); return; }
+  if (m.id === undefined) return;
   // one at a time: the translator's runtime runs one main at a time
   chain = chain.then(async () => {
-    try { (self as any).postMessage({ id: m.id, ...(await translate(m.key, m.control, m.code)) }); }
-    catch (e) { (self as any).postMessage({ id: m.id, error: e instanceof Error ? e.message : String(e) }); }
+    try { channel.postMessage({ id: m.id, ...(await translate(m.key, m.control, m.code)) }); }
+    catch (e) { channel.postMessage({ id: m.id, error: e instanceof Error ? e.message : String(e) }); }
   });
 };
+channel.postMessage({ ready: true });

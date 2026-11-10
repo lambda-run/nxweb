@@ -1,0 +1,14 @@
+{
+  "id": 0,
+  "name": "jit_env",
+  "doc": "One nn::jit environment (port of nxnative dm/host/hle_jit.c: jit_env; src/hle/jit.ts, 4 slots). Create: the embedder loaded the plugin NRO on its own and gave code and data memory (import hle_jit_create). Prepared: the plugin's init, GetVersion, ResolveBasicSymbols, SetupDiagnostics, Configure and OnPrepared have run, as the jit service runs them; GenerateCode and Control are served from here. Fail: the plugin lacks its entry points or is not version 1, and the environment is given back. Destroy: DestroyJitEnvironment ran the plugin's fini and the embedder freed the memory.",
+  "states": ["None", "Created", "Ready"],
+  "initial": "None",
+  "events": ["Create", "Prepared", "Fail", "Destroy"],
+  "transitions": [
+    ["None", "Create", "Created"],
+    ["Created", "Prepared", "Ready"],
+    ["Created", "Fail", "None"],
+    ["Ready", "Destroy", "None"]
+  ]
+}

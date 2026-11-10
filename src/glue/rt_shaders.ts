@@ -100,19 +100,34 @@ export class RtShaders {
 // ---- the in-page translator: a Worker of its own (rt_shader_worker.ts, bundled as a module) ----
 export const SHADER_CHAIN = "nxweb-shaders-1/page";
 export function workerTranslator(o: { worker: string | URL; framework: string; naga: string; chain?: string }): ShaderTranslator {
-  let w: Worker | null = null, seq = 0;
-  const calls = new Map<number, { res: (t: Translated) => void; rej: (e: Error) => void }>();
-  const start = (): Worker => {
-    const nw = new Worker(o.worker, { type: "module" });
-    nw.onmessage = ev => { const c = calls.get(ev.data.id); if (!c) return; calls.delete(ev.data.id); if (ev.data.error) c.rej(new Error(ev.data.error)); else c.res({ wgsl: ev.data.wgsl, reflection: ev.data.reflection }); };
-    nw.onerror = ev => { for (const c of calls.values()) c.rej(new Error("the shader translator's Worker failed: " + (ev.message || "it could not be started"))); calls.clear(); w = null; };
-    nw.postMessage({ init: { framework: o.framework, naga: o.naga } });
-    return nw;
+  let w: Worker | null = null, bc: BroadcastChannel | null = null, up = false, seq = 0;
+  const calls = new Map<number, { res: (t: Translated) => void; rej: (e: Error) => void }>(), queue: unknown[] = [];
+  const failAll = (why: string) => { for (const c of calls.values()) c.rej(new Error(why)); calls.clear(); };
+  const start = (): void => {
+    // the Worker is talked to over a BroadcastChannel named like it (rt_shader_worker.ts says why)
+    const name = "nxweb-shaders-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    bc = new BroadcastChannel(name);
+    bc.onmessage = ev => {
+      const m = ev.data;
+      if (m.ready) { up = true; bc!.postMessage({ init: { framework: o.framework, naga: o.naga } }); for (const q of queue.splice(0)) bc!.postMessage(q); return; }
+      const c = calls.get(m.id);
+      if (!c || (m.wgsl === undefined && m.error === undefined)) return;
+      calls.delete(m.id);
+      if (m.error !== undefined) c.rej(new Error(m.error)); else c.res({ wgsl: m.wgsl, reflection: m.reflection });
+    };
+    w = new Worker(o.worker, { type: "module", name });
+    w.onerror = ev => { failAll("the shader translator's Worker failed: " + (ev.message || "it could not be started")); stop(); };
   };
+  const stop = (): void => { w?.terminate(); bc?.close(); w = null; bc = null; up = false; queue.length = 0; };
   return {
     chain: o.chain ?? SHADER_CHAIN,
-    translate: blob => new Promise((res, rej) => { w ??= start(); const id = ++seq; calls.set(id, { res, rej }); w.postMessage({ id, key: blob.key, control: blob.control, code: blob.code }); }),
-    close: () => { w?.terminate(); w = null; },
+    translate: blob => new Promise((res, rej) => {
+      if (!w) start();
+      const id = ++seq, m = { id, key: blob.key, control: blob.control, code: blob.code };
+      calls.set(id, { res, rej });
+      if (up) bc!.postMessage(m); else queue.push(m);
+    }),
+    close: () => { failAll("the shader translator was closed"); stop(); },
   };
 }
 // The store of translations in the Cache API (window or Worker, secure context): one entry per key + chain version

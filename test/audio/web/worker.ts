@@ -53,8 +53,8 @@ function stats(): Record<string, unknown> {
   const h = host.ringHeader(), x = host.x;
   return { state: g ? OUT_S[x.audio_out_state(0)] : "none", appended, reclaimed, orderErrors, queued: queue.length, underruns: Number(x.audio_out_stat(0, 7)), silenceBytes: Number(x.audio_out_stat(0, 8)),
     signals: events[0]?.signals ?? 0, ringUnder: h[RING.UNDER], callbacks: h[RING.CB], rd: h[RING.RD], wr: h[RING.WR], rate: device.rate, transport: device.transport, context: device.context,
-    mixed: Number(x.audio_mixed_frames()), refused: x.kit_refused_total(), red: logs.filter(l => l.startsWith("[RED] ")), states: states.map(s => ({ ...s })), releaseTimes: releaseTimes.slice(),
-    isolated: (self as unknown as { crossOriginIsolated: boolean }).crossOriginIsolated, sharedMemory: x.memory.buffer instanceof SharedArrayBuffer, now: performance.now() };
+    mixed: Number(x.audio_mixed_frames()), refused: x.kit_refused_total(), red: logs.filter(l => l.startsWith("[RED] ")), states: states.map(s => ({ ...s })), trace: host.outTrace(0), releaseTimes: releaseTimes.slice(),
+    isolated: (self as unknown as { crossOriginIsolated: boolean }).crossOriginIsolated, sharedMemory: typeof SharedArrayBuffer !== "undefined" && x.memory.buffer instanceof SharedArrayBuffer, now: performance.now() };
 }
 
 // ---- Opus through WebCodecs: encode a tone with the browser's encoder, decode it through the decoder manager ----
@@ -128,6 +128,7 @@ self.onmessage = async (e: MessageEvent) => {
     for (let i = 0; i < cfg.inflight + 2; i++) { const data = alloc(cfg.frames * 4), b = alloc(64); call("au_SetBuf", b, data, cfg.frames * 4, cfg.frames * 4); free.push(b); }
     refill();
     const s = call("au_Start", g);
+    states.push({ t: performance.now(), s: OUT_S[host.x.audio_out_state(0)] });
     post({ id: m.id, result: { open: Number(r), start: Number(s) } });
   } else if (m.cmd === "set") {
     if (m.appending !== undefined) { appending = m.appending; if (appending && !cfg.event) refill(); if (appending && cfg.event) { events[0].flag = true; } }
@@ -137,7 +138,7 @@ self.onmessage = async (e: MessageEvent) => {
     // the run loop does not come back for ms milliseconds (a long slice): nothing ticks
     const until = performance.now() + m.ms; while (performance.now() < until) { /* spin */ }
     post({ id: m.id, result: true });
-  } else if (m.cmd === "stop") { call("au_Stop", g); refill(); post({ id: m.id, result: stats() }); }
+  } else if (m.cmd === "stop") { appending = false; call("au_Stop", g); refill(); post({ id: m.id, result: stats() }); }
   else if (m.cmd === "stats") post({ id: m.id, result: stats() });
   else if (m.cmd === "opus") { const r = await opus(); post({ id: m.id, result: r }, r.pcm ? [(r.pcm as Int16Array).buffer] : []); }
 };

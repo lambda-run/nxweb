@@ -14,7 +14,7 @@ Waiting and the SVC returns "switch"; time comes in through `kernel_tick`.
 | `sched.ts` | The scheduler (the only file that knows cores) |
 | `thread.ts`, `handle.ts`, `clock.ts`, `mem.ts`, `base.ts` | Thread records and contexts, handle table and events, guest clock, memory bookkeeping, results / log / lock |
 
-`npm run kernel:build`, `npm run kernel:test` (62 tests), `npm run kit:test` (the machines' tables).
+`npm run kernel:build`, `npm run kernel:test` (63 tests), `npm run kit:test` (the machines' tables).
 
 ## API for the embedder
 
@@ -44,7 +44,10 @@ point), `kernel_clock_freeze(reason, on)` / `kernel_clock_reasons()` / `kernel_g
 (for `mrs cntpct_el0`; while reason 1 holds a guest read must wait, as GetSystemTick does), `kernel_module_add(base,
 size, roOffset, dataOffset)` / `kernel_module_remove`, `kernel_device_share(addr, size, on)`, `kernel_map_stack(base, size)` (a stack in the stack
 region for a thread the embedder starts, the main thread's; QueryMemory reports it as a mapped stack), `kernel_query_memory(addr, out)`
-(svcQueryMemory for the embedder), `kernel_event_new` /
+(svcQueryMemory for the embedder), `kernel_clock_wait(ctx)` (a counter read by `mrs cntpct_el0` while the background
+freeze holds: the thread waits for the clock as GetSystemTick does, but its wake writes no register, so the embedder
+runs the read again), `kernel_handle_close(h)` (CloseHandle for handles the embedder made), `kernel_kill()` (the
+embedder ends the process: every thread leaves as at ExitProcess, stop reason 3), `kernel_event_new` /
 `_dup_readable` / `_signal` / `_clear` (events a service hands its client), `kernel_seed_entropy`, and for tests and
 dumps `kernel_thread_info`, `kernel_thread_ctx`, `kernel_count`, `kernel_check`. Every entry takes the kernel lock
 (`base.ts kLock`): today it only catches re-entry; it is the one function that becomes a real lock with Workers.
@@ -78,7 +81,7 @@ Order heap, stack, alias as in nxnative. ASLR size (13) = code base to alias end
 0x0400_0000 (nxnative's `app_pool` / `mem_used` defaults). The alias region is at most 2 GB (one 16-byte kit instance
 per page, 8 MB static). The kernel grows the memory (`memory.grow`) when a heap, map or thread-local slot needs it.
 
-## Verified (`npm run kernel:test`: 62 tests, 86/86 transitions taken by the kernel itself)
+## Verified (`npm run kernel:test`: 63 tests, 86/86 transitions taken by the kernel itself)
 
 Every SVC below with its success paths, each result code and timeouts: 0x01–0x07, 0x08–0x12, 0x16–0x1F, 0x21, 0x24–0x27,
 0x29, 0x2C, 0x2D, 0x32–0x35, 0x45. Ported nxnative scenarios: `t_condvar`, all seven groups of `t_sync_wait`,

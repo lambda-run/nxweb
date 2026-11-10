@@ -1,0 +1,43 @@
+{
+  "id": 0,
+  "name": "ctrl_prompt",
+  "doc": "The controller applet's prompt (nn::hid::ShowControllerSupport with fewer players than the game's minimum; what nxnative's front_ctrl_support blocks in, hle_hid.c). Ask: the import hle_ctrl_prompt is about to show the embedder's prompt, which stays up while controllers join. Answer: the embedder called hle_ctrl_answer with 1 enough players pressed OK or 2 the player closed it (inside the import or any time later), or the import said there is no window (3). Take: the take-over that asked read the answer. One prompt at a time, as one applet.",
+  "states": [
+    "Idle",
+    "Asking",
+    "Answered"
+  ],
+  "initial": "Idle",
+  "data": {
+    "Answered": {
+      "name": "result",
+      "values": [
+        "ok",
+        "closed",
+        "noWindow"
+      ]
+    }
+  },
+  "events": [
+    "Ask",
+    "Answer",
+    "Take"
+  ],
+  "transitions": [
+    [
+      "Idle",
+      "Ask",
+      "Asking"
+    ],
+    [
+      "Asking",
+      "Answer",
+      "Answered"
+    ],
+    [
+      "Answered",
+      "Take",
+      "Idle"
+    ]
+  ]
+}

@@ -3,11 +3,18 @@ on:
   push:
   pull_request:
 
+# nxnative (the reference this is a port of) is not part of this repository. Tests that compare against it or build
+# guests from its headers (nvn.h for the graphics guests, home_quit.h, the layout references, the take-over inventory)
+# use a shallow clone beside the checkout when it can be fetched, and print SKIPPED when it is not there.
+env:
+  NXNATIVE: ${{ github.workspace }}/../nxnative
+  NXNATIVE_HOST: ${{ github.workspace }}/../nxnative/dm/host
+
 jobs:
-  test:
-    name: npm test (kit, loader, kernel, a64 guests, runtime)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  fast:
+    name: fast (kit, loader, kernel, a64 guests, runtime under Node, fs, hle)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,12 +28,19 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang lld llvm
       - run: pip install unicorn capstone
       - run: npm ci
-      # test/guests/out is not in the repository: `npm test` builds the guest corpus first (clang + Unicorn)
+      - name: nxnative (reference checkout; the tests that need it skip without it)
+        run: git clone --depth 1 https://github.com/seedds/nxnative "$NXNATIVE" || echo "::warning::nxnative could not be cloned; the tests that need it are skipped"
+      - name: generated files are up to date
+        run: npm run kit:check
+      # test/guests/out is not in the repository: `npm test` builds the guest corpus first (clang + Unicorn).
+      # The shader tests inside it skip: there is no dotnet here.
       - run: npm test
+      - run: npm run fs:test
+      - run: npm run hle:test
 
   fuzz:
     name: a64 instruction fuzz against Unicorn
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -41,3 +55,33 @@ jobs:
       - run: pip install unicorn capstone
       - run: npm ci
       - run: npm run a64:fuzz
+
+  browser:
+    name: browser (headless Chromium, WebGPU on SwiftShader)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+      - run: pip install unicorn capstone
+      - run: npm ci
+      # The tests launch Playwright's full Chromium build (channel "chromium", new headless mode) with the flags
+      # that give WebGPU a software adapter (--enable-unsafe-webgpu --use-vulkan=swiftshader ..., set by the test
+      # runners). The version is the one pinned in package.json.
+      - name: Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - name: nxnative (reference checkout; the tests that need it skip without it)
+        run: git clone --depth 1 https://github.com/seedds/nxnative "$NXNATIVE" || echo "::warning::nxnative could not be cloned; the tests that need it are skipped"
+      - name: the guest corpus (test/guests/out is not in the repository)
+        run: npm run guests:build
+      - run: npm run a64:browser
+      - run: npm run rt:browser
+      - run: npm run fs:browser
+      - run: npm run gfx:test

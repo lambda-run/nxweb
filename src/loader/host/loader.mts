@@ -8,7 +8,7 @@ export interface LoaderExports extends KitExports {
   ld_host_count(): number; ld_host_kind(id: number): number; ld_host_name_ptr(id: number): number; ld_host_name_len(id: number): number;
   ld_host_refs(id: number): number; ld_host_first_module(id: number): number; ld_host_find(name: number, len: number): number;
   ld_stub_base(): number; ld_stub_cap(): number; ld_stub_addr(id: number): number; ld_stub_id(addr: bigint): number; ld_stub_overflow(): number;
-  ld_check_forced(): number;
+  ld_check_forced(): number; ld_force_strict(on: number): void;
   ld_parse(file: number, len: number, opts: number): number;
   ld_set_name(h: number, name: number, len: number): number;
   ld_map(h: number, base: number): number; ld_relocate(h: number): number; ld_activate(h: number): number;
@@ -109,6 +109,8 @@ export class Loader {
   // The whole table: host functions as added, then the stubs the loader made for unresolved imports
   hostFunctions(): HostFunction[] { return Array.from({ length: this.x.ld_host_count() }, (_, id) => this.hostFunction(id)); }
   checkForced(): number { return this.x.ld_check_forced(); }
+  // true: every forced name no module refers to is a red line of its own; false (default): one summary line
+  forceStrict(on: boolean): void { this.x.ld_force_strict(on ? 1 : 0); }
 
   // ---- modules ----
   // A module from file bytes in linear memory (they must stay there, unchanged, until the module is pinned).

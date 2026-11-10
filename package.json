@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "test": "node test/runtime/all.mts",
     "kit:diagrams": "node src/kit/host/gen.mts",
@@ -44,7 +45,11 @@
     "hle:names": "python3 tools/hle_names.py",
     "hle:check": "python3 tools/hle_names.py --check",
     "hle:build": "node src/hle/host/build.mts",
-    "hle:test": "node test/hle/run.mts"
+    "hle:test": "node test/hle/run.mts",
+    "audio:names": "node src/audio/host/gen_names.mts /home/user/nxnative/dm/host",
+    "audio:build": "asc src/audio/index.ts -o build/audio/audio.wasm -O2 --runtime stub",
+    "audio:test": "node test/audio/run.mts",
+    "audio:browser": "node test/audio/browser.mts"
   },
   "keywords": [],
   "author": "",
@@ -52,6 +57,7 @@
   "devDependencies": {
     "assemblyscript": "^0.28.20",
     "esbuild": "^0.28.2",
+    "playwright": "1.63.0",
     "typescript": "^7.0.2"
   }
 }

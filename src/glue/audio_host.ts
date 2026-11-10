@@ -29,7 +29,7 @@ export interface AudioExports extends KitExports {
   audio_opus_stat(mgr: number, which: number): number;
   audio_fn_count(): number; audio_fn_name(id: number): number; audio_fn_name_len(id: number): number; audio_fn_is_stub(id: number): number;
   audio_red_total(): number; audio_arena_used(): number; audio_arena_size(): number;
-  audio_out_max(): number; audio_out_state(i: number): number; audio_out_stat(i: number, which: number): bigint;
+  audio_out_max(): number; audio_out_machine(): number; audio_out_state(i: number): number; audio_out_stat(i: number, which: number): bigint;
   audio_buf_state(i: number, slot: number): number;
   audio_mixed_frames(): bigint;
   audio_resample(src: number, n: number, dst: number, outRate: number): number;
@@ -132,6 +132,16 @@ export class AudioHost {
   tick(guestNs: bigint, hostNs: bigint): void { this.x.audio_tick(guestNs, hostNs); }
   nextDeadline(): bigint { return BigInt.asUintN(64, this.x.audio_next_deadline()); }
 
+  // The states output #id entered, oldest first, as far as the kit's trace ring still holds them
+  outTrace(id: number): string[] {
+    const x = this.x, dv = this.dv, total = x.kit_trace_total() >>> 0, cap = x.kit_trace_cap(), rec = x.kit_trace_rec(), base = x.kit_trace_ptr() >>> 0, m = x.audio_out_machine();
+    const r: string[] = [];
+    for (let n = Math.max(0, total - cap); n < total; n++) {
+      const p = base + (n % cap) * rec;
+      if (dv.getUint16(p + 8, true) === m && dv.getUint32(p + 4, true) === id && !(dv.getUint8(p + 13) & 1)) r.push(OUT_S[dv.getUint8(p + 11)]);
+    }
+    return r;
+  }
   // The ring header as an Int32Array over the module's memory (8 words) and its frames
   ringHeader(): Int32Array { return new Int32Array(this.x.memory.buffer, this.x.audio_ring_ptr() >>> 0, 8); }
   ringData(): Float32Array { return new Float32Array(this.x.memory.buffer, this.x.audio_ring_data() >>> 0, this.x.audio_ring_cap() * 2); }

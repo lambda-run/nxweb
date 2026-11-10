@@ -120,11 +120,12 @@ try {
           await q.click("#stop");
           await until(`run ${i + 1}: Stopped`, async () => await text("state") === "Stopped");
         }
-        const why = await text("why"), red = await q.locator("#log .red").count();
+        const why = await text("why"), red = await q.locator("#log .red").count(), more = await text("more");
         if (why !== "killed") throw new Error("why: " + why);
+        if (!/\d+ translated units from the cache/.test(more)) throw new Error("the later runs did not start from the translation cache: " + more);
         if (red) throw new Error(red + " red log lines: " + (await q.locator("#log .red").allTextContents()).join(" | "));
         if (errors.length) throw new Error("page errors: " + errors.join(" | "));
-        console.log(`ok   ${name} (${Date.now() - t0} ms)\n       ${fps.toFixed(1)} frames/s; instructions/s readout: ${ips}\n       per frame: ${split}\n       ${gpu}; canvas ${await shot()}; screenshot build/runtime/web.png`);
+        console.log(`ok   ${name} (${Date.now() - t0} ms)\n       ${fps.toFixed(1)} frames/s; instructions/s readout: ${ips}\n       per frame: ${split}\n       ${gpu}; canvas ${await shot()}; screenshot build/runtime/web.png\n       last run: ${more}`);
       } finally { await q.close(); web.server.close(); }
     } catch (e) { failed++; console.log(`[RED] FAIL ${name}\n${e instanceof Error ? e.stack : e}`); }
   }

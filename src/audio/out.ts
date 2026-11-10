@@ -239,6 +239,17 @@ export function pull(o: Out, dst: usize, n: u32): void {
   }
 }
 
+// Whole frames queued and not yet consumed (the pending buffers' bytes less the position in the first)
+export function queuedFrames(o: Out): u64 {
+  let bytes: u64 = 0;
+  for (let q = o.qHead; q != o.qTail; q++) {
+    const p = o.slot(<u32>load<u8>(o.qPtr + (q & (QMAX - 1))));
+    const g = <usize>load<u32>(p, 16);
+    bytes += Inst.at(p).state == AudioBufS.Appended && g ? min(load<u64>(g, 16), <u64>0x7FFFFFFF) : <u64>load<u32>(p, 24);
+  }
+  return bytes > o.pos ? (bytes - o.pos) / o.frameBytes : 0;
+}
+
 // One wake-up per entry into the module in which the output released something (nxnative: one notify per pull)
 export function flushSignals(): void {
   for (let i = 0; i < AOMAX; i++) {

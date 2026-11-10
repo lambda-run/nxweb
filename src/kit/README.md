@@ -26,6 +26,10 @@ checks, compiles `test/kit/entry.ts`, runs `test/kit/*.test.mts` and fails if a 
    for an enumeration (values are 1..n, constants `<Name><DataName>.*`), or `{"name": "since", "type": "..."}` for a
    free 64-bit value.
 3. `npm run kit:diagrams`, and commit `gen/tables.ts` and `docs/machines/<name>.md` with the definition.
+   Machine ids are positions in the generated table, so every wasm module that compiles the kit in must be built
+   again afterwards. `host/stamp.mts`: a build calls `writeStamp(wasm)` (the hash of the tables it was built from, in
+   `<file>.kit`), and whoever loads a module it did not just build calls `checkStamp(wasm)`, which refuses one built
+   from other tables. The runtime, loader, kernel and fs builds write stamps; the runtime checks its modules.
 4. In AssemblyScript: `import { Inst } from ".../kit/machine"` and the constants from `.../kit/gen/tables`. An `Inst`
    is 16 unmanaged bytes that you place yourself (static memory, a pool, a field range of your own record:
    `Inst.at(ptr)`); `inst.init(KTHREAD, threadIndex)` puts it in the initial state.

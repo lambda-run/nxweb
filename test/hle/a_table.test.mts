@@ -5,8 +5,13 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { test, Hle, inventory, status, NXNATIVE } from "./harness.mts";
 
-test("inventory: one row per HLE / HLE_FORCE / HLE_FORCE_BIG use and per pass-through name of nxnative's dm/host", () => {
+test("inventory: one row per HLE / HLE_FORCE / HLE_FORCE_BIG use and per pass-through name of nxnative's dm/host and gfx/hle_vi.c", () => {
   const inv = inventory(), dir = join(NXNATIVE, "dm", "host");
+  {
+    const text = readFileSync(join(NXNATIVE, "dm", "gfx", "hle_vi.c"), "utf8").replace(/\/\/.*$/gm, "");
+    assert.equal(inv.filter(r => r.file === "gfx/hle_vi.c").length, (text.match(/^\s*(?:HLE|HLE_FORCE|HLE_FORCE_BIG)\("/gm) ?? []).length, "gfx/hle_vi.c: rows against plain uses");
+    assert.equal(inv.filter(r => r.file === "gfx/hle_vi.c").length, 31);
+  }
   // an independent count: registrations as the linker sees them. Wrapper macros hide them from a plain search, so
   // the files without wrappers are compared exactly and the others must have at least their plain uses
   const wrappers = new Set(["hle_net.c", "hle_misc.c", "hle_swkbd.c", "hle_hid.c", "hle_fs.c", "hle_codec_video.c", "hle_table.c", "hle_offline.c"]);
@@ -19,6 +24,8 @@ test("inventory: one row per HLE / HLE_FORCE / HLE_FORCE_BIG use and per pass-th
   }
   assert.equal(inv.filter(r => r.file === "hle_table.c").length, 63, "the libc pass-through list");
   assert.equal(inv.filter(r => r.file === "hle_net.c").length, 101);
+  assert.equal(inv.filter(r => r.file === "hle_hid.c").length, 169, "with the 32 of TOUCH(1) .. TOUCH(16) and the 19 of PALMA_FAIL");
+  assert.deepEqual(["hle_ro.c", "hle_jit.c", "hle_movie.c", "hle_codec_video.c"].map(f => inv.filter(r => r.file === f).length), [10, 7, 27, 101]);
   assert.ok(inv.some(r => r.mangled === "_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE" && r.kind === "forced"), "the entry hle_offline.c writes out by hand");
   for (const r of inv) {
     assert.ok(r.kind === "forced" || r.kind === "weak");
@@ -28,7 +35,7 @@ test("inventory: one row per HLE / HLE_FORCE / HLE_FORCE_BIG use and per pass-th
   assert.equal(inv.find(r => r.mangled === "_ZN2nn2oe25TryPopNotificationMessageEPj")!.demangled, "nn::oe::TryPopNotificationMessage(unsigned int*)");
 });
 
-test("table: every inventoried in-scope name resolves, with its kind; none is a stub", () => {
+test("table: every inventoried in-scope name resolves, with its kind; the stubs are the cut files' entries and nothing else", () => {
   const h = new Hle(), st = status().filter(r => !r.status.startsWith("out of scope")), entries = h.host.entries();
   assert.equal(entries.filter(e => !e.internal).length, st.length);
   assert.equal(h.x.hle_count(), st.length);
@@ -39,8 +46,11 @@ test("table: every inventoried in-scope name resolves, with its kind; none is a 
     const e = entries[id];
     assert.equal(e.name, r.mangled);
     assert.equal(e.forced, forcedNames.has(r.mangled), `${r.mangled}: lookup gives the forced entry when the name has one`);
-    assert.ok(e.implemented, `${r.mangled} is implemented`);
+    assert.equal(e.implemented, !r.status.startsWith("stub"), `${r.mangled} is implemented, or cut`);
+    assert.equal(r.status.startsWith("stub"), r.file === "hle_movie.c" || r.file === "hle_codec_video.c", `${r.mangled}: only movies and video codecs are stubs`);
+    assert.equal((h.x.hle_flags(id) & 64) !== 0, r.status.startsWith("stub (cut"), `${r.mangled}: the cut flag`);
   }
+  assert.equal(st.filter(r => r.status.startsWith("stub")).length, 128);
   assert.equal(h.host.lookup("_ZN2nn2fs9MountRomEPKcPvm"), -1, "a file system name is not this table's");
   assert.equal(h.host.lookup(""), -1);
   assert.equal(h.host.lookup("zzzz"), -1);
@@ -51,7 +61,8 @@ test("table: every inventoried in-scope name resolves, with its kind; none is a 
     assert.ok(both.find(e => !e.forced)!.shadowed);
   }
   assert.equal(new Set(entries.filter(e => !e.shadowed && !e.duplicate).map(e => e.name)).size, entries.filter(e => !e.shadowed && !e.duplicate).length, "names to register are unique");
-  assert.deepEqual(entries.filter(e => e.internal).map(e => e.name), ["hle.ngc_v_zero", "hle.ngc_v_none", "hle.ngc_v_check", "hle.ngc_v_mask"]);
+  assert.deepEqual(entries.filter(e => e.internal).map(e => e.name), ["hle.ngc_v_zero", "hle.ngc_v_none", "hle.ngc_v_check", "hle.ngc_v_mask",
+    "hle.jit_resolve", "hle.jit_panic", "hle.jit_abort", "hle.jit_unexp", "hle.jit_memcpy", "hle.jit_memmove", "hle.jit_memset"]);
 });
 
 test("table: every entry can be called with zero arguments without trapping (twice, and resumed when it waits)", () => {
@@ -65,8 +76,9 @@ test("table: every entry can be called with zero arguments without trapping (twi
     h.last = null;
   }
   assert.ok(waits > 0, "some calls wait (PopNotificationMessage, Poll with a timeout, WaitForExit)");
-  assert.equal(noReturn, 2 * 4, "the three aborts and ExecuteProgram do not return");
+  assert.equal(noReturn, 2 * 7, "the three aborts, ExecuteProgram and the JIT plugin's three fatal helpers do not return");
   assert.equal(h.red.filter(l => l.endsWith(" unimplemented")).length, 0);
+  assert.equal(h.red.filter(l => l.includes(" is cut (movies and video codecs are not played)")).length, 128, "one red line per cut function, however often it is called");
   assert.equal(h.x.hle_call_count(h.id("_ZN2nn2oe16GetOperationModeEv")), 2);
 });
 

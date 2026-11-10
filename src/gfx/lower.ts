@@ -114,11 +114,11 @@ function emitBeginPass(): void {
   pendColor = 0; pendDepth = false; pendStencil = false;
   dirty = D_ALL; nPasses++;
 }
-function emitEndPass(): void { H.hostRec(H.H_END_PASS, 8); nsnap = 0; }
-// The compute pass ends: what it wrote into storage buffers goes back to guest memory (it lands when the GPU is done;
-// until then the replayer serves binds of those ranges from the GPU's copy)
-function emitEndCompute(): void {
-  H.hostRec(H.H_END_PASS, 8);
+// A pass ends (render or compute): what its shaders wrote into storage buffers goes back to guest memory (it lands when
+// the GPU is done; until then the replayer serves binds of those ranges from the GPU's copy)
+function emitEndPass(): void {
+  H.hostRec(H.H_END_PASS, 8); nsnap = 0;
+  if (!nwr) return;
   for (let i = 0; i < nwr; i++) { const r = H.hostRec(H.H_BUF_READBACK, 24); store<u64>(r, load<u64>(WR + (<usize>i << 4)), 8); store<u32>(r, <u32>load<u64>(WR + (<usize>i << 4), 8), 16); }
   nwr = 0;
   dirty |= D_VBUF | D_UBO;
@@ -131,7 +131,7 @@ function passEvent(ev: u8): bool {
   const m = pass(), from = m.state;
   if (!m.can(ev)) { m.step(ev); return false; }
   const opens = ev == GfxPassE.Draw || ev == GfxPassE.PartialClear, inCompute = from == GfxPassS.Compute || from == GfxPassS.ComputeUnset;
-  if (inCompute) { if (ev == GfxPassE.Dispatch) { m.step(ev); return true; } emitEndCompute(); }
+  if (inCompute) { if (ev == GfxPassE.Dispatch) { m.step(ev); return true; } emitEndPass(); }
   if (opens) { if (from != GfxPassS.Open) emitBeginPass(); }
   else if (from == GfxPassS.Open) emitEndPass();
   else if (from == GfxPassS.ClearPending && ev != GfxPassE.FullClear) { emitBeginPass(); emitEndPass(); }
@@ -368,7 +368,7 @@ function emitState(): void {
       store<u32>(r, s, 8); store<u32>(r, <u32>load<u64>(VBUF + (<usize>s << 4), 8), 12); store<u64>(r, load<u64>(VBUF + (<usize>s << 4)), 16);
     }
   }
-  if (dirty & D_UBO) { emitUbos(0, curVs); emitUbos(1, curFs); }
+  if (dirty & D_UBO) { emitUbos(0, curVs); emitUbos(1, curFs); emitStorage(0, curVs); emitStorage(1, curFs); }
   if (dirty & D_TEX) { emitTexs(0, curVs); emitTexs(1, curFs); }
   if (dirty & D_BLENDC) memory.copy(H.hostRec(H.H_BLEND_COLOR, 24) + 8, BLENDC, 16);
   if (dirty & D_STREF) store<u32>(H.hostRec(H.H_STENCIL_REF, 16), stRef, 8);
@@ -414,7 +414,7 @@ function emitTexs(st: u32, id: i32): void {
     if (hasView) memory.copy(r + 32, e + TDE_view, O.VIEW_SIZE);
   }
 }
-// Storage buffers and images of a compute dispatch. A written range is noted for the read-back at the end of the pass
+// Storage buffers and images of a draw's or dispatch's stage. A written range is noted for the read-back at the end of the pass
 function emitStorage(st: u32, id: i32): void {
   const rf = libRefl(id), wm = load<u32>(rf, RF_ssbo_w);
   let m = load<u32>(rf, RF_ssbo) & 0xffff;
@@ -645,13 +645,13 @@ function exec(p: usize, depth: i32): void {
       }
       case O.OP_BIND_SSBO: {
         const st = hst(load<u32>(a)), i = load<u32>(a, 4);
-        if (st < 3 && i < 16) { const e = SSBO + (<usize>(st * 16 + i) << 4); store<u64>(e, load<u64>(a, 8)); store<u64>(e, load<u64>(a, 16), 8); }
+        if (st < 3 && i < 16) { const e = SSBO + (<usize>(st * 16 + i) << 4); store<u64>(e, load<u64>(a, 8)); store<u64>(e, load<u64>(a, 16), 8); dirty |= D_UBO; }
         break;
       }
       case O.OP_BIND_IMG: {
         const st = hst(load<u32>(a)), first = load<u32>(a, 4), n = load<u32>(a, 8);
         if (st < 3) for (let i: u32 = 0; i < n && first + i < 8; i++) store<u64>(IMGH + (<usize>(st * 8 + first + i) << 3), load<u64>(a + O.P_BIND_HANDLES_h + (<usize>i << 3)) & 0xfffff);
-        break;
+        dirty |= D_UBO; break;
       }
       case O.OP_DISPATCH: dispatch(a); break;
       case O.OP_DEPTH_CLAMP: { const on = load<i32>(a) != 0; if (on != depthClamp) { depthClamp = on; dirty |= D_PIPE; } break; }

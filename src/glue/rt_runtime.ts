@@ -11,6 +11,7 @@ export interface RuntimeModules {
   translator: WebAssembly.Module; helpers: WebAssembly.Module;
   gfx?: WebAssembly.Module;           // build/runtime/gfx.wasm, for src/glue/rt_gfx.ts
   fs?: WebAssembly.Module;            // build/runtime/fs.wasm, for src/glue/rt_fs.ts
+  hle?: WebAssembly.Module;           // build/runtime/hle.wasm, for src/glue/hle_rt.ts
 }
 export interface RuntimeOptions {
   budget?: number;                    // budget units per time slice (function entries + backward branches); default 100000
@@ -47,7 +48,7 @@ export interface RunLimit { slices?: number; ms?: number; yieldMs?: number; asyn
 // ---- host functions ----
 export type WaitResult = "signaled" | "timeout" | "cancelled";
 const ACTION = Symbol("rt.action");
-interface Action { [ACTION]: "jump" | "block"; pc?: bigint; event?: number; timeout?: bigint; resume?: (r: WaitResult, cpu: HostCpu) => HostResult }
+interface Action { [ACTION]: "jump" | "block" | "never"; pc?: bigint; event?: number; timeout?: bigint; resume?: (r: WaitResult, cpu: HostCpu) => HostResult }
 export type HostResult = void | number | bigint | Action;
 // What a host function sees: the calling guest thread's registers (live CPU state), guest memory, the log.
 export interface HostCpu {
@@ -65,6 +66,12 @@ export interface HostCpu {
   log(line: string): void;
   // Return these from the handler:
   jump(pc: bigint | number): HostResult;   // continue at pc instead of returning to x30
+  // The calling thread never continues (an abort, a program that replaces itself): it exits as by ExitThread; the
+  // process goes on with its other threads until the embedder ends it.
+  never(): HostResult;
+  // Writes the low 64 bits of v<i> (d<i>; a float is its low 32 bits) and clears the high 64: the floating point
+  // result of a host function goes to d0.
+  setD(i: number, bits: bigint): void;
   // The calling thread waits (kernel WaitSynchronization) until the readable event handle is signaled or the timeout
   // (ns, -1n = forever) passes; other guest threads run meanwhile. Then resume() runs on the same thread and its
   // result is the host function's result. x0..x3 are not preserved across the wait (they are caller-saved).
@@ -526,7 +533,9 @@ export class Runtime {
     c.save_ctx(ctx);
     this.tick();
     if (n === 0x01 || n === 0x04 || n === 0x05 || n === 0x08 || n === 0x2C || n === 0x2D) this.spOk.clear();
+    const closing = n === 0x16 && this.closeHooks.length ? this.dv().getUint32(ctx, true) : 0;
     const act = this.k.kernel_svc(n, ctx);
+    if (closing) for (const fn of this.closeHooks) fn(closing);
     if (act === ACT_CONTINUE) c.load_ctx(ctx);
     else { if (act !== ACT_SWITCH) this.stopFlag = true; c.pc.value = PC_YIELD; }   // translated code unwinds; the context holds the real pc
   }
@@ -534,7 +543,7 @@ export class Runtime {
   // ---- host calls ----
   private cpuApi(): HostCpu {
     const c = this.core, rt = this, index = this.curIndex;
-    const act = (a: Omit<Action, typeof ACTION> & { kind: "jump" | "block" }): Action => ({ [ACTION]: a.kind, pc: a.pc, event: a.event, timeout: a.timeout, resume: a.resume });
+    const act = (a: Omit<Action, typeof ACTION> & { kind: "jump" | "block" | "never" }): Action => ({ [ACTION]: a.kind, pc: a.pc, event: a.event, timeout: a.timeout, resume: a.resume });
     return {
       rt, threadIndex: index,
       get thread() { return index >= 0 ? rt.dv().getUint32(rt.threadInfo(index) + 28, true) : 0; },
@@ -549,6 +558,9 @@ export class Runtime {
       cstr: (addr, max = 4096) => { const m = rt.u8(), a = Number(addr); let e = a; while (e < m.length && e - a < max && m[e]) e++; return dec.decode(m.slice(a, e)); },
       log: (line: string) => rt.log(line),
       jump: (pc) => act({ kind: "jump", pc: BigInt(pc) }),
+      never: () => act({ kind: "never" }),
+      // JavaScript cannot write a v128 global: the state goes through a context block
+      setD: (i, bits) => { const s = rt.r.rt_ctx_scratch() >>> 0; c.save_ctx(s); const dv = rt.dv(); dv.setBigUint64(s + 0x130 + 16 * i, BigInt.asUintN(64, bits), true); dv.setBigUint64(s + 0x138 + 16 * i, 0n, true); c.load_ctx(s); },
       block: (event, timeout, resume) => act({ kind: "block", event, timeout, resume }),
       call: (fn, ...args) => rt.guestCall(BigInt(fn), args),
       now: () => rt.nowNs(),
@@ -629,6 +641,32 @@ export class Runtime {
     this.dispose();
     this.wake?.();
   }
+  // The embedder ends the process as an exit with a code (a shutdown the guest was asked for and agreed to, a
+  // program that hands over to another): as kill(), but the process machine records Exit.
+  requestExit(code: number): void {
+    if (this.state !== "Running" && this.state !== "Paused") { this.kill(); return; }
+    if (this.state === "Paused") this.r.rt_resume();
+    this.k.kernel_kill();
+    this.r.rt_exit(code); this.stop = { kind: "exit", code };
+    this.dispose();
+    this.wake?.();
+  }
+  // Kernel events are signalled from outside the guest (a front end's notifications): every thread waiting without
+  // a deadline is then an idle application, not a deadlock, for a run loop that can return to the host (runAsync).
+  expectOutsideEvents(): void { this.outsideEvents = true; }
+  private outsideEvents = false;
+  // svc CloseHandle by the guest is told to whoever keeps something per handle (the take-over table's SystemEvents)
+  onHandleClosed(fn: (handle: number) => void): void { this.closeHooks.push(fn); }
+  private closeHooks: ((handle: number) => void)[] = [];
+  // Zeroed memory the guest can address, for the life of the process (a take-over's work buffers): pages of the
+  // code region above the modules. 0 when the region is full.
+  hostAlloc(size: number): number {
+    const n = (size + 0xFFF) & ~0xFFF, base = this.nextBase;
+    if (base + n > 0x17C0_0000) return 0;
+    this.nextBase = base + n + 0x1000;
+    this.ensure(base + n);
+    return base;
+  }
   // Something to release when the process is disposed of (graphics objects, storage handles)
   onDispose(fn: () => void): void { this.disposers.push(fn); }
   // Releases what a stopped process still holds, so that the embedder can make another Runtime in the same page:
@@ -699,6 +737,14 @@ export class Runtime {
       if (typeof res === "number" || typeof res === "bigint") c.x0.value = BigInt.asUintN(64, BigInt(res));
       if (res === undefined || typeof res !== "object") { c.pc.value = c.x30.value; return; }
       if (res[ACTION] === "jump") { c.pc.value = res.pc!; return; }
+      if (res[ACTION] === "never") {
+        // ExitThread on the thread's behalf: the kernel ends it and the translated frames unwind
+        c.pc.value = BigInt(stubPc); c.save_ctx(this.cur);
+        this.tick();
+        if (this.k.kernel_svc(0x0A, this.cur) !== ACT_SWITCH) this.stopFlag = true;
+        c.pc.value = PC_YIELD;
+        return;
+      }
       // block: WaitSynchronization on the event, made on the thread's behalf, with pc at the stub so that the woken
       // thread enters hostCall() again and finds its resume
       const ctx = this.cur, slot = this.r.rt_wait_slot(this.curIndex) >>> 0;
@@ -769,7 +815,9 @@ export class Runtime {
         }
         if (until === FOREVER) {
           // a frozen guest clock is not a deadlock: the embedder releases it (freezeClock), which wakes the loop
-          if (k.kernel_clock_reasons() && limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true }; }
+          // nor is a guest that waits for the outside world (a notification from the front end): the embedder said
+          // such events exist (expectOutsideEvents), and whoever signals one wakes the loop (requestWake)
+          if ((k.kernel_clock_reasons() || this.outsideEvents) && limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true }; }
           this.faultNow(FAULT.deadlock, "every thread waits and no wait has a deadline" + (k.kernel_clock_reasons() ? ` (the guest clock is frozen, reasons ${hex(k.kernel_clock_reasons())})` : ""), 0n, this.lastCtx, true); break;
         }
         if (wall) {

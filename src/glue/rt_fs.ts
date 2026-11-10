@@ -11,9 +11,8 @@ import { range } from "./rt_layout.ts";
 
 export interface RtFsOptions {
   programId?: bigint;       // the running program's id (IsSaveDataExisting)
-  // true: the names win over a module's own definitions (a game that brings the SDK: its nn::fs would talk to the
-  // fsp-srv service, which nobody serves). false (default): they fill the imports no module defines, which is what a
-  // module without an SDK needs, and names nobody imports are not reported.
+  // true (default): the names win over a module's own definitions, as nxnative's take-overs do (a game brings the
+  // SDK, whose nn::fs would talk to the fsp-srv service, which nobody serves). false: they only fill imports.
   forced?: boolean;
   saveFailed?: (errno: number) => void;
 }
@@ -51,7 +50,7 @@ export class RtFs {
       rt.u8().set(enc.encode(n.name + "\0"), p);
       const id = this.x.fs_lookup(p);
       if (id !== n.id) throw new Error(`runtime: fs_lookup(${n.name}) gives ${id}, the table says ${n.id}`);
-      rt.register({ name: n.name, forced: !!o.forced, fn: cpu => this.call(n.id, cpu) });
+      rt.register({ name: n.name, forced: o.forced !== false, fn: cpu => this.call(n.id, cpu) });
     }
     this.x.fs_set_account_save(-1);
     this.stats.names = names.length;

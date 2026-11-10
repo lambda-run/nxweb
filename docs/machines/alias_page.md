@@ -15,7 +15,7 @@ stateDiagram-v2
     Stale --> Stale: Unmap
 ```
 
-Machine id 26. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 33. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

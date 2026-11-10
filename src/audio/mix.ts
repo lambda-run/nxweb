@@ -3,7 +3,7 @@
 import { AudioOutS } from "../kit/gen/tables";
 import { red, end, puts, putu, RATE } from "./base";
 import * as dev from "./dev";
-import { Out, outAt, AOMAX, pull } from "./out";
+import { Out, outAt, AOMAX, pull, queuedFrames } from "./out";
 
 // ---- one output's frames as stereo f32, added to an accumulator ----
 const BLOCK: u32 = 256;
@@ -140,7 +140,7 @@ function produce(nOut: u32): void {
 }
 
 let mixedFrames: u64 = 0, paddedFrames: u64 = 0;
-let rdSeen: u32 = 0;
+let primed = false;   // the ring holds its lead of silence for the current run of Live outputs
 export function mixed(): u64 { return mixedFrames; }
 export function padded(): u64 { return paddedFrames; }
 
@@ -151,37 +151,60 @@ function put(wr: u32, n: u32): void {
     store<f32>(d, l > 1.0 ? 1.0 : l < -1.0 ? -1.0 : l); store<f32>(d, r > 1.0 ? 1.0 : r < -1.0 ? -1.0 : r, 4);
   }
 }
+// Device frames the Live outputs can supply right now without any of them running empty: the least over the
+// outputs that have something queued (an output with nothing queued does not hold the others back; it underruns)
+function supply(): u32 {
+  let least: u64 = u64.MAX_VALUE;
+  for (let i = 0; i < AOMAX; i++) {
+    const o = outAt(i);
+    if (!o.used || o.state != AudioOutS.Live) continue;
+    const f = queuedFrames(o);
+    if (f && f < least) least = f;
+  }
+  if (least == u64.MAX_VALUE) return 0;
+  if (rsL == rsM) return <u32>min(least, 0x7FFFFFFF);
+  const t = <i64>min(least, 0x100000) * <i64>rsL - <i64>rsQ - 1;   // the most outputs whose input is at hand: needIn(n) <= least
+  return t < 0 ? 0 : <u32>(t / <i64>rsM) + 1;
+}
 
-// Once per tick. The Live outputs are consumed at the device's own pace: exactly as many device frames are mixed as
-// the device has taken from the ring since the last tick, as nxnative pulls what a device callback asks for. The
-// ring's lead over the device (`target` frames, the cushion for a late tick) is silence written once when the first
-// output goes Live, so going Live does not swallow 40 ms of the game's queue at once.
+// Once per tick. The ring is kept `target` frames ahead of the device, so the Live outputs are consumed at the
+// device's own pace: what is mixed is what the device took since the last tick, as nxnative pulls what a device
+// callback asks for.
+//  - The lead is silence, written once when the first output goes Live: going Live does not swallow 40 ms of the
+//    game's queue at once.
+//  - After a late tick the device has taken more than the game keeps queued (a renderer has 20 ms in flight). The
+//    outputs are then asked only for what they have; the game is woken by those releases and appends, and the rest
+//    is mixed in the following ticks. The ring's lead absorbs the lateness instead of the game's queue.
+//  - Only when the ring is down to a quarter of its lead is silence mixed for whatever an output lacks: that is the
+//    output's underrun, counted on it. The ring is then filled to its whole lead again, so a game that has stopped
+//    appending does not leave the device a few milliseconds from running dry.
 export function pump(): void {
   if (!dev.attached) return;
-  const live = liveCount(), rd = dev.ringGet(dev.R_RD);
+  const live = liveCount();
   dev.ringSet(dev.R_LIVE, live);
   // Nobody plays: the ring is left to run empty, which the device does not count as an underrun (the header's `live`)
-  if (!live || dev.state != dev.DEV_RUNNING) { rdSeen = rd; return; }
+  if (!live || dev.state != dev.DEV_RUNNING) { primed = false; return; }
   resamplerSet(RATE, dev.rate);
   let wr = dev.ringGet(dev.R_WR);
-  let paced = rd - rdSeen;
-  rdSeen = rd;
-  const fill = wr - rd;
-  if (fill >= dev.target) return;
-  let pad = dev.target - fill;
-  if (paced > pad) paced = pad;
-  pad -= paced;
-  if (pad) {
+  const fill = wr - dev.ringGet(dev.R_RD);
+  if (fill >= dev.target) { primed = true; return; }
+  let room = dev.target - fill;
+  if (!primed) {
+    primed = true;
     memory.fill(MIXOUT, 0, <usize>BLOCK << 3);
-    while (pad) { const n = min(pad, BLOCK); put(wr, n); wr += n; pad -= n; paddedFrames += n; }
+    while (room) { const n = min(room, BLOCK); put(wr, n); wr += n; room -= n; paddedFrames += n; }
     dev.ringSet(dev.R_WR, wr);
+    return;
   }
-  while (paced) {
-    let n = min(paced, BLOCK);
+  const low = dev.target >> 2;
+  let want = min(room, supply());
+  if (fill + want < low) want = room;
+  while (want) {
+    let n = min(want, BLOCK);
     while (n > 1 && rsL != rsM && needIn(n) > IN_CAP) n >>= 1;   // a device rate far below 48 kHz
     produce(n);
     put(wr, n);
-    wr += n; paced -= n; mixedFrames += n;
+    wr += n; want -= n; mixedFrames += n;
     dev.ringSet(dev.R_WR, wr);
   }
 }

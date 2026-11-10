@@ -5,13 +5,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { KIT_DIR } from "../../src/kit/host/defs.mts";
 import { readMachines, type WasmMachine } from "../../src/kit/host/reader.mts";
-import { HleHost, type HleEnv, type HleRegs, type HleResult, type TextRequest, type HlePending } from "../../src/glue/hle_host.ts";
+import { HleHost, type HleEnv, type HleRegs, type HleResult, type TextRequest, type HlePending, type VibrationState } from "../../src/glue/hle_host.ts";
 
 export const ROOT = join(KIT_DIR, "..", "..");
 export const WASM = join(ROOT, "build", "hle", "hle.wasm");
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 export const RES_FAIL = 0x2A2n;
-export const MACHINES = ["oe_focus", "oe_msg", "oe_notify_event", "hle_exit", "nifm_request", "swkbd_request", "swkbd_inline", "web_session"];
+export const MACHINES = ["oe_focus", "oe_msg", "oe_notify_event", "hle_exit", "nifm_request", "swkbd_request", "swkbd_inline", "web_session",
+  "pad_slot", "input_hold", "touch_finger", "six_shake", "ctrl_prompt", "ro_module", "jit_env"];
 
 export interface InvRow { file: string; kind: string; mangled: string; demangled: string; signature: string; reason: string }
 export function inventory(): InvRow[] {
@@ -54,6 +55,17 @@ export class Hle {
   images: number[] = []; freed: number[] = [];
   exits: { reason: string; value: bigint; bytes: Uint8Array }[] = [];
   entropyByte = 0;
+  // controllers, vi, ro, jit: the fake front end, present queue, loader and translator
+  stack: bigint[] = [];                                          // the guest stack's 8-byte slots at the call ([sp], [sp + 8], ...)
+  prompts: { min: number; max: number }[] = []; promptWindow = false; onPrompt: ((min: number, max: number) => void) | null = null;
+  mouseWanted: boolean[] = [];
+  vibrations: VibrationState[] = [];
+  vi = { layers: [] as [number, number][], crops: [] as number[][], frames: 0n, queued: 0n, done: 0n, presented: new Map<bigint, bigint>() };
+  // a loaded module of the fake loader: its exports, the guest functions to call for init and fini
+  nros = new Map<bigint, { image: bigint; size: number; sha: string; alone: boolean; syms: Map<string, bigint>; init: bigint[]; fini: bigint[]; active: boolean }>();
+  nroPlan: ((image: bigint, size: number, sha: string, alone: boolean) => { syms?: Record<string, bigint>; init?: bigint[]; fini?: bigint[] } | null) | null = null;
+  roLog: string[] = [];
+  jit = { allocs: [] as { rx: bigint; ro: bigint; rxSize: bigint; roSize: bigint }[], written: [] as [bigint, bigint, bigint][], freed: [] as bigint[], fail: false };
   private base: number; private top: number;
 
   constructor(o: { cover?: boolean } = {}) {
@@ -82,6 +94,27 @@ export class Hle {
       connectedNpad: () => t.npad,
       nativeImageBlank: (w, h) => { const n = 0x100 + t.images.length; t.images.push(w << 16 | h); return n; }, nativeImageBlankFree: h => { t.freed.push(h); },
       exitRequest: (reason, value, bytes) => { t.exits.push({ reason, value, bytes }); },
+      stackArg: i => t.stack[i] ?? 0n,
+      ctrlPrompt: (min, max) => { t.prompts.push({ min, max }); if (!t.promptWindow) return false; t.onPrompt?.(min, max); return true; },
+      joyMouseWanted: on => { t.mouseWanted.push(on); },
+      vibration: s => { t.vibrations.push(s); },
+      viLayer: (w, h) => { t.vi.layers.push([w, h]); }, viCrop: (x, y, w, h) => { t.vi.crops.push([x, y, w, h]); },
+      viFrameCount: () => t.vi.frames, viPresentProgress: () => ({ queued: t.vi.queued, done: t.vi.done }), viPresentedNs: k => t.vi.presented.get(k) ?? 0n,
+      roLoad: (image, size, sha, alone) => {
+        const hex = Buffer.from(sha).toString("hex"), plan = t.nroPlan ? t.nroPlan(image, size, hex, alone) : {};
+        t.roLog.push(`load ${hex.slice(0, 8)}${alone ? " alone" : ""}`);
+        if (!plan) return 0n;
+        const token = 0x7100_0000n + BigInt(t.nros.size + 1) * 0x10000n;
+        t.nros.set(token, { image, size, sha: hex, alone, syms: new Map(Object.entries(plan.syms ?? {})), init: plan.init ?? [], fini: plan.fini ?? [], active: false });
+        return token;
+      },
+      roCalls: (token, kind) => t.nros.get(token)?.[kind] ?? [],
+      roActivate: token => { t.roLog.push(`activate ${t.nros.get(token)!.sha.slice(0, 8)}`); t.nros.get(token)!.active = true; },
+      roUnload: token => { t.roLog.push(`unload ${t.nros.get(token)!.sha.slice(0, 8)}`); t.nros.delete(token); },
+      roLookupIn: (token, name) => t.nros.get(token)?.syms.get(name) ?? 0n,
+      jitMemory: (rxSize, roSize) => { if (t.jit.fail) return null; const a = { rx: BigInt(t.alloc(Number(rxSize))), ro: BigInt(t.alloc(Number(roSize))), rxSize, roSize }; t.jit.allocs.push(a); return { rx: a.rx, ro: a.ro }; },
+      jitCodeWritten: (rx, off, size) => { t.jit.written.push([rx, off, size]); },
+      jitFree: rx => { t.jit.freed.push(rx); },
     };
     this.host = new HleHost(module, env);
     const end = (this.host.x.hle_static_end() + 0xFFFF) & ~0xFFFF;
@@ -109,6 +142,9 @@ export class Hle {
   u32(p: number): number { return this.dv.getUint32(p, true); }
   i32(p: number): number { return this.dv.getInt32(p, true); }
   u64(p: number): bigint { return this.dv.getBigUint64(p, true); }
+  f32(p: number): number { return this.dv.getFloat32(p, true); }
+  u32s(v: number[]): number { const p = this.alloc(4 * v.length); v.forEach((x, i) => this.dv.setUint32(p + 4 * i, x >>> 0, true)); return p; }
+  f32s(v: number[]): number { const p = this.alloc(4 * v.length); v.forEach((x, i) => this.dv.setFloat32(p + 4 * i, x, true)); return p; }
   i64(p: number): bigint { return this.dv.getBigInt64(p, true); }
 
   // ---- calls ----

@@ -5,10 +5,10 @@
                                         status table in src/hle/README.md; print the counts per file
   python3 tools/hle_names.py --check    fail when a generated file is out of date
 
-Reads nxnative's dm/host/*.c (NXNATIVE overrides /home/user/nxnative): every HLE(...), HLE_FORCE(...) and
-HLE_FORCE_BIG(...), also through the wrapper macros a file defines (SKF, SSF, SSC, STPL_PAD, IKB_IGNORE, PALMA_FAIL),
-the libc pass-through list of hle_table.c and table entries written out by hand (hle_offline.c's PlayReport::Send).
-The graphics layers (dm/gfx) are read for the counts only.
+Reads nxnative's dm/host/*.c and dm/gfx/hle_vi.c (NXNATIVE overrides /home/user/nxnative): every HLE(...),
+HLE_FORCE(...) and HLE_FORCE_BIG(...), also through the wrapper macros a file defines (SKF, SSF, SSC, STPL_PAD,
+IKB_IGNORE, PALMA_FAIL, TOUCH, CV_FAMILY), the libc pass-through list of hle_table.c and table entries written out by
+hand (hle_offline.c's PlayReport::Send). The other graphics layers (dm/gfx) are read for the counts only.
 
 For the files this area ports (SCOPE) it also generates src/hle/gen/table.ts: the names, the kind of each entry
 and what answers it:
@@ -16,6 +16,9 @@ and what answers it:
   ops    a body that only stores constants, binds or signals an event, opens an applet and returns a constant is
          compiled from the C text into a few words that src/hle/ops.ts interprets
   stub   neither: one red line, then STUB_RET's value or 0
+  cut    a file in CUT (movies, video codecs): every entry is a stub that logs one red line and then answers as
+         nxnative's call on a decoder it does not have (the few words of CUT_OPS / cut_ops, or a function of the
+         file's module where that takes more than the op words can say)
 """
 import os, re, subprocess, sys, json
 
@@ -35,12 +38,15 @@ SCOPE = {
     "hle_misc.c": "misc", "hle_lifecycle.c": "lifecycle", "hle_net.c": "net", "hle_offline.c": "offline",
     "hle_friends.c": "friends", "hle_mii.c": "mii", "hle_sf.c": "sf", "hle_nvdrv.c": "nvdrv", "hle_swkbd.c": "swkbd",
     "hle_web.c": "web", "hle_sdk16.c": "sdk16", "hle_table.c": "libc", "hle_count.c": "count",
+    "hle_hid.c": "hid", "hle_touch.c": "touch", "hle_haptics.c": "haptics", "hle_ro.c": "ro", "hle_jit.c": "jit", "gfx/hle_vi.c": "vi",
+    "hle_movie.c": "movie", "hle_movie_av1.c": "movie", "hle_movie_avc.c": "movie", "hle_codec_video.c": "codec_video",
 }
+# In scope, but cut: every entry resolves to a stub (see the module docstring)
+CUT = {"hle_movie.c": "movies", "hle_codec_video.c": "video codecs"}
 # Not this area's, with the owner the task names
 OUT_OF_SCOPE = {
     "hle_fs.c": "file system (src/fs)", "hle_audio.c": "audio", "hle_audren.c": "audio", "hle_codec.c": "audio",
-    "hle_codec_video.c": "movies", "hle_movie.c": "movies", "hle_movie_av1.c": "movies", "hle_movie_avc.c": "movies",
-    "hle_cheats.c": "cheats", "hle_hid.c": "controllers (src/glue/rt_hle.ts)", "hle_haptics.c": "controllers", "hle_touch.c": "controllers",
+    "hle_cheats.c": "cheats",
 }
 # A stub's result where nxnative's "nothing to do" result is evident from its code (cname -> value)
 STUB_RET = {}
@@ -49,7 +55,9 @@ CONSTS = {
     "RES_OK": 0, "RES_FAIL": 0x2A2, "NULL": 0, "NV_ERR": 3, "SK_ENETDOWN": 50, "SK_EAI_FAIL": 4, "IRS_UNCONNECTED": 2,
     "MII_RES_NOT_FOUND": 0x87E, "MII_RES_CANCELED": 0xE7E, "MII_RES_TEST_MODE": 0x1987E, "MII_DEFAULTS": 6,
     "SWKBD_RESULT_CANCELED": 0x29F, "NFP_RES_TAG_NOT_FOUND": 115 | 97 << 9,
+    "RES_PALMA_INVALID_HANDLE": 202 | 3302 << 9, "false": 0, "true": 1,
 }
+CV_NO_DECODER = 0x6f | 2004 << 9   # nn::codec (module 111) description 2004: what hle_codec_video.c answers for a type with no host decoder
 OP_STORE, OP_ZERO, OP_APPLET, OP_RED, OP_ERRNO, OP_BIND, OP_SIGNAL, OP_RET, OP_RETSTR = range(1, 10)
 
 
@@ -234,7 +242,7 @@ def pointee_size(ty):
     if base.endswith("*"):
         return 8
     return {"int": 4, "int32_t": 4, "uint32_t": 4, "unsigned": 4, "unsigned int": 4, "Result": 4, "uint64_t": 8, "int64_t": 8,
-            "size_t": 8, "unsigned long": 8, "long": 8, "uint8_t": 1, "int8_t": 1, "char": 1, "bool": 1, "uint16_t": 2, "int16_t": 2}.get(base)
+            "size_t": 8, "unsigned long": 8, "long": 8, "uint8_t": 1, "int8_t": 1, "char": 1, "bool": 1, "uint16_t": 2, "int16_t": 2, "float": 4}.get(base)
 
 
 def const_value(e):
@@ -312,7 +320,7 @@ def compile_ops(e, strings):
     for s in stmts:
         if returned:
             return None
-        if not s or re.match(r"^\(void\)\s*\w+$", s) or re.match(r"^static (_Atomic )?int \w+$", s):
+        if not s or re.match(r"^\(void\)\s*\w+$", s) or re.match(r"^static (_Atomic )?int \w+$", s) or s == "dm_thread_service_connect()":
             continue
         m = re.match(r'^DM_APPLET\("([^"]*)"\)$', s)
         if m:
@@ -332,7 +340,7 @@ def compile_ops(e, strings):
         if m and (m.group(1) is None or m.group(1) == m.group(2)):
             r, v = ptr_arg(m.group(2)), const_value(m.group(3))
             size = pointee_size(r[1]) if r else None
-            if r is None or v is None or size is None:
+            if r is None or v is None or size is None or ("float" in r[1] and v != 0):
                 return None
             v &= (1 << (8 * size)) - 1
             ops.extend([OP_STORE, r[3] | size << 8 | (1 if m.group(1) else 0) << 16, v & 0xFFFFFFFF, v >> 32]); continue
@@ -367,6 +375,56 @@ def compile_ops(e, strings):
     return ops
 
 
+def cut_ops(e):
+    """The op words of a cut entry: what nxnative's take-over answers when the object it is called on holds no host
+    decoder (movie::Decoder with a null implementation: `if (!d) return <code>`; nn::codec: cv_of / pool_of null).
+    None: the module's function of that name does it (constructors, results in x8, sizes passed on the stack)."""
+    c, body = e["cname"], e["body"]
+    S8 = lambda arg, v: [OP_STORE, arg | 8 << 8, v & 0xFFFFFFFF, v >> 32]
+    RET = lambda v: [OP_RET, v & 0xFFFFFFFF, 0]
+    if e["file"] == "hle_movie.c":
+        if re.match(r"h_movie_Decoder\d?(_C2)?$", c) or c == "h_movie_DecD0":
+            return None
+        m = re.search(r"if \(!d\) return (0x[0-9a-fA-F]+)", body)
+        if m:
+            return RET(int(m.group(1), 16))
+        m = re.search(r"return (0x[0-9a-fA-F]+|\d+);\s*$", body.strip() + ";")
+        return RET(int(m.group(1), 0) if m else 0)
+    if re.match(r"h_cv_pref", c) or c in ("h_cv_rgbahdr", "h_cv_rgba", "h_cv_nv12", "h_spt_holder", "h_spt_cancel", "h_spt_trywait", "h_spt_destroy"):
+        return None
+    if c in ("h_cv_init", "h_cv_fin", "h_cv_poolfin", "h_cv_native"):
+        return RET(0)
+    if c == "h_cv_poolsize":
+        return S8(0, 0) + S8(1, 0x4000) + RET(CV_NO_DECODER)
+    if c in ("h_cv_pool", "h_cv_pool22"):
+        return S8(0, 0) + RET(CV_NO_DECODER)
+    if c == "h_gs_trywait":
+        return RET(1)
+    if c == "h_spt_create":
+        return [OP_ZERO, 0, 0x58, OP_BIND, 0, 0] + RET(0)
+    if c == "h_spt_request":
+        return [OP_SIGNAL, 0] + RET(0)
+    m = re.match(r"h_cv_(vp9|vp8|h264|av1)(\w+)$", c)
+    if not m:
+        raise SystemExit("hle_names: no cut answer for %s (%s)" % (c, e["file"]))
+    k = m.group(2)
+    if k == "work":
+        return S8(0, 0x1000) + S8(1, 0x1000) + RET(0)
+    if k in ("init", "init2", "init3", "tm", "rm", "rm19"):
+        return S8(0, 0) + RET(CV_NO_DECODER)
+    if k in ("fin", "stop", "flush", "rel"):
+        return RET(0)
+    if k == "event":
+        return S8(0, 0) + RET(CV_NO_DECODER)
+    if k == "ev22":
+        return RET(0)
+    if k == "props19":
+        return [OP_STORE, 4 | 4 << 8, 0, 0] + RET(CV_NO_DECODER)
+    if k in ("reg", "unreg", "start", "submit", "enc", "acq", "props"):
+        return RET(CV_NO_DECODER)
+    raise SystemExit("hle_names: no cut answer for %s (%s)" % (c, e["file"]))
+
+
 def hand_functions():
     """cname -> True for each `export function <cname>(a: usize): u64` in src/hle/<module>.ts"""
     found = {}
@@ -389,6 +447,10 @@ def main():
     ents = []
     for f in files:
         ents.extend(parse_file(os.path.join(HOST, f)))
+    for f in sorted(k for k in SCOPE if "/" in k):   # the graphics layer's files in scope: named by their path under dm/
+        for e in parse_file(os.path.join(NX, "dm", f)):
+            e["file"] = f
+            ents.append(e)
     gfx_counts = {}
     for d, _, fs in sorted(os.walk(GFX)):
         for f in sorted(fs):
@@ -399,7 +461,7 @@ def main():
                     n = 0
                 raw = open(os.path.join(d, f), encoding="utf-8", errors="replace").read()
                 tbl = len(re.findall(r"^\s*(?:GL|VK|GLB|VKB|GL_BIG|VK_BIG)\w*\(", raw, re.M)) if f in ("hle_gl.m", "hle_vk.m") else 0
-                if n or tbl:
+                if (n or tbl) and os.path.relpath(os.path.join(d, f), os.path.join(NX, "dm")) not in SCOPE:
                     gfx_counts[os.path.relpath(os.path.join(d, f), os.path.join(NX, "dm"))] = (n, tbl)
     dem = demangle([e["mangled"] for e in ents])
     for e, d in zip(ents, dem):
@@ -425,7 +487,14 @@ def main():
         e["dup"] = key in seen
         seen.setdefault(key, e)
         e["shadowed"] = e["kind"] == "weak" and e["mangled"] in forced_names
-        if (mod, e["cname"]) in hand:
+        if e["file"] in CUT:
+            e["how"] = "cut"
+            ops = cut_ops(e)
+            if ops is not None:
+                e["ops"] = ops
+            elif (mod, e["cname"]) not in hand:
+                raise SystemExit("hle_names: cut entry %s needs `export function %s(a: usize): u64` in src/hle/%s.ts" % (e["mangled"], e["cname"], mod))
+        elif (mod, e["cname"]) in hand:
             e["how"] = "hand"
         else:
             ops = compile_ops(e, strings)
@@ -436,7 +505,7 @@ def main():
     status = ["file\tmangled\tkind\tstatus\tcname"]
     for e in ents:
         st = e.get("how") or ("out of scope: " + OUT_OF_SCOPE.get(e["file"], "not assigned to src/hle"))
-        status.append("\t".join([e["file"], e["mangled"], e["kind"], {"hand": "implemented", "ops": "implemented (from the C body)", "stub": "stub"}.get(st, st), e["cname"]]))
+        status.append("\t".join([e["file"], e["mangled"], e["kind"], {"hand": "implemented", "ops": "implemented (from the C body)", "stub": "stub", "cut": "stub (cut: %s)" % CUT.get(e["file"], "")}.get(st, st), e["cname"]]))
     status_text = "\n".join(status) + "\n"
 
     # ---- table.ts ----
@@ -449,7 +518,7 @@ def main():
         str_off[k] = len(strblob); strblob += s.encode() + b"\0"
     opwords, op_off = [], []
     for e in scope:
-        if e["how"] == "ops":
+        if "ops" in e:
             op_off.append(len(opwords))
             w = list(e["ops"]); i = 0
             while i < len(w):   # string indices -> blob offsets
@@ -461,7 +530,8 @@ def main():
         else:
             op_off.append(0xFFFFFFFF)
     order = sorted(range(len(scope)), key=lambda i: (scope[i]["mangled"].encode(), 0 if scope[i]["kind"] == "forced" else 1, i))
-    mods = sorted({e["mod"] for e in scope if e["how"] == "hand"})
+    is_fn = lambda e: e["how"] == "hand" or (e["how"] == "cut" and "ops" not in e)
+    mods = sorted({e["mod"] for e in scope if is_fn(e)})
     T = []
     T.append("// Generated by tools/hle_names.py from nxnative's dm/host/*.c. Do not edit; run `npm run hle:names`.")
     T.append("// The take-over table of src/hle: names, flags, the compiled bodies and the dispatch to the hand-written functions.")
@@ -469,7 +539,7 @@ def main():
         T.append('import * as %s from "../%s";' % (m, m))
     T.append("")
     T.append("export const COUNT: i32 = %d;" % len(scope))
-    T.append("export const F_FORCED: u32 = 1, F_IMPL: u32 = 2, F_SHADOWED: u32 = 8, F_OPS: u32 = 16, F_DUP: u32 = 32;")
+    T.append("export const F_FORCED: u32 = 1, F_IMPL: u32 = 2, F_SHADOWED: u32 = 8, F_OPS: u32 = 16, F_DUP: u32 = 32, F_CUT: u32 = 64;")
     T.append("export const NAMES: usize = memory.data<u8>([%s]);" % ts_bytes(names))
     T.append("export const DNAMES: usize = memory.data<u8>([%s]);" % ts_bytes(dnames))
     T.append("export const STRINGS: usize = memory.data<u8>([%s]);" % ts_bytes(strblob or b"\0"))
@@ -477,7 +547,7 @@ def main():
     T.append("export const DNAME_OFF: usize = memory.data<u32>([%s]);" % ts_bytes(dname_off))
     flags = []
     for e in scope:
-        f = (1 if e["kind"] == "forced" else 0) | (2 if e["how"] != "stub" else 0) | (8 if e["shadowed"] else 0) | (16 if e["how"] == "ops" else 0) | (32 if e["dup"] else 0)
+        f = (1 if e["kind"] == "forced" else 0) | (2 if e["how"] in ("hand", "ops") else 0) | (8 if e["shadowed"] else 0) | (16 if "ops" in e else 0) | (32 if e["dup"] else 0) | (64 if e["how"] == "cut" else 0)
         flags.append(f)
     T.append("export const FLAGS: usize = memory.data<u8>([%s]);" % ts_bytes(flags))
     T.append("export const OP_OFF: usize = memory.data<u32>([%s]);" % ts_bytes(op_off))
@@ -491,7 +561,7 @@ def main():
     T.append("  found = true;")
     T.append("  switch (id) {")
     for i, e in enumerate(scope):
-        if e["how"] == "hand":
+        if is_fn(e):
             T.append("    case %d: return %s.%s(a);" % (i, e["mod"], e["cname"]))
     T.append("    default: found = false; return 0;")
     T.append("  }")
@@ -504,14 +574,14 @@ def main():
         c = per.setdefault(e["file"], dict(weak=0, forced=0, hand=0, ops=0, stub=0))
         c[e["kind"]] += 1
         if "how" in e:
-            c[e["how"]] += 1
+            c["stub" if e["how"] == "cut" else e["how"]] += 1
     rows = ["| nxnative file | entries | forced | weak | implemented by hand | implemented from the C body | stubbed (red) | |",
             "|---|---|---|---|---|---|---|---|"]
     tot = dict(n=0, forced=0, weak=0, hand=0, ops=0, stub=0)
     for f in sorted(per):
         c = per[f]; n = c["weak"] + c["forced"]
         if f in SCOPE:
-            rows.append("| `%s` | %d | %d | %d | %d | %d | %d | `src/hle/%s.ts` |" % (f, n, c["forced"], c["weak"], c["hand"], c["ops"], c["stub"], SCOPE[f]))
+            rows.append("| `%s` | %d | %d | %d | %d | %d | %d | `src/hle/%s.ts`%s |" % (f, n, c["forced"], c["weak"], c["hand"], c["ops"], c["stub"], SCOPE[f], " (cut: %s)" % CUT[f] if f in CUT else ""))
             for k in ("forced", "weak", "hand", "ops", "stub"):
                 tot[k] += c[k]
             tot["n"] += n
@@ -524,7 +594,8 @@ def main():
         if f not in SCOPE:
             c = per[f]; n = c["weak"] + c["forced"]; out_n += n
             rows.append("| `%s` | %d | %d | %d | | | | out of scope: %s |" % (f, n, c["forced"], c["weak"], OUT_OF_SCOPE.get(f, "not assigned to src/hle")))
-    rows.append("| **dm/host total** | **%d** | | | | | | %d out of scope |" % (tot["n"] + out_n, out_n))
+    gfx_in = sum(per[f]["weak"] + per[f]["forced"] for f in per if "/" in f)
+    rows.append("| **dm/host total** | **%d** | | | | | | %d out of scope; the scope also has %d of dm/gfx |" % (tot["n"] + out_n - gfx_in, out_n, gfx_in))
     for f, (n, tbl) in sorted(gfx_counts.items()):
         rows.append("| `%s` | %d | | | | | | graphics, counted only%s |" % (f, n + tbl, " (%d of them pass-through table rows)" % tbl if tbl else ""))
     table_md = "\n".join(rows)
@@ -554,7 +625,7 @@ def main():
         tail = "%5d %5d %5d" % (c["hand"], c["ops"], c["stub"]) if f in SCOPE else "out of scope"
         print("%-22s %7d %6d %5d | %s" % (f, c["weak"] + c["forced"], c["forced"], c["weak"], tail))
     print("%-22s %7d %6d %5d | %5d %5d %5d" % ("in scope", tot["n"], tot["forced"], tot["weak"], tot["hand"], tot["ops"], tot["stub"]))
-    print("dm/host total %d (%d out of scope)" % (tot["n"] + out_n, out_n))
+    print("dm/host total %d (%d out of scope), dm/gfx in scope %d" % (tot["n"] + out_n - gfx_in, out_n, gfx_in))
     for f, (n, tbl) in sorted(gfx_counts.items()):
         print("%-28s %5d (graphics, counted only)" % (f, n + tbl))
     dups = [e for e in scope if e["dup"]]

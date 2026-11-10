@@ -1,6 +1,6 @@
 // Sample format conversion, the resampler, the mix.
 import assert from "node:assert/strict";
-import { test, Au, sine, fit, channel, DEV, MS, RING } from "./harness.mts";
+import { test, Au, Feeder, frameNumbers, sine, fit, channel, DEV, MS, RING } from "./harness.mts";
 
 // n frames of a stereo f32 sine at 48 kHz through audio_resample; the SNR of the result against a fitted sine
 function resampled(a: Au, freq: number, outRate: number, n = 48000): { frames: number; snr: number; amp: number } {
@@ -148,4 +148,55 @@ test("mix: an output whose game appends too late underruns alone: silence for th
   const tail = channel(all, 0).subarray(12000, 22000);
   assert.ok(fit(tail, 440, 48000).snr > 80);   // only the fed output is left, undisturbed
   assert.deepEqual(a.logs.filter(l => l.includes("OpenAudioOut")).map(l => l.slice(0, 8)), ["audio #0", "audio #1"]);
+});
+
+test("mix: a tick that comes 32 ms late finds the device 32 ms further and the game with 20 ms queued: the outputs are asked only for what they have, the rest follows as the game refills: no underrun, no gap, the ring's lead took the lateness", () => {
+  const a = new Au();
+  a.attach(48000);                              // a lead of 40 ms
+  const g = a.open(), f = new Feeder(a, g);     // 4 x 5 ms in flight, as the audio renderer keeps
+  const Q = BigInt(Math.round(128e9 / 48000));
+  f.refill(); a.goLive(g);
+  const heard: number[] = [];
+  const quantum = () => { heard.push(...frameNumbers(a.callback(128))); };
+  for (let i = 0; i < 100; i++) { a.tick(Q); quantum(); f.step(); }
+  for (let late = 0; late < 5; late++) {
+    a.g += 12n * Q; a.h += 12n * Q;             // the run loop is away for 12 device callbacks
+    for (let i = 0; i < 12; i++) quantum();
+    const left = a.ring[RING.WR] - a.ring[RING.RD];
+    assert.ok(left === 1920 - 12 * 128 || left === 1920 - 13 * 128, `${left} frames left in the ring`);
+    for (let i = 0; i < 100; i++) { a.tick(Q); quantum(); f.step(); }
+    assert.ok(a.ring[RING.WR] - a.ring[RING.RD] >= 1920 - 128, "the lead is back");
+  }
+  const nums = heard.filter(n => n !== 0);
+  for (let i = 1; i < nums.length; i++) if (nums[i] !== nums[i - 1] + 1) assert.fail(`frame ${nums[i]} after ${nums[i - 1]}`);
+  assert.equal(heard.indexOf(nums[0]) + nums.length, heard.length, "no silence inside the stream");
+  assert.equal(a.stat(g, 7), 0); assert.equal(a.ring[RING.UNDER], 0);
+});
+
+test("mix: a game that stops appending is heard for as long as the ring's lead lasts; silence is mixed, and counted as the output's underrun, only when the ring is down to a quarter of its lead; the lead is rebuilt from the game when it appends again", () => {
+  const a = new Au();
+  a.attach(48000);
+  const g = a.open(), f = new Feeder(a, g);
+  const Q = BigInt(Math.round(128e9 / 48000));
+  f.refill(); a.goLive(g);
+  const heard: number[] = [];
+  const run = (n: number, feed: boolean) => { for (let i = 0; i < n; i++) { a.tick(Q); heard.push(...frameNumbers(a.callback(128))); if (feed) f.step(); } };
+  run(100, true);
+  assert.equal(a.stat(g, 7), 0);
+  run(75, false);                               // 200 ms without an append
+  assert.ok(a.stat(g, 7) > 0);
+  const fill = a.ring[RING.WR] - a.ring[RING.RD];
+  assert.ok(fill >= 1920 - 1440 - 128, `the ring holds ${fill} frames: never below a quarter of its lead`);
+  run(150, true);
+  assert.ok(a.ring[RING.WR] - a.ring[RING.RD] >= 1920 - 128);
+  // one hole in the stream: the 200 ms, less the 15 to 20 ms that were queued ...
+  const first = heard.findIndex(n => n !== 0), body = heard.slice(first);
+  const holeStart = body.indexOf(0), holeEnd = body.findIndex((n, i) => i > holeStart && n !== 0);
+  assert.ok(holeStart > 0 && holeEnd > holeStart);
+  const hole = holeEnd - holeStart;
+  assert.ok(hole >= 9600 - 960 - 1440 - 128 && hole <= 9600 - 720, `${hole} frames of silence`);   // and less what the ring was short of its lead when the game came back
+  assert.equal(hole, a.stat(g, 8) / 4, "the silence heard is the silence counted on the output");
+  assert.ok(body.slice(holeEnd).every(n => n !== 0), "one hole only");
+  assert.equal(body[holeEnd], body[holeStart - 1] + 1, "the stream goes on where it stopped");
+  assert.equal(a.ring[RING.UNDER], 0);
 });

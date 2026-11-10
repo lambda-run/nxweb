@@ -64,6 +64,11 @@ export declare function stubAddr(id: i32): u64;
 // @ts-ignore: decorator
 @external("env", "hle_host_alloc")
 export declare function hostAlloc(size: u64): u64;
+// The i-th 8-byte stack argument of the guest call being taken over (AAPCS64: the ninth and later integer arguments
+// are at [sp + 8 * i]). Only valid during hle_call, before the take-over calls back into the guest
+// @ts-ignore: decorator
+@external("env", "hle_stack_arg")
+export declare function stackArg(i: i32): u64;
 // kernel_clock_freeze(reason, on)
 // @ts-ignore: decorator
 @external("env", "hle_clock_freeze")
@@ -177,8 +182,17 @@ export const CFG_DET_ENTROPY = 8;       // DM_DETCLOCK: the fixed-seed entropy s
 export const CFG_SF_TRACE = 9;          // DM_SF_TRACE
 export const CFG_PROGRAM_INDEX = 10;    // this program's index in a multi-program application
 export const CFG_HAS_PROGRAMS = 11;     // the embedder can start another program (ExecuteProgram)
-export const CFG_N = 16;
-const CFGV: usize = memory.data(128);
+export const CFG_MOTION_OFF = 12;       // DM_MOTION=0: live controller motion is ignored, the six-axis sensors lie flat
+export const CFG_MOTION_ACC_NEG = 13;   // DM_MOTION_ACC_SIGN=-1: the controller reports the specific force (+1 G up at rest)
+export const CFG_MOTION_GAIN = 14;      // DM_MOTION_GAIN: the tilt correction gain, an f64's bits (default 0.5)
+export const CFG_MOTION_LOG = 15;       // DM_MOTION_LOG: player 1's mapped sample once a second
+export const CFG_PHONE_MOTION = 16;     // DM_PHONE_MOTION: -1 auto (the console's own sensors while no controller is fresh), 0 never, 1 always
+export const CFG_INPUT_SCRIPTED = 17;   // the embedder scripts the input (nxnative: DM_KEYS / DM_CTL): the controller applet does not wait for players
+export const CFG_DISPLAY_W = 18;        // the pixels of the display the picture is shown on (nxnative front_display_pixels), 0 = not known
+export const CFG_DISPLAY_H = 19;
+export const CFG_SDK_OUNCE = 20;        // the SDK is a Switch 2 one (system ticks are 31.25 MHz, not 19.2)
+export const CFG_N = 32;
+const CFGV: usize = memory.data(256);
 export function cfg(k: i32): i64 { return load<i64>(CFGV + (<usize>k << 3)); }
 export function cfgSet(k: i32, v: i64): void { if (k >= 0 && k < CFG_N) store<i64>(CFGV + (<usize>k << 3), v); }
 
@@ -189,6 +203,7 @@ export const STR_LAUNCH_SPEC = 3;       // profile launch_param: lang8 f32:<v> u
 export const STR_LAUNCH_BYTES = 4;      // DM_LAUNCH_PARAM's file contents (set = "the variable is set", even when empty)
 export const STR_DISPLAY_VERSION = 5;   // the display version of main's build (default 1.0.0)
 export const STR_KBD = 6;               // DM_KBD: the software keyboard's answer without asking
+export const STR_MOTION_AXES = 7;       // DM_MOTION_AXES: the controller frame's axes in the Switch's, like "x,-z,y" (default x,y,z)
 export const STR_N = 8;
 const STR_CAP: usize = 1024;
 const STRV: usize = memory.data(8192);     // STR_N * STR_CAP
@@ -205,6 +220,7 @@ export function strSet(k: i32, p: usize, n: i32): void {
 export function baseInit(): void {
   for (let k = 0; k < CFG_N; k++) cfgSet(k, 0);
   cfgSet(CFG_OPMODE, 1); cfgSet(CFG_FIXED_TIME, -1); cfgSet(CFG_PREV_PROGRAM, -1); cfgSet(CFG_SHARED_FONT_TTF, -1);
+  cfgSet(CFG_MOTION_GAIN, reinterpret<i64>(<f64>0.5)); cfgSet(CFG_PHONE_MOTION, -1);
   for (let k = 0; k < STR_N; k++) strSet(k, 0, -1);
   sleepR = 0;
 }
@@ -217,6 +233,9 @@ export function guestCall0(fn: u64): u64 { return envGuestCall(fn, CALLARGS, 0);
 export function guestCall1(fn: u64, a0: u64): u64 { const p = CALLARGS; store<u64>(p, a0); return envGuestCall(fn, p, 1); }
 export function guestCall2(fn: u64, a0: u64, a1: u64): u64 { const p = CALLARGS; store<u64>(p, a0); store<u64>(p, a1, 8); return envGuestCall(fn, p, 2); }
 export function guestCall3(fn: u64, a0: u64, a1: u64, a2: u64): u64 { const p = CALLARGS; store<u64>(p, a0); store<u64>(p, a1, 8); store<u64>(p, a2, 16); return envGuestCall(fn, p, 3); }
+// n arguments (u64 each) at args; more than 8 go on the guest stack, as AAPCS64 passes them
+export function guestCallN(fn: u64, args: usize, n: i32): u64 { return envGuestCall(fn, args, n); }
+export function guestSymZ(name: usize): u64 { return envGuestSym(name); }
 export function guestCall5(fn: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64): u64 {
   const p = CALLARGS; store<u64>(p, a0); store<u64>(p, a1, 8); store<u64>(p, a2, 16); store<u64>(p, a3, 24); store<u64>(p, a4, 32); return envGuestCall(fn, p, 5);
 }

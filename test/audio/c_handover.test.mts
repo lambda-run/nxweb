@@ -16,7 +16,7 @@ test("handover: silent -> live -> stall -> silent -> retry -> live -> hidden -> 
   const states: string[] = [];
   const note = () => { const s = a.state(g); if (states.at(-1) !== s) states.push(s); };
   const run = (ms: number, device: boolean) => {
-    for (let t = 0n; t < BigInt(ms) * MS; t += Q) { a.tick(Q); if (device) played.push(...frameNumbers(a.callback(128))); f.step(); note(); }
+    for (let t = 0n; t < BigInt(ms) * MS; t += Q) { a.tick(Q); note(); if (device) played.push(...frameNumbers(a.callback(128))); f.step(); note(); }
   };
   a.dev(DEV.STARTING); run(100, false);          // the context waits for its gesture
   a.dev(DEV.RUNNING); run(300, true);            // it runs

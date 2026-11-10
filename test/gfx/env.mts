@@ -78,6 +78,10 @@ struct Support { alpha_test: u32, @align(16) is_bgra: array<E, 8>, viewport_inve
   cs_invert: { stage: "compute", textures: [{ slot: 0 }], images: [{ slot: 0, format: "rgba8unorm" }], wgsl: `@group(1) @binding(128) var t: texture_2d<f32>; @group(1) @binding(129) var s: sampler;
 @group(1) @binding(272) var img: texture_storage_2d<rgba8unorm, write>;
 @compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) id: vec3u) { textureStore(img, vec2i(id.xy), vec4f(1.0 - textureLoad(t, vec2i(id.xy), 0).rgb, 1.0)); }` },
+  // a fragment shader reading a table from read-only storage buffer 0, indexed by fragment uniform 0
+  fs_table: { stage: "fragment", outputs: [0], ubos: [0], storage: [{ slot: 0 }], wgsl: `struct U { c: vec4f } @group(0) @binding(16) var<uniform> u: U;
+@group(0) @binding(144) var<storage, read> tab: array<vec4f, 4>;
+@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return tab[u32(u.c.x)]; }` },
   // the demo's cube: position (vec3) + uv (vec2), vertex uniform buffer 0 = model-view-projection
   vs_cube: { stage: "vertex", attributes: [0, 1], ubos: [0], wgsl: `${VO} struct U { mvp: mat4x4f } @group(0) @binding(0) var<uniform> u: U;
 @vertex fn main(@location(0) pos: vec3f, @location(1) uv: vec2f) -> VO { return VO(u.mvp * vec4f(pos, 1.0), vec4f(uv, 0.0, 1.0)); }` },

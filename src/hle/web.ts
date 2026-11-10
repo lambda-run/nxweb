@@ -8,6 +8,7 @@ import { Inst } from "../kit/machine";
 import { WEB_SESSION, WebSessionS, WebSessionE } from "../kit/gen/tables";
 import { X, P, C, setC, wait, newEventPair, eventSignal, eventClear, ls, ps, pz, pu, le, red, zero, copy, zlen, zcopy } from "./base";
 import { seBind, seSignal, seClear } from "./sysevent";
+import { holdSet, HOLD_WEB } from "./hid";
 
 // Open the document `path` (inside the game's HTML documents) with the callback URL; hidden: shown only at
 // hle_web_show. 0: a web view has it; 1: the page was not found; 2: there is no web view
@@ -27,6 +28,10 @@ declare function webClose(): void;
 // @ts-ignore: decorator
 @external("env", "hle_input_hold")
 declare function inputHold(on: i32): void;
+
+// The page holds the game's input for the reason "web" (hid.ts: the game reads nothing while any reason holds) and the
+// embedder is told, so that it sends the input to the page instead
+function hold(on: bool): void { holdSet(HOLD_WEB, on); inputHold(on ? 1 : 0); }
 
 const TLV_CALLBACK_URL: u32 = 0x3, TLV_DOCUMENT_PATH: u32 = 0x6, TLV_KEY_REPEAT_DELAY: u32 = 0x1c, TLV_KEY_REPEAT_PULSE: u32 = 0x1d, TLV_BOOT_MODE: u32 = 0x41;
 const ARG_SIZE: usize = 0x2000, URL_SIZE: usize = 0x1000, MSG_MAX: i32 = 32, MSG_CAP: usize = 2048;
@@ -74,7 +79,7 @@ function webEnd(why: u32, url: usize): void {
   if (!open_()) return;
   reason = why; if (url) zcopy(URL, url, URL_SIZE); else store<u8>(URL, 0);
   m().step(WebSessionE.End);
-  if (held) { held = false; inputHold(0); }
+  if (held) { held = false; hold(false); }
   seSignal(EV_WEB);
   if (endW) eventSignal(endW);
 }
@@ -101,7 +106,7 @@ function webStart(arg: usize, sync: bool): void {
   if (!load<u8>(CB)) { const s = "http://localhost/"; for (let i = 0; i < s.length; i++) store<u8>(CB + <usize>i, <u8>s.charCodeAt(i)); store<u8>(CB + <usize>s.length, 0); }
   const hidden = !sync && tlvU32(arg, TLV_BOOT_MODE, 0) == 1;   // WebSessionBootMode: 0 all foreground, 1 initially hidden
   const delay = tlvU32(arg, TLV_KEY_REPEAT_DELAY, 0), pulse = tlvU32(arg, TLV_KEY_REPEAT_PULSE, 0);
-  if (m().state != WebSessionS.None) { webClose(); if (held) inputHold(0); }
+  if (m().state != WebSessionS.None) { webClose(); if (held) hold(false); }
   msgClear(); held = false; reason = 0; store<u8>(URL, 0);
   m().step(WebSessionE.Start);
   // a path inside the document only (its query cut off for the test, as web_find does)
@@ -113,7 +118,7 @@ function webStart(arg: usize, sync: bool): void {
   else { ps(r == 2 ? ": no web view" : ": not found"); ps("; the stand-in answers (it loads at once and closes when it appears)"); }
   le();
   if (!real) msgPush(0, 0);   // the stand-in's ready message: the game waits for any message before Appear
-  if (real && !hidden) { m().step(WebSessionE.Show); held = true; inputHold(1); }
+  if (real && !hidden) { m().step(WebSessionE.Show); held = true; hold(true); }
 }
 function hasDotDot(p: usize): bool { for (let q = p; load<u8>(q) && load<u8>(q) != 0x3F && load<u8>(q) != 0x23; q++) if (load<u8>(q) == 0x2E && load<u8>(q + 1) == 0x2E) return true; return false; }
 // The ended page's result into the return value; the session is over
@@ -139,7 +144,7 @@ export function h_webs_Start(a: usize): u64 {
   return 0;
 }
 export function h_webs_Appear(a: usize): u64 {
-  if (m().state == WebSessionS.Started && real) { m().step(WebSessionE.Show); held = true; inputHold(1); webShow(); }
+  if (m().state == WebSessionS.Started && real) { m().step(WebSessionE.Show); held = true; hold(true); webShow(); }
   else if (open_()) { if (m().state == WebSessionS.Started) m().step(WebSessionE.Show); webEnd(0, 0); }   // the stand-in closes at once
   return 1;
 }

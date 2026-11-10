@@ -14,7 +14,7 @@ self.onmessage = async (ev: MessageEvent) => {
   try {
     const list: { nso: string[]; files: string[]; corpus: string[]; gfx: boolean; big: string | null; shaders: { library: boolean; translator: boolean; why: string } } = await (await fetch("/list")).json();
     const mod = async (n: string) => WebAssembly.compile(await bytes(`/wasm/${n}.wasm`));
-    const [rt, kernel, loader, translator, helpers, gfx, fsm] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs"].map(mod));
+    const [rt, kernel, loader, translator, helpers, gfx, fsm, hle] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle"].map(mod));
     const nso = new Map<string, Uint8Array>();
     await Promise.all(list.nso.map(async n => { nso.set(n, await bytes(`/nso/${n}.nso`)); }));
     const corpus: CorpusGuest[] = await Promise.all(list.corpus.map(async name => {
@@ -25,7 +25,7 @@ self.onmessage = async (ev: MessageEvent) => {
     await Promise.all(list.files.map(async n => { files.set(n, await bytes(`/guest/${n}`)); }));
     let big: CorpusGuest | undefined;
     if (list.big) { const side = await (await fetch(`/big/${list.big}.json`)).json(); big = { name: list.big, side, image: await bytes(`/big/${side.image}`), expected: await bytes(`/big/${side.expected_stdout}`) }; }
-    const env: MoreEnv = { haveGfxGuests: list.gfx, mods: { rt, kernel, loader, translator, helpers, gfx, fs: fsm }, nso: n => nso.get(n) ?? (() => { throw new Error("no NSO " + n); })(),
+    const env: MoreEnv = { haveGfxGuests: list.gfx, mods: { rt, kernel, loader, translator, helpers, gfx, fs: fsm, hle }, nso: n => nso.get(n) ?? (() => { throw new Error("no NSO " + n); })(),
       file: n => files.get(n) ?? (() => { throw new Error("no file " + n); })(), corpus, big,
       // saves in the Origin Private File System, the container opened ahead so that a mount does not wait; the rom
       // device is the test image in a Blob (read with FileReaderSync)

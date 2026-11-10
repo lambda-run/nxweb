@@ -105,15 +105,17 @@ test("libc: timegm, gmtime_r, localtime_r, mktime (the pass-through one), strfti
 test("ops: every body compiled from the C text returns the constant its C source ends with", () => {
   const h = new Hle();
   const CONST: Record<string, bigint> = { RES_OK: 0n, RES_FAIL: 0x2A2n, NULL: 0n, NV_ERR: 3n, SK_EAI_FAIL: 4n, IRS_UNCONNECTED: 2n, MII_RES_NOT_FOUND: 0x87En, MII_RES_CANCELED: 0xE7En,
-    MII_RES_TEST_MODE: 0x1987En, "sk_fail()": 0xFFFFFFFFn };
+    MII_RES_TEST_MODE: 0x1987En, "sk_fail()": 0xFFFFFFFFn, RES_PALMA_INVALID_HANDLE: BigInt(202 | 3302 << 9), false: 0n, true: 1n };
   const files = new Map<string, string>();
-  const src = (f: string) => { if (!files.has(f)) files.set(f, readFileSync(join(NXNATIVE, "dm", "host", f), "utf8")); return files.get(f)!; };
+  const src = (f: string) => { if (!files.has(f)) files.set(f, readFileSync(f.includes("/") ? join(NXNATIVE, "dm", f) : join(NXNATIVE, "dm", "host", f), "utf8")); return files.get(f)!; };
   let checked = 0, voids = 0;
   const rows = status().filter(r => r.status === "implemented (from the C body)");
-  assert.ok(rows.length >= 480, `${rows.length} compiled bodies`);
+  assert.ok(rows.length >= 590, `${rows.length} compiled bodies`);
   for (const r of rows) {
     const text = src(r.file), at = text.indexOf(`"${r.mangled}"`);
     assert.ok(at >= 0, r.mangled);
+    // hle_hid.c's PALMA_FAIL(sym, what, fn, ...) has no body of its own: the macro's is `return RES_PALMA_INVALID_HANDLE;`
+    if (text.slice(text.lastIndexOf("\n", at) + 1, at) === "PALMA_FAIL(") { assert.equal(h.callRegs(r.mangled, {}).x0, CONST.RES_PALMA_INVALID_HANDLE, r.cname); checked++; continue; }
     const open = text.indexOf("{", text.indexOf(r.cname, at));
     let close = open, depth = 0;
     for (; close < text.length; close++) { if (text[close] === "{") depth++; else if (text[close] === "}" && --depth === 0) break; }
@@ -132,7 +134,7 @@ test("ops: every body compiled from the C text returns the constant its C source
     checked++;
   }
   if (process.env.HLE_TEST_LOG) console.log(`    | ops: ${checked} constants compared, ${voids} bodies with nothing to return`);
-  assert.ok(checked >= 330 && checked + voids === rows.length, `${checked} constants compared, ${voids} bodies with nothing to return`);
+  assert.ok(checked >= 400 && checked + voids === rows.length, `${checked} constants compared, ${voids} bodies with nothing to return`);
 });
 
 test("ops: stores through pointer arguments have the C type's width and honour the null check", () => {

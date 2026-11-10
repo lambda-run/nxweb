@@ -5,6 +5,7 @@ import type { A64CacheStore } from "../../src/glue/a64_host.ts";
 import type { Env, CaseResult, CorpusGuest } from "./cases.ts";
 import { bootGfx, W, H, type Gpu, type GfxProcess, type GfxBoot } from "./gfx_cases.ts";
 import { RtFs } from "../../src/glue/rt_fs.ts";
+import { attachHle } from "../../src/glue/hle_rt.ts";
 import { MemStorage, MemDevice, FS_KIND, type FsStorage, type FsDevice } from "../../src/glue/fs_host.ts";
 import { ShaderLibrary } from "../../src/shaders/library.ts";
 import type { ShaderTranslator, ShaderStore, Translated, ShaderOptions } from "../../src/glue/rt_shaders.ts";
@@ -114,6 +115,44 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     } else lines.push("this host cannot report memory in use: only the GPU object count and the kernel's counts were checked");
     return lines;
   });
+  // ---- the SDK take-over table ----
+  if (env.mods.hle) test("hle: a guest calls take-overs by their mangled names: nn::oe (operation mode, focus messages), nn::time, nn::account, nifm and socket offline, libc math in d0; the host's shutdown ends it through the lifecycle path", async () => {
+    const FIXED = 1_700_000_000;   // 2023-11-14 22:13:20 UTC
+    const boot = (handheld: boolean) => {
+      const rt = new Runtime(env.mods);
+      const host = attachHle(rt, env.mods.hle!, { config: { opmode: handheld ? 0 : 1, fixedTime: FIXED, nick: "Tester", lang: "en-US" } });
+      ok(rt.loadNso([{ name: "hleg", bytes: env.nso("hleg") }]), "load failed: " + rt.red.join(" | "));
+      return { rt, host };
+    };
+    const { rt, host } = boot(false);
+    const done = rt.runAsync();
+    const until = async (what: string, f: () => boolean) => { const t0 = performance.now(); while (!f()) { if (performance.now() - t0 > 10000 || rt.state === "Stopped") fail(`timed out waiting for ${what}; state ${rt.state}\n${rt.stdout()}\n${rt.red.join("\n")}`); await new Promise(r => setTimeout(r, 2)); } };
+    await until("the message loop", () => rt.stdout().includes("waiting for notification messages"));
+    host.focusSet(3);                                   // out of focus
+    await until("the first focus message", () => rt.stdout().includes("oe: message 15, focus 3"));
+    host.focusSet(1);                                   // in focus again
+    await until("the second focus message", () => (rt.stdout().match(/oe: message 15/g) ?? []).length === 2);
+    eq(host.shutdown(), true, "the shutdown started the exit");
+    const r = await done;
+    eq([r.state, r.stop?.kind, r.stop?.code, host.exit.state, host.exit.reason], ["Stopped", "exit", 0, "Exited", "hostShutdown"], "how it ended");
+    const sin = Math.trunc(Math.fround(Math.fround(Math.sin(0.5)) * 1000000)), sq = Math.trunc(Math.fround(Math.fround(Math.sqrt(2)) * 1000000));
+    const out = rt.stdout().split("\n");
+    eq(out[0], "oe: operation mode 1, performance mode 1, focus 1", "oe");
+    eq(out[1], `time: posix ${FIXED} = 2023-11-14 22:13:20 UTC`, "time");
+    eq(out[2], 'account: rc 0x0, 1 user, uid set, nickname "Tester"', "account");
+    eq(out[3], "network: available 0, socket() = -1, errno set", "network");
+    ok(new RegExp(`^libc: sinf\\(0\\.5\\) \\* 1e6 = ${String(sin).slice(0, 5)}\\d, pow\\(2, 10\\) = 1024, strtod\\("3\\.25"\\) \\* 100 = 325, sqrtf\\(2\\) \\* 1e6 = ${String(sq).slice(0, 5)}\\d\\d$`).test(out[4]), "libc results through d0: " + out[4]);
+    eq(out.slice(5), ["oe: messages waiting before the loop: 0", "oe: waiting for notification messages", "oe: message 15, focus 3", "oe: message 15, focus 1", ""], "the message loop");
+    eq(rt.red, [], "red lines");
+    const summary = rt.logs.find(l => /force: \d+ entries hit, \d+ not referenced by this game/.test(l)) ?? fail("no summary line for the forced names nobody refers to: " + rt.logs.slice(0, 5).join(" | "));
+    // handheld: the operation mode the guest sees, and what the npad take-overs follow
+    const h = boot(true), hd = h.rt.runAsync();
+    const t0 = performance.now(); while (!h.rt.stdout().includes("waiting for notification")) { if (performance.now() - t0 > 10000) fail("handheld run: " + h.rt.stdout()); await new Promise(r => setTimeout(r, 2)); }
+    eq(h.rt.stdout().split("\n")[0], "oe: operation mode 0, performance mode 0, focus 1", "handheld");
+    h.rt.kill(); await hd;
+    return [out[4], summary.replace(/^.*force: /, "loader: force: "), `${host.entries().filter(e => !e.internal && !e.shadowed && !e.duplicate).length} names registered (${host.entries().filter(e => e.forced).length} forced); the guest imports 22 of them`];
+  });
+
   // ---- the file system ----
   if (env.mods.fs) test("fs: a guest mounts its RomFS and reads a file, mounts its save data, writes and commits; the next run reads what was committed; a run killed between write and commit leaves the committed version", async () => {
     const blob = env.file("romfs_blob.bin");

@@ -1,0 +1,21 @@
+{
+  "id": 0,
+  "name": "touch_finger",
+  "doc": "One finger id of the touch screen as the game's reads see it (port of nxnative dm/host/hle_touch.c: g_f[].st, .reported, .again; src/hle/touch.ts). The game looks only at the newest state, so a finger is reported once with Start and, after it lifted, once more with End before it goes: a press and lift between two reads is Start at one read and End at the next. Press and Lift come from the embedder's touch points, Report from a read by the game (GetTouchScreenState). DownNew: down, Start not yet reported. Down: down, reported. LiftedNew: lifted before Start was reported (the next read reports Start, the one after End). Lifted: End is due. LiftedAgain: pressed again before End went out (the next read reports End at the old point, then the new press starts).",
+  "states": ["Empty", "DownNew", "Down", "LiftedNew", "Lifted", "LiftedAgain"],
+  "initial": "Empty",
+  "events": ["Press", "Lift", "Report"],
+  "transitions": [
+    ["Empty", "Press", "DownNew"],
+    ["DownNew", "Lift", "LiftedNew"],
+    ["DownNew", "Report", "Down"],
+    ["Down", "Lift", "Lifted"],
+    ["Down", "Report", "Down"],
+    ["LiftedNew", "Press", "DownNew"],
+    ["LiftedNew", "Report", "Lifted"],
+    ["Lifted", "Press", "LiftedAgain"],
+    ["Lifted", "Report", "Empty"],
+    ["LiftedAgain", "Lift", "Lifted"],
+    ["LiftedAgain", "Report", "DownNew"]
+  ]
+}

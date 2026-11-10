@@ -1,5 +1,5 @@
 // hle: the SDK functions taken over by name (port of nxnative dm/host/hle_*.c). The embedder's API; see README.md.
-import { COUNT, NAMES, DNAMES, NAME_OFF, DNAME_OFF, FLAGS, OP_OFF, SORTED, STUB_RET, F_FORCED, F_IMPL, F_OPS, dispatch } from "./gen/table";
+import { COUNT, NAMES, DNAMES, NAME_OFF, DNAME_OFF, FLAGS, OP_OFF, SORTED, STUB_RET, F_FORCED, F_IMPL, F_OPS, F_CUT, dispatch } from "./gen/table";
 import { ARGS_SIZE, retFlags, retX1, retD0, waitHandle, waitTimeout, retClear, retRestore, setResume, baseInit, cfgSet, strSet, ls, ps, pz, le, red, copy, zero } from "./base";
 import { runOps, opsInit } from "./ops";
 import { seInit, seBind, seSignal, seClear, seHandleClosed, seHandle, seCount } from "./sysevent";
@@ -16,6 +16,15 @@ import { osInit, entropy64 } from "./os";
 import { nvdrvInit } from "./nvdrv";
 import { libcInit } from "./libc";
 import { miiStandin } from "./mii";
+import { hidInit, inputSet, inputPeek, holdSet, holdMask, ctrlAnswer, ctrlPromptState, playersSeen, playerNpad, npadStyle, inputSamples, cheatKeys, mouseWanted } from "./hid";
+import { padSlotOf, padSlotTake, padSlotTakeLowest, padSlotFree, padSlotMask } from "./padslots";
+import { hapticsInit, hapticsRoute, hapticsSetEnabled, hapticsSuspend, hapticsEpoch, hapticsAvailable } from "./haptics";
+import { mapParse, motionReset, motionUpdate, motionFill, motionPhoneToSwitch } from "./motion";
+import { viInit, viFrameQueued, viLayerSize, viLayerCrop, viNativeWindow } from "./vi";
+import { roInit, roRefuse, roLoadedCount } from "./ro";
+import { jitInit, jitEnvCount } from "./jit";
+import { movieInit } from "./movie";
+import { sha256 } from "./sha256";
 import { HleExitReason } from "../kit/gen/tables";
 export * from "../kit/exports";
 
@@ -23,13 +32,20 @@ const MAX_DEPTH: i32 = 16;
 const FRAMES: usize = memory.data(3328);      // MAX_DEPTH * ARGS_SIZE
 const SCRATCH_ARGS: usize = memory.data(208, 8);
 const SCRATCH: usize = memory.data(8192, 8);
-const STUB_SEEN: usize = memory.data(1024);
-const CALLS: usize = memory.data(4096 + 64);  // u32 per entry (hle_count.c's DM_HLECOUNT)
+const STUB_SEEN: usize = memory.data(2048);
+const CALLS: usize = memory.data(8192);       // u32 per entry (hle_count.c's DM_HLECOUNT)
 const INTERNAL_NAMES: usize = memory.data<u8>([
   104, 108, 101, 46, 110, 103, 99, 95, 118, 95, 122, 101, 114, 111, 0, 0,     // hle.ngc_v_zero
   104, 108, 101, 46, 110, 103, 99, 95, 118, 95, 110, 111, 110, 101, 0, 0,     // hle.ngc_v_none
   104, 108, 101, 46, 110, 103, 99, 95, 118, 95, 99, 104, 101, 99, 107, 0,     // hle.ngc_v_check
-  104, 108, 101, 46, 110, 103, 99, 95, 118, 95, 109, 97, 115, 107, 0, 0]);    // hle.ngc_v_mask
+  104, 108, 101, 46, 110, 103, 99, 95, 118, 95, 109, 97, 115, 107, 0, 0,      // hle.ngc_v_mask
+  104, 108, 101, 46, 106, 105, 116, 95, 114, 101, 115, 111, 108, 118, 101, 0, // hle.jit_resolve
+  104, 108, 101, 46, 106, 105, 116, 95, 112, 97, 110, 105, 99, 0, 0, 0,       // hle.jit_panic
+  104, 108, 101, 46, 106, 105, 116, 95, 97, 98, 111, 114, 116, 0, 0, 0,       // hle.jit_abort
+  104, 108, 101, 46, 106, 105, 116, 95, 117, 110, 101, 120, 112, 0, 0, 0,     // hle.jit_unexp
+  104, 108, 101, 46, 106, 105, 116, 95, 109, 101, 109, 99, 112, 121, 0, 0,    // hle.jit_memcpy
+  104, 108, 101, 46, 106, 105, 116, 95, 109, 101, 109, 109, 111, 118, 101, 0, // hle.jit_memmove
+  104, 108, 101, 46, 106, 105, 116, 95, 109, 101, 109, 115, 101, 116, 0, 0]); // hle.jit_memset
 let depth: i32 = 0;
 let lastFlags: u32 = 0, lastX1: u64 = 0, lastD0: u64 = 0, lastWaitH: u32 = 0, lastWaitT: i64 = -1;
 let inited: bool = false;
@@ -37,9 +53,10 @@ let inited: bool = false;
 // Everything back to the state of a fresh process
 export function hle_init(): void {
   inited = true; depth = 0;
-  zero(STUB_SEEN, 1024); zero(CALLS, 4096 + 64);
+  zero(STUB_SEEN, 2048); zero(CALLS, 8192);
   baseInit(); seInit(); opsInit(); exitInit(); oeInit(); netInit(); timeInit(); miscInit(); sfInit(); swkbdInit(); webInit(); osInit(); nvdrvInit(); libcInit();
   sdk16Init();
+  hidInit(); viInit(); roInit(); jitInit(); movieInit();
 }
 // ---------- the table ----------
 export function hle_count(): i32 { return COUNT; }
@@ -53,7 +70,8 @@ export function hle_name(id: i32): usize {
 export function hle_demangled(id: i32): usize { return id >= 0 && id < COUNT ? DNAMES + <usize>load<u32>(DNAME_OFF + (<usize>id << 2)) : hle_name(id); }
 // bit 0 forced (wins over every module's own definition; otherwise it fills an import no module defines), bit 1
 // implemented (otherwise a red stub), bit 3 a weak entry whose name also has a forced entry, bit 4 its body was compiled
-// from the C text, bit 5 the same name and kind appeared earlier in the table (register the first)
+// from the C text, bit 5 the same name and kind appeared earlier in the table (register the first), bit 6 cut: a stub
+// (bit 1 clear) that logs one red line and then answers as nxnative's call on an object with no host decoder
 export function hle_flags(id: i32): u32 { return id >= 0 && id < COUNT ? load<u8>(FLAGS + <usize>id) : id < COUNT + INTERNAL_COUNT ? F_FORCED | F_IMPL : 0; }
 function cmpName(p: usize, id: i32): i32 {
   const q = NAMES + <usize>load<u32>(NAME_OFF + (<usize>id << 2));
@@ -87,7 +105,11 @@ function enter(id: i32, args: usize): u64 {
   else {
     store<u32>(CALLS + (<usize>id << 2), load<u32>(CALLS + (<usize>id << 2)) + 1);
     const fl = load<u8>(FLAGS + <usize>id);
-    if (fl & F_OPS) r = runOps(id, load<u32>(OP_OFF + (<usize>id << 2)), f);
+    if (fl & F_CUT) {
+      if (!load<u8>(STUB_SEEN + <usize>id)) { store<u8>(STUB_SEEN + <usize>id, 1); ls(); ps("[RED] "); pz(hle_demangled(id), 400); ps(" is cut (movies and video codecs are not played): it fails as in nxnative without a decoder"); le(); }
+      r = (fl & F_OPS) ? runOps(id, load<u32>(OP_OFF + (<usize>id << 2)), f) : dispatch(id, f);
+    }
+    else if (fl & F_OPS) r = runOps(id, load<u32>(OP_OFF + (<usize>id << 2)), f);
     else if (fl & F_IMPL) r = dispatch(id, f);
     else {
       if (!load<u8>(STUB_SEEN + <usize>id)) { store<u8>(STUB_SEEN + <usize>id, 1); ls(); ps("[RED] "); pz(hle_demangled(id), 400); ps(" unimplemented"); le(); }
@@ -160,5 +182,55 @@ export function hle_entropy64(): u64 { return entropy64(); }
 export function hle_errno(): i32 { return getErrno(); }
 // The MiiModel system data stand-in (kind 0 a texture file, 1 a shape file) for the file system's MountSystemData
 export function hle_mii_standin(kind: i32, out: usize, cap: usize): usize { return miiStandin(kind, out, cap); }
+// ---------- controllers, the screen, vibration (hid.ts) ----------
+// One player's whole input: a snapshot of SNAP_SIZE (0x1B0) bytes, layout in hid.ts. player 0..7, or -1 to let the
+// snapshot's source id take (or, when it says disconnected, free) a player slot. Returns the player, -1 for none
+export function hle_input(player: i32, snapshot: usize): i32 { if (!inited) hle_init(); return inputSet(player, snapshot); }
+// What an applet in front of the game sees: out = { u64 buttons, i32 axes[4] }, every player ORed, presses since the last peek included
+export function hle_input_peek(out: usize): void { inputPeek(out); }
+// The game's input is held (on = 1) or given back (0) for a reason: 1 the offline web page (web.ts does it), 2 the
+// controller applet's prompt, 3 the software keyboard's box, 4 the embedder's own. The game reads nothing while any holds
+export function hle_hold(reason: i32, on: i32): void { holdSet(reason, on != 0); }
+export function hle_hold_state(): u32 { return holdMask(); }             // bit r: reason r holds
+// The controller prompt's answer (import hle_ctrl_prompt): 1 enough players joined and OK, 0 the player closed it
+export function hle_ctrl_answer(result: i32): i32 { return ctrlAnswer(result); }
+export function hle_ctrl_state(): u32 { return ctrlPromptState(); }
+// The player slots of the input sources by their stable id: op 0 the slot a source holds, 1 take one (a reconnected
+// source gets its player back), 2 take the lowest free one (press to join), 3 free it, 4 the mask of held slots
+export function hle_pad_slot(op: i32, id: u32): i32 {
+  if (!inited) hle_init();
+  return op == 0 ? padSlotOf(id) : op == 1 ? padSlotTake(id) : op == 2 ? padSlotTakeLowest(id) : op == 3 ? padSlotFree(id) : <i32>padSlotMask();
+}
+export function hle_players_reported(): i32 { return playersSeen(); }    // the players the game sees (a split Joy-Con pair is two)
+export function hle_player_npad(player: i32): u32 { return playerNpad(player); }
+export function hle_npad_style(id: u32): u32 { return npadStyle(id); }
+export function hle_input_samples(): u64 { return inputSamples(); }      // how often the game has sampled the controllers
+export function hle_cheat_keys(): u64 { return cheatKeys(); }            // the cheat VM's key mask
+export function hle_joy_mouse_wanted(): i32 { return mouseWanted(); }
+// Vibration: sink = the embedder plays it (import hle_vibration), enabled = rumble is on; a player's controller has a motor
+export function hle_haptics_init(sink: i32, enabled: i32): void { if (!inited) hle_init(); hapticsInit(sink != 0, enabled != 0); }
+export function hle_haptics_route(player: i32, on: i32): void { hapticsRoute(player, on != 0); }
+export function hle_haptics_enable(on: i32): void { hapticsSetEnabled(on != 0); }
+export function hle_haptics_suspend(reason: u32, on: i32): void { hapticsSuspend(reason, on != 0); }   // 1 inactive, 2 interrupted
+export function hle_haptics_epoch(player: i32): u64 { return hapticsEpoch(player); }
+export function hle_haptics_available(): u32 { return hapticsAvailable(); }
+// The orientation fusion on its own (motion.ts), for the embedder's own sensors and for the tests
+export function hle_motion_map(map: usize, spec: usize): i32 { return mapParse(map, spec) ? 1 : 0; }
+export function hle_motion_reset(state: usize): void { motionReset(state); }
+export function hle_motion_update(state: usize, map: usize, acc: usize, rot: usize, dt: f32, k: f32): void { motionUpdate(state, map, acc, rot, dt, k); }
+export function hle_motion_fill(state: usize, out: usize): void { motionFill(state, out); }
+export function hle_motion_phone(orient: i32, inp: usize, out: usize): void { motionPhoneToSwitch(orient, inp, out); }
+
+// ---------- nn::vi (vi.ts), nn::ro (ro.ts), nn::jit (jit.ts) ----------
+// At each present the game queues: frame = the frame count with it (for ListFrameHistory)
+export function hle_vi_frame_queued(frame: u64): void { viFrameQueued(frame); }
+export function hle_vi_layer_size(): u32 { return viLayerSize(); }       // w | h << 16 of the sized CreateLayer, 0 = none
+export function hle_vi_layer_crop(): u64 { return viLayerCrop(); }       // x | y << 16 | w << 32 | h << 48, 0 = none
+export function hle_vi_native_window(): usize { return viNativeWindow(); }   // what GetNativeWindow hands out
+// An NRO that must never be loaded (an online SDK), by the SHA-256 of its image (32 bytes at sha)
+export function hle_ro_refuse(sha: usize): void { if (!inited) hle_init(); roRefuse(sha); }
+export function hle_ro_loaded(): i32 { return roLoadedCount(); }
+export function hle_jit_envs(): i32 { return jitEnvCount(); }
+export function hle_sha256(p: usize, n: usize, out: usize): void { sha256(p, n, out); }
 // The end of this module's static data, for the embedder's layout check
 export function hle_static_end(): usize { return __heap_base; }

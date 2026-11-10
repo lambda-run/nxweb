@@ -161,14 +161,18 @@ test("a protected symbol binds to its own module's definition (dynsym patched in
   eq(b.u64(slotOf(w.mods[1], "shared_fn", R_JUMP_SLOT)), symAddr(w.mods[1], "shared_fn"), "sdk's call stays in sdk");
 });
 
-test("forced take-over that no module refers to is reported (nxnative force_check)", () => {
-  const b = fresh();
-  b.ld.hostAdd("nobody_calls_this", true);
-  b.ld.hostAdd("nor_this_but_it_is_weak", false);
-  const { set } = loadSet(b, ["main.nso", "sdk.nso"]);
-  eq(set.forcedUnused, 1, "count");
-  ok(b.red().includes("[RED] loader: forced take-over entry with no reference at all: nobody_calls_this"), "red line");
-  ok(!b.red().some(l => l.includes("nor_this")), "the weaker table may have unused entries");
+test("forced take-over that no module refers to is reported (nxnative force_check): one summary line, a red line a name when strict", () => {
+  for (const strict of [false, true]) {
+    const b = fresh();
+    b.ld.forceStrict(strict);
+    b.ld.hostAdd("nobody_calls_this", true);
+    b.ld.hostAdd("nor_this_but_it_is_weak", false);
+    const { set } = loadSet(b, ["main.nso", "sdk.nso"]);
+    eq(set.forcedUnused, 1, "count");
+    eq(b.red().includes("[RED] loader: forced take-over entry with no reference at all: nobody_calls_this"), strict, "the red line (strict only)");
+    eq(b.logs.some(l => /force: 1 entries hit, 1 not referenced by this game$/.test(l)), !strict, "the summary line: " + b.logs.filter(l => l.includes("force")).join(" | "));
+    ok(!b.logs.some(l => l.includes("nor_this")), "the weaker table may have unused entries");
+  }
 });
 
 test("host table: duplicates and bad entries are refused, a full stub region is reported", () => {

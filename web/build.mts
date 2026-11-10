@@ -2,9 +2,9 @@
 // runtime's wasm modules, and the built-in demo (the cube guest, built from test/runtime/src; nothing from any game)
 // with the ratio "guest instructions per budget unit" measured for it here, for the page's instructions readout.
 import { buildSync } from "esbuild";
-import { copyFileSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { ROOT, OUT, GUESTS, build, buildModules, loadEnv, haveNvn } from "../test/runtime/harness.mts";
+import { ROOT, OUT, GUESTS, SHADER_OUT, build, buildModules, loadEnv, haveNvn, shaderArtifacts } from "../test/runtime/harness.mts";
 import { bootGfx } from "../test/runtime/gfx_cases.ts";
 
 export const WEB = join(ROOT, "build", "web");
@@ -13,7 +13,14 @@ export async function buildWeb(): Promise<void> {
   mkdirSync(join(WEB, "wasm"), { recursive: true }); mkdirSync(join(WEB, "demo"), { recursive: true });
   for (const entry of ["main", "worker"]) buildSync({ entryPoints: [`web/${entry}.ts`], bundle: true, format: "iife", outfile: `build/web/${entry}.js`, logLevel: "warning", absWorkingDir: ROOT });
   copyFileSync(join(ROOT, "web", "index.html"), join(WEB, "index.html"));
-  for (const n of ["rt", "kernel", "loader", "translator", "helpers", "gfx"]) copyFileSync(join(OUT, n + ".wasm"), join(WEB, "wasm", n + ".wasm"));
+  buildSync({ entryPoints: ["src/glue/rt_shader_worker.ts"], bundle: true, format: "esm", outfile: "build/web/shader_worker.js", logLevel: "warning", absWorkingDir: ROOT });
+  for (const n of ["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle"]) copyFileSync(join(OUT, n + ".wasm"), join(WEB, "wasm", n + ".wasm"));
+  // the in-page shader translator (the Ryujinx translator as WebAssembly, naga): only when tools/shaders built it
+  rmSync(join(WEB, "shaders"), { recursive: true, force: true });
+  if (shaderArtifacts().translator) {
+    cpSync(join(SHADER_OUT, "xlate_wasm"), join(WEB, "shaders", "xlate_wasm"), { recursive: true });
+    copyFileSync(join(SHADER_OUT, "nx_naga.wasm"), join(WEB, "shaders", "nx_naga.wasm"));
+  } else console.error("web:build: the in-page shader translator is not built (tools/shaders; dotnet, cargo and the nxnative checkout): the page uses shader libraries only");
   if (!haveNvn()) { writeFileSync(join(WEB, "demo", "demo.json"), "{}"); console.error("[RED] web:build: the demo guest needs nxnative's nvn.h and was not built: the demo button will fail"); return; }
   copyFileSync(join(GUESTS, "cube.nso"), join(WEB, "demo", "cube.nso"));
   // the same frames on the null replayer, normally (budget units) and with one instruction per unit

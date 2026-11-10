@@ -1,0 +1,17 @@
+{
+  "id": 0,
+  "name": "six_shake",
+  "doc": "Player 1's controller shaken by a button (port of nxnative dm/host/hle_hid.c: g_shake_on, g_shake_t0, g_shake_end; the embedder's shake bit, bit 63 of a snapshot's buttons). The six-axis sensor moves side to side in whole cycles of 1/6 s on the guest clock, so it always comes back to rest: Press starts a shake (from Finishing it continues the one still finishing), holding keeps shaking, Release lets the current cycle finish (a tap of one frame is still one whole shake), and Settle is offered by the guard once the guest clock has passed that cycle's end. Finishing carries the end time.",
+  "states": ["Rest", "Held", "Finishing"],
+  "initial": "Rest",
+  "data": {
+    "Finishing": { "name": "end", "type": "guest ns at which the last cycle ends" }
+  },
+  "events": ["Press", "Release", "Settle"],
+  "transitions": [
+    ["Rest", "Press", "Held"],
+    ["Held", "Release", "Finishing"],
+    ["Finishing", "Press", "Held"],
+    ["Finishing", "Settle", "Rest"]
+  ]
+}

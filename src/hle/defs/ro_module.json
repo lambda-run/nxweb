@@ -1,0 +1,46 @@
+{
+  "id": 0,
+  "name": "ro_module",
+  "doc": "One module loaded at run time through nn::ro (port of nxnative dm/host/hle_ro.c: module_t.loaded and nn::ro::Module.state; src/hle/ro.ts, 64 slots). Map: LoadModule had the embedder's loader map and relocate the image (import hle_ro_load); no code of it has run. Refuse: the image turned out to be an online SDK (it exports EOS_Platform_Create) and was unmapped again. Ready: nn::ro::Module.state is 1 from here; its init functions run next and the embedder then activates it (hle_ro_activate). Fini: UnloadModule runs its fini functions. Unmap: the loader took it out (hle_ro_unload). A slot is used again by the next load, so a module unloaded and loaded again goes round the same states.",
+  "states": [
+    "Empty",
+    "Mapped",
+    "Loaded",
+    "Finalizing"
+  ],
+  "initial": "Empty",
+  "events": [
+    "Map",
+    "Refuse",
+    "Ready",
+    "Fini",
+    "Unmap"
+  ],
+  "transitions": [
+    [
+      "Empty",
+      "Map",
+      "Mapped"
+    ],
+    [
+      "Mapped",
+      "Refuse",
+      "Empty"
+    ],
+    [
+      "Mapped",
+      "Ready",
+      "Loaded"
+    ],
+    [
+      "Loaded",
+      "Fini",
+      "Finalizing"
+    ],
+    [
+      "Finalizing",
+      "Unmap",
+      "Empty"
+    ]
+  ]
+}
