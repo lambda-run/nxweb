@@ -10,6 +10,7 @@
 import { instantiate, type Naga } from "../../tools/shaders/naga.mts";
 import { convertStage } from "../shaders/convert.ts";
 import { jobFor } from "../shaders/job.ts";
+import type { FixOptions } from "../shaders/spv.ts";
 
 let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null;
 async function start(init: { framework: string; naga: string }) {
@@ -32,8 +33,10 @@ async function translate(key: string, control: Uint8Array, code: Uint8Array) {
   const rc = await dotnet.runMain("xlate_wasm", [`/w/jobs${n}.json`, out]);
   let spv: Uint8Array;
   try { spv = FS.readFile(`${out}/${key}.spv`); } catch { throw new Error(`the translator wrote no SPIR-V (exit ${rc}): ${lines.filter(l => l.includes("[RED]")).join(" | ").replace(/\[RED\] /g, "") || lines.slice(-2).join(" | ")}`); }
+  let res: { sbufs?: FixOptions["sbufs"] } = {};
+  try { res = JSON.parse(FS.readFile(`${out}/${key}.res.json`, { encoding: "utf8" })); } catch { /* not written: no storage buffers to place */ }
   for (const f of [`/w/${key}.bin`, `/w/jobs${n}.json`, `${out}/${key}.spv`, `${out}/${key}.res.json`]) { try { FS.unlink(f); } catch { /* not written */ } }
-  const c = convertStage(naga, spv, { bindings: "nxweb" });
+  const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [] });
   return { wgsl: c.wgsl, reflection: c.reflection };
 }
 // Requests do not come as messages to the Worker itself: the .NET runtime, started in a Worker, never finishes its

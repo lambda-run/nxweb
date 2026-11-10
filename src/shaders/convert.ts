@@ -11,15 +11,16 @@ export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions 
   // WGSL refuses an implicit-derivative sample (textureSample, dpdx) under control flow that differs between pixels; Maxwell code does it freely (a TEX after a
   // predicate), with the derivative then undefined, as on the hardware. The directive turns WGSL's error off for the module
   const wgsl = (f.stage === "fragment" ? "diagnostic(off, derivative_uniformity);\n" : "") + naga.spvToWgsl(f.spv);
-  const cb = f.bindings.filter(b => b.kind === "cbuf"), tex = f.bindings.filter(b => b.kind === "tex");
+  const cb = f.bindings.filter(b => b.kind === "cbuf"), tex = f.bindings.filter(b => b.kind === "tex"), sb = f.bindings.filter(b => b.kind === "storage");
   for (const t of tex) if (t.sampleType === "sint" || t.sampleType === "uint") f.notes.push(`texture slot ${t.reg} is sampled as ${t.sampleType}: src/gfx declares every texture float or depth`);
   const reflection: Reflection = {
     stage: f.stage, entry: "main",
     ubos: cb.map(b => b.reg!).sort((a, b) => a - b),
     textures: tex.map(t => ({ slot: t.reg!, dim: t.dim!, depth: t.sampleType === "depth", ...(t.handle ? { handle: t.handle } : {}) })).sort((a, b) => a.slot - b.slot),
     fixup: f.bindings.some(b => b.kind === "fixup"),
+    ...(sb.length ? { storage: sb.map(b => ({ slot: b.reg!, write: !!b.write })).sort((a, b) => a.slot - b.slot) } : {}),
     uboSize: Object.fromEntries(cb.map(b => [b.reg, b.size ?? 0])),
-    extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank })),
+    extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup", "storage"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank })),
     notes: f.notes,
   };
   if (f.stage === "vertex") { reflection.attributes = f.inputs.map(i => i.location); reflection.attributeTypes = Object.fromEntries(f.inputs.map(i => [i.location, i.type])); }
