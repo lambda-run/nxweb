@@ -114,7 +114,7 @@ the glue only routes. A test guest declares the import with an asm label and the
 npm install; pip install unicorn capstone        # clang with the aarch64 target and ld.lld are needed too
 npm test             # the fast tier: kit, loader, kernel, a64 guest programs (4 configurations), runtime under Node, prepare
 npm run fs:test      # file system; npm run hle:test: take-over table; npm run shaders:test; npm run audio:test
-npm run a64:fuzz     # instruction fuzz against Unicorn (338,000 cases; minutes)
+npm run a64:fuzz     # instruction fuzz against Unicorn (428,000 cases; minutes)
 npm run rt:browser   # the runtime's cases in headless Chromium: WebGPU pixels, the page, OPFS, in-page shaders
 npm run a64:browser  # the translator's gates in Chromium;  npm run fs:browser;  npm run gfx:test (46 scenes)
 npm run audio:browser; npm run prepare:browser         # the real AudioWorklet; the prepare page with OPFS

@@ -80,11 +80,16 @@ await test("literal pools: with a function table, what the functions' PC-relativ
   return scanLines("f", s).join(" | ");
 });
 await test("the answer is the decoder's: words the translator translates and words it does not", () => {
-  const yes = [NOP, RET, 0xD65F0FFF, 0xD73F0921, 0xF8E10002 /* ldaddal */, 0xC8E4FC05 /* casal */, 0x4868FC0A /* caspal */, 0x38BFC001 /* ldaprb */];
+  const yes = [NOP, RET, 0xD65F0FFF, 0xD73F0921, 0xF8E10002 /* ldaddal */, 0xC8E4FC05 /* casal */, 0x4868FC0A /* caspal */, 0x38BFC001 /* ldaprb */,
+    0x1EE22820 /* fadd h0, h1, h2 */, 0x1FC20C20 /* fmadd h0, h1, h2, h3 */, 0x1EE22020 /* fcmp h1, h2 */, 0x1EE70020 /* fmov h0, w1 */,
+    0x1EF80020 /* fcvtzs w0, h1 */, 0x4E421420 /* fadd v0.8h, v1.8h, v2.8h */, 0x0E420C20 /* fmla v0.4h, v1.4h, v2.4h */,
+    0x6EF9F820 /* fsqrt v0.8h, v1.8h */, 0x4F121020 /* fmla v0.8h, v1.8h, v2.h[1] */, 0x0E30C820 /* fmaxnmv h0, v1.4h */];
+  const fp16Rejected = [0x1EE2B820 /* fp16 2-source opcode 11 */, 0x0EC01C20 /* fp16 three-same U0 a1 opc 3 */];
   const no = [SVE1, ERETAA, HVC, MRS_SCTLR, UDF, JUNK, 0xCE608000 /* sha512h */];
   for (const w of yes) if (!scanner.implemented(w)) throw new Error(`0x${w.toString(16)} is said not to be implemented`);
   for (const w of no) if (scanner.implemented(w)) throw new Error(`0x${w.toString(16)} is said to be implemented`);
-  return `${yes.length} + ${no.length} words`;
+  for (const w of fp16Rejected) if (scanner.implemented(w)) throw new Error(`0x${w.toString(16)} (unallocated) is said to be implemented`);
+  return `${yes.length} + ${no.length + fp16Rejected.length} words`;
 });
 
 // ---- the translator's own guests: the .text of every ELF in test/a64/guests/out

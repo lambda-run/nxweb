@@ -26,6 +26,10 @@ function hex(b: Uint8Array, off: number, n: number): string {
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
 const f64 = new Float64Array(1), u64 = new BigUint64Array(f64.buffer);
 function nanEq(a: DataView, b: DataView, off: number, fp: number): boolean {
+  if (fp === 16) {
+    const x = a.getUint16(off, true), y = b.getUint16(off, true);
+    return ((x & 0x7FFF) > 0x7C00 && (y & 0x7FFF) > 0x7C00) || x === y;
+  }
   if (fp === 32) {
     u32[0] = a.getUint32(off, true); const x = f32[0];
     u32[0] = b.getUint32(off, true); const y = f32[0];
