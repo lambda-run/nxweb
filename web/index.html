@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nxweb</title>
+<style>
+  :root { color-scheme: dark; --bg: #11151c; --panel: #1a202b; --line: #2b3444; --text: #d7dde8; --dim: #8b96a8; --red: #ff6b6b; --acc: #6cb6ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header span { color: var(--dim); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button, label.file { background: #263044; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled), label.file:hover { border-color: var(--acc); }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=file] { display: none; }
+  #drop { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 12px; color: var(--dim); flex: 1 1 260px; min-width: 0; }
+  #drop.over { border-color: var(--acc); color: var(--text); }
+  #state { font-weight: 600; padding: 2px 10px; border-radius: 999px; background: #263044; }
+  #state[data-state=Running] { background: #1f4d2e; } #state[data-state=Paused] { background: #57471c; }
+  #state[data-state=Stopped] { background: #3a2530; } #state[data-fault="1"] { background: #6b1f25; }
+  #stage { display: grid; gap: 12px; grid-template-columns: minmax(0, 480px) minmax(0, 1fr); align-items: start; }
+  @media (max-width: 820px) { #stage { grid-template-columns: minmax(0, 1fr); } }
+  canvas { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; display: block; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
+  dt { color: var(--dim); } dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  #log { height: 260px; overflow: auto; font: 12px/1.45 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+  #log .red { color: var(--red); } #log .out { color: #b9e4a0; }
+  small { color: var(--dim); }
+</style>
+<main>
+  <header><h1>nxweb</h1><span>Switch code modules translated to WebAssembly, NVN on WebGPU. You supply the modules; nothing from any game is here.</span></header>
+  <div class="panel row">
+    <button id="demo">Run the built-in demo (spinning cube)</button>
+    <label class="file">NSO files…<input id="files" type="file" multiple></label>
+    <label class="file">Shader library…<input id="shaders" type="file" accept=".json"></label>
+    <div id="drop">or drop NSO files (main first, or a file named main) and an optional shader library (.json) here</div>
+  </div>
+  <div class="panel row">
+    <span>Process</span><span id="state" data-state="Empty">Empty</span><span id="why"></span>
+    <span style="flex:1"></span>
+    <button id="pause" disabled>Pause</button><button id="resume" disabled>Resume</button><button id="stop" disabled>Stop</button>
+  </div>
+  <div id="stage">
+    <div class="panel"><canvas id="canvas" width="480" height="270"></canvas>
+      <small>Pad: arrow keys or WASD = left stick, IJKL = right stick, Z/X/C/V = A/B/X/Y, Enter = Plus; a connected gamepad is read through the Gamepad API.</small></div>
+    <div class="panel"><dl>
+      <dt>Frames per second</dt><dd id="fps">–</dd>
+      <dt>Guest instructions per second</dt><dd id="ips">–</dd>
+      <dt>Budget units per second</dt><dd id="ups">–</dd>
+      <dt>Frames, NVN calls</dt><dd id="frames">–</dd>
+      <dt>Threads waiting outside the guest</dt><dd id="waits">–</dd>
+      <dt>Per frame</dt><dd id="split">–</dd>
+      <dt>Input</dt><dd id="pad">–</dd>
+      <dt>Modules</dt><dd id="mods">–</dd>
+      <dt>Graphics</dt><dd id="gpu">–</dd>
+    </dl></div>
+  </div>
+  <div class="panel"><pre id="log"></pre></div>
+</main>
+<script src="main.js"></script>
+</html>

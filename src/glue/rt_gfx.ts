@@ -15,6 +15,7 @@ export interface GfxOptions {
   // Wall clock only: resolves at the next display frame (requestAnimationFrame). Omitted: frames are paced by time.
   nextFrame?: () => Promise<unknown>;
   onPresent?: (frame: number) => void;
+  unpaced?: boolean;                  // measurements: an acquire waits only for the GPU to finish the previous present
 }
 
 export class RtGfx {
@@ -120,7 +121,8 @@ export class RtGfx {
           cpu.write(k.args, k.saved);
           const vs = this.opts.vsyncNs ?? 16_666_667n;
           let at: bigint | undefined, done: Promise<unknown> | null = null;
-          if (interval > 0 && this.lastAcquireAt >= 0n) {
+          if (this.opts.unpaced) done = this.lastPresentDone;
+          else if (interval > 0 && this.lastAcquireAt >= 0n) {
             if (wall && this.opts.nextFrame) done = this.opts.nextFrame();
             else { at = this.lastAcquireAt + BigInt(interval) * vs; if (!wall) done = this.lastPresentDone; }
           }
@@ -130,7 +132,9 @@ export class RtGfx {
         };
       }
       case "nvnQueuePresentTexture": return cpu => {
+        const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
         const res = this.call(id, cpu.args());
+        if (!this.live) { this.x.gfx_image_event(win, index, 0); this.x.gfx_image_event(win, index, 1); }   // null replayer: queued and shown at once
         this.stats.frames++;
         this.lastPresentDone = this.workDone();
         this.opts.onPresent?.(this.stats.frames);

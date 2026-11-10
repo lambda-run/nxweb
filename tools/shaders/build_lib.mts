@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { load } from "./naga.mts";
+import { load } from "./naga_node.mts";
 import { convertStage } from "../../src/shaders/convert.ts";
 import { writeLibrary, type Reflection } from "../../src/shaders/library.ts";
 

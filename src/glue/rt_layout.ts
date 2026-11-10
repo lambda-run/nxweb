@@ -17,7 +17,10 @@ const SIZES: [name: string, size: number, module: Range["module"] | undefined, w
   ["gfx static",     0x0010_0000, "gfx",     "src/gfx static data (its --memoryBase in build/runtime/gfx.wasm)"],
   ["gfx arena",      0x0200_0000, undefined, "gfx_init(arena, gfx_arena_bytes()): 24 MB today, 32 MB kept"],
   ["file staging",   0x0200_0000, undefined, "NSO/NRO file bytes while the loader needs them"],
-  ["pc map",         0x02CC_0000, undefined, "translator pc map: one u32 per guest instruction of [host stubs lo, + pc map size)"],
+  ["a64 translator", 0x0100_0000, undefined, "src/a64 translator static data and buffers (its --memoryBase, root a64:build script)"],
+  ["a64 helpers",    0x0001_0000, undefined, "src/a64 helpers static data (its --memoryBase)"],
+  ["a64 entry bits", 0x0080_0000, undefined, "translator: 1 bit per instruction of the 256 MB code region (known function entries)"],
+  ["pc map",         0x014B_0000, undefined, "translator pc map: first level (256 KB), zero leaf, then one 64 KB leaf per touched 64 KB of code"],
   ["host stubs",     0x0004_0000, undefined, "loader stub region: 4 bytes (UDF #id) per host function, 65536 stubs"],
 ];
 
@@ -43,6 +46,13 @@ export const GUEST = {
   pcYield: 0xFFFF_FFE0,
 };
 
-// The pc map covers the stub region and the code that follows it
+// The a64 translator's part of the table (src/glue/a64_host.ts, A64Layout). The pc map is two-level and covers the
+// whole 4 GB of guest addresses; its leaves are allocated on demand from the "pc map" range.
+export const A64 = {
+  translatorBase: range("a64 translator").lo, translatorEnd: range("a64 translator").hi,
+  helpersBase: range("a64 helpers").lo, helpersEnd: range("a64 helpers").hi,
+  entryBitsBase: range("a64 entry bits").lo, codeRegionLo: GUEST.codeBase, codeRegionSize: 0x1000_0000,
+  pcmapBase: range("pc map").lo, pcmapEnd: range("pc map").hi,
+};
 export const PCMAP = { base: range("pc map").lo, codeLo: range("host stubs").lo, size: range("pc map").hi - range("pc map").lo };
 export const STUBS = { base: range("host stubs").lo, cap: (range("host stubs").hi - range("host stubs").lo) >>> 2 };

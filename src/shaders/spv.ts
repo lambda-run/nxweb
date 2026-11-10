@@ -188,6 +188,40 @@ function nanTests(c: Ctx) {
   c.m.insts = out;
 }
 
+// 1c. OpUMulExtended / OpSMulExtended (Maxwell IMUL.HI, the translator's MultiplyHigh): naga reads neither. Scalars only, as the translator writes them. The low word is
+// OpIMul; the high word is built from 16-bit halves, and the signed one from the unsigned: hi_s = hi_u - (a < 0 ? b : 0) - (b < 0 ? a : 0)
+function mulExtended(c: Ctx) {
+  const muls = c.m.insts.filter(i => i.op === 151 || i.op === 152);
+  if (!muls.length) return;
+  let at = c.firstFunction(), r;
+  const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
+  const u32 = add(Op.TypeInt, [32, 0], false), i32 = add(Op.TypeInt, [32, 1], false), k16 = add(Op.Constant, [u32, 16], true), kff = add(Op.Constant, [u32, 0xffff], true), k31 = add(Op.Constant, [i32, 31], true);
+  const pair = new Map<number, [number, number]>();   // the struct result -> its two members' ids
+  const out: Inst[] = [];
+  for (const i of c.m.insts) {
+    if (i.op === 151 || i.op === 152) {
+      const st = c.def.get(i.w[0])!, t = c.def.get(st.w[1])!;
+      if (t.op !== Op.TypeInt) throw new Error("an extended multiply of vectors");
+      const signed = i.op === 152, T = t.w[0];
+      const e = (op: number, type: number, ...ops: number[]) => { const id = c.id(); out.push({ op, w: [type, id, ...ops] }); return id; };
+      const U = (x: number) => T === u32 ? x : e(124, u32, x);
+      const a = U(i.w[2]), b = U(i.w[3]);
+      const a0 = e(199, u32, a, kff), a1 = e(194, u32, a, k16), b0 = e(199, u32, b, kff), b1 = e(194, u32, b, k16);
+      const m1 = e(128, u32, e(132, u32, a1, b0), e(194, u32, e(132, u32, a0, b0), k16));
+      const m2 = e(128, u32, e(132, u32, a0, b1), e(199, u32, m1, kff));
+      let hi = e(128, u32, e(128, u32, e(132, u32, a1, b1), e(194, u32, m1, k16)), e(194, u32, m2, k16));
+      if (signed) {
+        const sa = e(124, u32, e(195, i32, T === i32 ? i.w[2] : e(124, i32, i.w[2]), k31)), sb = e(124, u32, e(195, i32, T === i32 ? i.w[3] : e(124, i32, i.w[3]), k31));   // all ones when negative
+        hi = e(130, u32, e(130, u32, hi, e(199, u32, sa, b)), e(199, u32, sb, a));
+      }
+      const lo = e(132, T, i.w[2], i.w[3]);
+      pair.set(i.w[1], [lo, T === u32 ? hi : e(124, T, hi)]);
+    } else if (i.op === Op.CompositeExtract && pair.has(i.w[2])) out.push({ op: 83 /* CopyObject */, w: [i.w[0], i.w[1], pair.get(i.w[2])![i.w[3]]] });
+    else { if (i.op !== Op.Name && i.op !== Op.Decorate && i.w.some((w, k) => k > 0 && pair.has(w)) && i.op >= Op.Load) throw new Error("the result of an extended multiply used whole"); out.push(i); }
+  }
+  c.m.insts = out;
+}
+
 // 2. gl_PerVertex: only the position survives. A write of a point size other than the constant 1, or of any clip or cull distance, is a loss
 function perVertex(c: Ctx): number {
   let posVar = 0;
@@ -460,6 +494,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   if (!stage) throw new Error(`execution model ${model} (geometry, tessellation, task or mesh): WebGPU has no such stage`);
   dropUnused(c); c.index();
   nanTests(c); c.index();
+  mulExtended(c); c.index();
   dropUnreferenced(c); c.index();
   privatizeBoundSizes(c); c.index();
   const posVar = perVertex(c); c.index();

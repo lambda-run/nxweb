@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--nofma", action="store_true")
     ap.add_argument("--strictnan", action="store_true", help="compare NaNs bitwise too")
     ap.add_argument("--nonan", action="store_true", help="translate without the NaN fix-up")
+    ap.add_argument("--shared", action="store_true", help="shared memory: atomic exclusives")
     a = ap.parse_args()
     fuzz_lib.NCASES = a.cases
     import fuzz_classes
@@ -68,7 +69,7 @@ def main():
     t0 = time.time()
 
     def check(batch):
-        cmd = ["node", os.path.join(HERE, "fuzz_run.ts")] + (["--nofma"] if a.nofma else []) + (["--strictnan"] if a.strictnan else []) + (["--nonan"] if a.nonan else []) + [p for _, p in batch]
+        cmd = ["node", os.path.join(HERE, "fuzz_run.ts")] + (["--nofma"] if a.nofma else []) + (["--strictnan"] if a.strictnan else []) + (["--nonan"] if a.nonan else []) + (["--shared"] if a.shared else []) + [p for _, p in batch]
         p = subprocess.run(cmd, capture_output=True, text=True)
         got = {}
         for line in p.stdout.splitlines():

@@ -2,11 +2,11 @@
 // Everything is computed on the full v128; 64-bit and scalar forms then clear the unused part.
 import {
   b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, fc,
-  getX, setX, t32, t64, tf32, tf64, tv, optFma, optNan, gget, G_FPCR, F_VOP,
+  getX, setX, t32, t64, tf32, tf64, tv, optFma, optNan, gget, G_FPCR, F_VOP, mk,
 } from "./emit";
 import { vget, vset, setF, setVint, roundMode, vfpExpand32, vfpExpand64, minMaxNum, rmodeTest, nanFixS } from "./fp";
 
-const SH = new StaticArray<u8>(16);
+const SH = mk<u8>(16);
 function shuffle(): void { simd(0x0D); for (let i = 0; i < 16; i++) b(SH[i]); }
 // integer lane op: base 0x60 + 0x20 * sz
 // @ts-ignore

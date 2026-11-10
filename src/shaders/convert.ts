@@ -8,7 +8,9 @@ export interface Converted { wgsl: string; reflection: Reflection; bindings: Bin
 
 export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions = {}): Converted {
   const f = fixForWgsl(spv, opts);
-  const wgsl = naga.spvToWgsl(f.spv);
+  // WGSL refuses an implicit-derivative sample (textureSample, dpdx) under control flow that differs between pixels; Maxwell code does it freely (a TEX after a
+  // predicate), with the derivative then undefined, as on the hardware. The directive turns WGSL's error off for the module
+  const wgsl = (f.stage === "fragment" ? "diagnostic(off, derivative_uniformity);\n" : "") + naga.spvToWgsl(f.spv);
   const cb = f.bindings.filter(b => b.kind === "cbuf"), tex = f.bindings.filter(b => b.kind === "tex");
   for (const t of tex) if (t.sampleType === "sint" || t.sampleType === "uint") f.notes.push(`texture slot ${t.reg} is sampled as ${t.sampleType}: src/gfx declares every texture float or depth`);
   const reflection: Reflection = {

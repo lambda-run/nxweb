@@ -4,7 +4,7 @@
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
 import { A64Host } from "./a64_host.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
-import { RANGES, HOST_END, GUEST, PCMAP, STUBS, range } from "./rt_layout.ts";
+import { RANGES, HOST_END, GUEST, PCMAP, STUBS, A64, range } from "./rt_layout.ts";
 
 export interface RuntimeModules {
   rt: WebAssembly.Module; kernel: WebAssembly.Module; loader: WebAssembly.Module;
@@ -166,7 +166,7 @@ export class Runtime {
     if (this.k.kernel_init(0) !== 0) throw new Error("runtime: kernel_init refused the default layout");
 
     this.a64 = new A64Host(mods.translator, mods.helpers, {
-      memory: this.memory, pcmapBase: PCMAP.base, codeLo: PCMAP.codeLo, mapSize: PCMAP.size,
+      memory: this.memory, layout: A64,
       maxInsns: opts.maxInsns, maxFuncs: opts.maxFuncs, depthLimit: opts.depthLimit, tailCalls: opts.tailCalls, fma: opts.fma, nanFix: opts.nanFix,
       onTranslate: (pc: bigint) => this.onTranslate(pc),
       imports: {
@@ -182,7 +182,7 @@ export class Runtime {
     this.thunk = this.a64.table.length;
     this.a64.table.grow(1);
     this.a64.table.set(this.thunk, thunk);
-    new Uint32Array(this.memory.buffer, PCMAP.base + (STUBS.base - PCMAP.codeLo), STUBS.cap).fill(this.thunk);
+    this.a64.fillPcMap(STUBS.base, STUBS.cap, this.thunk);
   }
 
   // ---- memory ----
@@ -201,7 +201,7 @@ export class Runtime {
     RANGES.forEach((g, i) => { dv.setBigUint64(p + 16 * i, BigInt(g.lo), true); dv.setBigUint64(p + 16 * i + 8, BigInt(g.hi), true); });
     let bad = this.r.rt_ranges_check(p, RANGES.length, BigInt(HOST_END));
     const ends: Record<string, number> = { rt: this.r.rt_static_end() >>> 0, loader: lx.ld_heap_base() >>> 0, kernel: this.k.kernel_static_end() >>> 0 };
-    RANGES.forEach((g, i) => { if (g.module) bad |= this.r.rt_static_check(i, BigInt(g.lo), BigInt(g.hi), BigInt(ends[g.module])); });
+    RANGES.forEach((g, i) => { if (g.module && ends[g.module] !== undefined) bad |= this.r.rt_static_check(i, BigInt(g.lo), BigInt(g.hi), BigInt(ends[g.module])); });
     if (bad) throw new Error("runtime: the shared memory layout is not sound: " + this.red.join("; "));
   }
 
@@ -374,7 +374,6 @@ export class Runtime {
     }
     try {
       const idx = this.a64.translateUnit([pc])[0];
-      if (p - PCMAP.codeLo >= PCMAP.size) this.far.set(p, idx);
       return idx;
     } catch (e) {
       this.fault(FAULT.jump, `no translatable code at ${hex(pc)}: ${e instanceof Error ? e.message : e}`, pc);

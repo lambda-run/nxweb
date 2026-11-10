@@ -4,7 +4,8 @@
 //                           [--notail] [--depth N] [--speed] [--quiet] [--dir DIR]
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { runGuest, defaultOpts, speedLine, totalLine, type Result } from "./guest_core.ts";
+import { runGuest, defaultOpts, speedLine, totalLine, cacheKey, type Result } from "./guest_core.ts";
+import { nodeFileStore } from "./cache_node.ts";
 
 const root = new URL("../../", import.meta.url).pathname;
 const argv = process.argv.slice(2);
@@ -22,15 +23,20 @@ o.fma = !argv.includes("--nofma");
 o.nanFix = !argv.includes("--nonan");
 o.tailCalls = !argv.includes("--notail");
 o.rmodeArith = !argv.includes("--normarith");
+o.shared = argv.includes("--shared");
+o.cntYield = argv.includes("--cntyield");
+o.preciseFaults = Number(opt("--precise", "0")) as 0 | 1 | 2;
 const only = opt("--only") ? new RegExp(opt("--only")!) : null;
+const store = opt("--cache") ? nodeFileStore(opt("--cache")!) : null;   // translation cache directory
 const speed = argv.includes("--speed");
 const quiet = argv.includes("--quiet");
-const translator = new WebAssembly.Module(readFileSync(join(root, "build/a64/translator.wasm")));
-const helpers = new WebAssembly.Module(readFileSync(join(root, "build/a64/helpers.wasm")));
+const sfx = o.shared ? ".shared.wasm" : ".wasm";
+const translator = new WebAssembly.Module(readFileSync(join(root, "build/a64/translator" + sfx)));
+const helpers = new WebAssembly.Module(readFileSync(join(root, "build/a64/helpers" + sfx)));
 
 const dirs = opt("--dir") ? [opt("--dir")!] : [join(root, "test/guests/out"), join(root, "test/a64/guests/out")].filter(existsSync);
 const results: Result[] = [];
-if (!quiet) console.log(`budget=${o.budget} maxInsns=${o.maxInsns} maxFuncs=${o.maxFuncs} fma=${o.fma} nanFix=${o.nanFix} tailCalls=${o.tailCalls} depthLimit=${o.depthLimit}`);
+if (!quiet) console.log(`budget=${o.budget} maxInsns=${o.maxInsns} maxFuncs=${o.maxFuncs} fma=${o.fma} nanFix=${o.nanFix} tailCalls=${o.tailCalls} depthLimit=${o.depthLimit} shared=${o.shared} cntYield=${o.cntYield} preciseFaults=${o.preciseFaults}`);
 for (const dir of dirs) {
   for (const f of readdirSync(dir).filter(f => f.endsWith(".json") && f !== "manifest.json").sort()) {
     if (only && !only.test(f)) continue;
@@ -38,11 +44,16 @@ for (const dir of dirs) {
     const name = f.replace(/\.json$/, "");
     try {
       const side = JSON.parse(readFileSync(join(dir, f), "utf8"));
-      r = runGuest(translator, helpers, name, side, readFileSync(join(dir, side.image)), readFileSync(join(dir, side.expected_stdout)), o);
+      const image = readFileSync(join(dir, side.image));
+      const key = store ? await cacheKey(image, side, o) : "";
+      const blob = store ? await store.get(key) : null;
+      r = runGuest(translator, helpers, name, side, image, readFileSync(join(dir, side.expected_stdout)), { ...o, cacheIn: blob, wantCache: !!store && !blob });
+      if (store && !blob && r.cacheBlob && r.ok) await store.put(key, r.cacheBlob);
+      if (store) r.name += blob ? " (warm)" : " (cold)";
     } catch (e) { r = { name, ok: false, why: "runner: " + String(e), insns: 0, runMs: 0, trMs: 0, trOnlyMs: 0, trInsns: 0, funcs: 0, bytes: 0, slices: 0, tableLen: 0 }; }
     results.push(r);
     if (speed) console.log(speedLine(r));
-    if (argv.includes("--mem")) console.log(`     modules=${r.modules} largest=${r.maxModule} B total wasm=${r.bytes} B (${(r.bytes / Math.max(1, r.trInsns)).toFixed(1)} B/insn) table=${r.tableLen} translator memory=${((r.trMem ?? 0) / 1048576).toFixed(0)} MB process rss=${(process.memoryUsage().rss / 1048576).toFixed(0)} MB`);
+    if (argv.includes("--mem")) console.log(`     modules=${r.modules} largest=${r.maxModule} B total wasm=${r.bytes} B (${(r.bytes / Math.max(1, r.trInsns)).toFixed(1)} B/insn) table=${r.tableLen} translator memory=${((r.trMem ?? 0) / 1048576).toFixed(1)} MB pc map=${((r.pcMapBytes ?? 0) / 1024).toFixed(0)} KB process rss=${(process.memoryUsage().rss / 1048576).toFixed(0)} MB cache hits=${r.cacheHits}${r.cacheBlob ? " cache blob=" + r.cacheBlob.length + " B" : ""}`);
     else if (!quiet || !r.ok) console.log(`${r.ok ? "ok  " : "[RED] FAIL"} ${r.name}${r.ok ? "" : "  " + r.why}`);
   }
 }

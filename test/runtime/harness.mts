@@ -21,6 +21,12 @@ export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
   fault_jump: ["fault.c", "-DMODE=1"], fault_undef: ["fault.c", "-DMODE=2"], fault_load: ["fault.c", "-DMODE=3"], fault_stack: ["fault.c", "-DMODE=4"], break: ["fault.c", "-DMODE=5"],
 };
 
+// nxnative's nvn.h is not in this repository: the graphics guests include it from the reference clone
+// (NXNATIVE_NVN_INCLUDE overrides the directory). Without it they are not built and their tests are skipped.
+export const NVN_INCLUDE = process.env.NXNATIVE_NVN_INCLUDE ?? "/home/user/nxnative/dm/gfx/nvn/include";
+export const GFX_MODULES: Record<string, string> = { cube: "cube.c", cube2: "cube2.c" };
+export const haveNvn = (): boolean => existsSync(join(NVN_INCLUDE, "nvn.h"));
+
 export function buildModules(): void {
   mkdirSync(GUESTS, { recursive: true });
   const o = (n: string) => join(GUESTS, n);
@@ -28,6 +34,12 @@ export function buildModules(): void {
   run("clang", [...CFLAGS, "-c", join(SRC, "svc.S"), "-o", o("svc.o")]);
   for (const [name, [src, ...flags]] of Object.entries(MODULES)) {
     run("clang", [...CFLAGS, ...flags, "-c", join(SRC, src), "-o", o(name + ".o")]);
+    run("ld.lld", [...LDFLAGS, o("crt0.o"), o(name + ".o"), o("svc.o"), "-o", o(name + ".so")]);
+    run("python3", [join(ROOT, "tools", "elf2nso.py"), o(name + ".so"), o(name + ".nso"), "--lz4"]);
+  }
+  if (!haveNvn()) { console.error(`[RED] rt: ${join(NVN_INCLUDE, "nvn.h")} not found (set NXNATIVE_NVN_INCLUDE): the graphics guests are not built and their tests are skipped`); return; }
+  for (const [name, src] of Object.entries(GFX_MODULES)) {
+    run("clang", [...CFLAGS, "-I", NVN_INCLUDE, "-c", join(SRC, src), "-o", o(name + ".o")]);
     run("ld.lld", [...LDFLAGS, o("crt0.o"), o(name + ".o"), o("svc.o"), "-o", o(name + ".so")]);
     run("python3", [join(ROOT, "tools", "elf2nso.py"), o(name + ".so"), o(name + ".nso"), "--lz4"]);
   }
@@ -45,8 +57,9 @@ export function loadEnv(): Env {
     return { name, side, image: new Uint8Array(readFileSync(join(dir, side.image))), expected: new Uint8Array(readFileSync(join(dir, side.expected_stdout))) };
   });
   return {
-    mods: { rt: mod("rt"), kernel: mod("kernel"), loader: mod("loader"), translator: mod("translator"), helpers: mod("helpers") },
+    mods: { rt: mod("rt"), kernel: mod("kernel"), loader: mod("loader"), translator: mod("translator"), helpers: mod("helpers"), gfx: mod("gfx") },
     nso: name => new Uint8Array(readFileSync(join(GUESTS, name + ".nso"))),
+    haveGfxGuests: haveNvn(),
     corpus,
     rssMb: () => process.memoryUsage().rss / 1e6,
   };

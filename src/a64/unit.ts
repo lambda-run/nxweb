@@ -8,15 +8,15 @@ import {
   locTy, nLoc, regLocalRaw, resetLocals, newLocal, L_STATE, L_BUD,
   EV_R, EV_W, EV_WB, EV_RELOAD, evBuf, nEv, insPos, insKind, insMI, insMV, nIns, fbBase, overflow,
   rollback, blkPc, succ0, succ1, nBlk, setNBlk, setCurBlk, term, setTerm, gotoPc, emitTrap,
-  fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, beginFunction, FB_CAP, optChunk, fnLimit,
+  fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, balloc, ballocEnd, mk, beginFunction, FB_CAP, optChunk, fnLimit,
 } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
 
 // ---------------------------------------------------------------------------------------------
 const HDR_MAX: usize = 128 << 10;
-const CS_CAP: usize = 12 << 20;
-const SIDE_CAP: i32 = 500000;      // instructions per unit in the offset -> pc side table
+const CS_CAP: usize = 8 << 20;
+const SIDE_CAP: i32 = 250000;      // instructions per unit in the offset -> pc side table
 const REC_CAP: i32 = 8192;
 let sidePtr: usize = 0;            // unit side table: (code offset: u32, guest pc: u32) per instruction
 let nSide: i32 = 0;
@@ -34,16 +34,16 @@ let unitInsns: u32 = 0;
 
 export function init(): void {
   initEmit();
-  csBase = heap.alloc(CS_CAP);
-  hdrTmp = heap.alloc(HDR_MAX);
-  entryPtr = heap.alloc(ENTRY_CAP * 8);
-  metaPtr = heap.alloc(16 + 4096 * 9);
-  sidePtr = heap.alloc(<usize>SIDE_CAP * 8);
-  recPtr = heap.alloc(<usize>REC_CAP * 8);
+  csBase = balloc(CS_CAP);
+  hdrTmp = balloc(HDR_MAX);
+  entryPtr = balloc(ENTRY_CAP * 8);
+  metaPtr = balloc(16 + 4096 * 9);
+  sidePtr = balloc(<usize>SIDE_CAP * 8);
+  recPtr = balloc(<usize>REC_CAP * 8);
 }
 export function sideBuf(): usize { return sidePtr; }
 // end of everything this module keeps in the shared memory (static data + buffers)
-export function staticEnd(): usize { return heap.alloc(16); }
+export function staticEnd(): usize { return ballocEnd(); }
 export function staticBase(): usize { return <usize>ASC_MEMORY_BASE; }
 export function entryBuf(): usize { return entryPtr; }
 export function metaBuf(): usize { return metaPtr; }
@@ -85,10 +85,10 @@ function secEnd(at: usize): void { patch5(at, <u32>(P - at - 5)); }
 // ---------------------------------------------------------------------------------------------
 // discovery
 const WL_CAP = 8192;
-const wl = new StaticArray<u64>(WL_CAP);
+const wl = mk<u64>(WL_CAP);
 let wlN: i32 = 0;
 const TOUCH_CAP = 65536;
-const touched = new StaticArray<u64>(TOUCH_CAP);
+const touched = mk<u64>(TOUCH_CAP);
 let nTouched: i32 = 0;
 let minPc: u64 = 0, maxPc: u64 = 0;
 
@@ -195,11 +195,11 @@ export function probe(insn: u32): i32 {
 
 // analysis state
 const BLK_CAP = 16384;
-const evStart = new StaticArray<i32>(BLK_CAP + 1);
-const dI = new StaticArray<u64>(BLK_CAP);
-const dV = new StaticArray<u32>(BLK_CAP);
-const nI = new StaticArray<u64>(BLK_CAP);
-const nV = new StaticArray<u32>(BLK_CAP);
+const evStart = mk<i32>(BLK_CAP + 1);
+const dI = mk<u64>(BLK_CAP);
+const dV = mk<u32>(BLK_CAP);
+const nI = mk<u64>(BLK_CAP);
+const nV = mk<u32>(BLK_CAP);
 
 function analyse(): void {
   let n = nBlk;

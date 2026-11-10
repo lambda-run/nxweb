@@ -104,6 +104,10 @@
   "file": "storage_buffer.frag"
  },
  {
+  "name": "switch_fallthrough",
+  "file": "switch_fallthrough.frag"
+ },
+ {
   "name": "tex_1d",
   "file": "tex_1d.frag"
  },
@@ -150,6 +154,10 @@
  {
   "name": "tex_types",
   "file": "tex_types.frag"
+ },
+ {
+  "name": "tex_uint_filtered",
+  "file": "tex_uint_filtered.frag"
  },
  {
   "name": "ubo_const_index",

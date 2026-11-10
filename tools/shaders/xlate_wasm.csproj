@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>full</TrimMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../dmsh_xlate/Program.cs" />
+    <ProjectReference Include="../../../third_party/ryujinx/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
+    <ProjectReference Include="../../../third_party/ryujinx/src/Ryujinx.Common/Ryujinx.Common.csproj" />
+    <EmbeddedResource Include="../dmsh_xlate/Program.cs" LogicalName="src0" />
+    <EmbeddedResource Include="../dmsh_xlate/dmsh_xlate.csproj" LogicalName="src1" />
+  </ItemGroup>
+</Project>

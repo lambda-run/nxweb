@@ -3,6 +3,26 @@
 // write-back / reload analysis, and the control-flow protocol helpers.
 
 // ---------------------------------------------------------------------------------------------
+// memory: this module lives in the embedder's linear memory (asc --importMemory --memoryBase). Everything it
+// keeps there is static data plus what this bump allocator hands out at start; nothing is allocated later and
+// the memory is never grown from here (the stub runtime's allocator is not used: it mis-computes on a 4 GB memory).
+let bump: usize = 0;
+export function balloc(size: usize): usize {
+  if (bump == 0) bump = (__heap_base + 15) & ~15;
+  let p = bump;
+  bump += (size + 15) & ~15;
+  return p;
+}
+export function ballocEnd(): usize { return bump; }
+// a StaticArray laid out by hand (the 16-byte object header only needs its byte length); relies on zeroed memory
+export function mk<T>(n: i32): StaticArray<T> {
+  let bytes = <usize>n << alignof<T>();
+  let p = balloc(bytes + 16) + 16;
+  store<u32>(p - 4, <u32>bytes);
+  return changetype<StaticArray<T>>(p);
+}
+
+// ---------------------------------------------------------------------------------------------
 // options
 export let optPcmapBase: u32 = 0;   // address of the pc map's first level (65536 u32 leaf addresses, one per 64 KB of guest address space)
 export let optEntryBase: u32 = 0;   // address of the entry bitmap (1 bit per instruction of the code region)
@@ -44,8 +64,8 @@ export function setOpt(id: i32, v: u32): void {
 // guest code: read straight from the shared linear memory. Code ranges are registered by the glue
 // (addRange / removeRange); a function and everything discovered from it stay inside one range.
 const RANGE_CAP = 64;
-const rLo = new StaticArray<u64>(RANGE_CAP);
-const rHi = new StaticArray<u64>(RANGE_CAP);
+const rLo = mk<u64>(RANGE_CAP);
+const rHi = mk<u64>(RANGE_CAP);
 let nRanges: i32 = 0;
 export let curLo: u64 = 0;
 export let curHi: u64 = 0;
@@ -79,13 +99,13 @@ export function isEntry(pc: u64): bool { return inRegion(pc) && ((load<u8>(ebyte
 export function setEntry(pc: u64): void {
   if (!inRegion(pc) || (pc & 3) != 0) return;
   let p = ebyte(pc);
-  store<u8>(p, load<u8>(p) | (<u8>1 << (<u32>((pc - optRegionLo) >> 2) & 7)));
+  store<u8>(p, <u8>(<u32>load<u8>(p) | (<u32>1 << (<u32>((pc - optRegionLo) >> 2) & 7))));
 }
 function clearEntries(lo: u64, hi: u64): void {
   for (let pc = lo; pc < hi; pc += 4) {
     if (!inRegion(pc)) continue;
     let p = ebyte(pc);
-    store<u8>(p, load<u8>(p) & ~(<u8>1 << (<u32>((pc - optRegionLo) >> 2) & 7)));
+    store<u8>(p, <u8>(<u32>load<u8>(p) & ~(<u32>1 << (<u32>((pc - optRegionLo) >> 2) & 7))));
   }
 }
 export function isDone(pc: u64): bool {
@@ -222,10 +242,10 @@ export const T_V128: u8 = 0x7B;
 
 // locals
 const MAXLOC = 1024;
-export const locTy = new StaticArray<u8>(MAXLOC);
+export const locTy = mk<u8>(MAXLOC);
 export let nLoc: u32 = 0;
-const regLoc = new StaticArray<i32>(NREG);
-const tmpLoc = new StaticArray<i32>(5 * 16);
+const regLoc = mk<i32>(NREG);
+const tmpLoc = mk<i32>(5 * 16);
 export const L_STATE: u32 = 0;
 export const L_BUD: u32 = 1;
 export const L_DEPTH: u32 = 2;
@@ -257,16 +277,16 @@ export const EV_W: u32 = 1;
 export const EV_WB: u32 = 2;
 export const EV_RELOAD: u32 = 3;
 const EV_CAP = 1 << 18;
-export const evBuf = new StaticArray<u32>(EV_CAP);
+export const evBuf = mk<u32>(EV_CAP);
 export let nEv: i32 = 0;
 const INS_CAP = 1 << 15;
-export const insPos = new StaticArray<u32>(INS_CAP);
-export const insKind = new StaticArray<u8>(INS_CAP);
-export const insMI = new StaticArray<u64>(INS_CAP);
-export const insMV = new StaticArray<u32>(INS_CAP);
+export const insPos = mk<u32>(INS_CAP);
+export const insKind = mk<u8>(INS_CAP);
+export const insMI = mk<u64>(INS_CAP);
+export const insMV = mk<u32>(INS_CAP);
 export let nIns: i32 = 0;
 export let fbBase: usize = 0;
-export const FB_CAP: usize = 3 << 20;
+export const FB_CAP: usize = 2 << 20;
 export let ifDepth: i32 = 0;
 export let overflow: bool = false;
 
@@ -407,9 +427,9 @@ export function emitCond(cond: u32): void {
 // ---------------------------------------------------------------------------------------------
 // blocks of the current function
 const BLK_CAP = 16384;
-export const blkPc = new StaticArray<u64>(BLK_CAP);
-export const succ0 = new StaticArray<i32>(BLK_CAP);
-export const succ1 = new StaticArray<i32>(BLK_CAP);
+export const blkPc = mk<u64>(BLK_CAP);
+export const succ0 = mk<i32>(BLK_CAP);
+export const succ1 = mk<i32>(BLK_CAP);
 export let nBlk: i32 = 0;
 export let curBlk: i32 = 0;
 export let term: bool = false;   // current instruction ended the block (no fallthrough)
@@ -429,9 +449,9 @@ function addSucc(j: i32): void {
 // unit function registry (pc -> function index, open-addressing hash)
 const FN_CAP = 4096;
 const HSZ = 16384;
-export const fnPc = new StaticArray<u64>(FN_CAP);
-const hKey = new StaticArray<u64>(HSZ);   // pc + 1, 0 = empty
-const hVal = new StaticArray<u16>(HSZ);
+export const fnPc = mk<u64>(FN_CAP);
+const hKey = mk<u64>(HSZ);   // pc + 1, 0 = empty
+const hVal = mk<u16>(HSZ);
 export let nFn: i32 = 0;
 export let fnLimit: i32 = 0;
 export function resetFns(): void {
@@ -562,8 +582,8 @@ export function emitTrap(fn: u32, pc: u64, arg: u32): void {
 // ---------------------------------------------------------------------------------------------
 export function resetLocals(): void { nLoc = 0; }
 export function initEmit(): void {
-  fbBase = heap.alloc(FB_CAP);
-  markBase = heap.alloc(<usize>(2 * WINDOW / 4) * 2);
+  fbBase = balloc(FB_CAP);
+  markBase = balloc(<usize>(2 * WINDOW / 4) * 2);
   memory.fill(markBase, 0, <usize>(2 * WINDOW / 4) * 2);
 }
 export function beginFunction(): void {

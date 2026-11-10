@@ -14,7 +14,6 @@ stateDiagram-v2
     Clean --> Dirty: Write
     Dirty --> Dirty: Write
     Poisoned --> Poisoned: Write
-    Clean --> Poisoned: WriteFailed
     Dirty --> Poisoned: WriteFailed
     Poisoned --> Poisoned: WriteFailed
     Clean --> Clean: Commit
@@ -49,7 +48,6 @@ Machine id 7. Any (state, event) pair not listed below is refused: the state sta
 | Clean | Write (4) | Dirty |
 | Dirty | Write (4) | Dirty |
 | Poisoned | Write (4) | Poisoned |
-| Clean | WriteFailed (5) | Poisoned |
 | Dirty | WriteFailed (5) | Poisoned |
 | Poisoned | WriteFailed (5) | Poisoned |
 | Clean | Commit (6) | Clean |

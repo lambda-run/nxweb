@@ -1,5 +1,5 @@
 // naga as WebAssembly (tools/shaders/naga_wasm, built by `npm run shaders:naga` into build/shaders/nx_naga.wasm): SPIR-V -> WGSL.
-// instantiate() takes the module's bytes, so a page can use it as it is; load() is the Node convenience.
+// instantiate() takes the module's bytes, so a page can use it as it is; tools/shaders/naga_node.mts loads the file in Node.
 export interface Naga { spvToWgsl(spv: Uint8Array, flags?: number): string }
 export async function instantiate(wasm: BufferSource): Promise<Naga> {
   const { instance } = await WebAssembly.instantiate(wasm, {});
@@ -17,8 +17,4 @@ export async function instantiate(wasm: BufferSource): Promise<Naga> {
       return text;
     },
   };
-}
-export async function load(path = new URL("../../build/shaders/nx_naga.wasm", import.meta.url)): Promise<Naga> {
-  const { readFile } = await import("node:fs/promises");
-  return instantiate(await readFile(path));
 }

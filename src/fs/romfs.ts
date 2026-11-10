@@ -42,7 +42,8 @@ export function imgOf(kind: i32, index: i64): i32 {
   const m = img(nImg);
   memory.fill(changetype<usize>(m), 0, 128);
   m.inst.init(FS_IMAGE, nImg); m.kind = kind; m.index = index; m.dev = -1; m.used = 1;
-  return <i32>nImg++;
+  nImg++;
+  return <i32>nImg - 1;
 }
 
 // ---- table access (offsets are checked at load) ----
@@ -127,8 +128,8 @@ export function imgHdrSize(): u32 { return HDR_SIZE; }
 export function imgHeader(m: Img): bool {
   const h = m.hdr, size = m.devSize;
   if (load<u64>(h) != HDR_SIZE) return bad(m, "the header size is not 0x50", load<u64>(h));
-  for (let i = 0; i < 4; i++) {
-    const off = load<u64>(h, 8 + 16 * i), len = load<u64>(h, 16 + 16 * i);
+  for (let i: usize = 0; i < 4; i++) {
+    const off = load<u64>(h + 8 + 16 * i), len = load<u64>(h + 16 + 16 * i);
     if (off < HDR_SIZE || off > size || len > size - off) return bad(m, "a table lies outside the image", off);
     if (len > 0x7FFFFFF0 || (off & 3) || (len & 3)) return bad(m, "a table's size or alignment is impossible", len);
   }
@@ -141,7 +142,7 @@ export function imgHeader(m: Img): bool {
   if (dmS < 0x18) return bad(m, "there is no root directory");
   if (fmS && fhS < 4) return bad(m, "files without a file hash table");
   m.dhN = dhS / 4; m.dmSize = dmS; m.fhN = fhS / 4; m.fmSize = fmS;
-  m.dh = alloc(dhS); m.dm = alloc(dmS); m.fh = alloc(fhS ? fhS : 4); m.fm = alloc(fmS ? fmS : 4);
+  m.dh = alloc(dhS); m.dm = alloc(dmS); m.fh = alloc(fhS ? <usize>fhS : 4); m.fm = alloc(fmS ? <usize>fmS : 4);
   if (!m.dh || !m.dm || !m.fh || !m.fm) { imgDrop(m); return bad(m, "the arena has no room for its tables", <u64>dhS + dmS + fhS + fmS); }
   return true;
 }
@@ -154,9 +155,9 @@ export function imgDrop(m: Img): void {
 }
 
 // @ts-ignore: decorator
-@inline function bit(map: usize, off: u32): bool { return (load<u8>(map + (off >> 5)) & (1 << ((off >> 2) & 7))) != 0; }
+@inline function bit(map: usize, off: u32): bool { return ((<u32>load<u8>(map + (off >> 5)) >> ((off >> 2) & 7)) & 1) != 0; }
 // @ts-ignore: decorator
-@inline function setBit(map: usize, off: u32): void { const p = map + (off >> 5); store<u8>(p, load<u8>(p) | (1 << ((off >> 2) & 7))); }
+@inline function setBit(map: usize, off: u32): void { const p = map + (off >> 5); store<u8>(p, load<u8>(p) | (<u8>1 << <u8>((off >> 2) & 7))); }
 function nameOk(p: usize, n: u32): bool {
   if (n == 0 || n > 0x300) return false;
   if (n == 1 && load<u8>(p) == 46) return false;
@@ -169,7 +170,7 @@ function scan(tab: usize, size: u32, fixed: u32, map: usize, root: bool): i32 {
   let p: u32 = 0, n: i32 = 0;
   while (p < size) {
     if (size - p < fixed) return -1;
-    const len = load<u32>(tab + p, fixed - 4);
+    const len = load<u32>(tab + p + fixed - 4);
     if (len > 0x300) return -1;
     const step = fixed + ((len + 3) & ~3);
     if (step > size - p) return -1;

@@ -10,6 +10,7 @@ export interface Env {
   nso(name: string): Uint8Array;        // build/runtime/guests/<name>.nso
   corpus: CorpusGuest[];                // test/guests/out
   rssMb?: () => number;                 // resident memory of the process, when the host can tell
+  haveGfxGuests?: boolean;              // cube.nso and cube2.nso were built (they need nxnative's nvn.h)
 }
 export interface Case { name: string; fn: () => string[] }   // returns lines to print under the test; throws on failure
 export interface CaseResult { name: string; ok: boolean; why: string; info: string[]; ms: number }
@@ -48,8 +49,8 @@ export function cases(env: Env): Case[] {
     const ends: Record<string, number> = { rt: rt.r.rt_static_end() >>> 0, loader: rt.ld.x.ld_heap_base() >>> 0, kernel: rt.k.kernel_static_end() >>> 0 };
     const lines = RANGES.map(g => {
       const end = g.module ? ends[g.module] : 0;
-      if (g.module) ok(end > g.lo && end <= g.hi, `${g.name}: static end ${hex(end)} outside ${hex(g.lo)}..${hex(g.hi)}`);
-      return `${g.name.padEnd(14)} ${hex(g.lo).padStart(10)} .. ${hex(g.hi).padStart(10)}${g.module ? `  static data ends at ${hex(end)} (${((end - g.lo) / 1024).toFixed(0)} KiB of ${((g.hi - g.lo) / 1024).toFixed(0)})` : ""}`;
+      if (g.module && end) ok(end > g.lo && end <= g.hi, `${g.name}: static end ${hex(end)} outside ${hex(g.lo)}..${hex(g.hi)}`);
+      return `${g.name.padEnd(14)} ${hex(g.lo).padStart(10)} .. ${hex(g.hi).padStart(10)}${g.module && end ? `  static data ends at ${hex(end)} (${((end - g.lo) / 1024).toFixed(0)} KiB of ${((g.hi - g.lo) / 1024).toFixed(0)})` : ""}`;
     });
     eq(RANGES[0].lo, 0, "first range"); eq(RANGES.at(-1)!.hi, HOST_END, "last range");
     eq(rt.memory.buffer.byteLength, HOST_END, "initial memory is the host area only");

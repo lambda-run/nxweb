@@ -62,7 +62,8 @@ export function saveOf(kind: i32, index: i64): i32 {
   s.inst.init(FS_SAVE, nSave); s.kind = kind; s.index = index; s.dev = -1; s.used = 1;
   s.txn = <u8>(kind != KIND_TEMP); s.strict = <u8>(kind == KIND_SAVE || kind == KIND_DEVICE_SAVE);
   s.nodeFree = -1;
-  return <i32>nSave++;
+  nSave++;
+  return <i32>nSave - 1;
 }
 export function saveFind(kind: i32, index: i64): i32 {
   for (let i: u32 = 0; i < nSave; i++) { const s = save(i); if (s.kind == kind && s.index == index) return <i32>i; }
@@ -121,7 +122,7 @@ function nodesGrow(s: Save, cap: u32): bool {
 // A new node under parent (name copied into the arena); -1 when the arena is full
 function nodeNew(s: Save, parent: i32, type: u8, name: usize, len: u32): i32 {
   if (s.nodeFree < 0 && !nodesGrow(s, s.nodeCap ? s.nodeCap * 2 : 64)) return -1;
-  const nm = alloc(len ? len : 1);
+  const nm = alloc(len ? <usize>len : 1);
   if (!nm) return -1;
   memory.copy(nm, name, len);
   const n = s.nodeFree, p = np(s, n);
@@ -313,7 +314,7 @@ export function saveClean(s: Save, dir: i32): void {
   for (let c = nChild(s, dir); c >= 0; c = nChild(s, dir)) saveRemove(s, c);
 }
 export function saveRename(s: Save, n: i32, parent: i32, name: usize, len: u32): i32 {
-  const nm = alloc(len ? len : 1);
+  const nm = alloc(len ? <usize>len : 1);
   if (!nm) return OP_NOMEM;
   touch(s);
   memory.copy(nm, name, len);
@@ -436,7 +437,7 @@ export function saveLoad(s: Save): i32 {
   if (why !== null) {
     dropTree(s);
     memory.copy(changetype<usize>(s), BACKUP, 160);
-    return corrupt(s, why!);
+    return corrupt(s, why);
   }
   // success: drop the old tree (its record is in BACKUP)
   const keepNodes = s.nodes, keepCap = s.nodeCap, keepFree = s.nodeFree, keepFl = s.fl, keepFlN = s.flN, keepFlCap = s.flCap, keepEnd = s.end, keepSerial = s.serial;
@@ -460,7 +461,7 @@ function build(s: Save, man: usize, manLen: u32, count: u32, manOff: u64, size: 
     if (manLen - p < 32) { why = "the manifest is cut short"; break; }
     const e = man + p, parent = load<u32>(e), type = load<u8>(e, 4), len = <u32>load<u16>(e, 6);
     const off = load<u64>(e, 8), cap = load<u64>(e, 16), fsize = load<u64>(e, 24);
-    const step = 32 + ((len + 7) & ~7);
+    const step: u32 = 32 + ((len + 7) & ~7);
     if (step > manLen - p) { why = "the manifest is cut short"; break; }
     if (parent >= i || type > 1 || load<u8>(e, 5) != 0 || !nameOk(e + 32, len)) { why = "a manifest entry is damaged"; break; }
     const pn = load<i32>(map + <usize>parent * 4);
