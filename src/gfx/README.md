@@ -81,6 +81,55 @@ use → `Building`: the replayer starts `createRenderPipelineAsync` and builds s
 now; `Ready` or `Failed` comes back through `gfx_pipeline_done`. Draws of a failed pipeline are skipped (red once).
 A shader key missing from the library: `[RED] shader <key> is not in the shader map` once, its draws skipped.
 
+## Texture content from guest memory (`texcontent.ts`, machine `gfx_texture`)
+
+A texture's storage is a range of a memory pool, block-linear (GOBs of 64 × 8 bytes, 16-byte runs, block height and
+depth per level) unless the texture is linear. `blMove` is nxnative's `nvn_deswizzle.c` in both directions; the replayer
+receives linear rows (`H_TEX_DATA`), deswizzled 4 MB at a time, or straight from memory for linear textures.
+
+nxnative write-protects texture pages to see CPU writes; a wasm module cannot. Instead each texture is `Unknown`,
+`Uploaded(sampled hash)` or `GpuOwned`, checked at its **first use in each submission** (sampled, copied from, presented):
+
+| State | At first use in a submission |
+|---|---|
+| Unknown | deswizzle and upload every level and layer; keep the full hash and the sampled hash |
+| Uploaded | sampled hash again (16 probes of 64 bytes; everything under 1 KB). Different → upload again. Same → full hash too when the game called `FlushMappedRange` over the storage since the last submission, or every 60 submissions within 1 MB of hashing a submission; different → upload again |
+| GpuOwned | nothing. Entered when a pass, a copy or a clear writes the texture; never left |
+
+Measured (100 textures 64×64 RGBA8 with 7 levels, all bound every frame, SwiftShader machine): first submission
+14–19 ms for 2.1 MB deswizzled and uploaded; afterwards the checks cost about 0.3–0.5 µs a texture, 30–50 µs a frame.
+
+Failure modes, accepted: a CPU write that touches no probed byte and is not flushed shows up to 60 submissions late
+(later if more than 1 MB of textures are due at once); a CPU write into a `GpuOwned` texture's storage is never seen;
+a texture changed while a submission that already used it is lowered keeps the old content for that submission.
+
+`WriteTexels` writes into the storage (next use uploads) or, for a `GpuOwned` texture, straight to the GPU.
+`ReadTexels` reads the storage; of a `GpuOwned` texture it is red and writes nothing (WebGPU readback is asynchronous).
+`CopyTextureToBuffer` is a CPU copy in stream order when the storage holds the content; otherwise a GPU readback that
+lands in guest memory later, and fences issued after it complete only once it has landed (`GfxHost.landed()`).
+
+## Window origin, depth mode, and what the shader chain must emit
+
+nxnative (Metal): lower-left origin = negative-height viewport, reversed winding, present flipped; depth mode = a
+second vertex entry point. WebGPU has no negative viewport, so the split here is:
+
+- **Recorder / replayer**: with a lower-left origin targets are stored bottom-up (row 0 = bottom, as GL). Viewport and
+  scissor rectangles are used as given; front face is inverted in the pipeline key; present flips the blit. Before
+  each pass's draws the replayer gets `H_FIXUP = (1, ysign, zscale, zoffset)`: `ysign` −1 for lower-left, else 1;
+  `(zscale, zoffset)` = (0.5, 0.5) for NEAR_IS_MINUS_W, (1, 0) for NEAR_IS_ZERO.
+- **A translated WGSL module must**:
+  1. Uniform buffer `i` of a stage: `@group(0) @binding(stage*16 + i)` (stage 0 vertex, 1 fragment), a struct of at most the bound size.
+  2. Texture slot `s` (the slot of `nvnCommandBufferBindTexture`): `@group(1) @binding(stage*64 + s*2)`, its sampler at `+1`
+     (`sampler_comparison` with a `texture_depth_*` when declared `depth`).
+  3. Vertex inputs `@location(l)` = NVN attribute index `l`, typed to match the attribute's format class (float / sint / uint).
+     Fragment outputs `@location(i)` = colour target `i`.
+  4. Vertex stage, last thing before returning the position: `struct NxFix { fix: vec4f }` at `@group(2) @binding(0)`, then
+     `pos.y *= nx.fix.y; pos.z = pos.z * nx.fix.z + pos.w * nx.fix.w;` and declare `fixup: true`. Nothing else may depend on the modes
+     (`gl_FragCoord.y` and `dFdy` users must multiply by `nx.fix.y` too if the chain exposes it to fragment stages: not bound there yet).
+  5. Come with a reflection record: `{ stage, entry, ubos: [i…], textures: [{ slot, dim: 2d | 2d-array | cube | 3d, depth }…],
+     attributes: [l…] (vertex) | outputs: [i…] (fragment), fixup }`, registered under the stage's key (`GfxHost.registerShader`).
+  Alpha test, when ported, will need the fragment stage to discard against a replayer-supplied reference: not specified yet.
+
 ## Verified (`npm run gfx:test`, headless Chromium, WebGPU on SwiftShader; `npm run kit:test` for the tables)
 
 - **Layout**: 268 offsets and sizes equal `nvn_obj.h` compiled by gcc (`test/gfx/layout_ref.c`), except the two listed
@@ -89,32 +138,36 @@ A shader key missing from the library: `[RED] shader <key> is not in the shader 
   `DeviceGetInteger` equals nxnative's table.
 - **Recording**: handles, empty recording, BeginRecording re-entered, the callback (arguments, size asked, JUMP
   placement), callback that adds nothing and no callback (host-lent segment); all 743 names resolve.
-- **Scenes** (21, pixels read back with `copyTextureToBuffer`, expected values computed in the test): clear only;
+- **Deswizzler**: 18 textures (2D with mips, non-power-of-two, arrays, cubes, 3D, BC1/BC3/BC7, packaged layouts; 112
+  levels and layers) laid out by an independent Python implementation (`test/gfx/swizzle_ref.py`: own layout, one byte
+  at a time) come out identical and swizzle back identical; WriteTexels / ReadTexels regions over storage.
+- **Scenes** (26, pixels read back with `copyTextureToBuffer`, expected values computed in the test): clear only;
   per-vertex colour; indexed textured quad nearest / linear; uniform animation + UpdateUniformBuffer + CopyBufferToBuffer;
   depth test on DEPTH32F / D24S8 / DEPTH16 with a scissored depth clear; blending; scissored and masked clears in a pass;
   full clear mid-pass; render to texture; self-sampling draw; CALL; buffer→texture, texture→texture (also scaled), mips
   and array layers; BC1/2/3/4/5/7; RGBA8, sRGB, BGRA8, R8, RG8, RGBA16F, RGB10A2, R11G11B10F as targets; missing key;
-  command memory exhaustion; pipeline cache and failure; fences, syncs, window images.
+  command memory exhaustion; pipeline cache and failure; fences, syncs, window images; pool-backed textures uploaded
+  and compared level by level; the content-tracking heuristics including their blind spot; WriteTexels;
+  CopyTextureToBuffer on the CPU and from the GPU; 100 textures; both origin / depth conventions with culling.
 - **Demo**: `npm run gfx:demo`, `test/gfx/demo.html`; the test run saves `build/gfx/demo.png`.
 
 ## NVN functions
 
-743 names: **302 implemented, 11 empty by design** (nxnative's list: debug groups, patch size, depth bounds, scratch
-memory), **430 red stubs** (`[RED] nvnXxx unimplemented` once, return 0). nxnative implements 489.
+743 names: **306 implemented, 11 empty by design** (nxnative's list: debug groups, patch size, depth bounds, scratch
+memory), **426 red stubs** (`[RED] nvnXxx unimplemented` once, return 0). nxnative implements 489.
 Implemented / total by object: DeviceBuilder 3/3, Device 19/61, QueueBuilder 9/23, Queue 10/16, MemoryPoolBuilder 7/8,
 MemoryPool 9/10, TexturePool 7/9, SamplerPool 8/9, BufferBuilder 6/7, Buffer 10/11, TextureBuilder 30/44, TextureView
-9/14, Texture 17/31, SamplerBuilder 13/25, Sampler 3/15, Program 4/34, Sync 4/6, WindowBuilder 7/20, Window 9/18,
+9/14, Texture 21/31, SamplerBuilder 13/25, Sampler 3/15, Program 4/34, Sync 4/6, WindowBuilder 7/20, Window 9/18,
 CommandBuffer 67/214, Blend 7/15, Color 5/7, ChannelMask 2/3, Multisample 7/26, Polygon 9/9, DepthStencil 11/13,
 VertexAttrib 5/5, VertexStream 5/5, Event(Builder) 0/11, other (NVN2, debug, raw) 0/71. The exact set is the
 `case F.` lines of `dispatch.ts`.
 
 ## Gaps
 
-- Textures get content only from GPU operations (copies, rendering). Packaged textures in pool memory (block-linear,
-  needs the deswizzler), linear textures over pool memory, WriteTexels / ReadTexels, CopyTextureToBuffer (recorded,
-  red at submit), ASTC, RGB5 / RGBA4 / 16-bit-norm formats.
-- Lower-left window origin: viewport and scissor are flipped, the flip of clip space and the −w..w depth range are left
-  to the shader chain (tests use upper-left and near = 0, as games do).
+- Texture content: sparse (virtual-pool) textures, ASTC, RGB5 / RGBA4 / 16-bit-norm formats, depth textures uploaded
+  from memory, multisampled storage; ReadTexels of GPU-written textures; the blind spots listed above.
+- `gl_FragCoord` / derivative sign under a lower-left origin (fix-up is bound to the vertex stage only); queues with
+  an origin different from the device's.
 - Triangle fans, quads, line loops, adjacency, patches; indirect and multi-draws; compute; storage buffers; images;
   separate textures / samplers; transform feedback; counters and events; multisample resolve; tessellation, geometry.
 - One viewport and scissor; stencil masks and reference of the front face for both; no logic op, alpha test, border
