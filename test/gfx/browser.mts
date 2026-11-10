@@ -10,7 +10,7 @@ import { ROOT, OUT, guest } from "./harness.mts";
 import { readMachines, unexercised } from "../../src/kit/host/reader.mts";
 
 export const CHROMIUM_ARGS = ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=swiftshader", "--use-vulkan=swiftshader"];
-const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".png": "image/png", ".map": "application/json" };
+const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".png": "image/png", ".map": "application/json", ".json": "application/json" };
 
 export function bundle(): void {
   execFileSync(join(ROOT, "node_modules", "esbuild", "bin", "esbuild"), ["test/gfx/page.mts", "test/gfx/demo.mts", "--bundle", "--format=esm", "--outdir=build/gfx", "--sourcemap", "--log-level=warning"],
@@ -33,6 +33,7 @@ function playwright(): any {
 
 export async function browserTests(only?: string): Promise<{ ran: number; failed: number; summary: string }> {
   bundle();
+  execFileSync("python3", [join(ROOT, "test/gfx/swizzle_ref.py"), join(OUT, "swizzle.json")], { stdio: "ignore" });
   const { server, url } = await serve();
   const browser = await playwright().chromium.launch({ args: CHROMIUM_ARGS });
   let failed = 0, summary = "";
@@ -49,6 +50,7 @@ export async function browserTests(only?: string): Promise<{ ran: number; failed
       checks += s.checks; calls += s.calls;
       if (s.error) { failed++; console.error(`[RED] FAIL scene: ${s.name}\n${s.error}\n  last log lines:\n  ${(s.logs ?? []).join("\n  ")}`); }
       else console.log(`ok   scene: ${s.name}  (${s.checks} checks, ${s.calls} NVN calls, ${s.ms} ms)`);
+      for (const n of s.notes ?? []) console.log(`     ${n}`);
     }
     summary = ` (${checks} checks, ${calls} NVN calls)`;
     // Which transitions of the graphics machines the real module took while rendering the scenes

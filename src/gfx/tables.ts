@@ -7,27 +7,29 @@ import { arenaAlloc } from "./arena";
 
 let generation: u64 = 0;
 export function tablesInit(): void {
-  TEXTAB = arenaAlloc(<usize>TEX_SLOTS << 4); PROGTAB = arenaAlloc(<usize>PROG_SLOTS * PE_SIZE);
+  TEXTAB = arenaAlloc(<usize>TEX_SLOTS * TE_SIZE); PROGTAB = arenaAlloc(<usize>PROG_SLOTS * PE_SIZE);
   TEXDESC = arenaAlloc(<usize>TEXDESC_N * TDE_SIZE); SAMPDESC = arenaAlloc(<usize>SAMPDESC_N * SDE_SIZE);
 }
 
 // ---- textures: serial -> flags ----
 export const TEX_SLOTS: u32 = 65536;
-let TEXTAB: usize = 0;                               // TEX_SLOTS * 16: u64 serial, u32 flags
-export const TF_HOST: u32 = 1;                       // the replayer has been told to create it
+// Entry: u64 serial, the content machine (texcontent.ts), where the storage is, a copy of the description (the game's
+// object may be gone or reused when a recorded command needs the texture), and the content hashes
+export const TE_inst: usize = 8, TE_mem: usize = 24, TE_size: usize = 32, TE_desc: usize = 40, TE_full: usize = 80, TE_last_full: usize = 88, TE_checked: usize = 92, TE_SIZE: usize = 96;
+let TEXTAB: usize = 0;
 let texNext: u32 = 1;
 export function texNew(): u64 {
   for (let k: u32 = 0; k < TEX_SLOTS; k++) {
     const s = texNext; texNext = texNext + 1 == TEX_SLOTS ? 1 : texNext + 1;
-    const e = TEXTAB + (<usize>s << 4);
-    if (!load<u64>(e)) { const ser = (++generation << 16) | s; store<u64>(e, ser); store<u32>(e, 0, 8); return ser; }
+    const e = TEXTAB + <usize>s * TE_SIZE;
+    if (!load<u64>(e)) { const ser = (++generation << 16) | s; memory.fill(e, 0, TE_SIZE); store<u64>(e, ser); return ser; }
   }
   L.redLine("texture table full (65535 live textures): the texture gets no host texture");
   return 0;
 }
 // The table entry of a live serial, 0 when it is not (or no longer) one
 export function texEntry(serial: u64): usize {
-  const e = TEXTAB + (<usize>(serial & 0xffff) << 4);
+  const e = TEXTAB + <usize>(serial & 0xffff) * TE_SIZE;
   return serial && load<u64>(e) == serial ? e : 0;
 }
 export function texFree(serial: u64): void { const e = texEntry(serial); if (e) store<u64>(e, 0); }

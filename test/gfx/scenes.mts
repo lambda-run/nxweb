@@ -4,7 +4,7 @@
 import { Env, SHADERS, type Image } from "./env.mts";
 import { FMT, PRIM, STAGE, SIZEOF, BLEND, DEPTH_FUNC, FILTER, TARGET } from "./nvn.mts";
 
-export interface Scene { name: string; run(e: Env, t: T): Promise<void>; cmdBytes?: number }
+export interface Scene { name: string; run(e: Env, t: T): Promise<void>; cmdBytes?: number; glConventions?: boolean }
 export class T {
   checks = 0;
   ok(c: boolean, msg: string) { this.checks++; if (!c) throw new Error(msg); }
@@ -450,4 +450,140 @@ export const scenes: Scene[] = [
     t.ok(e.g.red().at(-1)!.includes("gfx_image") && e.g.red().at(-1)!.includes("refused Present"), "presenting an image that was not acquired is refused, red"); t.eq(e.g.red().length, 1, "and nothing else was"); t.eq(e.host.stats.errors, 0, "WebGPU errors");
     t.eq(x.kit_refused_total(), 1, "the machines refused only that");
   } },
+  { name: "textures from pool memory: block-linear storage from the Python reference (mips, array, cube, 3D, BC1, BC7) and a linear texture", async run(e, t) {
+    const G = e.G, cmd = G.cmd, cases: any[] = await (await fetch("/build/gfx/swizzle.json")).json(), b64 = (s: string) => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const prog = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST), sink = G.texture({ w: 4, h: 4, format: FMT.RGBA8 }), sinkBC = G.texture({ w: 4, h: 4, format: FMT.BC1 });
+    const names = ["RGBA8 100x60", "RGBA8 256x256", "R8 320x180", "RGBA16F 33x17", "BC1 64x64", "BC7 256x128", "RGBA8 array", "RGBA8 cube", "RGBA8 3D", "RGBA8 64x64 packaged"];
+    const made: { c: any; tex: number }[] = [];
+    for (const n of names) {
+      const c = cases.find(x => x.name.startsWith(n)), tex = G.texture({ w: c.desc[4], h: c.desc[5], format: c.desc[1], levels: c.desc[7], target: c.desc[0], depth: c.desc[6], packaged: c.desc[9] ? [c.desc[9] - 1, 0, 0, 0, 0, 0, 0, 0] : undefined });
+      e.g.u8.set(b64(c.storage), G.c("TextureGetTextureAddress", [tex]));          // the game loaded the texture file into its pool
+      made.push({ c, tex });
+    }
+    // a linear texture: rows 96 bytes apart for 20 texels (the stride NVN gives it), over pool memory
+    const lin = G.texture({ w: 20, h: 10, format: FMT.RGBA8, flags: 0x10 }), linAddr = G.c("TextureGetTextureAddress", [lin]), linTexel = (x: number, y: number) => [x * 12, y * 25, (x * y) & 255, 255];
+    t.eq(G.c("TextureGetStorageSize", [lin]), 960, "linear storage: stride 96 x 10 rows");
+    for (let y = 0; y < 10; y++) for (let x = 0; x < 20; x++) e.g.u8.set(linTexel(x, y), linAddr + y * 96 + x * 4);
+    const i = G.acquire(e.win), one = REGION(e, 0, 0, 0, 4, 4);
+    G.begin(); e.frame(cmd, e.wtex[i], prog); G.clear(cmd, [0, 0, 0, 1]);
+    // each texture is used once: the 2D ones sampled by a draw, the others as the source of a copy
+    for (const m of made) {
+      if (m.c.desc[0] === 1 && m.c.desc[1] !== FMT.BC1 && m.c.desc[1] !== FMT.BC7 && m.c.desc[1] !== 0x29) { e.bindTexture(cmd, G.texId(m.tex), nearest); e.drawQuad(cmd); }
+      else if (m.c.desc[1] === FMT.BC1) G.c("CommandBufferCopyTextureToTexture", [cmd, m.tex, 0, one, sinkBC, 0, one, 0]);
+      else if (m.c.desc[1] === FMT.RGBA8) G.c("CommandBufferCopyTextureToTexture", [cmd, m.tex, 0, one, sink, 0, one, 0]);
+      else { e.bindTexture(cmd, G.texId(m.tex), nearest); e.drawQuad(cmd); }
+    }
+    e.bindTexture(cmd, G.texId(lin), nearest); e.drawQuad(cmd);
+    e.finish(i);
+    let levels = 0;
+    for (const m of made) for (const l of m.c.levels) {
+      const want = b64(l.linear);
+      for (let z = 0; z < l.slices; z++) {
+        const img = await e.read(e.serial(m.tex), l.level, m.c.desc[0] === 2 ? z : l.layer), slice = want.subarray(z * l.rowBytes * l.rows, (z + 1) * l.rowBytes * l.rows);
+        t.eq([img.data.length, img.data.every((v, k) => v === slice[k])], [slice.length, true], `${m.c.name} level ${l.level} layer ${l.layer} slice ${z}`);
+      }
+      levels++;
+    }
+    const li = await e.read(e.serial(lin));
+    for (let y = 0; y < 10; y++) for (let x = 0; x < 20; x++) t.px(li, x, y, linTexel(x, y), "linear texture", 0);
+    const img = await e.read();        // the last draw: the linear texture over the window, nearest
+    for (const [x, y] of [[0, 0], [63, 63], [20, 40], [50, 9]]) t.px(img, x, y, linTexel(Math.floor((x + 0.5) / 64 * 20), Math.floor((y + 0.5) / 64 * 10)), "linear texture sampled");
+    t.eq([e.stat(8), made.every(m => e.g.x.gfx_tex_state(m.tex) === 1)], [made.length + 1, true], "each uploaded once, state Uploaded");
+    console.log(`${levels} levels and layers of ${made.length} textures compared, ${e.stat(9)} KB uploaded`); t.noRed(e);
+  } },
+
+  { name: "texture content tracking: unchanged, changed under a probe, changed elsewhere (missed until flushed or scrubbed), GPU-owned; WriteTexels; CopyTextureToBuffer both ways", async run(e, t) {
+    const G = e.G, cmd = G.cmd, x = e.g.x, prog = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
+    const tex = G.texture({ w: 64, h: 64, format: FMT.RGBA8 }), id = G.texId(tex), addr = G.c("TextureGetTextureAddress", [tex]), size = G.c("TextureGetStorageSize", [tex]);
+    for (let k = 0; k < size; k++) e.g.u8[addr + k] = (k * 13) & 255;
+    const desc = e.g.alloc(40), linear = e.g.alloc(64 * 64 * 4);
+    new Int32Array(e.g.memory.buffer, desc, 10).set([1, FMT.RGBA8, 0, 0, 64, 64, 1, 1, 0, 0]);
+    const expected = () => { x.gfx_deswizzle(desc, 0, 0, addr, linear, 256, 1); return Array.from(e.g.u8.subarray(linear, linear + 64 * 64 * 4)); };
+    const frame = async () => { G.c("CommandBufferAddCommandMemory", [cmd, G.cmdPool.obj, 0, G.cmdPool.size]); const i = G.acquire(e.win); G.begin(); e.frame(cmd, e.wtex[i], prog); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]); e.bindTexture(cmd, id, nearest); e.drawQuad(cmd); e.finish(i); return Array.from((await e.read()).data); };
+    const same = (a: number[], b: number[]) => a.length === b.length && a.every((v, k) => v === b[k]);
+    let was = expected();
+    t.ok(same(await frame(), was), "frame 1: the storage, deswizzled"); t.eq([e.stat(8), x.gfx_tex_state(tex)], [1, 1], "uploaded");
+    t.ok(same(await frame(), was), "frame 2"); t.eq([e.stat(8), e.stat(12)], [1, 0], "unchanged: one sampled hash, no upload");
+    e.g.u8[addr + 2] ^= 0xff;                                           // under the first probe
+    let now = expected();
+    t.ok(same(await frame(), now) && !same(now, was), "frame 3 shows the change"); t.eq([e.stat(8), e.stat(12)], [2, 1], "found by the sampled hash, uploaded again");
+    e.g.u8[addr + 501] ^= 0xff; was = now; now = expected();            // between two probes, and the game does not say so
+    t.ok(same(await frame(), was) && !same(now, was), "frame 4 still shows the old texel: the documented blind spot"); t.eq(e.stat(8), 2, "not uploaded");
+    G.c("MemoryPoolFlushMappedRange", [G.texStore.obj, addr - G.texStore.mem, size]);
+    t.ok(same(await frame(), now), "after FlushMappedRange over the storage the full hash finds it"); t.eq([e.stat(8), e.stat(12)], [3, 2], "uploaded again");
+    e.g.u8[addr + 777] ^= 0xff; was = now; now = expected();            // another one, never flushed: the periodic full hash finds it
+    let frames = 0; for (; frames < 70 && e.stat(8) === 3; frames++) await frame();
+    t.ok(frames >= 50 && frames <= 61, `found after ${frames} submissions (the scrub period is 60)`); t.ok(same(await frame(), now), "and shown");
+    // WriteTexels: into the storage, uploaded at the next use
+    G.c("TextureWriteTexels", [tex, 0, REGION(e, 8, 8, 0, 4, 2), e.g.bytes(new Uint8Array(32).fill(200))]);
+    now = expected(); t.eq(now.slice((8 * 64 + 8) * 4, (8 * 64 + 12) * 4), new Array(16).fill(200), "the storage holds the written texels");
+    t.ok(same(await frame(), now), "WriteTexels shown");
+    // CopyTextureToBuffer of a texture whose content is its storage: done at once, in stream order
+    const out = G.put(new Uint8Array(4096)), i = G.acquire(e.win);
+    G.begin(); G.c("CommandBufferCopyTextureToBuffer", [cmd, tex, 0, REGION(e, 4, 6, 0, 16, 3), out, 0]); G.targets(cmd, [e.wtex[i]]); G.clear(cmd, [0.2, 0.4, 0.6, 1]);
+    // the window texture is the GPU's: its copy lands when the GPU is done, and the fence after it waits for that
+    const out2 = G.put(new Uint8Array(4096)), sync = e.g.alloc(SIZEOF.SYNC);
+    G.c("SyncInitialize", [sync, G.dev]);
+    G.c("CommandBufferSetCopyRowStride", [cmd, 64]); G.c("CommandBufferCopyTextureToBuffer", [cmd, e.wtex[i], 0, REGION(e, 0, 0, 0, 8, 2), out2, 0]); G.c("CommandBufferSetCopyRowStride", [cmd, 0]);
+    G.c("CommandBufferFenceSync", [cmd, sync, 0, 0]);
+    e.finish(i);
+    for (let y = 0; y < 3; y++) t.eq(Array.from(e.g.u8.subarray(out + y * 64, out + y * 64 + 64)), now.slice(((6 + y) * 64 + 4) * 4, ((6 + y) * 64 + 20) * 4), `CPU copy row ${y}`);
+    t.eq([e.g.u8[out2 + 3], G.c("SyncWait", [sync, 0])], [0, 2], "the GPU copy has not landed within the turn, its fence is pending");
+    await e.host.landed(); await e.settle();
+    for (let y = 0; y < 2; y++) for (let px = 0; px < 8; px++) t.eq(Array.from(e.g.u8.subarray(out2 + y * 64 + px * 4, out2 + y * 64 + px * 4 + 4)), [51, 102, 153, 255], "GPU copy landed, strided");
+    t.eq([e.g.u8[out2 + 32], G.c("SyncWait", [sync, 0])], [0, 0], "nothing between the rows; the fence is done");
+    // a texture the GPU wrote is never uploaded from memory again; WriteTexels on it goes straight to the GPU; ReadTexels cannot
+    const j = G.acquire(e.win), uploads = e.stat(8);
+    G.begin(); G.targets(cmd, [tex]); G.clear(cmd, [1, 0, 0, 1]); e.frame(cmd, e.wtex[j], prog); e.bindTexture(cmd, id, nearest); e.drawQuad(cmd); e.finish(j);
+    t.rect(await e.read(), 0, 0, 64, 64, RED, "rendered to, then sampled"); t.eq(x.gfx_tex_state(tex), 2, "GpuOwned");
+    e.g.u8.fill(7, addr, addr + size); G.c("MemoryPoolFlushMappedRange", [G.texStore.obj, addr - G.texStore.mem, size]);
+    G.c("TextureWriteTexels", [tex, 0, REGION(e, 0, 0, 0, 32, 64), e.g.bytes(Uint8Array.from({ length: 32 * 64 * 4 }, (_, k) => k % 4 === 1 || k % 4 === 3 ? 255 : 0))]);
+    const img = Array.from((await (async () => { const k = G.acquire(e.win); G.begin(); e.frame(cmd, e.wtex[k], prog); e.bindTexture(cmd, id, nearest); e.drawQuad(cmd); e.finish(k); return e.read(); })()).data);
+    t.eq([img.slice(0, 4), img.slice(40 * 4, 40 * 4 + 4), e.stat(8)], [GREEN, RED, uploads], "left half written by WriteTexels, right half still the GPU's; nothing uploaded from the storage");
+    t.noRed(e);
+    G.c("TextureReadTexels", [tex, 0, REGION(e, 0, 0, 0, 4, 4), e.g.alloc(64)]);
+    t.ok(e.g.red().length === 1 && e.g.red()[0].includes("ReadTexels of a texture the GPU wrote"), "ReadTexels of a GPU-owned texture is red");
+  } },
+
+  { name: "100 textures bound every frame: what the content checks cost", async run(e, t) {
+    const G = e.G, cmd = G.cmd, x = e.g.x, prog = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
+    const texs = Array.from({ length: 100 }, (_, k) => { const tex = G.texture({ w: 64, h: 64, format: FMT.RGBA8, levels: 7 }), a = G.c("TextureGetTextureAddress", [tex]); e.g.u8.fill(k * 2 + 1, a, a + G.c("TextureGetStorageSize", [tex])); return { tex, id: G.texId(tex) }; });
+    const top = e.g.top;
+    const frame = () => {
+      e.g.top = top; G.c("CommandBufferAddCommandMemory", [cmd, G.cmdPool.obj, 0, G.cmdPool.size]);     // a game hands its command memory out again every frame
+      const i = G.acquire(e.win); G.begin(); e.frame(cmd, e.wtex[i], prog); G.clear(cmd, [0, 0, 0, 1]);
+      texs.forEach((tx, k) => { G.c("CommandBufferSetViewport", [cmd, (k % 10) * 6, Math.floor(k / 10) * 6, 6, 6]); e.bindTexture(cmd, tx.id, nearest); e.drawQuad(cmd); });
+      const h = G.end(), t0 = performance.now(); G.submit([h]); const ms = performance.now() - t0; G.present(e.win, i); return ms;
+    };
+    const first = frame(), img = await e.read();
+    for (const k of [0, 37, 99]) t.px(img, (k % 10) * 6 + 3, Math.floor(k / 10) * 6 + 3, new Array(4).fill(k * 2 + 1), `texture ${k}`);
+    t.eq([e.stat(8), e.stat(10)], [100, 100], "100 uploads in the first frame");
+    let total = 0; const N = 40; for (let k = 0; k < N; k++) total += frame();
+    t.eq([e.stat(8), e.stat(10)], [100, 100 * (N + 1)], "then one sampled hash a texture a frame, no upload");
+    const t0 = performance.now(), reps = 2000; for (const tx of texs) x.gfx_bench_sample(tx.tex, reps); const us = (performance.now() - t0) * 1000 / (100 * reps);
+    await e.settle();
+    console.log(`100 textures (64x64 RGBA8, 7 levels, 24 KB of storage each): first submission ${first.toFixed(1)} ms with ${e.stat(9)} KB deswizzled and uploaded; then ${(total / N).toFixed(2)} ms a submission (100 draws, recorder + replayer), of which the content checks are ${(us * 100).toFixed(1)} us (${us.toFixed(3)} us a texture: 16 probes of 64 bytes)`);
+    t.noRed(e);
+  } },
+  ...[true, false].map((gl): Scene => ({ name: `window origin and depth mode: ${gl ? "NVN's defaults (lower left, near = -w)" : "upper left, near = 0"}; winding and culling`, glConventions: gl, async run(e, t) {
+    const G = e.G, cmd = G.cmd, prog = await e.program("vs_quad_fix", "fs_ubo"), depth = G.texture({ w: 64, h: 64, format: FMT.DEPTH32F }), i = G.acquire(e.win);
+    t.eq([G.c("DeviceGetWindowOriginMode", [G.dev]), G.c("DeviceGetDepthMode", [G.dev])], gl ? [0, 0] : [1, 1], "modes");
+    const zNear = gl ? -0.5 : 0.25, zFar = gl ? 0.5 : 0.75, zOut = gl ? -1.5 : -0.25;        // the same depths in each convention
+    G.begin();
+    const st = e.frame(cmd, e.wtex[i], prog, depth);
+    G.c("DepthStencilStateSetDepthTestEnable", [st.ds, 1]); G.c("CommandBufferBindDepthStencilState", [cmd, st.ds]);
+    G.c("PolygonStateSetCullFace", [st.po, 2]); G.c("CommandBufferBindPolygonState", [cmd, st.po]);            // cull back faces; the quad is counter-clockwise, NVN's default front
+    G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferClearDepthStencil", [cmd, 1, 0, 0], [1.0]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]);
+    bindUbos(e, cmd, ubo(e, [1, 0.5, 0, 0.5, zFar, 0, 0, 0]), ubo(e, [0, 1, 0, 1])); e.drawQuad(cmd);            // the upper half of clip space, far, green
+    bindUbos(e, cmd, ubo(e, [0.5, 0.5, -0.5, 0.5, zNear, 0, 0, 0]), ubo(e, [1, 0, 0, 1])); e.drawQuad(cmd);      // its left half again, nearer, red
+    bindUbos(e, cmd, ubo(e, [1, 1, 0, 0, zOut, 0, 0, 0]), ubo(e, [1, 1, 1, 1])); e.drawQuad(cmd);                // in front of the near plane: clipped away
+    G.c("CommandBufferSetScissor", [cmd, 0, 0, 64, 8]); G.clear(cmd, [0, 0, 1, 1]); G.c("CommandBufferSetScissor", [cmd, 0, 0, 64, 64]);   // rows 0..7 of the target, whichever way up it is
+    G.c("PolygonStateSetCullFace", [st.po, 1]); G.c("CommandBufferBindPolygonState", [cmd, st.po]);              // cull front faces: nothing of this one
+    bindUbos(e, cmd, ubo(e, [1, 1, 0, 0, zNear, 0, 0, 0]), ubo(e, [1, 1, 0, 1])); e.drawQuad(cmd);
+    e.finish(i);
+    const img = await e.read(), top = gl ? 32 : 0;      // lower left: the target is stored bottom-up, the upper half of the picture is rows 32..63
+    t.rect(img, 0, Math.max(top, 8), 32, top + 32, RED, "upper half of the picture, left: the nearer quad"); t.rect(img, 32, Math.max(top, 8), 64, top + 32, GREEN, "upper half, right: the far quad");
+    t.rect(img, 0, 0, 64, 8, BLUE, "the scissored clear: the first rows of the target"); t.rect(img, 0, gl ? 8 : 32, 64, gl ? 32 : 64, [0, 0, 0, 255], "the other half: nothing");
+    t.eq(e.host.presentFlips, gl ? 1 : 0, "a bottom-up window texture is flipped when it is shown"); t.eq([e.stat(1), e.stat(2)], [4, 0], "draws"); t.noRed(e);
+  } })),
 ];

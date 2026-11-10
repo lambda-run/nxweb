@@ -13,7 +13,8 @@ import { progSetKeys } from "./shader";
 import { syncInitialize, syncFinalize, syncWait } from "./sync";
 import { windowInitialize, windowAcquire, windowPresent, windowGetCrop } from "./window";
 import { submit, emitFence, passBreak, blendDefault, dsDefault } from "./lower";
-import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH } from "./hostops";
+import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY } from "./hostops";
+import { contentInit, noteFlush, regionCopy, writeTexels } from "./texcontent";
 
 // Device properties: values measured on Tegra X1 (nxnative g_devinfo). Items 0 and 1 are the API version (apiMajor /
 // apiMinor), 0x2E and 0x30 the GPU code version the shader chain translates (1.16)
@@ -91,7 +92,7 @@ function textureInitialize(t: usize, b: usize): u64 {
   store<u64>(t, mem ? mem + off : 0, O.TEX_mem);
   const serial = T.texNew();
   store<u64>(t, serial, O.TEX_serial);
-  if (serial) { const r = hostRec(H_TEX_CREATE, 56); store<u64>(r, serial, 8); memory.copy(r + 16, t + O.TEX_d, O.TD_SIZE); }
+  if (serial) { const r = hostRec(H_TEX_CREATE, 56); store<u64>(r, serial, 8); memory.copy(r + 16, t + O.TEX_d, O.TD_SIZE); contentInit(serial, t); }
   return 1;
 }
 function viewOffset(d: usize, layerSize: u64, v: usize): u64 {
@@ -159,7 +160,8 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnMemoryPoolFinalize: store<u32>(P(a, 0), 0); return 0;
     case F.nvnMemoryPoolSetDebugLabel: return 0;
     case F.nvnMemoryPoolMap: { const p = P(a, 0); return load<u32>(p, O.POOL_flags) & O.POOLF_CPU_NO_ACCESS ? 0 : load<u64>(p, O.POOL_mem); }
-    case F.nvnMemoryPoolFlushMappedRange: return 0;        // guest memory is the GPU's memory here: the replayer reads it at submit
+    // Guest memory is the GPU's memory here; a flush is the game saying it wrote: textures over the range get a full check (texcontent.ts)
+    case F.nvnMemoryPoolFlushMappedRange: noteFlush(load<u64>(P(a, 0), O.POOL_mem) + X(a, 1), X(a, 2)); return 0;
     case F.nvnMemoryPoolInvalidateMappedRange: return 0;
     case F.nvnMemoryPoolGetBufferAddress: return load<u64>(P(a, 0), O.POOL_mem);
     case F.nvnMemoryPoolGetSize: return load<u64>(P(a, 0), O.POOL_size);
@@ -199,7 +201,8 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnBufferSetDebugLabel: return 0;
     case F.nvnBufferMap: { const b = P(a, 0), pool = <usize>load<u64>(b, O.BUF_pool); return load<u32>(pool, O.POOL_flags) & O.POOLF_CPU_NO_ACCESS ? 0 : load<u64>(pool, O.POOL_mem) + load<u64>(b, O.BUF_off); }
     case F.nvnBufferGetAddress: { const b = P(a, 0); return load<u64>(<usize>load<u64>(b, O.BUF_pool), O.POOL_mem) + load<u64>(b, O.BUF_off); }
-    case F.nvnBufferFlushMappedRange: case F.nvnBufferInvalidateMappedRange: return 0;
+    case F.nvnBufferFlushMappedRange: { const b = P(a, 0); noteFlush(load<u64>(<usize>load<u64>(b, O.BUF_pool), O.POOL_mem) + load<u64>(b, O.BUF_off) + X(a, 1), X(a, 2)); return 0; }
+    case F.nvnBufferInvalidateMappedRange: return 0;
     case F.nvnBufferGetMemoryPool: return load<u64>(P(a, 0), O.BUF_pool);
     case F.nvnBufferGetMemoryOffset: return load<u64>(P(a, 0), O.BUF_off);
     case F.nvnBufferGetSize: return load<u64>(P(a, 0), O.BUF_size);
@@ -273,6 +276,21 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnTextureGetMemoryOffset: return load<u64>(P(a, 0), O.TEX_off);
     case F.nvnTextureGetTextureAddress: { const t = P(a, 0), pool = <usize>load<u64>(t, O.TEX_pool); return pool ? load<u64>(pool, O.POOL_mem) + load<u64>(t, O.TEX_off) : 0; }
     case F.nvnTextureGetViewOffset: { const t = P(a, 0); return viewOffset(t + O.TEX_d, load<u64>(t, O.TEX_L + O.TL_layer_size), P(a, 1)); }
+    // Texels between the CPU and a texture. From the storage when it holds the content; a texture the GPU wrote cannot be
+    // read back within the call (WebGPU readback is asynchronous): red, and the destination is left as it was
+    case F.nvnTextureWriteTexels: case F.nvnTextureWriteTexelsStrided: {
+      const v = P(a, 1), s = fn == F.nvnTextureWriteTexelsStrided;
+      writeTexels(P(a, 0), v && (load<u8>(v) & 1) ? load<u8>(v, O.VIEW_base_level) : 0, v && (load<u8>(v) & 2) ? load<u16>(v, O.VIEW_min_layer) : 0, P(a, 2), P(a, 3), s ? P(a, 4) : 0, s ? P(a, 5) : 0);
+      return 0;
+    }
+    case F.nvnTextureReadTexels: case F.nvnTextureReadTexelsStrided: {
+      const v = P(a, 1), s = fn == F.nvnTextureReadTexelsStrided;
+      hostFlush();
+      if (!regionCopy(P(a, 0), v && (load<u8>(v) & 1) ? load<u8>(v, O.VIEW_base_level) : 0, v && (load<u8>(v) & 2) ? load<u16>(v, O.VIEW_min_layer) : 0, P(a, 2), P(a, 3), s ? P(a, 4) : 0, s ? P(a, 5) : 0, false))
+        L.redLine("ReadTexels of a texture the GPU wrote: not available within the call (use CopyTextureToBuffer and a sync); nothing is written");
+      else hostRec(H_MEM_DIRTY, 8);
+      return 0;
+    }
     case F.nvnTextureViewSetDefaults: memory.fill(P(a, 0), 0, O.VIEW_SIZE); return 0;
     case F.nvnTextureViewSetLevels: { const v = P(a, 0); store<u8>(v, load<u8>(v) | 1); store<u8>(v, <u8>I(a, 1), O.VIEW_base_level); store<u8>(v, <u8>I(a, 2), O.VIEW_nlevels); return 0; }
     case F.nvnTextureViewSetLayers: { const v = P(a, 0); store<u8>(v, load<u8>(v) | 2); store<u16>(v, <u16>I(a, 1), O.VIEW_min_layer); store<u16>(v, <u16>I(a, 2), O.VIEW_nlayers); return 0; }

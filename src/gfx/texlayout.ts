@@ -70,6 +70,7 @@ function tileShapeH(d: usize, tileH: u32): u32 {
   return dpl == 2 && !load<i32>(d, TD_pkg_block_h) && sparseTileH(fBpb) >= 0 ? <u32>sparseTileH(fBpb) : tileH;
 }
 
+let lastGobs: u32 = 0;
 // Offset of level `level` from the start of its layer (shape() and fmtOf() already called for d)
 function levelOffset(d: usize, level: u32, tileH: u32, tileD: u32): u64 {
   const shp = tileShapeH(d, tileH);
@@ -85,7 +86,7 @@ function levelOffset(d: usize, level: u32, tileH: u32, tileD: u32): u64 {
     let wg = (lwb + 63) / 64; const hg = (lh + 7) / 8;
     tiled = tiled && lwb >= tw * 64 && lh >= (<u32>8 << shp) && ld >= (<u32>1 << tileD);
     if (tiled) wg = (wg + tw - 1) / tw * tw;
-    if (i == level) return off;
+    if (i == level) { lastGobs = wg; return off; }
     const ht = (hg + (<u32>1 << th) - 1) >> th, dt = (ld + (<u32>1 << td) - 1) >> td;
     off += (<u64>wg * ht * dt) << (9 + th + td);
   }
@@ -153,3 +154,28 @@ export function texLevelOffset(d: usize, level: u32): u64 {
   texLayout(d, TMP_L);
   return levelOffset(d, level, load<u32>(TMP_L, TL_tileH), load<u32>(TMP_L, TL_tileD));
 }
+
+// Geometry of one level for the deswizzler (nxnative nvn_deswizzle_geom): results in the g* variables.
+// False for what has no block-linear storage: multisample, buffer and linear textures, unknown formats, a level or layer out of range
+export let gRowBytes: u32 = 0, gRows: u32 = 0, gSlices: u32 = 0, gTh: u32 = 0, gTd: u32 = 0, gBpb: u32 = 0, gGobs: u32 = 0, gBw: u32 = 1, gBh: u32 = 1;
+export let gBase: u64 = 0;
+export function texGeom(d: usize, level: u32, layer: u32): bool {
+  const target = load<i32>(d, TD_target), levels = load<u32>(d, TD_levels);
+  if (target == 5 || target == 6 || target == 10 || (load<i32>(d, TD_flags) & 0x50) || load<i32>(d, TD_samples) > 1) return false;
+  if (!fmtOf(load<i32>(d, TD_format)) || level >= (levels ? levels : 1)) return false;
+  texLayout(d, TMP_L);
+  if (layer >= load<u32>(TMP_L, TL_layers)) return false;
+  const tileH = load<u32>(TMP_L, TL_tileH), tileD = load<u32>(TMP_L, TL_tileD);
+  const oneD = target == 0 || target == 3;
+  const w = mip(load<u32>(d, TD_width), level), h = oneD ? 1 : mip(load<u32>(d, TD_height), level), dep = load<u32>(d, TD_depth);
+  gBpb = fBpb; gBw = fBw; gBh = fBh;
+  gSlices = target == 2 ? mip(dep ? dep : 1, level) : 1;
+  gRowBytes = (w + fBw - 1) / fBw * fBpb; gRows = (h + fBh - 1) / fBh;
+  gBase = <u64>layer * load<u64>(TMP_L, TL_layer_size) + levelOffset(d, level, tileH, tileD);
+  gGobs = lastGobs;
+  const lh = dpl >= 2 ? blk(mip(sh * sy, level), fBh) : 1, ld = dpl >= 3 ? mip(sz, level) : 1;
+  gTh = adjTile(tileH, 8, lh); gTd = adjTile(tileD, 1, ld);
+  return true;
+}
+export function texLayers(d: usize): u32 { texLayout(d, TMP_L); return load<u32>(TMP_L, TL_layers); }
+export function texSize(d: usize): u64 { texLayout(d, TMP_L); return load<u64>(TMP_L, TL_size); }

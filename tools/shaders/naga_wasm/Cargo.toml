@@ -1,0 +1,19 @@
+# naga (the wgpu project's shader translator) built as a plain WebAssembly module: SPIR-V in, WGSL out.
+# No wasm-bindgen: three C-ABI exports, so the same .wasm loads in Node and in a page with WebAssembly.instantiate.
+[package]
+name = "nx_naga"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+naga = { version = "=30.0.1", default-features = false, features = ["spv-in", "wgsl-out"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

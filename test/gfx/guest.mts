@@ -17,7 +17,7 @@ export class Guest {
   private callbacks: ((...a: bigint[]) => bigint | number | void)[] = [];
   calls = 0;
 
-  static async create(wasm: BufferSource | WebAssembly.Module, imports: GuestImports, pages = 1024): Promise<Guest> {
+  static async create(wasm: BufferSource | WebAssembly.Module, imports: GuestImports, pages = 2048): Promise<Guest> {
     const g = new Guest();
     g.memory = new WebAssembly.Memory({ initial: pages });
     const module = wasm instanceof WebAssembly.Module ? wasm : await WebAssembly.compile(wasm);

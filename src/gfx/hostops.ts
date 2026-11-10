@@ -27,10 +27,13 @@ export const H_CLEAR_RECT: u32 = 16;       // +8 u32 kind (0 colour, 1 depth-ste
 export const H_COPY_B2T: u32 = 17;         // +8 u64 source, +16 u64 serial, +24 u32 level, +28 u32 layer, +32 i32 region[6], +56 u32 row stride, +60 u32 image stride
 export const H_COPY_T2T: u32 = 18;         // +8 u64 src, +16 u64 dst, +24 u32 src level, layer, dst level, layer, +40 i32 src region[6], +64 i32 dst region[6], +88 u32 flags
 export const H_SNAPSHOT: u32 = 19;         // +8 u64 serial
-export const H_PRESENT: u32 = 20;          // +8 u64 serial, +16 i32 crop[4], +32 u32 window, +36 u32 index
+export const H_PRESENT: u32 = 20;          // +8 u64 serial, +16 i32 crop[4], +32 u32 window, +36 u32 index, +40 u32 flags (1: flip vertically)
 export const H_FENCE: u32 = 21;            // +8 u64 fence number
 export const H_FLUSH: u32 = 22;            // the submission ends: finish the encoder, submit
-export const H_MEM_DIRTY: u32 = 23;        // guest memory changed under the stream (UpdateUniformBuffer, CopyBufferToBuffer): drop uploads
+export const H_MEM_DIRTY: u32 = 23;
+export const H_TEX_DATA: u32 = 24;         // texels as linear rows: see texcontent.ts emitData
+export const H_COPY_T2B: u32 = 25;         // +8 u64 destination, +16 u64 serial, +24 u32 level, +28 u32 layer, +32 i32 region[6], +56 u32 row stride, +60 u32 image stride (lands when the GPU is done)
+export const H_FIXUP: u32 = 26;            // +8 f32 x4: what translated vertex shaders multiply into the position (README, "clip space")        // guest memory changed under the stream (UpdateUniformBuffer, CopyBufferToBuffer): drop uploads
 
 const CAP: usize = 1 << 20;
 let BUF: usize = 0;

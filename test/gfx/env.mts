@@ -21,6 +21,14 @@ export const SHADERS: Record<string, ShaderInfo> = {
 @fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return vec4f(1.0 - textureSample(t, s, v.xy).rgb, 1.0); }` },
   // fragment uniform buffer 0: the colour
   fs_ubo: { stage: "fragment", outputs: [0], ubos: [0], wgsl: `struct U { c: vec4f } @group(0) @binding(16) var<uniform> u: U; @fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return u.c; }` },
+  // as the shader chain must emit it: the position fix-up last (origin and depth mode), from @group(2) @binding(0)
+  vs_quad_fix: { stage: "vertex", attributes: [0, 1], ubos: [0], fixup: true, wgsl: `${VO} struct U { xf: vec4f, z: vec4f } @group(0) @binding(0) var<uniform> u: U;
+struct NxFix { fix: vec4f } @group(2) @binding(0) var<uniform> nx: NxFix;
+@vertex fn main(@location(0) pos: vec2f, @location(1) uv: vec2f) -> VO {
+  var p = vec4f(pos * u.xf.xy + u.xf.zw, u.z.x, 1.0);
+  p.y *= nx.fix.y; p.z = p.z * nx.fix.z + p.w * nx.fix.w;
+  return VO(p, vec4f(uv, 0.0, 1.0));
+}` },
   // does not match a float vertex layout: its pipeline cannot be built
   vs_bad: { stage: "vertex", attributes: [0, 1], wgsl: `${VO} @vertex fn main(@location(0) pos: vec2i, @location(1) uv: vec2f) -> VO { return VO(vec4f(vec2f(pos), 0.0, 1.0), vec4f(uv, 0.0, 1.0)); }` },
   // the demo's cube: position (vec3) + uv (vec2), vertex uniform buffer 0 = model-view-projection
@@ -40,13 +48,13 @@ export class Env {
   private made = new Map<string, Shader>();
   quad = 0; quadIdx = 0;
 
-  static async create(device: any, wasm: WebAssembly.Module, opts: { canvas?: any; w?: number; h?: number; cmdBytes?: number } = {}): Promise<Env> {
+  static async create(device: any, wasm: WebAssembly.Module, opts: { canvas?: any; w?: number; h?: number; cmdBytes?: number; glConventions?: boolean } = {}): Promise<Env> {
     const e = new Env();
     let host!: GfxHost;
     e.g = await Guest.create(wasm, { gfx_exec: (p, n) => host.exec(p >>> 0, n >>> 0) });
     host = e.host = new GfxHost(device, e.g.memory, { canvas: opts.canvas, log: l => e.g.logs.push(l) });
     host.attach(e.g.x);
-    e.G = new Game(e.g).init({ cmdBytes: opts.cmdBytes });
+    e.G = new Game(e.g).init({ cmdBytes: opts.cmdBytes, glConventions: opts.glConventions });
     e.W = opts.w ?? 64; e.H = opts.h ?? 64;
     const w = e.G.window(e.W, e.H); e.win = w.win; e.wtex = w.tex;
     e.quad = e.G.put(QUAD); e.quadIdx = e.G.put(QUAD_INDICES);

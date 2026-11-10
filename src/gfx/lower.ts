@@ -19,10 +19,11 @@ import { Inst } from "../kit/machine";
 import { GFX_PASS, GfxPassE, GfxPassS } from "../kit/gen/tables";
 import * as O from "./obj";
 import * as H from "./hostops";
-import { texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, fenceNew } from "./tables";
+import { texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
 import { progShader, libRefl, RF_ubo, RF_tex, RF_io } from "./shader";
 import * as PK from "./pipeline";
 import { syncFence } from "./sync";
+import { contentNeed, contentGpuWrite, regionCopy, submitDone } from "./texcontent";
 
 // ---- current state (nxnative's S and R) ----
 let prog: usize = 0;
@@ -91,9 +92,10 @@ function emitBeginPass(): void {
   for (let i = 0; i < rtN; i++) {
     const t = RT + <usize>i * RT_E, o = r + 32 + <usize>i * 40;
     store<u64>(o, load<u64>(t)); store<u32>(o, load<u32>(t, RT_level), 8); store<u32>(o, load<u32>(t, RT_layer), 12); store<u32>(o, load<u32>(t, RT_fmt), 16);
+    contentGpuWrite(load<u64>(t));
     store<u32>(o, (pendColor >> i) & 1, 20); memory.copy(o + 24, PEND_RGBA + (<usize>i << 4), 16);
   }
-  if (hasDepth) { store<u64>(r, load<u64>(d), 352); store<u32>(r, load<u32>(d, RT_level), 360); store<u32>(r, load<u32>(d, RT_layer), 364); store<u32>(r, load<u32>(d, RT_fmt), 368); }
+  if (hasDepth) { contentGpuWrite(load<u64>(d)); store<u64>(r, load<u64>(d), 352); store<u32>(r, load<u32>(d, RT_level), 360); store<u32>(r, load<u32>(d, RT_layer), 364); store<u32>(r, load<u32>(d, RT_fmt), 368); }
   pendColor = 0; pendDepth = false; pendStencil = false;
   dirty = D_ALL; nPasses++;
 }
@@ -161,7 +163,6 @@ let rX: u32 = 0, rY: u32 = 0, rW: u32 = 0, rH: u32 = 0;
 function scissorRect(w: u32, h: u32): bool {
   if (!hasSc) { rX = 0; rY = 0; rW = w; rH = h; return false; }
   let x0 = <i64>scX, y0 = <i64>scY, x1 = x0 + max<i32>(scW, 0), y1 = y0 + max<i32>(scH, 0);
-  if (originLowerLeft) { const t = <i64>h - y1; y1 = <i64>h - y0; y0 = t; }
   x0 = max<i64>(x0, 0); y0 = max<i64>(y0, 0); x1 = min<i64>(x1, w); y1 = min<i64>(y1, h);
   if (x1 < x0) x1 = x0; if (y1 < y0) y1 = y0;
   rX = <u32>x0; rY = <u32>y0; rW = <u32>(x1 - x0); rH = <u32>(y1 - y0);
@@ -249,7 +250,7 @@ function fillKey(prim: i32, itype: i32): bool {
   memory.fill(k, 0, PK.PK_SIZE);
   store<u16>(k, <u16>curVs, PK.PK_vs); store<u16>(k, <u16>curFs, PK.PK_fs);
   store<u8>(k, <u8>prim, PK.PK_prim);
-  store<u8>(k, <u8>(polySt & 3), PK.PK_cull); store<u8>(k, <u8>((polySt >> 2) & 1), PK.PK_front); store<u8>(k, <u8>((polySt >> 3) & 3), PK.PK_poly_mode);
+  store<u8>(k, <u8>(polySt & 3), PK.PK_cull); store<u8>(k, <u8>(((polySt >> 2) & 1) ^ (originLowerLeft ? 1 : 0)), PK.PK_front);   // lower-left origin: the picture is stored bottom-up, so windings are mirrored (below) store<u8>(k, <u8>((polySt >> 3) & 3), PK.PK_poly_mode);
   const offEn = (polySt >> 5) & 7;
   store<u8>(k, <u8>offEn, PK.PK_offset_en);
   if (offEn) memory.copy(k + PK.PK_offset, POLYOFF, 12);
@@ -284,13 +285,19 @@ function fillKey(prim: i32, itype: i32): bool {
   return true;
 }
 
+// Window origin and depth mode (nxnative: negative-height viewport, reversed winding, flipped present; a near = 0 shader entry).
+// With a lower-left origin render targets are stored bottom-up, as GL has them: row 0 is the bottom row. Viewport and
+// scissor rectangles are therefore used as given; clip space is mirrored in y instead, which WebGPU can only do in the
+// vertex shader. H_FIXUP carries what a translated vertex shader applies last (README, "What the shader chain must emit"):
+//   position.y *= fix.y;  position.z = position.z * fix.z + position.w * fix.w
 function emitState(): void {
   if (dirty & D_VP) {
+    const f = H.hostRec(H.H_FIXUP, 24);
+    store<f32>(f, 1, 8); store<f32>(f, originLowerLeft ? -1 : 1, 12); store<f32>(f, depthZeroToOne ? 1 : 0.5, 16); store<f32>(f, depthZeroToOne ? 0 : 0.5, 20);
     const r = H.hostRec(H.H_VIEWPORT, 32);
     let x: f32 = 0, y: f32 = 0, w = <f32>rtW, h = <f32>rtH;
     if (hasVp) {
       x = load<f32>(VP); y = load<f32>(VP, 4); w = load<f32>(VP, 8); h = load<f32>(VP, 12);
-      if (originLowerLeft) y = <f32>rtH - y - h;
       // WebGPU wants the viewport inside the target; a larger one is clipped to it (the picture then scales: reported once)
       if (x < 0 || y < 0 || x + w > <f32>rtW || y + h > <f32>rtH) {
         if (once(6)) L.redLine("viewport reaches outside the render target: clipped to it (WebGPU has no larger viewport)");
@@ -328,7 +335,9 @@ function emitState(): void {
     let m = load<u32>(libRefl(st ? curFs : curVs), RF_tex);
     for (let slot: u32 = 0; m; slot++, m >>= 1) {
       if (!(m & 1)) continue;
-      const h = texHandle(st, slot), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h), r = H.hostRec(H.H_TEX, 48);
+      const h = texHandle(st, slot), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h);
+      if (serial) contentNeed(serial);       // may upload it now
+      const r = H.hostRec(H.H_TEX, 48);
       if (!serial && once(7)) { L.red("a draw samples texture ID "); L.u(h & 0xfffff); L.str(" (stage "); L.u(st); L.str(" slot "); L.u(slot); L.str("), which names no live texture: it reads as empty"); L.end(); }
       store<u32>(r, st, 8); store<u32>(r, slot, 12); store<u64>(r, serial, 16);
       const hasView = serial != 0 && load<u8>(e, TDE_has_view) != 0;
@@ -389,6 +398,7 @@ function copyB2T(r: usize, size: u32): void {
   const t = liveTex(<usize>load<u64>(r, O.P_COPY_B2T_tex));
   if (!t) { if (once(27)) L.redLine("CopyBufferToTexture: the texture is not live at submit; the copy is dropped"); return; }
   passBreak();
+  contentGpuWrite(load<u64>(t, O.TEX_serial));
   const has = load<u8>(r, O.P_COPY_B2T_has_view) != 0, o = H.hostRec(H.H_COPY_B2T, 64);
   store<u64>(o, load<u64>(r, O.P_COPY_B2T_src), 8); store<u64>(o, load<u64>(t, O.TEX_serial), 16);
   store<u32>(o, viewLevel(r + O.P_COPY_B2T_view, has), 24); store<u32>(o, viewLayer(r + O.P_COPY_B2T_view, has), 28);
@@ -399,11 +409,27 @@ function copyT2T(r: usize): void {
   const s = liveTex(<usize>load<u64>(r, O.P_COPY_T2T_src)), d = liveTex(<usize>load<u64>(r, O.P_COPY_T2T_dst));
   if (!s || !d) { if (once(28)) L.redLine("CopyTextureToTexture: a texture is not live at submit; the copy is dropped"); return; }
   passBreak();
+  contentNeed(load<u64>(s, O.TEX_serial)); contentGpuWrite(load<u64>(d, O.TEX_serial));
   const hs = load<u8>(r, O.P_COPY_T2T_has_sv) != 0, hd = load<u8>(r, O.P_COPY_T2T_has_dv) != 0, o = H.hostRec(H.H_COPY_T2T, 96);
   store<u64>(o, load<u64>(s, O.TEX_serial), 8); store<u64>(o, load<u64>(d, O.TEX_serial), 16);
   store<u32>(o, viewLevel(r + O.P_COPY_T2T_sv, hs), 24); store<u32>(o, viewLayer(r + O.P_COPY_T2T_sv, hs), 28);
   store<u32>(o, viewLevel(r + O.P_COPY_T2T_dv, hd), 32); store<u32>(o, viewLayer(r + O.P_COPY_T2T_dv, hd), 36);
   memory.copy(o + 40, r + O.P_COPY_T2T_sr, 24); memory.copy(o + 64, r + O.P_COPY_T2T_dr, 24); store<u32>(o, load<u32>(r, O.P_COPY_T2T_flags), 88);
+}
+// CopyTextureToBuffer. A texture whose content is its storage is copied on the CPU, in stream order; one the GPU wrote
+// is read back by the replayer and lands in guest memory when the GPU is done (fences issued after it wait for that)
+function copyT2B(r: usize, size: u32): void {
+  const t = liveTex(<usize>load<u64>(r, O.P_COPY_B2T_tex));
+  if (!t) { if (once(30)) L.redLine("CopyTextureToBuffer: the texture is not live at submit; the copy is dropped"); return; }
+  const has = load<u8>(r, O.P_COPY_B2T_has_view) != 0, level = viewLevel(r + O.P_COPY_B2T_view, has), layer = viewLayer(r + O.P_COPY_B2T_view, has);
+  let row: u32 = 0, img: u32 = 0;
+  if (<usize>size - 8 >= O.COPY_STRIDES_OFF + O.P_COPY_STRIDES_SIZE) { row = <u32>load<i64>(r, O.COPY_STRIDES_OFF); img = <u32>load<i64>(r, O.COPY_STRIDES_OFF + 8); }
+  H.hostFlush();
+  if (regionCopy(t, level, layer, r + O.P_COPY_B2T_r, <usize>load<u64>(r, O.P_COPY_B2T_src), row, img, false)) { H.hostRec(H.H_MEM_DIRTY, 8); dirty |= D_VBUF | D_UBO; return; }
+  passBreak();
+  const o = H.hostRec(H.H_COPY_T2B, 64);
+  store<u64>(o, load<u64>(r, O.P_COPY_B2T_src), 8); store<u64>(o, load<u64>(t, O.TEX_serial), 16); store<u32>(o, level, 24); store<u32>(o, layer, 28);
+  memory.copy(o + 32, r + O.P_COPY_B2T_r, 24); store<u32>(o, row, 56); store<u32>(o, img, 60);
 }
 // A CPU-visible write in stream order: everything before it is executed first (the replayer uploads what the earlier
 // draws bound), then guest memory changes, then the replayer is told to forget its uploads
@@ -490,6 +516,7 @@ function exec(p: usize, depth: i32): void {
       case O.OP_SET_TEX_POOL: case O.OP_SET_SAMP_POOL: break;     // the pools' numbering bases were added when the binds were recorded
       case O.OP_COPY_B2T: copyB2T(a, size); break;
       case O.OP_COPY_T2T: copyT2T(a); break;
+      case O.OP_COPY_T2B: copyT2B(a, size); break;
       case O.OP_COPY_B2B: memWrite(<usize>load<u64>(a, 8), <usize>load<u64>(a), <usize>load<u64>(a, 16)); break;
       case O.OP_UPDATE_UB: memWrite(<usize>load<u64>(a), a + 16, <usize>load<u64>(a, 8)); break;
       case O.OP_FENCE_SYNC: { const s = <usize>load<u64>(a); passBreak(); emitFence(s); break; }
@@ -512,12 +539,15 @@ export function submit(n: i32, handles: usize): void {
   passEvent(GfxPassE.Submit);
   H.hostRec(H.H_FLUSH, 8);
   H.hostFlush();
+  submitDone();
 }
 // nvnQueuePresentTexture: the blit of the window texture to the canvas
 export function present(tex: usize, crop: usize, window: usize, index: i32): void {
   passBreak();
-  const o = H.hostRec(H.H_PRESENT, 40);
+  contentNeed(load<u64>(tex, O.TEX_serial));
+  const o = H.hostRec(H.H_PRESENT, 48);
   store<u64>(o, load<u64>(tex, O.TEX_serial), 8); memory.copy(o + 16, crop, 16); store<u32>(o, <u32>window, 32); store<u32>(o, index, 36);
+  store<u32>(o, originLowerLeft ? 1 : 0, 40);      // stored bottom-up: shown flipped
   H.hostRec(H.H_FLUSH, 8);
   H.hostFlush();
 }

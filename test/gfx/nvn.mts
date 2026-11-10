@@ -16,7 +16,7 @@ export const FILTER = { NEAREST: 0, LINEAR: 1 }, WRAP = { CLAMP_TO_EDGE: 7, REPE
 export const TARGET = { T2D: 1, T2D_ARRAY: 4 };
 
 export interface Pool { obj: number; mem: number; size: number; used: number }
-export interface TextureOpts { w: number; h: number; format: number; levels?: number; target?: number; depth?: number; flags?: number }
+export interface TextureOpts { w: number; h: number; format: number; levels?: number; target?: number; depth?: number; flags?: number; packaged?: number[] }
 
 export class Game {
   g: Guest;
@@ -26,13 +26,13 @@ export class Game {
   c(name: string, ints: (number | bigint)[] = [], floats: number[] = []) { return this.g.call("nvn" + name, ints, floats); }
 
   // Device, queue, memory pools, a command buffer with 1 MB of command memory, descriptor pools: what every game sets up first
-  init(opts: { cmdBytes?: number; lowerLeft?: boolean } = {}): this {
+  init(opts: { cmdBytes?: number; glConventions?: boolean } = {}): this {
     const g = this.g;
     const db = g.alloc(SIZEOF.DEVICE_BUILDER); this.dev = g.alloc(SIZEOF.DEVICE);
     this.c("DeviceBuilderSetDefaults", [db]); this.c("DeviceBuilderSetFlags", [db, 0]);
     if (this.c("DeviceInitialize", [this.dev, db]) !== 1) throw new Error("DeviceInitialize");
-    if (!opts.lowerLeft) this.c("DeviceSetWindowOriginMode", [this.dev, 1]);    // upper left, as every game so far
-    this.c("DeviceSetDepthMode", [this.dev, 1]);                                 // near = 0
+    // upper left and near = 0, as nearly every game sets them; glConventions keeps NVN's defaults (lower left, near = -w)
+    if (!opts.glConventions) { this.c("DeviceSetWindowOriginMode", [this.dev, 1]); this.c("DeviceSetDepthMode", [this.dev, 1]); }
     const qb = g.alloc(SIZEOF.QUEUE_BUILDER); this.queue = g.alloc(SIZEOF.QUEUE);
     this.c("QueueBuilderSetDevice", [qb, this.dev]); this.c("QueueBuilderSetDefaults", [qb]);
     const qmem = this.c("QueueBuilderGetQueueMemorySize", [qb]);
@@ -40,7 +40,7 @@ export class Game {
     if (this.c("QueueInitialize", [this.queue, qb]) !== 1) throw new Error("QueueInitialize");
     this.cmdPool = this.pool(opts.cmdBytes ?? 1 << 20, POOL_FLAGS.CPU_CACHED | POOL_FLAGS.GPU_CACHED);
     this.data = this.pool(4 << 20, POOL_FLAGS.CPU_CACHED | POOL_FLAGS.GPU_CACHED);
-    this.texStore = this.pool(8 << 20, POOL_FLAGS.CPU_NO_ACCESS | POOL_FLAGS.GPU_CACHED);
+    this.texStore = this.pool(24 << 20, POOL_FLAGS.CPU_NO_ACCESS | POOL_FLAGS.GPU_CACHED);
     this.cmd = this.commandBuffer(this.cmdPool, 0, this.cmdPool.size);
     const dpool = this.pool(1 << 20, POOL_FLAGS.CPU_CACHED | POOL_FLAGS.GPU_CACHED);
     this.texPool = g.alloc(SIZEOF.TEXTURE_POOL); this.sampPool = g.alloc(SIZEOF.SAMPLER_POOL);
@@ -76,6 +76,7 @@ export class Game {
     this.c("TextureBuilderSetTarget", [b, o.target ?? TARGET.T2D]); this.c("TextureBuilderSetFormat", [b, o.format]);
     this.c("TextureBuilderSetSize2D", [b, o.w, o.h]); if (o.depth) this.c("TextureBuilderSetDepth", [b, o.depth]);
     this.c("TextureBuilderSetLevels", [b, o.levels ?? 1]); this.c("TextureBuilderSetFlags", [b, o.flags ?? 0]);
+    if (o.packaged) this.c("TextureBuilderSetPackagedTextureLayout", [b, g.bytes(o.packaged)]);      // the 8 layout bytes of a texture file
     const size = this.c("TextureBuilderGetStorageSize", [b]), align = this.c("TextureBuilderGetStorageAlignment", [b]);
     const off = (this.texStore.used + align - 1) & ~(align - 1);
     this.texStore.used = off + size;

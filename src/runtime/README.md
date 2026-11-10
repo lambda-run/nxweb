@@ -34,9 +34,11 @@ hole, an overlap or an empty range before anything runs):
 | rt static | 0x0001_0000 | 0x0010_0000 | `src/runtime` static data (75 KiB used): process machine, fault record, clock, scratch, kit trace |
 | loader static | 0x0010_0000 | 0x0020_0000 | `src/loader` static data (110 KiB used) |
 | loader arena | 0x0020_0000 | 0x0080_0000 | module records, export tables, names (`ld_init`) |
-| kernel static | 0x0080_0000 | 0x0180_0000 | `src/kernel` static data (8.5 MiB used: thread records with their context blocks, handle table, 8 MiB of alias page states) |
-| file staging | 0x0180_0000 | 0x0380_0000 | NSO file bytes, which the loader needs in memory until a module is pinned |
-| pc map | 0x0380_0000 | 0x07FC_0000 | the translator's pc map: one `u32` per guest instruction of 0x07FC_0000 .. 0x0C78_0000 |
+| kernel static | 0x0080_0000 | 0x0120_0000 | `src/kernel` static data (8.5 MiB used: thread records with their context blocks, handle table, 8 MiB of alias page states) |
+| gfx static | 0x0120_0000 | 0x0130_0000 | reserved for `src/gfx` static data (its `--memoryBase`); gfx is not instantiated by the runtime yet |
+| gfx arena | 0x0130_0000 | 0x0230_0000 | reserved: the 16 MB of `gfx_init(arena, bytes)` |
+| file staging | 0x0230_0000 | 0x0430_0000 | NSO file bytes, which the loader needs in memory until a module is pinned |
+| pc map | 0x0430_0000 | 0x07FC_0000 | the translator's pc map: one `u32` per guest instruction of 0x07FC_0000 .. 0x0B88_0000 |
 | host stubs | 0x07FC_0000 | 0x0800_0000 | the loader's stub region: 65536 stubs of 4 bytes |
 | code | 0x0800_0000 | | modules, mapped one after the other with a free page between them |
 | stack | 0x7800_0000 | 0x7810_0000 | the main thread's stack (1 MB by default), the first mapping of the kernel's stack region |
@@ -48,12 +50,12 @@ below the range's end" is the whole check: `rt_static_check` compares `rt_static
 data into the wasm file (kernel.wasm: 8.9 MB instead of 24 KB) and into memory at instantiation.
 
 **The pc map** costs as many bytes as the code it covers, and the kernel's code region is 252 MB while the whole
-host area is 128 MB. Chosen: 71.75 MB of map in the host area, covering the stub region and the first 71.5 MB of the
+host area is 128 MB. Chosen: 60.75 MB of map in the host area, covering the stub region and the first 60.5 MB of the
 code region (the stub region is put directly below the code region so that one map covers both). Only touched pages
 of the map are resident. A pc beyond the map is still correct: the index-0 trampoline calls the glue, which keeps
-those entries in a JavaScript map (`far`) and translates on first use (tested by mapping the modules at 0x0C79_0000).
+those entries in a JavaScript map (`far`) and translates on first use (tested by mapping the modules at 0x0BC9_0000).
 It is slower, and functions the translator added to a unit on its own are translated again when they are entered
-indirectly. A game with more than 71 MB of images needs either a different kernel layout (a region for the map) or a
+indirectly. A game with more than 60 MB of images needs either a different kernel layout (a region for the map) or a
 map that covers text only.
 
 **Growth, not reservation.** The memory starts as the 128 MB host area and grows when something needs it: `ensure()`
@@ -127,7 +129,16 @@ run():
   inside its slice. When every thread waits, time jumps to `kernel_next_timeout()`. Same program, same budget: the
   same slices, SVC count, unit count and guest clock, in Node and in Chromium (the tests compare them). Wall clock
   (`clock: "wall"`): `performance.now()`, with a blocking sleep while every thread waits.
-- **`mrs cntpct_el0`** = `kernel_guest_ticks()` after a tick.
+- **`mrs cntpct_el0`** = `kernel_guest_ticks()` after a tick. The kernel asks that a read waits while the clock is
+  frozen for background; that is **not done**: an `mrs` is not a point where translated code can unwind, so the read
+  returns the standing value and one red line says so (see Gaps).
+- **Per-thread CPU state outside the context block**: `depth` is set to 0 by `core.run()` before every dispatch, and
+  a thread only leaves the core by a full unwind, so nothing is carried over. The exclusive monitor (`excl_addr`,
+  `excl_val`, `excl_val2`) is cleared (`excl_addr = -1`) whenever the next slice belongs to another thread, as a
+  context switch does on a CPU; a thread resumed after another ran fails its pending STXR and retries.
+- **Translator window and region mode**: one `setCode` window from the first image's base to the last image's end,
+  set once after relocation. The entry scan and the 64 KB chunk units work on it unchanged (all tests run in this
+  mode; `maxInsns: 1` is used once to count instructions). The stub region is outside the window by construction.
 - **Pause**: `run({ slices, ms })` or `requestPause()` returns in `Paused` at a slice boundary; `run()` resumes.
 - The glue decides nothing about who runs or who wakes; it only reports what happened to the kernel.
 
@@ -154,6 +165,11 @@ hostCall: id = (pc - stubBase) / 4; handler = registry[loader's name of id]
   is the function's result. x0..x3 are lost across the wait (caller-saved). The host signals with
   `kernel_event_signal`. Nothing in the kernel had to change for this.
 - **Jump**: `return cpu.jump(pc)` continues elsewhere (the start sequence uses it).
+- **Calling back into the guest**: `cpu.call(fn, ...args)` runs a guest function to completion on the calling thread
+  and returns its x0 (what gfx's `env.gfx_guest_call` needs). It is a nested `core.run()` with x30 = 0xFFFF_FFD0; the
+  callback may make SVCs that return at once and call host functions, and it is not preempted (its budget is
+  refilled and the time accounted). A callback that blocks stops the process with a `host` fault, because the host
+  frame it would have to return to cannot be suspended. Tested with budgets 100000 and 50.
 - A stub with no host function behind it is a jump fault.
 
 ### Adding a host function
@@ -193,7 +209,7 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 | `load` | the loader or the kernel refused a file | none |
 | `host` | an exception in glue or in a host function | last written back |
 
-## Verified (`npm run rt:test`: 21 tests; the same 21 in Chromium with `npm run rt:browser`)
+## Verified (`npm run rt:test`: 22 tests; the same 22 in Chromium with `npm run rt:browser`)
 
 - The range table and each module's static end; a broken table is refused.
 - (a) hello: output, x0 and x1 at entry, exit code by return.
@@ -211,7 +227,8 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
   main stack, and the free ranges between them, contiguous.
 - (e) host calls: forced over a module's definition (from both modules), weak filling an undefined import, weak
   losing to a module's definition, an unresolved import called twice (one red line, 0), host functions reading and
-  writing guest memory, a host function blocking until another guest thread makes the host signal, and its timeout.
+  writing guest memory, a host function blocking until another guest thread makes the host signal, its timeout, and
+  a host function calling a guest callback five times (the callback makes an SVC); with budgets 100000 and 50.
 - (f) faults: jump to 0x6000_0000, an undefined instruction, a load from 0xF000_0000 in a second thread, runaway
   recursion, a damaged NSO, a deadlock, a fatal `svcBreak`: each `Stopped` with its kind and the red lines.
 - (g) the 21-program corpus (61 flat images) through this loop, budgets 100000 and 50: 61 of 61 both times.
@@ -221,8 +238,8 @@ Measured on the development machine (4 cores), run time without translation:
 
 | | Node 22.23 | Chromium 153 |
 |---|---|---|
-| (g) corpus, 160.1 M guest instructions | 0.52 s = 306 M insn/s | 0.71 s = 224 M insn/s |
-| (c) threads, 6.46 M guest instructions | 13.1 ms = 492 M insn/s | 9.9 ms = 653 M insn/s |
+| (g) corpus, 160.1 M guest instructions | 306-333 M insn/s (0.48-0.52 s, three runs) | 176-247 M insn/s (0.65-0.91 s, three runs) |
+| (c) threads, 6.46 M guest instructions | 454-492 M insn/s (13.1-14.2 ms) | 616-653 M insn/s (9.9-10.5 ms) |
 
 (c)'s instruction count is taken from a run with `maxInsns = 1`, where a budget unit is one instruction; its run
 time is the best of five normal runs and is so short that the figure is rough. (g) is slower here than in the
@@ -249,7 +266,10 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
   `cntpct_el0` without a backward branch or call would not see time move.
 - Wall-clock idle uses `Atomics.wait` (a Worker or Node); on a browser's main thread it would spin. There is no
   asynchronous `run`: the embedder calls `run({ ms })` in a loop to keep a Worker responsive.
-- The kernel's background freeze (a counter read must wait) is not wired to `cntpct`.
+- The kernel's background freeze is not honoured by `mrs cntpct_el0` (red line once). Doing it needs the translator
+  to treat the read like an SVC (pc written back, pc check after the import) and a kernel wait that does not write
+  x0/x1 into the context as the GetSystemTick wait does.
+- gfx is not attached: its two ranges are reserved and `cpu.call` exists, nothing more.
 - `fini` functions never run. TLS relocations stay unsupported in the loader. File staging is 32 MB.
 - Host functions are found by name at the first call of each stub; there is no arity or type information.
 - Browser run needs the full Chromium build: in `chrome-headless-shell` 153 as installed here, any out-of-bounds

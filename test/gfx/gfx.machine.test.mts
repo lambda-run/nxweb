@@ -96,3 +96,16 @@ test("gfx_sync: the pending states carry their fence number", () => {
   w.go(s, [["Acquire", "PendingAcquire"]], 4);
   w.go(s, [["Complete", "Signaled"]]);
 });
+
+test("gfx_texture: uploaded with its sampled hash, stale and uploaded again, then the GPU's for good", () => {
+  const w = walker("gfx_texture"), a = w.start(), b = w.start();
+  w.refused(a, "Stale");
+  w.go(a, [["Upload", "Uploaded"]], 1234);
+  assert.equal(w.k.x.m_data(a), 1234);
+  w.refused(a, "Upload");                                   // a new hash only through Stale
+  w.go(a, [["Stale", "Unknown"]]); w.go(a, [["Upload", "Uploaded"]], 99); assert.equal(w.k.x.m_data(a), 99);
+  w.go(a, [["GpuWrite", "GpuOwned"], ["GpuWrite", "GpuOwned"]]);
+  assert.equal(w.k.x.m_data(a), 0);
+  w.refused(a, "Upload"); w.refused(a, "Stale");
+  w.go(b, [["GpuWrite", "GpuOwned"]]);
+});

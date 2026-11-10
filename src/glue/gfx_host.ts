@@ -39,11 +39,12 @@ export interface ShaderInfo {
   ubos?: number[];
   textures?: { slot: number; dim?: "2d" | "2d-array" | "cube" | "3d"; depth?: boolean }[];
   attributes?: number[];   // vertex: locations read
+  fixup?: boolean;         // vertex: declares `@group(2) @binding(0) var<uniform>` of one vec4f, the position fix-up (README)
   outputs?: number[];      // fragment: colour outputs written
 }
 
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
-  BLEND_COLOR: 12, STENCIL_REF: 13, DRAW: 14, DRAW_IDX: 15, CLEAR_RECT: 16, COPY_B2T: 17, COPY_T2T: 18, SNAPSHOT: 19, PRESENT: 20, FENCE: 21, FLUSH: 22, MEM_DIRTY: 23 };
+  BLEND_COLOR: 12, STENCIL_REF: 13, DRAW: 14, DRAW_IDX: 15, CLEAR_RECT: 16, COPY_B2T: 17, COPY_T2T: 18, SNAPSHOT: 19, PRESENT: 20, FENCE: 21, FLUSH: 22, MEM_DIRTY: 23, TEX_DATA: 24, COPY_T2B: 25, FIXUP: 26 };
 // Pipeline key offsets (src/gfx/pipeline.ts)
 const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8, samples: 9, ncolor: 10, depthFmt: 11, colorFmt: 12, a2c: 20, blendEn: 22, stencilV: 23, stencilW: 24,
   itype: 25, chmask: 28, ds: 32, blend: 40, offset: 104, attrMask: 116, attr: 120, stream: 248 };
@@ -84,9 +85,14 @@ export class GfxHost {
   private ubo = new Map<number, { addr: number; size: number }>();
   private tex = new Map<number, { serial: number; snap: boolean; view: Uint8Array | null; samp: number }>();
   private bindDirty = true;
+  private fix = [1, 1, 1, 0];
+  private fixGroups = new Map<string, GPU>();
+  presentFlips = 0;
   private dummy: GPU = null;
   private helpers = new Map<string, GPU>();
   private redOnce = new Set<string>();
+  private readbacks: Promise<void>[] = [];   // texture-to-buffer copies that have not landed in guest memory yet
+  private queued: { buf: GPU; dst: number; row: number; rows: number; wb: number; img: number; depth: number; srcRow: number }[] = [];
 
   constructor(device: GPU, memory: WebAssembly.Memory, opts: { canvas?: any; log?: (line: string) => void } = {}) {
     this.device = device; this.memory = memory;
@@ -195,6 +201,11 @@ export class GfxHost {
   private flush() {
     this.endPass();
     if (this.enc) { this.device.queue.submit([this.enc.finish()]); this.enc = null; this.stats.submits++; }
+    for (const q of this.queued.splice(0)) this.readbacks.push(q.buf.mapAsync(1).then(() => {
+      const src = new Uint8Array(q.buf.getMappedRange()), mem = this.u8;
+      for (let z = 0; z < q.depth; z++) for (let y = 0; y < q.rows; y++) mem.set(src.subarray((z * q.rows + y) * q.srcRow, (z * q.rows + y) * q.srcRow + q.wb), q.dst + z * q.img + y * q.row);
+      q.buf.unmap(); q.buf.destroy(); this.uploads.clear(); this.bindDirty = true;
+    }, (e: any) => this.log(`[RED] CopyTextureToBuffer readback failed: ${e?.message ?? e}`)));
     for (const b of this.inUse) { let l = this.pool.get(b.size); if (!l) this.pool.set(b.size, l = []); l.push(b); }
     this.inUse = []; this.uploads.clear(); this.bindDirty = true;
   }
@@ -243,7 +254,9 @@ export class GfxHost {
         g1.push({ binding: st * 64 + t.slot * 2 + 1, visibility, sampler: { type: t.depth ? "comparison" : "filtering" } });
       }
     });
-    return [g0, g1].map(entries => {
+    const groups = [g0, g1];
+    if (vs.fixup) groups.push([{ binding: 0, visibility: 1, buffer: { type: "uniform" } }]);
+    return groups.map(entries => {
       const key = JSON.stringify(entries);
       let l = this.layouts.get(key);
       if (!l) { l = this.device.createBindGroupLayout({ entries }); this.layouts.set(key, l); }
@@ -347,6 +360,12 @@ export class GfxHost {
     });
     this.pass.setBindGroup(0, this.device.createBindGroup({ layout: layouts[0], entries: g0 }));
     this.pass.setBindGroup(1, this.device.createBindGroup({ layout: layouts[1], entries: g1 }));
+    if (layouts[2]) {
+      const key = this.fix.join(",");
+      let g = this.fixGroups.get(key);
+      if (!g) { const b = this.device.createBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(b, 0, new Float32Array(this.fix)); g = this.device.createBindGroup({ layout: layouts[2], entries: [{ binding: 0, resource: { buffer: b } }] }); this.fixGroups.set(key, g); }
+      this.pass.setBindGroup(2, g);
+    }
     this.bindDirty = false;
   }
   private zero: GPU = null;
@@ -444,6 +463,34 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     const sv = s.gpu.createView({ dimension: "2d", baseMipLevel: sl, mipLevelCount: 1, baseArrayLayer: sy + sr[2], arrayLayerCount: 1 });
     this.blit(sv, [sr[0] / sw, sr[1] / sh, sr[3] / sw, sr[4] / sh], this.attachView(d, dl, dy + dr[2]), d.fmt.tex!, [dr[0], dr[1], dr[3], dr[4]], (dv.getUint32(p + 88, true) & 1) !== 0);
   }
+  // Texels from the recorder (texcontent.ts): linear rows in memory. Takes effect at once; the recorder only sends
+  // them before the submission's first use of the texture, so nothing encoded and not yet submitted reads it
+  private texData(dv: DataView, p: number) {
+    const t = this.texture(this.u64(dv, p + 8));
+    if (!t) return;
+    if (t.fmt.kind === "depth" || t.fmt.stencil) { this.red("datadepth", "texels for a depth or stencil texture from guest memory: WebGPU cannot write one, not uploaded"); return; }
+    const level = dv.getUint32(p + 16, true), z = dv.getUint32(p + 20, true), y = dv.getUint32(p + 24, true), slices = dv.getUint32(p + 36, true), ptr = dv.getUint32(p + 40, true), pitch = dv.getUint32(p + 44, true), x = dv.getUint32(p + 48, true);
+    const f = t.fmt, up = (v: number, b: number) => Math.ceil(v / b) * b, lw = up(Math.max(1, t.gpu.width >> level), f.bw), lh = up(Math.max(1, t.gpu.height >> level), f.bh);
+    const w = Math.min(dv.getUint32(p + 28, true), lw - x), h = Math.min(dv.getUint32(p + 32, true), lh - y), rows = h / f.bh;
+    if (w <= 0 || h <= 0 || level >= t.gpu.mipLevelCount) return;
+    const bytes = pitch * rows * (slices - 1) + pitch * (rows - 1) + w / f.bw * f.bpb;
+    this.device.queue.writeTexture({ texture: t.gpu, mipLevel: level, origin: { x, y, z } }, this.u8.subarray(ptr, ptr + bytes), { bytesPerRow: pitch, rowsPerImage: rows }, { width: w, height: h, depthOrArrayLayers: slices });
+    this.stats.uploads++; this.stats.uploadBytes += bytes;
+  }
+  private copyT2B(dv: DataView, p: number) {
+    const dst = this.u64(dv, p + 8), t = this.texture(this.u64(dv, p + 16));
+    if (!t) return;
+    const level = dv.getUint32(p + 24, true), layer = dv.getUint32(p + 28, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 32 + i * 4, true)), f = t.fmt;
+    if (t.gpu.sampleCount > 1 || f.tex === "depth24plus" || f.tex === "depth24plus-stencil8") { this.red("t2bfmt", "CopyTextureToBuffer from a multisampled or 24-bit depth texture: WebGPU cannot copy it out, dropped"); return; }
+    const bx = Math.ceil(r[3] / f.bw), by = Math.ceil(r[4] / f.bh), depth = Math.max(1, r[5]), wb = bx * f.bpb, row = dv.getUint32(p + 56, true) || wb, img = dv.getUint32(p + 60, true) || row * by, srcRow = Math.ceil(wb / 256) * 256;
+    const buf = this.device.createBuffer({ size: srcRow * by * depth, usage: 0x01 | 0x08 });
+    this.endPass();
+    this.encoder().copyTextureToBuffer({ texture: t.gpu, mipLevel: level, origin: { x: r[0], y: r[1], z: r[2] + (t.gpu.dimension === "3d" ? 0 : layer) }, ...(f.kind === "depth" ? { aspect: "depth-only" } : {}) },
+      { buffer: buf, bytesPerRow: srcRow, rowsPerImage: by }, { width: bx * f.bw, height: by * f.bh, depthOrArrayLayers: depth });
+    this.queued.push({ buf, dst, row, rows: by, wb, img, depth, srcRow });
+  }
+  // Resolves when every texture-to-buffer copy issued so far has landed in guest memory
+  async landed() { while (this.readbacks.length) await Promise.all(this.readbacks.splice(0)); }
   private snapshot(serial: number) {
     const t = this.texture(serial);
     if (!t) return;
@@ -460,8 +507,10 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.lastPresented = serial; this.stats.presents++;
     if (t && this.context) {
       const c = [0, 1, 2, 3].map(i => dv.getInt32(p + 16 + i * 4, true)), uv = c[2] > 0 && c[3] > 0 ? [c[0] / t.width, c[1] / t.height, c[2] / t.width, c[3] / t.height] : [0, 0, 1, 1];
+      if (dv.getUint32(p + 40, true) & 1) { uv[1] += uv[3]; uv[3] = -uv[3]; }
       this.blit(this.view(t, t.gpu, null, "2d"), uv, this.context.getCurrentTexture().createView(), this.canvasFormat, null, true);
     }
+    if (dv.getUint32(p + 40, true) & 1) this.presentFlips++;
     this.flush();
     this.x.gfx_image_event(win, index, 0);
     this.device.queue.onSubmittedWorkDone().then(() => this.x.gfx_image_event(win, index, 1));
@@ -513,7 +562,10 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.COPY_T2T: this.copyT2T(dv, p); break;
         case H.SNAPSHOT: this.snapshot(this.u64(dv, p + 8)); break;
         case H.PRESENT: this.present(dv, p); break;
-        case H.FENCE: { const n = this.u64(dv, p + 8); this.flush(); this.device.queue.onSubmittedWorkDone().then(() => this.x.gfx_fence_signal(n)); break; }
+        case H.FENCE: { const n = this.u64(dv, p + 8); this.flush(); const rb = this.readbacks.slice(); this.device.queue.onSubmittedWorkDone().then(() => Promise.all(rb)).then(() => this.x.gfx_fence_signal(n)); break; }
+        case H.TEX_DATA: this.texData(dv, p); break;
+        case H.FIXUP: { const f = [0, 1, 2, 3].map(i => dv.getFloat32(p + 8 + i * 4, true)); if (f.some((v, i) => v !== this.fix[i])) { this.fix = f; this.bindDirty = true; } break; }
+        case H.COPY_T2B: this.copyT2B(dv, p); break;
         case H.FLUSH: this.flush(); break;
         case H.MEM_DIRTY: this.dropUploads(); break;
         default: this.log(`[RED] host stream: unknown op ${op} at 0x${p.toString(16)}`); return;
@@ -528,10 +580,11 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.x.gfx_flush(); this.flush();
     const t = this.texture(serial);
     if (!t) throw new Error(`no texture ${serial}`);
-    const w = Math.max(1, t.width >> level), h = Math.max(1, t.height >> level), bpp = t.fmt.bpb, row = Math.ceil(w * bpp / 256) * 256;
+    // width and height are in blocks, bytesPerPixel the bytes of one block (a texel for uncompressed formats)
+    const pw = Math.max(1, t.width >> level), ph = t.target === 0 || t.target === 3 ? 1 : Math.max(1, t.height >> level), w = Math.ceil(pw / t.fmt.bw), h = Math.ceil(ph / t.fmt.bh), bpp = t.fmt.bpb, row = Math.ceil(w * bpp / 256) * 256;
     const buf = this.device.createBuffer({ size: row * h, usage: 0x01 | 0x08 /* MAP_READ | COPY_DST */ });
     const enc = this.device.createCommandEncoder();
-    enc.copyTextureToBuffer({ texture: t.gpu, mipLevel: level, origin: { x: 0, y: 0, z: layer } }, { buffer: buf, bytesPerRow: row, rowsPerImage: h }, { width: w, height: h, depthOrArrayLayers: 1 });
+    enc.copyTextureToBuffer({ texture: t.gpu, mipLevel: level, origin: { x: 0, y: 0, z: layer } }, { buffer: buf, bytesPerRow: row, rowsPerImage: h }, { width: w * t.fmt.bw, height: h * t.fmt.bh, depthOrArrayLayers: 1 });
     this.device.queue.submit([enc.finish()]);
     await buf.mapAsync(1);
     const src = new Uint8Array(buf.getMappedRange()), data = new Uint8Array(w * h * bpp);
