@@ -430,9 +430,9 @@ state still coming from Unicorn.
 ## Known gaps
 
 Not translated (compile to `unimpl`, reported only if executed):
-- Half-precision arithmetic (fp16 is not on the Switch CPU), FCVTXN, FJCVTZS, vector FCVT*/SCVTF on halves.
+- Half-precision arithmetic (fp16 is not on the Switch CPU), FCVTXN, vector FCVT*/SCVTF on halves.
 - ERETAA/ERETAB (EL1), LSE128,
-  MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, SHA-512/SHA-3/SM3/SM4, any system register not
+  MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, any system register not
   listed above.
 
 Behavioural differences:
@@ -451,7 +451,12 @@ Behavioural differences:
 - memory64: see its section for the limits (16 GB, static data below 4 GB). The runtime and every other module have
   the mode too (`src/runtime/README.md`, "memory64, for the 14").
 - Code and cache blobs are tied to the load address. At most 64 code ranges; a unit holds at most 250k instructions
-  and 8 MB of wasm (more is split over further units).
+  and 8 MB of wasm (more is split over further units).- Cryptographic extensions of ARMv8.2 (the 0xCE encodings, `crypto2` in `simd.ts`): SHA-512 (SHA512H, SHA512H2,
+  SHA512SU0, SHA512SU1), SM3 (SM3SS1, SM3TT1A/1B/2A/2B, SM3PARTW1/2) and SM4 (SM4E, SM4EKEY) through `hlp.vop`
+  like AES/SHA-1/SHA-256 (ops 40..49); SHA-3 EOR3, BCAX, RAX1 and XAR inline (v128 xor / andnot, i64x2 shifts).
+- FJCVTZS (ARMv8.3, JavaScript's ToInt32): `hlp.rnd` op 11 truncates modulo 2^32 and answers whether the conversion
+  was exact; Z is that, N, C and V are cleared. It does not read FPCR (the rounding is always toward zero).
+
 - Multi-structure LD2/3/4 and ST2/3/4 and everything behind `hlp.vop` are lane-by-lane (correct, slow).
 - The speed figures below were taken while other jobs ran on the machine; run-to-run spread is about +-20%.
 
