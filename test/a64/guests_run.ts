@@ -20,7 +20,7 @@ const speed = argv.includes("--speed");
 const quiet = argv.includes("--quiet");
 const translator = readFileSync(join(root, "build/a64/translator.wasm"));
 
-interface Result { name: string; ok: boolean; why: string; insns: number; runMs: number; trMs: number; trInsns: number; funcs: number; bytes: number; slices: number }
+interface Result { name: string; ok: boolean; why: string; insns: number; runMs: number; trMs: number; trInsns: number; trOnlyMs: number; funcs: number; bytes: number; slices: number }
 
 function runGuest(dir: string, file: string): Result {
   const side = JSON.parse(readFileSync(join(dir, file), "utf8"));
@@ -88,27 +88,27 @@ function runGuest(dir: string, file: string): Result {
     why = `stdout differs at byte ${i}: expected ${JSON.stringify(expected.subarray(ls, ls + 100).toString())} got ${JSON.stringify(got.subarray(ls, ls + 100).toString())}`;
   } else if (side.exit_code !== undefined && exitCode !== side.exit_code) why = `exit code ${exitCode}, expected ${side.exit_code}`;
   const trMs = host.translateNs / 1e6;
-  return { name: file.replace(/\.json$/, ""), ok: why === "", why, insns: side.insn_count ?? 0, runMs: total - trMs, trMs, trInsns: host.translatedInsns, funcs: host.translatedFuncs, bytes: host.moduleBytes, slices };
+  return { name: file.replace(/\.json$/, ""), ok: why === "", why, insns: side.insn_count ?? 0, runMs: total - trMs, trMs, trInsns: host.translatedInsns, trOnlyMs: host.translatorNs / 1e6, funcs: host.translatedFuncs, bytes: host.moduleBytes, slices };
 }
 
 const dirs = [join(root, "test/guests/out"), join(root, "test/a64/guests/out")].filter(existsSync);
 let pass = 0, failn = 0;
-let totInsns = 0, totRun = 0, totTr = 0, totTrInsns = 0;
+let totInsns = 0, totRun = 0, totTr = 0, totTrInsns = 0, totTrOnly = 0;
 if (!quiet) console.log(`budget=${budget} maxInsns=${maxInsns} fma=${fma}`);
 for (const dir of dirs) {
   for (const f of readdirSync(dir).filter(f => f.endsWith(".json") && f !== "manifest.json").sort()) {
     if (only && !only.test(f)) continue;
     let r: Result;
-    try { r = runGuest(dir, f); } catch (e) { r = { name: f, ok: false, why: "runner: " + String(e), insns: 0, runMs: 0, trMs: 0, trInsns: 0, funcs: 0, bytes: 0, slices: 0 }; }
+    try { r = runGuest(dir, f); } catch (e) { r = { name: f, ok: false, why: "runner: " + String(e), insns: 0, runMs: 0, trMs: 0, trInsns: 0, trOnlyMs: 0, funcs: 0, bytes: 0, slices: 0 }; }
     if (r.ok) pass++; else failn++;
-    totInsns += r.insns; totRun += r.runMs; totTr += r.trMs; totTrInsns += r.trInsns;
+    totInsns += r.insns; totRun += r.runMs; totTr += r.trMs; totTrInsns += r.trInsns; totTrOnly += r.trOnlyMs;
     if (speed) {
-      console.log(`${r.ok ? "ok  " : "FAIL"} ${r.name.padEnd(24)} insns=${String(r.insns).padStart(10)} run=${r.runMs.toFixed(1).padStart(8)}ms ${(r.insns / r.runMs / 1000).toFixed(1).padStart(8)} Minsn/s  translate=${r.trMs.toFixed(1).padStart(7)}ms for ${String(r.trInsns).padStart(6)} insns (${(r.trMs * 1000 / Math.max(1, r.trInsns)).toFixed(2)} us/insn, ${r.funcs} funcs, ${r.bytes} B) slices=${r.slices}`);
+      console.log(`${r.ok ? "ok  " : "FAIL"} ${r.name.padEnd(24)} insns=${String(r.insns).padStart(10)} run=${r.runMs.toFixed(1).padStart(8)}ms ${(r.insns / r.runMs / 1000).toFixed(1).padStart(8)} Minsn/s  translate=${r.trMs.toFixed(1).padStart(7)}ms for ${String(r.trInsns).padStart(6)} insns (${(r.trMs * 1000 / Math.max(1, r.trInsns)).toFixed(2)} us/insn, translator alone ${(r.trOnlyMs * 1000 / Math.max(1, r.trInsns)).toFixed(3)}, ${r.funcs} funcs, ${r.bytes} B) slices=${r.slices}`);
     } else if (!quiet || !r.ok) {
       console.log(`${r.ok ? "ok  " : "[RED] FAIL"} ${r.name}${r.ok ? "" : "  " + r.why}`);
     }
   }
 }
 console.log(`guests: ${pass} passed, ${failn} failed`);
-if (speed) console.log(`total: ${totInsns} guest insns in ${totRun.toFixed(0)} ms run = ${(totInsns / totRun / 1000).toFixed(1)} Minsn/s; translated ${totTrInsns} insns in ${totTr.toFixed(0)} ms = ${(totTr * 1000 / totTrInsns).toFixed(2)} us/insn (includes wasm compile+instantiate)`);
+if (speed) console.log(`total: ${totInsns} guest insns in ${totRun.toFixed(0)} ms run = ${(totInsns / totRun / 1000).toFixed(1)} Minsn/s; translated ${totTrInsns} insns in ${totTr.toFixed(0)} ms = ${(totTr * 1000 / totTrInsns).toFixed(2)} us/insn including wasm compile+instantiate, translator alone ${totTrOnly.toFixed(0)} ms = ${(totTrOnly * 1000 / totTrInsns).toFixed(3)} us/insn`);
 process.exit(failn ? 1 : 0);

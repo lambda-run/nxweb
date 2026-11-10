@@ -43,6 +43,7 @@ export class A64Host {
   readonly core: CoreExports;
   readonly memory: WebAssembly.Memory;
   translateNs = 0;        // time spent in translator + wasm compile (ns)
+  translatorNs = 0;       // time spent in the translator alone (ns)
   translatedFuncs = 0;
   translatedInsns = 0;    // guest instructions translated
   moduleBytes = 0;
@@ -93,6 +94,7 @@ export class A64Host {
     const tr = this.tr;
     new BigUint64Array(tr.memory.buffer, tr.entryBuf(), entries.length).set(entries);
     const len = tr.translate(entries.length);
+    this.translatorNs += (performance.now() - t0) * 1e6;
     if (len === 0) throw new Error("a64: translation failed");
     const bytes = new Uint8Array(tr.memory.buffer, tr.outPtr(), len);
     const meta = tr.metaBuf();

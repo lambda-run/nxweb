@@ -33,14 +33,12 @@ export function handlesUsed(): u32 {
   for (let i: u32 = 1; i < MAX_H; i++) if (load<u32>(TAB + (<usize>i << 3)) != O_FREE) n++;
   return n;
 }
-// How many handles of this type name obj (the consistency check counts an event's references this way)
-export function handlesTo(type: u32, obj: u32): u32 {
-  let n: u32 = 0;
+// Add 1 to counts[e] (i32) for every handle of event e (the consistency check counts references this way)
+export function handlesCountEvents(counts: usize): void {
   for (let i: u32 = 1; i < MAX_H; i++) {
-    const p = TAB + (<usize>i << 3);
-    if (load<u32>(p) == type && load<u32>(p, 4) == obj) n++;
+    const p = TAB + (<usize>i << 3), ty = load<u32>(p);
+    if (ty == O_EVENT_R || ty == O_EVENT_W) { const q = counts + (<usize>load<u32>(p, 4) << 2); store<i32>(q, load<i32>(q) + 1); }
   }
-  return n;
 }
 
 // ---- events ----

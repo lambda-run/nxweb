@@ -166,3 +166,13 @@ Behavioural differences:
 - One code window at a time (`setCode`); no self-modifying-code detection (`A64Host.invalidate()`
   drops all translations). Wasm memory offsets are used for the pc map, so the map must stay put.
 - Multi-structure LD2/3/4 and ST2/3/4 are lane-by-lane (correct but slow).
+
+## Status (last full run)
+
+- Gate 1: 128 classes x 2000 cases = 256000 cases, 0 failures (seed 1); 192000 cases, 0 failures (seed 7).
+- Gate 2: 71 guest images (61 shared corpus + 10 own): 62 pass, 9 fail, identical with `--budget 50`.
+  Failing: `fp_nan_bits` (O0/O2/Os, NaN sign/payload), `fpcr_modes` (O0/O2/Os, non-nearest rounding),
+  `neon_estimate` (O0/O2/Os, FRECPE/FRSQRTE family not implemented).
+- Speed under Node 22 on the development machine, all guests together: about 350-400 million guest
+  instructions per second of run time (182.9 M instructions in 0.45-0.53 s); translation about
+  0.4-0.5 us per guest instruction in the translator, 1.4-1.7 us including wasm compile + instantiate.
