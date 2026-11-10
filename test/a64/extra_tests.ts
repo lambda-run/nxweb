@@ -1,20 +1,27 @@
 // Translator feature tests on hand-assembled code, shared by Node (extra_run.ts) and the browser worker:
 // exact fault pcs, code ranges added and removed at run time, the cntpct yield point, the translation cache,
-// atomic exclusives on a shared memory.
-import { A64Host, type A64Options } from "../../src/glue/a64_host.ts";
+// atomic exclusives on a shared memory. runExtraTests(mods, { mem64, high }) runs them in the memory64 mode (the
+// wasm64 translator on a 64-bit memory), with `high` at addresses above 4 GB, and adds what only that mode has.
+import { A64Host, makeMemory64, MEM64_MAX_PAGES, type A64Options } from "../../src/glue/a64_host.ts";
 import { A64, HOST_END } from "../../src/glue/rt_layout.ts";
 
+// for the memory64 mode, the same four built for wasm64 (translator64*.wasm, helpers64*.wasm) go in as these
 export interface Mods { translator: WebAssembly.Module; helpers: WebAssembly.Module; translatorShared: WebAssembly.Module; helpersShared: WebAssembly.Module }
 export interface TestResult { name: string; ok: boolean; detail: string }
+export interface ExtraConfig { mem64?: boolean; high?: boolean }
 
-const BASE = 0x0800_0000, FAR = 0x1700_0000, DATA = 0x0900_0000;
+// code, a second code range 240 MB further and data; with `high` all three are moved up by HIGH
+const HIGH = 0x1_8000_0000;
+let BASE = 0x0800_0000, FAR = 0x1700_0000, DATA = 0x0900_0000, M64 = false, LAYOUT = A64;
 const RET = 0xD65F03C0;
 
 function mk(m: Mods, o: Partial<A64Options> & { top?: number; cnt?: () => bigint } = {}) {
   const pages = Math.ceil(Math.max(o.top ?? DATA + 0x10000, HOST_END) / 65536);
-  const memory = o.shared ? new WebAssembly.Memory({ initial: pages, maximum: 65536, shared: true }) : new WebAssembly.Memory({ initial: pages });
+  const m64 = M64 ? makeMemory64(o.shared ? { initial: pages, maximum: MEM64_MAX_PAGES, shared: true } : { initial: pages }) : null;
+  const memory = m64 ? m64.memory : o.shared ? new WebAssembly.Memory({ initial: pages, maximum: 65536, shared: true }) : new WebAssembly.Memory({ initial: pages });
+  const grow = (n: number) => m64 ? m64.grow(n) : memory.grow(n);
   const host: A64Host = new A64Host(o.shared ? m.translatorShared : m.translator, o.shared ? m.helpersShared : m.helpers, {
-    memory, layout: A64, ...o,
+    memory, mem64: M64, layout: LAYOUT, ...o,
     imports: { svc: () => {}, unimpl: (pc, insn) => { throw new Error(`unimpl ${insn.toString(16)} at ${pc.toString(16)}`); }, brk: () => {}, cntpct: o.cnt ?? (() => 0n) },
   });
   const put = (addr: number, words: number[]) => new Uint32Array(memory.buffer, addr, words.length).set(words);
@@ -26,11 +33,15 @@ function mk(m: Mods, o: Partial<A64Options> & { top?: number; cnt?: () => bigint
     c.run();
     return c.x0.value;
   };
-  return { host, memory, put, call, c };
+  return { host, memory, put, call, c, grow };
 }
 
-export function runExtraTests(m: Mods): TestResult[] {
+export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
   const out: TestResult[] = [];
+  const up = cfg.high ? HIGH : 0;
+  M64 = !!cfg.mem64; BASE = up + 0x0800_0000; FAR = up + 0x1700_0000; DATA = up + 0x0900_0000;
+  LAYOUT = { ...A64, codeRegionLo: BASE };
+  const FIXED = A64Host.pcMapFixedBytes(M64);
   const test = (name: string, fn: () => string) => {
     try { out.push({ name, ok: true, detail: fn() }); } catch (e) { out.push({ name, ok: false, detail: String(e instanceof Error ? e.stack ?? e.message : e).slice(0, 600) }); }
   };
@@ -103,7 +114,7 @@ export function runExtraTests(m: Mods): TestResult[] {
     t.host.addCode(FAR, 8);
     eq("new b()", t.call(FAR), 3n);
     eq("a2()", t.call(BASE + 8), 10n);
-    return `units: ${t.host.units.map(u => "[" + [...u.pcs].map(p => "0x" + p.toString(16)).join(",") + "]").join(" ")}; pc map ${t.host.pcMapBytes >> 10} KB for 4 GB of address space`;
+    return `units: ${t.host.units.map(u => "[" + [...u.pcs].map(p => "0x" + p.toString(16)).join(",") + "]").join(" ")}; pc map ${t.host.pcMapBytes >> 10} KB for ${M64 ? "16" : "4"} GB of address space`;
   });
 
   test("cntpct as a yield point: the embedder parks at the read and resumes at the same instruction", () => {
@@ -203,10 +214,10 @@ export function runExtraTests(m: Mods): TestResult[] {
   });
   test("pc map beyond its fixed range: leaves come from leafAlloc (which may grow the memory); without one, or when it gives none, the error names the pc map; freed leaves are used again", () => {
     // mov x0,#n; ret in six different 64 KB pages, with a layout whose own arena has room for two leaves
-    const small = { ...A64, pcmapEnd: A64.pcmapBase + 0x40000 + 3 * 0x10000 };
+    const small = { ...LAYOUT, pcmapEnd: LAYOUT.pcmapBase + FIXED + 2 * 0x10000 };
     const fn = (n: number) => [0xD2800000 | (n << 5), RET];
     const EXTRA = DATA + 0x10000;
-    const run = (leafAlloc?: (t: { memory: WebAssembly.Memory }) => number) => {
+    const run = (leafAlloc?: (t: { memory: WebAssembly.Memory; grow: (n: number) => number }) => number) => {
       let self: ReturnType<typeof mk>;
       self = mk(m, { layout: small, leafAlloc: leafAlloc ? () => leafAlloc(self) : undefined });
       for (let i = 0; i < 6; i++) { self.put(BASE + i * 0x10000, fn(i + 1)); self.host.addCode(BASE + i * 0x10000, 8); }
@@ -221,7 +232,7 @@ export function runExtraTests(m: Mods): TestResult[] {
     let given = 0, grown = 0;
     const r = run(t => {
       const at = EXTRA + given++ * 0x10000;
-      if (t.memory.buffer.byteLength < at + 0x10000) { t.memory.grow(Math.ceil((at + 0x10000 - t.memory.buffer.byteLength) / 65536)); grown++; }
+      if (t.memory.buffer.byteLength < at + 0x10000) { t.grow(Math.ceil((at + 0x10000 - t.memory.buffer.byteLength) / 65536)); grown++; }
       new Uint8Array(t.memory.buffer, at, 0x10000).fill(0xAA);   // the host zeroes what it is given
       return at;
     });
@@ -257,5 +268,110 @@ export function runExtraTests(m: Mods): TestResult[] {
     eq("modules with maxFuncs 1", alone.modules, code.length);
     return `${code.length} instructions, ${insns} executed: ${shared.modules} modules (was one per instruction: ${alone.modules} with maxFuncs 1), ${shared.used} budget units either way`;
   });
+
+  test("guard: integer, pair, SIMD, exclusive and DC ZVA accesses below guardBase trap, at it they work", () => {
+    const G = DATA + 0x1000;
+    const t = mk(m, { guardBase: G });
+    // each: one access through x0, then ret. str x1,[x0] / ldr x1,[x0] / stp x1,x2,[x0] / str q0,[x0] / ldr d0,[x0] / ld1 {v0.16b},[x0] / ldxr x1,[x0] / dc zva,x0
+    const acc = [0xF9000001, 0xF9400001, 0xA9000801, 0x3D800000, 0xFD400000, 0x4C407000, 0xC85F7C01, 0xD50B7420];
+    acc.forEach((w, i) => t.put(BASE + i * 0x40, [w, 0xD2800540, RET]));   // access; mov x0,#42; ret
+    t.host.addCode(BASE, acc.length * 0x40, { entries: acc.map((_, i) => BASE + i * 0x40) });
+    let trapped = 0;
+    for (let i = 0; i < acc.length; i++) {
+      eq(`access ${i} at the guard base`, t.call(BASE + i * 0x40, [BigInt(G)]), 42n);
+      // the last byte below it (DC ZVA: the 64-byte block below it)
+      let err: unknown; try { t.call(BASE + i * 0x40, [BigInt(i === 7 ? G - 64 : G - 8)]); } catch (e) { err = e; }
+      if (!err) throw new Error(`access ${i} (0x${acc[i].toString(16)}) below the guard base did not trap`);
+      eq(`fault pc of access ${i}`, t.host.faultFromError(err)?.pc, BASE + i * 0x40);
+      trapped++;
+    }
+    return `${trapped} kinds of access trap below 0x${G.toString(16)} and work at it`;
+  });
+
+  test("context: save_ctx / load_ctx at a guest address, registers round-trip", () => {
+    const t = mk(m);
+    const CTX = DATA + 0x2000;
+    t.c.x5.value = 0x1122334455667788n; t.c.sp.value = BigInt(DATA + 0x8000); t.c.pc.value = BigInt(BASE + 0x40); t.c.nf.value = 1; t.c.cf.value = 1;
+    t.host.core.save_ctx(CTX);
+    const dv = new DataView(t.memory.buffer);
+    eq("x5 in memory", dv.getBigUint64(CTX + 5 * 8, true), 0x1122334455667788n);
+    eq("sp in memory", dv.getBigUint64(CTX + 0xF8, true), BigInt(DATA + 0x8000));
+    eq("nzcv in memory", dv.getUint32(CTX + 0x108, true), 0b1010);
+    t.c.x5.value = 0n; t.c.sp.value = 0n; t.c.pc.value = 0n; t.c.nf.value = 0;
+    t.host.core.load_ctx(CTX);
+    eq("x5", t.c.x5.value, 0x1122334455667788n); eq("sp", t.c.sp.value, BigInt(DATA + 0x8000)); eq("pc", t.c.pc.value, BigInt(BASE + 0x40)); eq("N", t.c.nf.value, 1);
+    return `context block at 0x${CTX.toString(16)}`;
+  });
+
+  test("the mode is part of the option key and of the cache blob", () => {
+    const t = mk(m);
+    t.host.keepBytes = true;
+    t.put(BASE, [0x52800020, RET]); t.host.addCode(BASE, 8);
+    eq("result", t.call(BASE), 1n);
+    const key = t.host.optionsKey();
+    if (!new RegExp(M64 ? "\\.m64\\." : "\\.m32$").test(key)) throw new Error("the option key does not name the mode: " + key);
+    const blob = t.host.exportCache(BASE, 8);
+    const magic = new DataView(blob.buffer).getUint32(0, true);
+    eq("blob magic", magic, M64 ? 0x44343641 : 0x43343641);
+    // a blob of the other mode is not taken
+    const other = blob.slice(); new DataView(other.buffer).setUint32(0, M64 ? 0x43343641 : 0x44343641, true);
+    eq("units taken from a blob of the other mode", mk(m).host.importCache(other), 0);
+    eq("units taken from its own", mk(m).host.importCache(blob), 1);
+    return `key ${key}`;
+  });
+
+  if (M64) {
+    test("memory64: an address beyond the memory traps (it is not wrapped to 32 bits), fault pc exact", () => {
+      const t = mk(m);
+      // f(x0): ldr x1,[x0]; mov x0,x1; ret        g(x0, x1): str x1,[x0]; ret
+      t.put(BASE, [0xF9400001, 0xAA0103E0, RET, 0xD503201F, 0xF9000001, RET]);
+      t.host.addCode(BASE, 24, { entries: [BASE, BASE + 16] });
+      new BigUint64Array(t.memory.buffer, DATA, 1)[0] = 0x55n;
+      eq("in range", t.call(BASE, [BigInt(DATA)]), 0x55n);
+      const size = t.memory.buffer.byteLength;
+      const beyond = [BigInt(DATA) + 0x1_0000_0000n, BigInt(DATA) + 0x100_0000_0000n, BigInt(size), BigInt(size - 4), 0xFFFF_FFFF_0000_0000n + BigInt(DATA % 0x1_0000_0000), -8n];
+      for (const a of beyond) {
+        if (a >= 0n && a + 8n <= BigInt(size)) continue;   // (with `high`, DATA + 4 GB may lie inside the memory)
+        for (const [fn, what] of [[BASE, "load"], [BASE + 16, "store"]] as [number, string][]) {
+          let err: unknown; try { t.call(fn, [a, 0x77n]); } catch (e) { err = e; }
+          if (!err) throw new Error(`${what} at 0x${BigInt.asUintN(64, a).toString(16)} did not trap (memory is 0x${size.toString(16)} bytes)`);
+          eq(`fault pc of the ${what}`, t.host.faultFromError(err)?.pc, fn);
+        }
+      }
+      eq("the word the wrapped address would have hit", new BigUint64Array(t.memory.buffer, DATA, 1)[0], 0x55n);
+      return `loads and stores at ${beyond.length} addresses beyond the ${(size / 2 ** 20).toFixed(0)} MB memory trap; the word at the same address modulo 4 GB is untouched`;
+    });
+    test("memory64: a pc with no code, inside the pc map's span and beyond it, reaches the embedder whole", () => {
+      const asked: bigint[] = [];
+      const t = mk(m, { onTranslate: (pc: bigint) => { asked.push(pc); return A64Host.STOP; } });
+      t.put(BASE, [0xD61F0000]);   // br x0
+      t.host.addCode(BASE, 4);
+      t.host.setPcMap(BASE, t.host.translateUnit([BigInt(BASE)])[0]);
+      const span = BigInt(MEM64_MAX_PAGES) * 65536n;
+      const targets = [BigInt(BASE) + 0x1_0000_0000n * 2n, span - 4n, span, span + 0x1234_5678n * 4n, 0x7FFF_FFFF_FFFF_FFF0n, 0xFFFF_FFFF_0800_0000n];
+      for (const target of targets) {
+        t.c.x0.value = target; t.c.pc.value = BigInt(BASE); t.c.budget.value = 1 << 30;
+        t.c.run();
+        eq("pc after the stop", BigInt.asUintN(64, t.c.pc.value), target);
+      }
+      eq("pcs the embedder was asked for", asked.map(p => BigInt.asUintN(64, p).toString(16)).join(","), targets.map(p => p.toString(16)).join(","));
+      eq("getPcMap beyond the span", t.host.getPcMap(Number(span) + 0x1000), 0);
+      let threw = ""; try { t.host.setPcMap(Number(span), 5); } catch (e) { threw = String(e); }
+      if (!/beyond the pc map/.test(threw)) throw new Error("setPcMap beyond the span: " + (threw || "no error"));
+      return `${targets.length} targets, none aliased onto code at the same address modulo 4 GB or modulo the span`;
+    });
+    test("memory64: the embedder's pcs are the window 0xFFFF_FF00 .. 0xFFFF_FFFF; code on both sides of it runs", () => {
+      const t = mk(m, { top: Math.max(DATA + 0x10000, 0x1_0002_0000) });
+      const LOW = 0xFFFE_0000, ABOVE = 0x1_0000_0000;   // the last 64 KB page pair below 4 GB and the first above
+      // low: mov x9,x30; bl +8; br x9 | add x0,x0,#1; ret       above (called from low through a pointer): add x0,x0,#16; ret
+      t.put(LOW, [0xAA1E03E9, 0x94000002, 0xD61F0120, 0x91000400, RET]);
+      t.put(ABOVE, [0x91004000, RET]);
+      t.host.addCode(LOW, 20); t.host.addCode(ABOVE, 8);
+      eq("a function just below the window", t.call(LOW, [1n]), 2n);
+      eq("a function at 4 GB", t.call(ABOVE, [1n]), 17n);
+      eq("isHostPc", [0xFFFFFEFCn, 0xFFFFFF00n, 0xFFFFFFF0n, 0xFFFFFFFFn, 0x1_0000_0000n, 0x1_FFFF_FFF0n].map(p => t.host.isHostPc(p)).join(","), "false,true,true,true,false,false");
+      return "run() returns for a pc in the window only";
+    });
+  }
   return out;
 }

@@ -23,11 +23,20 @@ export function mk<T>(n: i32): StaticArray<T> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// options
-export let optPcmapBase: u32 = 0;   // address of the pc map's first level (65536 u32 leaf addresses, one per 64 KB of guest address space)
-export let optEntryBase: u32 = 0;   // address of the entry bitmap (1 bit per instruction of the code region)
-export let optRegionLo: u32 = 0;    // code region covered by the entry bitmap
-export let optRegionSize: u32 = 0;
+// memory64: a translator built for wasm64 (tools/asc64; usize is 64 bits) reads guest code anywhere in an i64 memory
+// and emits units for an i64 memory: guest addresses are used whole (no i32.wrap_i64), the pc map is indexed with the
+// whole pc. One build is one mode; the wasm32 build compiles none of the M64 branches and emits what it always did.
+// @ts-ignore
+@inline export const M64: bool = sizeof<usize>() == 8;
+
+// ---------------------------------------------------------------------------------------------
+// options (addresses are usize: 32 bits in the wasm32 build, 64 in the wasm64 build, set there with setOptAddr)
+export let optPcmapBase: usize = 0; // address of the pc map's first level: one leaf address per 64 KB of guest address space (wasm32: 65536 u32; memory64: optPcSpan / 64 KB + 1 u64)
+export let optEntryBase: usize = 0; // address of the entry bitmap (1 bit per instruction of the code region)
+export let optRegionLo: usize = 0;  // code region covered by the entry bitmap
+export let optRegionSize: usize = 0;
+export let optPcSpan: u64 = <u64>1 << 34;   // memory64: the guest addresses [0, optPcSpan) the pc map's first level covers (a multiple of 64 KB); a pc beyond it has no translation
+export let optMaxPages: u32 = 262144;       // memory64, shared: the maximum the modules declare for the imported memory (pages)
 export let optMaxInsns: i32 = 1500; // function size cap
 export let optMaxFuncs: i32 = 1024; // functions per unit (entries + region entries + auto-added BL targets)
 export let optFma: bool = true;     // relaxed-simd fused multiply-add
@@ -38,7 +47,7 @@ export let optRmArith: bool = true; // scalar FADD/FSUB/FMUL/FDIV/FSQRT honour F
 export let optDepth: i32 = 160;     // nested guest calls before a call unwinds through the run loop (0 = off)
 export let optShared: bool = false; // modules import a shared memory; exclusives and LDAR/STLR are atomic
 export let optCntYield: bool = false; // `mrs cntpct_el0` is a yield point (write back, pc = the instruction, pc check after the import)
-export let optGuard: u32 = 0;       // guest data accesses below this address trap (0 = off): the host area of the shared memory
+export let optGuard: usize = 0;     // guest data accesses below this address trap (0 = off): the host area of the shared memory
 export let optPrecise: i32 = 0;     // 1: pc is written before every memory instruction; 2: dirty registers too
 
 export function setOpt(id: i32, v: u32): void {
@@ -59,6 +68,18 @@ export function setOpt(id: i32, v: u32): void {
     case 13: optCntYield = v != 0; break;
     case 14: optPrecise = <i32>v; break;
     case 15: optGuard = v; break;
+    case 17: optMaxPages = v; break;
+  }
+}
+// the address-valued options as 64-bit values (the wasm64 build's; the wasm32 build takes them through setOpt)
+export function setOptAddr(id: i32, v: u64): void {
+  switch (id) {
+    case 0: optPcmapBase = <usize>v; break;
+    case 1: optEntryBase = <usize>v; break;
+    case 2: optRegionLo = <usize>v; break;
+    case 11: optRegionSize = <usize>v; break;
+    case 15: optGuard = <usize>v; break;
+    case 16: optPcSpan = v; break;
   }
 }
 
@@ -111,6 +132,11 @@ function clearEntries(lo: u64, hi: u64): void {
   }
 }
 export function isDone(pc: u64): bool {
+  if (M64) {
+    if (pc >= optPcSpan) return false;
+    let leaf64 = <usize>load<u64>(optPcmapBase + (<usize>(pc >> 16) << 3));
+    return load<u32>(leaf64 + <usize>(pc & 0xFFFC)) != 0;
+  }
   let p = <u32>pc;
   let leaf = load<u32>(<usize>optPcmapBase + (<usize>(p >> 16) << 2));
   return load<u32>(<usize>leaf + (p & 0xFFFC)) != 0;
@@ -165,6 +191,7 @@ export function setP(p: usize): void { P = p; }
 // @ts-ignore
 @inline export function b(x: u32): void { store<u8>(P, <u8>x); P += 1; }
 export function leb(x: u32): void { while (x >= 0x80) { b((x & 0x7F) | 0x80); x >>= 7; } b(x); }
+export function leb64(x: u64): void { while (x >= 0x80) { b((<u32>x & 0x7F) | 0x80); x >>= 7; } b(<u32>x); }
 export function sleb64(x: i64): void {
   while (true) {
     let c = <u32>(x & 0x7F); x >>= 7;
@@ -183,13 +210,18 @@ export function lset(i: u32): void { b(0x21); leb(i); }
 export function ltee(i: u32): void { b(0x22); leb(i); }
 export function gget(i: u32): void { b(0x23); leb(i); }
 export function gset(i: u32): void { b(0x24); leb(i); }
-export function mem(op: u32): void { b(op); b(0); leb(optGuard); }
-export function vmem(op: u32): void { simd(op); b(0); leb(optGuard); }
+export function mem(op: u32): void { b(op); b(0); if (M64) leb64(optGuard); else leb(<u32>optGuard); }
+export function vmem(op: u32): void { simd(op); b(0); if (M64) leb64(optGuard); else leb(<u32>optGuard); }
 // Guest data address on the stack: i64 -> i32. With optGuard the address is biased by -optGuard and every memory
 // instruction carries the offset optGuard (mem, vmem, moff): an address below optGuard wraps to 4 GB or more and
 // the access traps (the effective address is computed without wrapping), at the cost of one subtraction.
-export function aw(): void { b(0xA7); if (optGuard) { i32c(<i32>optGuard); b(0x6B); } }
-export function moff(o: u32): void { leb(o + optGuard); }
+// memory64: the i64 address is the memory operand as it is (an address beyond the memory traps); the guard is the
+// same subtraction in 64 bits (an address below optGuard wraps to 2^64 - n, and index + offset is not reduced).
+export function aw(): void {
+  if (M64) { if (optGuard) { i64c(<i64>optGuard); b(0x7D); } return; }
+  b(0xA7); if (optGuard) { i32c(<i32>optGuard); b(0x6B); }
+}
+export function moff(o: u32): void { if (M64) leb64(<u64>o + optGuard); else leb(o + <u32>optGuard); }
 export function fc(op: u32): void { b(0xFC); leb(op); }
 // @ts-ignore
 @inline export function op(x: u32): void { b(x); }
@@ -276,6 +308,8 @@ export function tf32(n: i32): u32 { return tmp(T_F32, n); }
 export function tf64(n: i32): u32 { return tmp(T_F64, n); }
 export function tv(n: i32): u32 { return tmp(T_V128, n); }
 export function tw(sf: bool, n: i32): u32 { return sf ? t64(n) : t32(n); }
+// a temp for a guest data address after aw(): i32 slot n, or with memory64 the i64 slot kept for this (10)
+export function ta(n: i32): u32 { return M64 ? t64(10) : t32(n); }
 
 // ---------------------------------------------------------------------------------------------
 // event log + insertion points
@@ -484,17 +518,34 @@ export function addFn(pc: u64, force: bool): i32 {
 // control-flow protocol
 // two-level pc map: leaf = L1[pc >> 16], index = leaf[pc & 0xFFFC]; unmapped leaves are a shared zero page
 function idxConst(target: u64): void {
+  if (M64) {
+    if (target >= optPcSpan) { i32c(0); return; }   // beyond the pc map: the trampoline, which asks the embedder
+    i64c(<i64>(<u64>optPcmapBase + ((target >> 16) << 3))); b(0x29); b(3); b(0);
+    b(0x28); b(2); leb(<u32>(target & 0xFFFC));
+    return;
+  }
   let t = <u32>target;
-  i32c(<i32>(optPcmapBase + ((t >> 16) << 2))); b(0x28); b(2); b(0);
+  i32c(<i32>(<u32>optPcmapBase + ((t >> 16) << 2))); b(0x28); b(2); b(0);
   b(0x28); b(2); leb(t & 0xFFFC);
 }
 // stack: i64 target -> i32 table index
 function idxDyn(): void {
-  pcmapLookup(t32(11));
+  pcmapLookup(M64 ? t64(10) : t32(11));
 }
-// stack: i64 pc -> i32 table index (tmp: an i32 local)
+// stack: i64 pc -> i32 table index (tmp: an i32 local; memory64: an i64 local)
 export function pcmapLookup(tmp: u32): void {
-  b(0xA7); ltee(tmp); i32c(16); b(0x76); i32c(2); b(0x74); b(0x28); b(2); leb(optPcmapBase);
+  if (M64) {
+    // leaf = L1[pc < span ? pc >> 16 : span >> 16] (the entry after the last is always the zero leaf: a pc beyond
+    // the map reads index 0, the trampoline); index = u32 at leaf + (pc & 0xFFFC)
+    ltee(tmp); i64c(16); b(0x88);
+    i64c(<i64>(optPcSpan >> 16));
+    lget(tmp); i64c(<i64>optPcSpan); b(0x54);
+    b(0x1B);
+    i64c(3); b(0x86); b(0x29); b(3); leb64(optPcmapBase);
+    lget(tmp); i64c(0xFFFC); b(0x83); b(0x7C); b(0x28); b(2); b(0);
+    return;
+  }
+  b(0xA7); ltee(tmp); i32c(16); b(0x76); i32c(2); b(0x74); b(0x28); b(2); leb(<u32>optPcmapBase);
   lget(tmp); i32c(0xFFFC); b(0x71); b(0x6A); b(0x28); b(2); b(0);
 }
 // depth bookkeeping: a nested call announces depth+1, a tail transfer hands on the current depth

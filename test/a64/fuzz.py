@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Gate 1: differential fuzz of the a64 translator against Unicorn.
 
-    python3 test/a64/fuzz.py [--cases N] [--only REGEX] [--seed S] [--show K] [--jobs J]
+    python3 test/a64/fuzz.py [--cases N] [--only REGEX] [--seed S] [--show K] [--jobs J] [--mem64] [--hi]
+
+--cases is per class; --total N spreads N cases over the classes instead. --mem64 runs the cases in the translator's
+memory64 mode (wasm64 translator, 64-bit memory); --hi (implies --mem64) also generates them with the code and
+the memory window above 4 GB (0x1_8010_0000 / 0x1_8020_0000), on Unicorn and in the translator alike.
 
 For every instruction class: generate random encodings + random state, run each on Unicorn,
 then let the Node runner (fuzz_run.ts) translate/run the same cases and compare all state.
@@ -19,6 +23,9 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+HI_UP = 0x1_8000_0000
+if "--hi" in sys.argv:      # before fuzz_lib is imported: its addresses are module constants
+    os.environ["A64_FUZZ_UP"] = "%#x" % HI_UP
 import fuzz_lib  # noqa: E402
 
 
@@ -56,20 +63,28 @@ def main():
     ap.add_argument("--strictnan", action="store_true", help="compare NaNs bitwise too")
     ap.add_argument("--nonan", action="store_true", help="translate without the NaN fix-up")
     ap.add_argument("--shared", action="store_true", help="shared memory: atomic exclusives")
+    ap.add_argument("--mem64", action="store_true", help="the memory64 mode: wasm64 translator, 64-bit memory")
+    ap.add_argument("--hi", action="store_true", help="--mem64 with code and memory window above 4 GB")
+    ap.add_argument("--total", type=int, default=0, help="this many cases in all, spread over the classes")
+    ap.add_argument("--quiet", action="store_true", help="only the classes with failures, and the total")
     a = ap.parse_args()
-    fuzz_lib.NCASES = a.cases
+    if a.hi:
+        a.mem64 = True
     import fuzz_classes
     names = [c.name for c in fuzz_classes.CLASSES]
     if a.only:
         names = [n for n in names if re.search(a.only, n)]
-    outdir = os.path.join(ROOT, "build", "a64", "fuzz")
+    if a.total:
+        a.cases = max(1, -(-a.total // max(1, len(names))))
+    fuzz_lib.NCASES = a.cases
+    outdir = os.path.join(ROOT, "build", "a64", "fuzz" + ("_hi" if a.hi else ""))
     os.makedirs(outdir, exist_ok=True)
     jobs = [(n, a.cases, a.seed, os.path.join(outdir, n + ".bin")) for n in names]
     results = {}
     t0 = time.time()
 
     def check(batch):
-        cmd = ["node", os.path.join(HERE, "fuzz_run.ts")] + (["--nofma"] if a.nofma else []) + (["--strictnan"] if a.strictnan else []) + (["--nonan"] if a.nonan else []) + (["--shared"] if a.shared else []) + [p for _, p in batch]
+        cmd = ["node", os.path.join(HERE, "fuzz_run.ts")] + (["--nofma"] if a.nofma else []) + (["--strictnan"] if a.strictnan else []) + (["--nonan"] if a.nonan else []) + (["--shared"] if a.shared else []) + (["--mem64"] if a.mem64 else []) + (["--hi"] if a.hi else []) + [p for _, p in batch]
         p = subprocess.run(cmd, capture_output=True, text=True)
         got = {}
         for line in p.stdout.splitlines():
@@ -100,7 +115,8 @@ def main():
 
     total = fails = 0
     bad = []
-    print("%-34s %8s %8s %9s" % ("class", "cases", "fail", "rejected"))
+    if not a.quiet:
+        print("%-34s %8s %8s %9s" % ("class", "cases", "fail", "rejected"))
     for n in names:
         r = results[n]
         if "error" in r:
@@ -109,10 +125,13 @@ def main():
             continue
         total += r["cases"]
         fails += r["fail"]
-        print("%-34s %8d %8d %9d" % (n, r["cases"], r["fail"], r["rejected"]))
+        if not a.quiet or r["fail"]:
+            print("%-34s %8d %8d %9d" % (n, r["cases"], r["fail"], r["rejected"]))
         if r["fail"]:
             bad.append(n)
     print("%-34s %8d %8d   (%.0fs)" % ("TOTAL", total, fails, time.time() - t0))
+    if a.mem64:
+        print("mode: memory64%s, %d classes x %d cases" % (" with code and data above 4 GB (code at %#x)" % fuzz_lib.CODE_BASE if a.hi else "", len(names), a.cases))
     for n in bad:
         r = results[n]
         for fc in r.get("failures", [])[:a.show]:

@@ -3,7 +3,7 @@ import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, mem, ar, cm, cst, fc,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, tw, ifVoid, ifT, els, end,
   flagsAddSub, addCarry, flagsNZ, setNZCVconst, emitCond, killCmp,
-  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield, optGuard, aw, moff,
+  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield, optGuard, aw, moff, M64,
   R_N, R_Z, R_C, R_V, G_FPCR, G_FPSR, G_TPIDR, G_TPIDRRO, G_EXADDR, G_EXVAL, G_EXVAL2,
   F_BRK, F_CNTPCT, F_CRC, T_I32, T_I64,
 } from "./emit";
@@ -472,6 +472,7 @@ export function trBranchSys(pc: u64, insn: u32): bool {
     let key = (insn >> 5) & 0x3FFF;      // op1 CRn CRm op2
     if (key == 0x1BA1) {                 // DC ZVA  (op1=3 C7 C4 1)
       if (optGuard) { getX(rt, true); i64c(-64); b(0x83); aw(); mem(0x2D); b(0x1A); }
+      if (M64) { getX(rt, true); i64c(-64); b(0x83); i32c(0); i64c(64); fc(11); b(0); return true; }
       getX(rt, true); i64c(-64); b(0x83); b(0xA7); i32c(0); i32c(64); fc(11); b(0);
       return true;
     }

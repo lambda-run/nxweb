@@ -2,7 +2,7 @@
 // server and runs them with the same core as the Node runner. Compile is synchronous, hence a Worker.
 import { runGuest, defaultOpts, cacheKey, type Result } from "../guest_core.ts";
 import { runExtraTests } from "../extra_tests.ts";
-import { webCacheStore } from "../../../src/glue/a64_host.ts";
+import { webCacheStore, hasMemory64 } from "../../../src/glue/a64_host.ts";
 
 async function bytes(url: string): Promise<Uint8Array> {
   const r = await fetch(url);
@@ -14,12 +14,15 @@ const mod = async (f: string) => new WebAssembly.Module(await bytes("/build/" + 
 self.onmessage = async (ev: MessageEvent) => {
   const post = (m: unknown) => (self as any).postMessage(m);
   try {
-    const mods = { translator: await mod("translator.wasm"), helpers: await mod("helpers.wasm"),
-                   translatorShared: await mod("translator.shared.wasm"), helpersShared: await mod("helpers.shared.wasm") };
-    if (ev.data.extra) { post({ extra: runExtraTests(mods), done: true }); return; }
+    // { mem64: true } (with the extra tests) or opts.mem64 (with guests): the memory64 mode, the wasm64 binaries
+    const m64 = !!(ev.data.mem64 ?? ev.data.opts?.mem64), x = m64 ? "64" : "";
+    if (m64 && !hasMemory64()) throw new Error("this browser has no 64-bit WebAssembly memories");
+    const mods = { translator: await mod(`translator${x}.wasm`), helpers: await mod(`helpers${x}.wasm`),
+                   translatorShared: await mod(`translator${x}.shared.wasm`), helpersShared: await mod(`helpers${x}.shared.wasm`) };
+    if (ev.data.extra) { post({ extra: runExtraTests(mods, { mem64: m64, high: !!ev.data.high }), done: true }); return; }
     const o = { ...defaultOpts, ...ev.data.opts };
     const store = ev.data.cache ? webCacheStore(ev.data.cache) : null;
-    const list: { name: string; dir: number }[] = (await (await fetch("/list")).json()).filter((g: { name: string }) => !ev.data.only || new RegExp(ev.data.only).test(g.name));
+    const list: { name: string; dir: number }[] = (await (await fetch("/list")).json()).filter((g: { name: string; hi?: boolean }) => !!g.hi === !!ev.data.high && (!ev.data.only || new RegExp(ev.data.only).test(g.name)));
     for (const g of list) {
       let r: Result;
       try {

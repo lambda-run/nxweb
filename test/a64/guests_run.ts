@@ -1,7 +1,9 @@
 // Gate 2 runner (Node): run every test guest (shared corpus + test/a64/guests/out) through the
 // translator and compare stdout + exit code with the expected output.
 // Usage: node guests_run.ts [--budget N] [--only REGEX] [--maxinsns N] [--maxfuncs N] [--nofma] [--nonan]
-//                           [--notail] [--depth N] [--speed] [--quiet] [--dir DIR]
+//                           [--notail] [--depth N] [--speed] [--quiet] [--dir DIR]... [--mem64]
+// --mem64: a 64-bit memory and the wasm64 translator (the memory64 mode). With --dir test/a64/guests/out_hi the
+// images are the ones linked at 0x1_8000_0000 (test/a64/guests/build_hi.py): code, data and stack above 4 GB.
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { runGuest, defaultOpts, speedLine, totalLine, cacheKey, type Result } from "./guest_core.ts";
@@ -26,17 +28,20 @@ o.rmodeArith = !argv.includes("--normarith");
 o.shared = argv.includes("--shared");
 o.cntYield = argv.includes("--cntyield");
 o.preciseFaults = Number(opt("--precise", "0")) as 0 | 1 | 2;
+o.mem64 = argv.includes("--mem64");
+if (opt("--guard")) o.guardBase = Number(opt("--guard"));
 const only = opt("--only") ? new RegExp(opt("--only")!) : null;
 const store = opt("--cache") ? nodeFileStore(opt("--cache")!) : null;   // translation cache directory
 const speed = argv.includes("--speed");
 const quiet = argv.includes("--quiet");
-const sfx = o.shared ? ".shared.wasm" : ".wasm";
+const sfx = (o.mem64 ? "64" : "") + (o.shared ? ".shared.wasm" : ".wasm");
 const translator = new WebAssembly.Module(readFileSync(join(root, "build/a64/translator" + sfx)));
 const helpers = new WebAssembly.Module(readFileSync(join(root, "build/a64/helpers" + sfx)));
 
-const dirs = opt("--dir") ? [opt("--dir")!] : [join(root, "test/guests/out"), join(root, "test/a64/guests/out")].filter(existsSync);
+const dirArgs = argv.flatMap((a, i) => a === "--dir" ? [argv[i + 1]] : []);
+const dirs = dirArgs.length ? dirArgs : [join(root, "test/guests/out"), join(root, "test/a64/guests/out")].filter(existsSync);
 const results: Result[] = [];
-if (!quiet) console.log(`budget=${o.budget} maxInsns=${o.maxInsns} maxFuncs=${o.maxFuncs} fma=${o.fma} nanFix=${o.nanFix} tailCalls=${o.tailCalls} depthLimit=${o.depthLimit} shared=${o.shared} cntYield=${o.cntYield} preciseFaults=${o.preciseFaults}`);
+if (!quiet) console.log(`budget=${o.budget} maxInsns=${o.maxInsns} maxFuncs=${o.maxFuncs} fma=${o.fma} nanFix=${o.nanFix} tailCalls=${o.tailCalls} depthLimit=${o.depthLimit} shared=${o.shared} cntYield=${o.cntYield} preciseFaults=${o.preciseFaults} mem64=${!!o.mem64}`);
 for (const dir of dirs) {
   for (const f of readdirSync(dir).filter(f => f.endsWith(".json") && f !== "manifest.json").sort()) {
     if (only && !only.test(f)) continue;

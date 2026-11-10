@@ -4,10 +4,13 @@ sidecars (contract test ABI). Expected output comes from the Unicorn reference r
 import json, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
-OUT = os.path.join(HERE, "out")
+# A64_GUEST_BASE / A64_GUEST_LD / A64_GUEST_OUT: the same programs linked at another address into another
+# directory (build_hi.py: above 4 GB, for the memory64 mode)
+OUT = os.environ.get("A64_GUEST_OUT") or os.path.join(HERE, "out")
+LD = os.environ.get("A64_GUEST_LD") or os.path.join(HERE, "guest.ld")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import ref_run  # noqa: E402
-BASE = 0x08000000
+BASE = int(os.environ.get("A64_GUEST_BASE", "0x08000000"), 0)
 STACK_TOP = BASE + 0x100000
 os.makedirs(OUT, exist_ok=True)
 GEN = os.path.join(HERE, "gen")
@@ -26,12 +29,12 @@ for path, opts, STACK_TOP, OUT in SOURCES:
         obj = os.path.join(OUT, name + ".o")
         subprocess.check_call(["clang", "--target=aarch64-none-elf", "-ffreestanding", "-nostdlib", "-mcpu=cortex-a57", "-" + opt,
                                "-fno-math-errno", "-w", "-c", path, "-o", obj])
-        subprocess.check_call(["ld.lld", "-T", os.path.join(HERE, "guest.ld"), obj, "-o", elf])
+        subprocess.check_call(["ld.lld", "-T", LD, obj, "-o", elf])
         subprocess.check_call(["llvm-objcopy", "-O", "binary", elf, os.path.join(OUT, name + ".bin")])
         nm = subprocess.check_output(["llvm-nm", elf], text=True)
         bss_end = next(int(l.split()[0], 16) for l in nm.splitlines() if l.endswith(" __bss_end"))
         image = open(os.path.join(OUT, name + ".bin"), "rb").read()
-        res = ref_run.run(image, stack_top=STACK_TOP, count=True)
+        res = ref_run.run(image, stack_top=STACK_TOP, base=BASE, count=True)
         open(os.path.join(OUT, name + ".out"), "wb").write(res.stdout)
         json.dump({"base": BASE, "entry": BASE, "image": name + ".bin", "bss_end": bss_end, "stack_top": STACK_TOP,
                    "expected_stdout": name + ".out", "exit_code": res.exit_code, "insn_count": res.insn_count},

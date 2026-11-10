@@ -3,7 +3,9 @@
 //   memory32, as today:   i64 guest address -> i32.wrap_i64 -> i64.load / i64.store        (bounds: the engine's guard pages)
 //   memory64:             i64 guest address ->                 i64.load / i64.store on an i64 memory (bounds: an explicit check, or guard pages where the engine reserves enough)
 // The loop walks a 64 MB window with a stride of 4160 bytes (so that the cache behaviour is the same in both), loads,
-// adds and stores. Node needs --experimental-wasm-memory64 before V8 12.x ships it by default.
+// adds and stores. Node 22.23 has memory64 on (older: --experimental-wasm-memory64). The translator's own memory64
+// mode on the guest corpus: `npm run a64:mem64:speed`.
+import { makeMemory64 } from "../../src/glue/a64_host.ts";
 const leb = (v: number) => { const n: number[] = []; do { let b = v & 0x7F; v >>>= 7; if (v) b |= 0x80; n.push(b); } while (v); return n; };
 const sleb = (v: number) => { const n: number[] = []; for (;;) { const b = v & 0x7F; v >>= 7; if ((v === 0 && !(b & 0x40)) || (v === -1 && (b & 0x40))) { n.push(b); break; } n.push(b | 0x80); } return n; };
 const str = (t: string) => [t.length, ...Array.from(t, c => c.charCodeAt(0))];
@@ -41,8 +43,9 @@ for (const [what, stride, mask] of [["in the cache (a 32 KB window: the cost of 
   console.log(`    memory32 (i32.wrap_i64, guard pages): median ${per(med(a))} ns an iteration (min ${per(min(a))})`);
   console.log(`    memory64 (i64 address):               median ${per(med(b))} ns an iteration (min ${per(min(b))}): ${((med(b) / med(a) - 1) * 100).toFixed(1)} % by the medians, ${((min(b) / min(a) - 1) * 100).toFixed(1)} % by the minima`);
 }
-// how large a memory64 may get here
+// how large a memory64 may get here (made the way src/glue/a64_host.ts makes one: a module that defines it; Node 22's
+// JavaScript API has no `address: "i64"`)
 for (const gb of [8, 16, 32]) {
-  try { const bytes = module(true, 8, 8); const k = bytes.indexOf(0x05, 20); void k; const m = new (WebAssembly as any).Memory({ initial: 1, maximum: gb * 16384, address: "i64" }); m.grow(BigInt(5 * 16384 - 1)); console.log(`  a memory64 with maximum ${gb} GB: made, grown to ${(m.buffer.byteLength / 2 ** 30).toFixed(1)} GB of address space`); }
-  catch (e) { console.log(`  a memory64 with maximum ${gb} GB: ${(e as Error).message.split("\n")[0]}`); }
+  try { const m = makeMemory64({ initial: 1, maximum: gb * 16384 }); const before = m.grow(gb * 16384 - 1); console.log(`  a memory64 with maximum ${gb} GB: made, ${before < 0 ? "but it does not grow to its maximum" : `grown to ${(m.memory.buffer.byteLength / 2 ** 30).toFixed(1)} GB of address space`}`); }
+  catch (e) { console.log(`  a memory64 with maximum ${gb} GB: ${(e as Error).message.split("\n")[0].slice(0, 200)}`); }
 }

@@ -1,14 +1,18 @@
 """Differential fuzz support for the nxweb a64 translator: encoding DSL, random state,
 Unicorn execution of single instructions (or short sequences), case file writer."""
+import os
 import random
 import struct
 
 from unicorn import UC_ERR_FETCH_UNMAPPED, UC_ARCH_ARM64, UC_MODE_ARM, UC_PROT_ALL, Uc, UcError
 from unicorn import arm64_const as A
 
-CODE_BASE = 0x100000
+# A64_FUZZ_UP moves the code and the memory window up by that much (fuzz.py --hi: 0x1_8000_0000, above 4 GB, for the
+# translator's memory64 mode: every base register, pc-relative address and branch target is then a 33-bit value)
+UP = int(os.environ.get("A64_FUZZ_UP", "0"), 0)
+CODE_BASE = 0x100000 + UP
 SLOT = 16                 # bytes of code per case (up to 4 instructions)
-WIN_BASE = 0x200000
+WIN_BASE = 0x200000 + UP
 WIN_SIZE = 0x1000
 WIN_MID = WIN_BASE + 0x800
 CTX_SIZE = 0x330

@@ -9,6 +9,7 @@ import {
   EV_R, EV_W, EV_WB, EV_RELOAD, evBuf, nEv, insPos, insKind, insMI, insMV, nIns, fbBase, overflow,
   rollback, blkPc, succ0, succ1, nBlk, setNBlk, setCurBlk, term, setTerm, gotoPc, emitTrap,
   fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, balloc, ballocEnd, mk, beginFunction, FB_CAP, optChunk, fnLimit,
+  M64, optMaxPages,
 } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
@@ -46,6 +47,7 @@ export function sideBuf(): usize { return sidePtr; }
 // end of everything this module keeps in the shared memory (static data + buffers)
 export function staticEnd(): usize { return ballocEnd(); }
 export function staticBase(): usize { return <usize>ASC_MEMORY_BASE; }
+export function addrBits(): i32 { return M64 ? 64 : 32; }   // the linear memory this build translates for
 export function entryBuf(): usize { return entryPtr; }
 export function metaBuf(): usize { return metaPtr; }
 export function outPtr(): usize { return outP; }
@@ -79,6 +81,17 @@ function globType(g: i32): u8 {
   if (g < 68) return T_V128;
   if (g == 69 || g == 70 || g == 75 || g == 77 || g == 78) return T_I32;
   return T_I64;
+}
+// the limits of the imported memory. memory64: flag bit 2 (an i64 memory), shared with the maximum the embedder set
+function memLimits(): void {
+  if (M64) { if (optShared) { b(7); b(0); leb(optMaxPages); } else { b(4); b(0); } return; }
+  if (optShared) { b(3); b(0); leb(65536); } else { b(0); b(0); }
+}
+// stack: -> i32: is pc one of the embedder's special values, 0xFFFF_FF00 .. 0xFFFF_FFFF? (memory64: code may lie
+// above them, so it is a window, not a lower bound)
+function hostPc(): void {
+  gget(G_PC); i64c(0xFFFFFF00);
+  if (M64) { b(0x7D); i64c(0x100); b(0x54); } else b(0x5A);
 }
 function secBegin(id: u32): usize { b(id); let at = P; setP(P + 5); return at; }
 function secEnd(at: usize): void { patch5(at, <u32>(P - at - 5)); }
@@ -429,7 +442,7 @@ export function translate(nEntries: i32): u32 {
   secEnd(s);
   s = secBegin(2);
   leb(2 + NGLOB + NIMPF);
-  name("env"); name("memory"); b(2); if (optShared) { b(3); b(0); leb(65536); } else { b(0); b(0); }
+  name("env"); name("memory"); b(2); memLimits();
   name("env"); name("table"); b(1); b(0x70); b(0); b(0);
   for (let g = 0; g < NGLOB; g++) {
     if (g == G_TBASE) { name("env"); globName(g); b(3); b(T_I32); b(0); }
@@ -490,7 +503,7 @@ export function buildCore(): u32 {
   csP = csBase + HDR_MAX;
   // 1: trampoline
   coreFnBegin();
-  gget(G_PC); i64c(0xFFFFFF00); b(0x5A); b(0x04); b(0x40); b(0x0F); b(0x0B);
+  hostPc(); b(0x04); b(0x40); b(0x0F); b(0x0B);
   gget(G_PC); b(0x10); b(0);
   if (optTail) { b(0x13); b(0); b(0); } else { b(0x11); b(0); b(0); }
   coreFnEnd(0);
@@ -498,9 +511,9 @@ export function buildCore(): u32 {
   coreFnBegin(); i32c(-1); gset(G_BUDGET); coreFnEnd(0);
   // 3: run
   coreFnBegin();
-  let t = newLocal(T_I32);
+  let t = newLocal(M64 ? T_I64 : T_I32);
   b(0x02); b(0x40); b(0x03); b(0x40);
-  gget(G_PC); i64c(0xFFFFFF00); b(0x5A); b(0x0D); b(1);
+  hostPc(); b(0x0D); b(1);
   gget(G_BUDGET); i32c(0); b(0x48); b(0x0D); b(1);
   i32c(0); gset(G_DEPTH);
   idxFromPc(t); b(0x11); b(0); b(0);
@@ -508,7 +521,7 @@ export function buildCore(): u32 {
   b(0x0B); b(0x0B);
   coreFnEnd(0);
   // 4: save_ctx(ptr)
-  coreFnBegin(); newLocal(T_I32);
+  coreFnBegin(); newLocal(M64 ? T_I64 : T_I32);
   for (let i = 0; i < 32; i++) { lget(0); gget(i); b(0x37); b(0); leb(i * 8); }
   lget(0); gget(G_PC); b(0x37); b(0); leb(0x100);
   lget(0); gget(32); i32c(3); b(0x74); gget(33); i32c(2); b(0x74); b(0x72); gget(34); i32c(1); b(0x74); b(0x72); gget(35); b(0x72);
@@ -520,7 +533,7 @@ export function buildCore(): u32 {
   for (let i = 0; i < 32; i++) { lget(0); gget(36 + i); simd(0x0B); b(0); leb(0x130 + i * 16); }
   coreFnEnd(1);
   // 5: load_ctx(ptr)
-  coreFnBegin(); newLocal(T_I32);
+  coreFnBegin(); newLocal(M64 ? T_I64 : T_I32);
   for (let i = 0; i < 32; i++) { lget(0); b(0x29); b(0); leb(i * 8); gset(i); }
   lget(0); b(0x29); b(0); leb(0x100); gset(G_PC);
   for (let i = 0; i < 4; i++) { lget(0); b(0x28); b(0); leb(0x108); i32c(3 - i); b(0x76); i32c(1); b(0x71); gset(32 + i); }
@@ -550,12 +563,12 @@ export function buildCore(): u32 {
   leb(4);
   b(0x60); b(0); b(0);
   b(0x60); b(1); b(T_I64); b(1); b(T_I32);
-  b(0x60); b(1); b(T_I32); b(0);
+  b(0x60); b(1); b(M64 ? T_I64 : T_I32); b(0);   // save_ctx / load_ctx (ptr)
   b(0x60); b(4); b(T_I32); b(T_I64); b(T_I32); b(T_I32); b(1); b(T_I32);
   secEnd(s);
   s = secBegin(2);
   leb(3);
-  name("env"); name("memory"); b(2); if (optShared) { b(3); b(0); leb(65536); } else { b(0); b(0); }
+  name("env"); name("memory"); b(2); memLimits();
   name("env"); name("table"); b(1); b(0x70); b(0); b(2);
   name("env"); name("translate"); b(0); b(1);
   secEnd(s);

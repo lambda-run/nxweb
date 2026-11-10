@@ -12,9 +12,12 @@ const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 const argv = process.argv.slice(2);
 const speed = argv.includes("--speed");
-const dirs = [join(root, "test/guests/out"), join(root, "test/a64/guests/out"), join(root, "test/a64/guests/out_big")].filter(existsSync);
-const list: { name: string; dir: number }[] = [];
-dirs.forEach((d, i) => readdirSync(d).filter(f => f.endsWith(".json") && f !== "manifest.json").sort().forEach(f => list.push({ name: f.replace(/\.json$/, ""), dir: i })));
+// out_hi: both corpora linked at 0x1_8000_0000 (test/a64/guests/build_hi.py), for the memory64 passes only
+const HI_DIR = join(root, "test/a64/guests/out_hi");
+const dirs = [join(root, "test/guests/out"), join(root, "test/a64/guests/out"), join(root, "test/a64/guests/out_big"), HI_DIR].filter(existsSync);
+const list: { name: string; dir: number; hi?: boolean }[] = [];
+dirs.forEach((d, i) => readdirSync(d).filter(f => f.endsWith(".json") && f !== "manifest.json").sort().forEach(f => list.push({ name: f.replace(/\.json$/, ""), dir: i, ...(d === HI_DIR ? { hi: true } : {}) })));
+const hasHi = list.some(g => g.hi);
 const hasBig = list.some(g => g.name.startsWith("a64_big"));
 
 const page = `<!doctype html><meta charset="utf-8"><title>nxweb a64 guests</title><script>
@@ -60,11 +63,33 @@ try {
     ["translation cache, warm", { opts: {}, only: small, cache: cacheName }],
   ];
   if (hasBig) passes.push(["big guest, cache cold", { opts: {}, only: "^a64_big", cache: cacheName }], ["big guest, cache warm", { opts: {}, only: "^a64_big", cache: cacheName }]);
+  // the memory64 mode: a 64-bit memory and the wasm64 translator; then the images linked above 4 GB
+  passes.push(["memory64", { opts: { mem64: true }, only: small }],
+              ["memory64, budget 50 (forced preemption)", { opts: { mem64: true, budget: 50 }, only: small }],
+              ["memory64, shared memory (atomic exclusives)", { opts: { mem64: true, shared: true }, only: small }],
+              ["memory64, translation cache cold (Cache API)", { opts: { mem64: true }, only: small, cache: cacheName }],
+              ["memory64, translation cache warm", { opts: { mem64: true }, only: small, cache: cacheName }]);
+  if (hasHi) passes.push(["memory64, code, data and stack above 4 GB (images linked at 0x1_8000_0000)", { opts: { mem64: true }, only: small, high: true }],
+                         ["memory64 above 4 GB, shared memory", { opts: { mem64: true, shared: true }, only: small, high: true }],
+                         ["memory64 above 4 GB, no wasm tail calls", { opts: { mem64: true, tailCalls: false }, only: small, high: true }]);
+  else { console.log("[RED] test/a64/guests/out_hi is missing (python3 test/a64/guests/build_hi.py): the memory64 passes above 4 GB did not run"); bad++; }
+  // speed: the three modes one after the other, five times over
+  const SPEED = ["speed: memory32", "speed: memory64", "speed: memory64 above 4 GB"];
+  if (hasHi) for (let r = 0; r < 5; r++) passes.push([SPEED[0], { opts: {}, only: small }], [SPEED[1], { opts: { mem64: true }, only: small }], [SPEED[2], { opts: { mem64: true }, only: small, high: true }]);
+  const speeds: Record<string, number[]> = {};
   for (const [title, msg] of passes) {
     const t0 = Date.now();
     const out: { results: Result[]; info: any; isolated: boolean } = await p.evaluate((o: object) => (window as any).run(o), msg);
-    console.log(`--- ${title} (wall ${Date.now() - t0} ms) ---`);
+    const quiet = SPEED.includes(title);
     if (out.info?.fatal) { console.log("[RED] worker failed: " + out.info.fatal); bad++; }
+    if (quiet) {
+      const failn = out.results.filter(r => !r.ok).length;
+      bad += failn;
+      for (const r of out.results) if (!r.ok) console.log(`[RED] FAIL ${title}: ${r.name}  ${r.why.slice(0, 200)}`);
+      (speeds[title] ??= []).push(out.results.reduce((a, r) => a + r.insns, 0) / out.results.reduce((a, r) => a + r.runMs, 0) / 1000);
+      continue;
+    }
+    console.log(`--- ${title} (wall ${Date.now() - t0} ms) ---`);
     for (const r of out.results) {
       if (speed && title === "default") console.log(speedLine(r));
       else if (!r.ok) console.log(`[RED] FAIL ${r.name}  ${r.why.slice(0, 200)}`);
@@ -75,10 +100,19 @@ try {
     console.log(`guests: ${out.results.length - failn} passed, ${failn} failed${"cache" in msg ? `; units from the cache: ${hits}` : ""}`);
     if (out.results.length) console.log(totalLine(out.results).replace("Infinity", "-").replace("NaN", "-"));
   }
-  const ex: { info: { extra?: { name: string; ok: boolean; detail: string }[]; fatal?: string } } = await p.evaluate((o: object) => (window as any).run(o), { extra: true });
-  console.log("--- translator feature tests (test/a64/extra_tests.ts) ---");
-  if (!ex.info.extra) { console.log("[RED] worker failed: " + ex.info.fatal); bad++; }
-  for (const r of ex.info.extra ?? []) { console.log(`${r.ok ? "ok  " : "[RED] FAIL"} ${r.name}\n       ${r.detail.split("\n")[0]}`); if (!r.ok) bad++; }
+  if (speeds[SPEED[0]]) {
+    const med = (v: number[]) => [...v].sort((a, b) => a - b)[v.length >> 1], a = speeds[SPEED[0]];
+    console.log(`--- speed, the guest corpus in this browser, five interleaved rounds (M guest instructions/s, best / median round) ---`);
+    for (const t of SPEED) { const v = speeds[t]; console.log(`  ${t.slice(7).padEnd(20)} ${Math.max(...v).toFixed(1).padStart(6)} / ${med(v).toFixed(1).padStart(6)}` + (v === a ? "" : `   (${((Math.max(...v) / Math.max(...a) - 1) * 100).toFixed(1)} % / ${((med(v) / med(a) - 1) * 100).toFixed(1)} % against memory32)`)); }
+  }
+  for (const [title, msg] of [["translator feature tests (test/a64/extra_tests.ts)", { extra: true }], ["translator feature tests, memory64", { extra: true, mem64: true }],
+                              ["translator feature tests, memory64, above 4 GB", { extra: true, mem64: true, high: true }]] as [string, object][]) {
+    const ex: { info: { extra?: { name: string; ok: boolean; detail: string }[]; fatal?: string } } = await p.evaluate((o: object) => (window as any).run(o), msg);
+    console.log(`--- ${title} ---`);
+    if (!ex.info.extra) { console.log("[RED] worker failed: " + ex.info.fatal); bad++; }
+    for (const r of ex.info.extra ?? []) { console.log(`${r.ok ? "ok  " : "[RED] FAIL"} ${r.name}\n       ${r.detail.split("\n")[0]}`); if (!r.ok) bad++; }
+    console.log(`feature tests: ${(ex.info.extra ?? []).filter(r => r.ok).length} passed, ${(ex.info.extra ?? []).filter(r => !r.ok).length} failed`);
+  }
 } finally {
   await browser.close();
   server.close();

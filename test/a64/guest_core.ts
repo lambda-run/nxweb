@@ -1,10 +1,12 @@
 // Gate 2 core, shared by the Node runner (guests_run.ts) and the browser worker: run one test guest
 // through the translator per the contract's test ABI and compare stdout + exit code.
-import { A64Host } from "../../src/glue/a64_host.ts";
+import { A64Host, makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 import { A64, HOST_END } from "../../src/glue/rt_layout.ts";
 
 export interface GuestOpts { budget: number; maxInsns: number; maxFuncs: number; fma: boolean; nanFix: boolean; tailCalls: boolean; depthLimit: number; chunk: number; rmodeArith: boolean;
-  shared: boolean; cntYield: boolean; preciseFaults: 0 | 1 | 2; cacheIn?: Uint8Array | null; wantCache?: boolean }
+  shared: boolean; cntYield: boolean; preciseFaults: 0 | 1 | 2; guardBase?: number;
+  mem64?: boolean;   // a 64-bit memory and the wasm64 translator (the caller passes translator64 / helpers64)
+  cacheIn?: Uint8Array | null; wantCache?: boolean }
 export const defaultOpts: GuestOpts = { budget: 1 << 30, maxInsns: 1500, maxFuncs: 1024, fma: true, nanFix: true, tailCalls: true, depthLimit: 160, chunk: 65536, rmodeArith: true,
   shared: false, cntYield: false, preciseFaults: 0 };
 export interface Result {
@@ -24,21 +26,32 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
                          side: any, image: Uint8Array, expected: Uint8Array, o: GuestOpts): Result {
   const base: number = side.base, stackTop: number = side.stack_top;
   const top = Math.max(stackTop, side.bss_end ?? 0, base + image.length);
-  const pages = Math.ceil(Math.max(top + 0x10000, HOST_END) / 65536);
-  const memory = o.shared ? new WebAssembly.Memory({ initial: pages, maximum: 65536, shared: true }) : new WebAssembly.Memory({ initial: pages });
+  const m64 = !!o.mem64;
+  // memory64 with the image above 4 GB: the pc map's leaves go up there too (64 KB each, after the stack), so that
+  // the first level holds 64-bit leaf addresses
+  const high = m64 && base >= 0x1_0000_0000;
+  let leafNext = Math.ceil((top + 0x10000) / 65536) * 65536;
+  const leafEnd = high ? leafNext + (16 << 20) : leafNext;
+  const pages = Math.ceil(Math.max(leafEnd, HOST_END) / 65536);
+  const memory = m64 ? makeMemory64(o.shared ? { initial: pages, maximum: MEM64_MAX_PAGES, shared: true } : { initial: pages }).memory
+    : o.shared ? new WebAssembly.Memory({ initial: pages, maximum: 65536, shared: true }) : new WebAssembly.Memory({ initial: pages });
+  const addr = (v: bigint) => m64 ? Number(v) : Number(v & 0xFFFFFFFFn);   // a guest pointer in a register
   let parked = false, parkPc = 0n, yields = 0, faultPc: number | undefined;
   const out: number[] = [];
   let exitCode: number | null = null;
   let tick = 0n;
   let fault = "";
   const host: A64Host = new A64Host(translator, helpers, {
-    memory, layout: { ...A64, codeRegionLo: base & ~0xFFFF, codeRegionSize: 0x1000_0000 }, maxInsns: o.maxInsns, maxFuncs: o.maxFuncs, fma: o.fma, nanFix: o.nanFix,
-    tailCalls: o.tailCalls, depthLimit: o.depthLimit, chunk: o.chunk, rmodeArith: o.rmodeArith, shared: o.shared, cntYield: o.cntYield, preciseFaults: o.preciseFaults,
+    memory, mem64: m64,
+    layout: { ...A64, codeRegionLo: base - base % 65536, codeRegionSize: 0x1000_0000, ...(high ? { pcmapEnd: A64.pcmapBase + A64Host.pcMapFixedBytes(true) + 0x10000 } : {}) },
+    ...(high ? { leafAlloc: () => { if (leafNext + 0x10000 > leafEnd) return 0; const a = leafNext; leafNext += 0x10000; return a; } } : {}),
+    maxInsns: o.maxInsns, maxFuncs: o.maxFuncs, fma: o.fma, nanFix: o.nanFix,
+    tailCalls: o.tailCalls, depthLimit: o.depthLimit, chunk: o.chunk, rmodeArith: o.rmodeArith, shared: o.shared, cntYield: o.cntYield, preciseFaults: o.preciseFaults, ...(o.guardBase ? { guardBase: o.guardBase } : {}),
     imports: {
       svc: (n: number) => {
         const c = host.core as any;
         if (n === 0x27) {
-          const p = Number(c.x0.value & 0xFFFFFFFFn), l = Number(c.x1.value & 0xFFFFFFFFn);
+          const p = addr(c.x0.value), l = Number(c.x1.value & 0xFFFFFFFFn);
           const m = new Uint8Array(memory.buffer, p, l);
           for (let i = 0; i < l; i++) out.push(m[i]);
           c.x0.value = 0n;
@@ -79,7 +92,7 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
       slices++;
       if (fault) break;
       if (parked && c.pc.value === 0xFFFFFFE0n) { c.pc.value = parkPc; continue; }
-      if (c.pc.value >= 0xFFFFFF00n) break;
+      if (host.isHostPc(c.pc.value)) break;
     }
   } catch (e) {
     const f = host.faultFromError(e);

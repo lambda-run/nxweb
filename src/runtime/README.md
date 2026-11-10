@@ -200,30 +200,117 @@ own regions, see "File staging"). With `code` (the images' bytes) the code regio
 steps (images + 64 MB spare), the heap region starts after it, and the images count against the pool when the
 split is chosen; without a profile the default alias region gives up what the code region takes.
 
-**memory64, for the 14.** Measured and found:
+**memory64, for the 14.** Phase 1 of 3 is done: the translator, its helpers and their glue run on a 64-bit memory
+(`src/a64/README.md`, "memory64" and "tools/asc64"). The runtime and every other module are wasm32 still, so no game
+runs in the mode yet. What is measured, and what replaces the earlier finding:
 
-- *Engine limits.* Chromium 153 makes a memory64 `WebAssembly.Memory` with a maximum of 16 GB and grows it to 16 GB
-  of address space; 32 GB is refused ("above the upper bound 262144" pages). Node 22 (V8 12.4) compiles a memory64
-  module only with `--experimental-wasm-memory64` and its JS API has no `address: "i64"`. 16 GB holds a 9 GB pool with
-  a per-game split; not nxnative's 64 GB alias reserve.
-- *Speed of the addressing form* (`npm run a64:mem64`: a hand-assembled loop of load + add + store, memory32 with
-  `i32.wrap_i64` against an i64 address on a memory64, V8 12.4): **+2.6 % by the medians, +4.4 % by the minima** in
-  the cache (the bounds check that guard pages give for free on memory32); -9 % (noise or better, not worse) on a
-  64 MB window where memory misses dominate. An estimate for the translator: 3 to 5 % on tight code, since about
-  a third of its instructions are loads and stores; the guest gate itself was not run on memory64.
-- *What it takes in the translator*: drop the `i32.wrap_i64` before each access and the wrap contract ("a 64-bit
-  guest address is wrapped to 32 bits"), i64 memory operands, a 64-bit pc map index, the guard as an i64 subtraction.
-  Bounded.
-- *What it takes everywhere else*, and this is the cost: the kernel, the loader, the take-over table, graphics, the
-  file system and audio are AssemblyScript modules on the **same** memory, and they take guest pointers as `usize`.
-  AssemblyScript has no memory64 target; a wasm32 module cannot import an i64 memory. Either all six are moved to
-  wasm64 (not available), or the guest gets a second memory (multi-memory) and every host module reaches guest data
-  through imports or copies, which is a redesign of every take-over.
+- *Engine limits.* A 64-bit memory is at most 16 GB in V8 (262144 pages; a module that declares more is refused at
+  compile time), in Chromium 153 and in Node 22.23, where memory64 is on without a flag. 16 GB holds a 9 GB pool
+  with a per-game split, and holds Ocarina of Time's profile as reserved (12.5 GB of reserve behind 380 MB of host
+  area and code); not nxnative's 64 GB alias reserve. Node's JavaScript API has no `address: "i64"` (it returns a
+  32-bit memory without an error), so the glue makes the memory from a module that defines it (`makeMemory64`), in
+  both engines.
+- *Speed, the translator's mode on the guest corpus* (`npm run a64:mem64:speed`; 75 programs, 276 M guest
+  instructions, modes interleaved, same process): Node 22 (V8 12.4, explicit bounds checks) 5 to 8 % more run time
+  than memory32, with the images above 4 GB the same within the noise; with the guard 8 to 10 %. Chromium 153, two
+  runs of five interleaved rounds: from 11 % fewer to 7 % more instructions per second (the spread between runs is
+  as large as the difference), 5 to 15 % fewer with the images above 4 GB. Memory-bound programs pay the most (up
+  to +40 % on single -O0 programs). The hand-assembled loop (`npm run a64:mem64`) had said 3 to 5 %.
+- *AssemblyScript does have the target.* The earlier finding here, "AssemblyScript has no memory64 target", was
+  wrong in the way that matters: 0.28.20's compiler has `Target.Wasm64` (usize = i64, i64 addresses in loads, stores,
+  `memory.copy` / `memory.fill`, i64 static offsets); only its driver never selects it, and four things around it
+  are unfinished (the memory is declared 32-bit, `memory.size` / `memory.grow` are typed i32, the non-null
+  assertion `x!` emits an i64 condition, the stock runtimes grow the memory). `tools/asc64` closes the four without
+  touching `node_modules`, and Binaryen's validator, `-O2` and V8 accept the result. **Compiled unchanged with it
+  today**: `src/runtime`, `src/kernel`, `src/gfx`, `src/fs`, `src/audio`, `src/hle`, `src/prepare`, and the
+  translator and helpers, which are built and tested that way. `src/loader` stops on two lines
+  (`changetype<Mod>(u32)`). So the "second, guest-only memory behind every take-over" redesign is not needed: the
+  modules stay on the one memory, built for wasm64.
+- *Compiling is not being correct.* A wasm64 build makes `usize` 64 bits; it does not widen a pointer the source
+  holds as `u32`. Every `<u32>` cast of an address, every `load<u32>` / `store<u32>` of one, every record with a
+  4-byte pointer field, every `i32` export parameter that is an address, and every `>>> 0` or `Uint32Array` over
+  addresses in the glue truncates silently above 4 GB. By count (`<u32>` casts / `load<u32>` / `store<u32>` in the
+  sources, not all of them addresses): kernel 77 / 12 / 21, loader 188 / 69 / 42, hle 353 / 129 / 90, gfx 585 / 220
+  / 208, fs 217 / 65 / 39, audio 190 / 66 / 39, prepare 244 / 120 / 83; the glue has 152 `>>> 0` and 15
+  `Uint32Array`. Finding which of those are guest addresses is phase 2's work, and the test for it is the one phase 1
+  used: run everything with the guest above 4 GB, where a truncated pointer lands on zeroed pages 4 GB lower.
 
-Recommendation: **not now.** The per-game layout brings 139 of 153 profiles inside wasm32 at no run-time cost; the
-14 that remain are 11 Switch 2 titles and 3 whose split needs a run to decide. memory64 becomes worth its redesign
-only when a Switch 2 title is the goal, and should then be done as a second (guest-only) memory behind the kernel's
-`commit`, after AssemblyScript or the host modules' pointer handling can address it.
+**Phase 2: every other module on the 64-bit memory**, in the order that keeps something running at each step.
+1. *Build.* `src/runtime/host/build.mts` and `src/hle/host/build.mts` gain a wasm64 build next to the wasm32 one
+   (`asc64([...])` with the same `--memoryBase`: static data stays below 4 GB, which the tool requires), and the
+   glue instantiates either set on a `makeMemory64` memory with `Memory64.imports()` (`env.memory_size`,
+   `env.memory_grow`: the kernel's `commit`, `src/gfx`, `src/fs` and `src/prepare` grow the memory; with asc64 those
+   calls become these imports). `rt_layout.ts`: `Range.lo / hi` are numbers already; `HOST_END` and the host table
+   stay as they are (the host area is the same in both modes).
+2. *The module ABI.* Every export that takes or returns an address becomes `usize` (BigInt at the JavaScript
+   boundary in the wasm64 build, number in the wasm32 one). One convention for the glue, as in `a64_host.ts`:
+   numbers in the glue's own interfaces, `BigInt(x)` exactly at a wasm64 export's i64 parameter, `Number(x)` on the
+   way back, no 32-bit operator on an address. `rt_runtime.ts` (1128 lines), `hle_host.ts`, `gfx_host.ts`
+   (1235), `fs_host.ts`, `audio_host.ts`, `rt_process.ts` and the device glue all take part.
+3. *The kernel.* `kernel_init`'s cfg block is 16 u64 already; inside, region bases, sizes, the heap end and every
+   address in a thread context are to be u64 / usize throughout (`src/kernel/mem.ts` first). The alias page table
+   is one 16-byte kit instance per 4 KB page in static data: 3.5 GB of alias region costs 14 MB today, 64 GB would
+   cost 256 MB, so for a 16 GB memory it is sized per process (a 4 GB alias region: 16 MB) and for more it becomes a
+   two-level table. Thread-local region, handle table and wait lists hold addresses: audit each. The special pcs
+   stay 0xFFFF_FFF0 / 0xFFFF_FFE0 in both modes (the translator treats them as a window in memory64 and has
+   `isHostPc`).
+4. *The loader.* Module bases, relocation targets (R_AARCH64_RELATIVE writes 64-bit values already), symbol tables
+   and the stub region: `Mod` records hold u32 addresses (the two compile errors are there). A module may load
+   above 4 GB in the mode, which `test/a64` already does to the translator.
+5. *The take-over table (`src/hle`) and its glue.* The largest count of pointer handling: every take-over reads
+   guest pointers from registers (64-bit) and many narrow them. Then `src/fs`, `src/audio` (the renderer walks
+   guest command lists and wave buffers by address), `src/gfx` (the recorder keeps guest buffer and texture
+   addresses and sizes; pools above 4 GB; the replayer's `Uint8Array` views over a buffer larger than 4 GB work in
+   V8, as `test/a64` uses them, but WebGPU's `writeBuffer` / `writeTexture` take their data from views of that
+   buffer and should be tried early on a memory64 buffer).
+6. *The per-game layout* (`rt_process.ts` `layoutFor`): `SPACE.hi` and `aliasMax` are 32-bit constants; in the mode
+   the space is 16 GB less host area and code, the split becomes "as reserved" for all 153 profiles whose reserve
+   fits 16 GB, and "short" remains only for reserves beyond it (the 64 GB alias reserves, which are address space
+   nobody commits). The pc map's first level for 16 GB is 2 MB of the "pc map" range; the entry bitmap follows the
+   code region.
+7. *Tests.* Each module's own runner, `rt:test` and `rt:browser` in the mode, and the same again with the process
+   placed above 4 GB (code region, heap, stacks, thread-local region): a second `layoutFor` that starts the guest
+   at 0x1_8000_0000 is the truncation test for everything at once.
+
+Where it will hurt: `src/hle` and `src/gfx` by sheer count (steps 2 and 5); the kernel's alias table by design
+(step 3); and the glue, where a missed `>>> 0` gives a wrong address rather than an error. The compiler itself is
+not where the risk is: the translator, 3,500 lines of the same kind of code, needed changes in eleven places.
+
+**Phase 3: the page chooses the mode.** `layoutFor` says whether a profile fits a 32-bit memory; the page starts
+the memory64 set of modules when it does not (the 14), and may offer it for the others at the measured cost. The
+translation cache key carries the mode already (`optionsKey()` ends in `m32` or `m64...`). A tab that commits 9 GB
+needs the machine to have it: Chromium's limits on a renderer's memory, and what an out-of-memory looks like to the
+page (a `RangeError` from `memory.grow`, or the tab killed), are to be measured on the target machines; nxnative
+notes 12 GB and more wired for Ocarina of Time on a 16 GB Mac while its first 3D scene loads.
+
+**What a Switch 2 title needs beyond memory** (read from nxnative's notes on The Legend of Zelda: Ocarina of Time,
+`0400486024DEC000`, update v131072: `dm/games/0400486024DEC000/README.md` and `game.tsv`; none of it is tried here):
+- *NVN2.* The game renders through NVN2 with Ampere shader code in BNSH (`Shader/*.Nin_Ounce_NVN2.bfsha.zs`);
+  `src/gfx` records NVN. About 42,850 shaders, among them 500 mesh and 20 task shaders (indirect mesh draws):
+  WebGPU has no mesh or task stage. 137 compute pipelines in the recorded manifest, float atomics in storage
+  memory, shading-rate images (no-ops in nxnative).
+- *Profile keys that are graphics behaviour*: `render_cond on` (agl wraps clears in render conditions: conditional
+  rendering has no WebGPU form), `gpu_timestamps segment` (the game's dynamic resolution reads GPU timestamps;
+  WebGPU's timestamp queries are optional and coarse), `draw_barriers game`, `tex_flush_upload` /
+  `tex_dirty_upload` (the CPU writes terrain maps into textures after creating them).
+- *SDK 22.2.8 ("Ounce")*: three modules (`main`, `subsdk0` = NintendoSDK_movie, `sdk`); the take-over table has
+  been written against the SDKs of the games tried so far. `sys_resource 0x3000000` (virtual address memory on),
+  `mem_map_limit on` (the kernel has the flag), `SetHeapSize 0x18ce00000` at start (6.2 GB in one call),
+  `app_pool 0x240000000`. The Switch 2 forms of services nxnative lists for SDK 20 and later (hid mouse mode and
+  Joy-Con 2 styles, `nn::pl` fonts, GameChat's `chat:u`, `vi` answering as a 1080p / docked Switch 2).
+- *Movies*: AV1, and `nn::ndve`, a movie-enhancement network nxnative runs as its own GPU kernels (11 to 36 ms of
+  compute a frame on Macs before that).
+- *Game patches*: `patches.py` places a frame-step stub and a dynamic-resolution stub by function fingerprint
+  (`fps_target 60`); the prepare step's match writes would carry them.
+- *Files*: one NUP container of 25.6 GB; the RomFS keeps most files as zstd with dictionaries (decoded by the
+  game), so the file system sees large sequential reads from a 25 GB image in the browser's storage.
+- *CPU*: the translator implements the Switch's Cortex-A57 set. nxnative runs guest code natively, so its notes do
+  not say whether SDK 22 code built for the Switch 2's CPU uses what the translator leaves out (LSE atomics, RCPC
+  `LDAPR`, pointer authentication forms, half-precision arithmetic, dot product): the translator's `probe` export
+  over the instruction words of the three modules (what `test/a64/coverage.py` does for the test corpus) answers
+  that before anything else is built.
+- *Frame cost*: about 60 fps on recent Apple GPUs natively with 6 ms of CPU a frame; translated code at the corpus'
+  rate would need its own measurement.
 
 ## Start contract (test modules)
 
@@ -787,7 +874,7 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
   byte of code that was translated (tested with 27 MB of text touched in every 64 KB). The code region's spare is
   64 MB beyond the images, shared with run-time modules and host blocks, so a game that executes more than about
   80 MB of its code would need a larger spare. The entry bitmap covers the first 256 MB of the code region.
-- **Address space**: 14 of nxnative's 153 profiles do not fit a 32-bit memory (see "The address space per game");
+- **Address space**: 14 of nxnative's 153 profiles do not fit a 32-bit memory (see "The address space per game"; the translator has a 64-bit memory mode, the other modules not yet);
   "fits" for the other 139 is arithmetic, no game has run. A profile's `mem_reserve`-style keys beyond the split,
   frame-step patches and the other "needs" of a profile are listed by the page and not applied.
 - **nn::jit** has not run with a real plugin; a module asked for "alone" is linked like any other (red once).

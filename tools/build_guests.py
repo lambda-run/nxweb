@@ -41,6 +41,9 @@ BASE_CFLAGS = [
     "-std=gnu11", "-Wall", "-Wextra", "-I" + RT,
 ]
 RT_SOURCES = ["svc.S", "setjmp.S", "libc.c"]   # crt0.S is linked first, separately
+# The linker script. GUESTS_LD names another one: the same layout at another base (test/a64/guests/build_hi.py links
+# the corpus above 4 GB for the translator's memory64 mode); the base is read back from the image's symbols.
+GUEST_LD = os.environ.get("GUESTS_LD") or os.path.join(RT, "guest.ld")
 
 
 def sh(cmd):
@@ -135,7 +138,7 @@ def build_one(job):
     # crt0 first so that _start is at offset 0; a .S program brings its own _start.
     link = rt_objs[1:] if variant == "asm" else rt_objs
     link = ([obj] + link) if variant == "asm" else ([link[0], obj] + link[1:])
-    sh([LLD, "-T", os.path.join(RT, "guest.ld"), "--gc-sections", "-o", elf] + link)
+    sh([LLD, "-T", GUEST_LD, "--gc-sections", "-o", elf] + link)
     syms = elf_symbols(elf)
     base = syms["__image_start"]
     if syms["_start"] != base:

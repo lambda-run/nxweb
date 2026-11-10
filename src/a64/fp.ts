@@ -1,7 +1,7 @@
 // nxweb a64: scalar floating point and SIMD&FP register loads/stores.
 import {
   b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, vmem, mem, aw, moff, fc, ar, cm, cst,
-  getX, getXsp, setX, setXsp, rget, rset, t32, t64, tf32, tf64, tv, emitCond, killCmp, optFma, optNan, gget,
+  getX, getXsp, setX, setXsp, rget, rset, t32, t64, ta, tf32, tf64, tv, emitCond, killCmp, optFma, optNan, gget,
   G_FPCR, F_NAN1S, F_NAN2S, F_NAN3S, F_RND, F_RARS, optRmArith,
   R_N, R_Z, R_C, R_V, R_V0, T_I32,
 } from "./emit";
@@ -359,7 +359,7 @@ function structLoadStore(insn: u32): bool {
   let Q = (insn >> 30) & 1, L = (insn >> 22) & 1, post = (insn >> 23) & 1;
   let rm = <i32>((insn >> 16) & 31), rn = <i32>((insn >> 5) & 31), rt = <i32>(insn & 31);
   let size = (insn >> 10) & 3;
-  let a = t64(A), a32 = t32(A), T = tv(7);
+  let a = t64(A), a32 = ta(A), T = tv(7);
   if (!post && rm != 0) return false;
   let total: i32;
   if ((insn & 0x01000000) == 0) { // multiple structures

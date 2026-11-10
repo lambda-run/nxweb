@@ -16,7 +16,7 @@ instantiates modules, owns the function table and the pc map and provides the im
 | `fp.ts` | scalar floating point, SIMD&FP register loads/stores, AdvSIMD structure loads/stores |
 | `simd.ts` | Advanced SIMD data processing (vector and scalar-in-SIMD forms) |
 | `unit.ts` | function discovery, per-function assembly, register write-back/reload analysis, unit module builder, core module builder, `probe` |
-| `index.ts` | exports: `init, setOpt, codeBuf, setCode, resetDone, entryBuf, translate, outPtr, metaBuf, buildCore, probe` |
+| `index.ts` | exports: `init, setOpt, setOptAddr, addRange, removeRange, setEntry, entryBuf, translate, outPtr, metaBuf, sideBuf, buildCore, probe, staticBase, staticEnd, addrBits` |
 | `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding; `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `rarith{s,d}`: directed-rounding scalar arithmetic) |
 
 **Core module** (`buildCore()`, bytes produced by the same encoder). Imports `env.memory`,
@@ -125,6 +125,88 @@ With 0 the emitted bytes are what they were. Measured by the runtime on the shar
 (runs between +2 % and +10 % on a busy machine; `src/runtime/README.md`), which is why it is not the default. The pc map, `save_ctx` / `load_ctx` and
 the helpers are host accesses and are not biased.
 
+**memory64 (`mem64: true`, default off).** The second mode, for a process that needs more than 4 GB of address
+space: one 64-bit linear memory (the memory64 proposal; `makeMemory64` in the glue) in place of the 32-bit one. It
+is a second build of the same sources, `translator64.wasm` / `helpers64.wasm` (and `.shared`), compiled for wasm64 by
+`tools/asc64` (below), so the translator itself reads guest code at any address; `M64` in `emit.ts` is a compile-time
+constant (`sizeof<usize>() == 8`), one build is one mode, and the wasm32 build compiles none of the other's branches.
+What differs in the emitted code, all of it:
+
+| | memory32 | memory64 |
+|---|---|---|
+| imported memory | limits flags 0 (shared 3, maximum 65536 pages) | flags 4 (shared 7, maximum `memoryMaxPages`, default 262144 = 16 GB) |
+| a guest data address (`aw`) | `i32.wrap_i64` | nothing: the i64 is the memory operand |
+| guard | `i32.sub guardBase`, offset `guardBase` | `i64.sub guardBase`, offset `guardBase` (u64 LEB) |
+| `memarg` offsets (`mem`, `vmem`, `moff`; atomic and SIMD lane forms) | u32 | u64 |
+| AdvSIMD structure loads / stores: the address temp | i32 local | i64 local |
+| DC ZVA | `memory.fill(i32, 0, i32 64)` | `memory.fill(i64, 0, i64 64)` |
+| pc map lookup, dynamic | `L1[u32(pc) >> 16]` (u32 entries), `+ (pc & 0xFFFC)` | `L1[pc < span ? pc >> 16 : span >> 16]` (u64 entries, an `i64.lt_u` and a `select`), `+ (pc & 0xFFFC)` |
+| pc map lookup, constant target | first-level address folded in | the same; a target at or beyond the span is index 0 at translation time |
+| embedder pcs in `run` / trampoline | `pc >= 0xFFFF_FF00` | `pc - 0xFFFF_FF00 < 0x100` |
+| `save_ctx` / `load_ctx` | `(ptr: i32)` | `(ptr: i64)` |
+
+Everything else was 64-bit already: registers and `pc` are i64 globals, the return-address check after a call
+compares the whole `pc`, address arithmetic (base + offset, extends, pre/post-index, pc-relative literals, ADRP) is
+done in i64 before `aw`, exclusives compare the whole address in `excl_addr`, function names carry the whole pc.
+
+*Contract.* "A 64-bit guest address is wrapped to 32 bits" becomes: **a guest address is used whole, and an access
+beyond the memory traps** (the engine's bounds check; `faultFromError` gives the pc as before). Nothing aliases: an
+address or a pc that differs from a mapped one by 4 GB, or by the pc map's span, is not that one (feature tests
+"an address beyond the memory traps", "a pc with no code ... reaches the embedder whole"). The special pc values stay
+where the contract has them, 0xFFFF_FF00 .. 0xFFFF_FFFF (x30 = 0xFFFF_FFF0 at thread start, 0xFFFF_FFE0 = yield), so
+the kernel and the runtime keep their constants; they are a window now, since code may lie above them: the last 256
+bytes below 4 GB cannot hold code (data is fine), and embedders ask `host.isHostPc(pc)` instead of comparing.
+
+*The pc map* covers the guest addresses `[0, pcmapSpan)` whole: a first level of one **u64** leaf address per 64 KB
+(so leaves may lie anywhere, above 4 GB too) plus one entry that always holds the zero leaf, which is where a pc at
+or beyond the span is looked up (it reads index 0, the trampoline, and the embedder is asked with the whole pc).
+Default span 16 GB, the engines' limit for a 64-bit memory: a first level of 2 MB (2.2 MB fixed with the zero leaf,
+against 320 KB), leaves as before. It extends by a larger `A64Layout.pcmapSpan` (8 bytes per 64 KB: 128 MB of first
+level per TB); nothing else depends on it. The entry bitmap is unchanged (1 bit per instruction of the code region,
+whose base and size are 64-bit now and may be above 4 GB), as are the return-address checks.
+
+*The glue.* Addresses in `A64Host`'s interface are JavaScript numbers in both modes (exact to 2^53): layout fields,
+`addCode`, the pc map functions, `units[i].pcs` (a `Float64Array` in this mode), fault pcs, `core.save_ctx(ptr)`.
+Register values stay BigInt. A number becomes a BigInt only where it enters a wasm64 export's i64 parameter. The
+side table keeps the low 32 bits of each instruction's pc and `faultFromError` restores the rest from the function's
+pc (an instruction is within 256 KB of its function's entry). Cache blobs of this mode have their own magic (8-byte
+pcs) and `optionsKey()` ends in `m64.<span>.<max pages>` (`m32` otherwise): a cache key always names the mode.
+Node 22's `WebAssembly.Memory` has no `address: "i64"` (it silently returns a 32-bit memory), so `makeMemory64`
+instantiates a 40-byte module that defines and exports the memory, in every engine; `grow` / `pages` are that
+module's `memory.grow` / `memory.size`.
+
+*Limits.* Static data of the translator and helpers must be below 4 GB (`--memoryBase` is a u32 in asc); a unit's
+side table and the translation window assume a function is smaller than 4 GB; V8 gives a 64-bit memory at most 16 GB.
+Atomic accesses (shared memory) take the same i64 address and trap when misaligned, as in memory32.
+
+*Cost* (same machine, same run, modes interleaved; `npm run a64:mem64:speed`, the 75 guests, 276 M guest
+instructions): see Status. In short, 5 to 8 % more run time under Node 22 (V8 12.4, explicit bounds checks), about
+the same with the images above 4 GB; in Chromium 153 the difference is inside the spread between two runs (from 11 %
+slower to 7 % faster; above 4 GB 5 to 15 % slower). Memory-bound -O0 programs pay the most (up to +40 % on single
+programs), compute-bound ones nothing.
+
+**tools/asc64: AssemblyScript for wasm64.** `node tools/asc64/asc64.mjs <asc arguments>` (or `asc64([...])`).
+AssemblyScript 0.28.20 has the target in its compiler, but four things around it are unfinished; the tool closes them
+without touching `node_modules` (the header of `asc64.mjs` has the detail):
+1. the command line driver always selects wasm32: a copy of `dist/asc.js` with `setTarget(options, 0)` changed to
+   `2` is written to `build/asc64/` and loaded from there (setting the target later, from a transform, is too late:
+   pointer arithmetic comes out as `i32.sub` on i64 operands);
+2. the module's memory is declared 32-bit whatever the target, and Binaryen's validator and optimizer reject or abort
+   on the result: an `afterCompile` hook declares it again as an i64 memory (same limits, segments, import) before
+   Binaryen validates, so validation and `-O2` run as usual and no binary patch is needed;
+3. `memory.size` / `memory.grow` are typed i32 but are i64 on an i64 memory: in the copy of the driver the library's
+   two builtins become imports (`env.memory_size`, `env.memory_grow`, pages; `Memory64.imports()`), and the stub
+   runtime is replaced by `tools/asc64/rt.ts` (the same bump allocator, no growing, a heap the module can place with
+   `__set_heap(start, end)`). Only `--runtime stub` is accepted;
+4. the non-null assertion `x!` compiles to an `if` with an i64 condition: the hook rewrites such conditions to
+   `!= 0`.
+The output is then checked: one i64 memory, no `memory.size` / `memory.grow` instruction, and the running engine's
+`WebAssembly.validate`. `npm run a64:asc64` (`test/a64/asc64/run.mts`) compiles `probe_std.ts` (classes, linked
+lists, arrays, typed arrays, strings, maps, sets, function references, generics, Math, nullable references, raw
+memory, static data, memory growth) for wasm32 with `asc` and for wasm64 with the tool, and runs both: every result
+must be equal, with the wasm64 module's heap and raw pointers above 4 GB and the same addresses minus 4 GB checked
+to be untouched.
+
 **Fault pcs.** Default (no run-time cost): every unit carries a side table (module byte offset -> guest pc, 8 bytes
 per instruction, kept by the glue) and a name section (`f_<hex pc>` per function). `host.faultFromError(e)` reads
 the innermost wasm frame of the trap's stack (`f_8000000 (wasm://wasm/..:wasm-function[N]:0xOFFSET)`, the same in
@@ -144,7 +226,7 @@ caller's key must contain the module's build id, its load address (the code embe
 locals so that a following `b.cond`/`csel`/`cset`/`ccmp` in the same block is emitted as one direct
 comparison; dead flag computations are left to the wasm engine's optimizer.
 
-**Memory.** Address = `i32.wrap_i64`. W-register writes zero-extend. Exclusives record address and
+**Memory.** Address = `i32.wrap_i64` (memory64: the i64 itself). W-register writes zero-extend. Exclusives record address and
 value(s) in `excl_addr`/`excl_val` (`excl_val2` for the second word of a pair); the store succeeds
 only if the address matches and memory still holds the recorded value. LDAR/STLR are plain.
 
@@ -171,14 +253,27 @@ undecodable compiles to `unimpl(pc, insn)`; after `unimpl`/`brk` return, the fun
 ## Running the gates
 
 ```
-npm run a64:build            # asc -> build/a64/{translator,helpers}{,.shared}.wasm
-npm run a64:extra            # feature tests: fault pcs, code ranges, cntpct yield, cache, shared exclusives
-npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py)
-    python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N]
+npm run a64:build            # asc -> build/a64/{translator,helpers}{,.shared}.wasm; tools/asc64 -> {translator64,helpers64}{,.shared}.wasm
+npm run a64:extra            # feature tests: fault pcs, code ranges, cntpct yield, cache, shared exclusives, guard,
+                             #         contexts; then again in memory64, and in memory64 at addresses above 4 GB
+npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py), then 30,000
+                             #         cases in memory64 and 30,000 with code and memory window above 4 GB
+    python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N] [--mem64 | --hi] [--total N]
+npm run a64:fuzz:mem64       # the full 338,000 cases in memory64, and again above 4 GB
 npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out, then again with
-                             #         budget=50, without wasm tail calls, on a shared memory; then a64:extra
+                             #         budget=50, without wasm tail calls, on a shared memory; in memory64; in
+                             #         memory64 with the images linked at 0x1_8000_0000 (test/a64/guests/out_hi,
+                             #         built by build_hi.py: default, budget=50, shared, no tail calls); then the
+                             #         feature tests in the three configurations and a64:asc64
 npm run a64:browser          # the same in headless Chromium (full build, Playwright channel "chromium"), in a
-                             #         Worker, plus cache cold/warm (Cache API), the big guest and the feature tests
+                             #         Worker, plus cache cold/warm (Cache API), the big guest, memory64 (default,
+                             #         budget 50, shared, cache cold/warm; above 4 GB: default, shared, no tail
+                             #         calls), the three modes' speed in five interleaved rounds, the feature tests
+npm run a64:asc64            # the wasm64 build tool against the stock compiler (test/a64/asc64)
+npm run a64:mem64:speed      # memory32 / memory64 / memory64 above 4 GB on the guest corpus, interleaved [-- --rounds N --guard --each]
+npm run a64:mem64            # the two addressing forms in a hand-assembled loop; how large a 64-bit memory gets
+npm run a64:bytes            # a digest of every emitted byte for the corpus, per option set (two translator builds
+                             #         emit the same code exactly when these lines are the same)
 npm run a64:big              # larger-code check: generated 400k-instruction guest, time / size / memory
     python3 test/a64/fuzz.py --strictnan     # compare NaNs bitwise too
 npm run a64:speed            # per-guest guest-instructions/second and translation time
@@ -258,6 +353,9 @@ Behavioural differences:
 - After a wasm trap the registers cached in locals are lost unless `preciseFaults: 2` is on; the fault pc is exact
   either way. The stack-frame format is V8's (Node, Chromium); other engines get `undefined` from `faultFromError`.
 - No self-modifying-code detection: the embedder calls `removeCode`/`addCode` (or `invalidate()`) when code changes.
+- memory64: see its section for the limits (16 GB, static data below 4 GB). The other AssemblyScript modules and the
+  runtime are wasm32 still; only the translator, its helpers and their glue have the mode (`src/runtime/README.md`,
+  "memory64, for the 14").
 - Code and cache blobs are tied to the load address. At most 64 code ranges; a unit holds at most 250k instructions
   and 8 MB of wasm (more is split over further units).
 - Multi-structure LD2/3/4 and ST2/3/4 and everything behind `hlp.vop` are lane-by-lane (correct, slow).
@@ -280,3 +378,32 @@ Behavioural differences:
   compile 215-263 ms -> 153-204 ms, 25 modules both, largest 663 KB -> 391 KB, pc map 1.9 MB.
 - Translation cache on the big guest: Node cold 150 ms of translation + compile, warm 31-36 ms (25 units from a
   12.9 MB file, 0 instructions translated); Chromium cold 138 ms, warm 32 ms.
+
+memory64 (same machine; Node 22.23.4 = V8 12.4, Chromium 153.0.8010):
+- memory32 is untouched: `npm run a64:bytes` on the translator built from the tree before the mode and on this one
+  gives the same digests: the core module (three variants) and the units of all 75 guests under nine option sets
+  (default, no tail calls, shared, cntYield, preciseFaults 1 and 2, guard, no fma / nanFix / rmodeArith, maxInsns
+  40 with chunk 0 and depth 0; 70 MB of wasm). Gate 1 and Gate 2 in memory32 as above (338000 cases, 0 failures;
+  75 of 75 four times); feature tests 14 of 14 (three added: guard, contexts, mode in key and blob).
+- Gate 1 in memory64: 338000 cases, 0 failures; with code and memory window above 4 GB (Unicorn and translator both
+  at 0x1_8010_0000 / 0x1_8020_0000): 338000 cases, 0 failures. In `a64:fuzz`: 30082 + 30082 cases, 0 failures.
+- Gate 2 in memory64 (Node): 75 of 75; with the images linked at 0x1_8000_0000 (code, data, stack and pc map
+  leaves above 4 GB) 75 of 75 in each of default, `--budget 50`, `--shared`, `--notail`; by hand also `--precise 2`,
+  `--cntyield` and `--guard 0x08000000` in both placements. Feature tests 17 of 17 in memory64 and 17 of 17 above
+  4 GB. `a64:asc64`: 23 of 23.
+- Chromium (Worker): 75 of 75 in memory64 default, budget 50, shared, cache cold and warm (569 units from the Cache
+  API, 0 instructions translated); above 4 GB 75 of 75 in default, shared, no tail calls; feature tests 14 / 17 / 17.
+- Speed, Node, 25 interleaved rounds (`a64:mem64:speed`), M guest instructions/s by the best round / the median
+  round / each guest's best round summed: memory32 496 / 391 / 664; memory64 461 / 366 / 634 (run time +7.7 % /
+  +7.1 % / +4.8 %); memory64 above 4 GB 463 / 370 / 619 (+7.2 % / +5.7 % / +7.2 %). Per guest (the 50 that run 2 ms
+  or more): median +5.0 %, from -10 % to +41 % (a64_sort.O0, memory.O0, mixed_lz.O0 at the top). With the guard at
+  0x0800_0000: memory64 +4.0 % / +12.3 % / +7.8 %, above 4 GB +8.4 % / +12.8 % / +10.4 %. With V8's
+  `--wasm-memory64-trap-handling`: +4.1 % / +4.9 % / +6.4 %. A guard base above 4 GB (an offset of more than 32
+  bits in every memory instruction) costs more: +22 to +27 % with the images above 4 GB; the runtime's guard base
+  is in the host area.
+- Speed, Chromium, five interleaved rounds, best / median M guest instructions/s, two runs of the gate:
+  memory32 343 / 290 and 339 / 313; memory64 307 / 275 and 361 / 343 (-10.6 % / -5.0 %, then +6.6 % / +9.6 %);
+  memory64 above 4 GB 291 / 266 and 324 / 294 (-15.2 % / -8.4 %, then -4.5 % / -6.0 %).
+- Translator alone (the wasm64 build translating), Chromium: 0.57 to 0.81 us per instruction against 0.49 to 0.66
+  for the wasm32 build in the same run. The corpus' units are 6.48 MB against 6.53 MB (no `i32.wrap_i64`); the
+  fixed part of the pc map is 2.2 MB against 320 KB.

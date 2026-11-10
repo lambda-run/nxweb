@@ -1,18 +1,22 @@
 // Gate 1 runner: translate each fuzz case in single-instruction mode, run it, compare with Unicorn.
-// Usage: node fuzz_run.ts [--nofma] file.bin...   -> one JSON line per file on stdout.
+// Usage: node fuzz_run.ts [--nofma] [--mem64] [--hi] file.bin...   -> one JSON line per file on stdout.
+// --mem64: the memory64 mode (wasm64 translator, 64-bit memory). --hi: the case files were generated with code and
+// memory window moved up by 0x1_8000_0000 (fuzz.py --hi); the context scratch block goes up there as well.
 import { readFileSync } from "node:fs";
-import { A64Host } from "../../src/glue/a64_host.ts";
+import { A64Host, makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 import { A64, HOST_END } from "../../src/glue/rt_layout.ts";
 
-const CODE_BASE = 0x100000, SLOT = 16, WIN_BASE = 0x200000, CTX = 0x330;
-const SCRATCH = 0x300000;
-const BATCH = 512;
-
 const args = process.argv.slice(2);
-let nofma = false, strict = false, nonan = false, shared = false;
-while (args[0]?.startsWith("--")) { const a = args.shift(); if (a === "--nofma") nofma = true; if (a === "--strictnan") strict = true; if (a === "--nonan") nonan = true; if (a === "--shared") shared = true; }
-const translator = new WebAssembly.Module(readFileSync(new URL("../../build/a64/translator" + (shared ? ".shared" : "") + ".wasm", import.meta.url)));
-const helpers = new WebAssembly.Module(readFileSync(new URL("../../build/a64/helpers" + (shared ? ".shared" : "") + ".wasm", import.meta.url)));
+let nofma = false, strict = false, nonan = false, shared = false, mem64 = false, hi = false;
+while (args[0]?.startsWith("--")) { const a = args.shift(); if (a === "--nofma") nofma = true; if (a === "--strictnan") strict = true; if (a === "--nonan") nonan = true; if (a === "--shared") shared = true; if (a === "--mem64") mem64 = true; if (a === "--hi") mem64 = hi = true; }
+const UP = hi ? 0x1_8000_0000 : 0;
+const CODE_BASE = UP + 0x100000, SLOT = 16, WIN_BASE = UP + 0x200000, CTX = 0x330;
+const SCRATCH = UP + 0x300000;
+const BATCH = 512;
+const PAGES = Math.ceil(Math.max(HOST_END, UP + 0x400000) / 65536);
+const sfx = (mem64 ? "64" : "") + (shared ? ".shared" : "") + ".wasm";
+const translator = new WebAssembly.Module(readFileSync(new URL("../../build/a64/translator" + sfx, import.meta.url)));
+const helpers = new WebAssembly.Module(readFileSync(new URL("../../build/a64/helpers" + sfx, import.meta.url)));
 
 function hex(b: Uint8Array, off: number, n: number): string {
   let s = "";
@@ -41,9 +45,10 @@ function runFile(path: string): void {
   const code = file.subarray(off, off + ncases * SLOT); off += ncases * SLOT;
   const winInit = file.subarray(off, off + winSize); off += winSize;
 
-  const memory = shared ? new WebAssembly.Memory({ initial: HOST_END >> 16, maximum: 65536, shared: true }) : new WebAssembly.Memory({ initial: HOST_END >> 16 });
+  const memory = mem64 ? makeMemory64(shared ? { initial: PAGES, maximum: MEM64_MAX_PAGES, shared: true } : { initial: PAGES }).memory
+    : shared ? new WebAssembly.Memory({ initial: HOST_END >> 16, maximum: 65536, shared: true }) : new WebAssembly.Memory({ initial: HOST_END >> 16 });
   const host = new A64Host(translator, helpers, {
-    memory, layout: { ...A64, codeRegionLo: CODE_BASE, codeRegionSize: 0x100000 }, maxInsns: 1, maxFuncs: 1, chunk: 0, fma: !nofma, nanFix: !nonan, shared,
+    memory, mem64, layout: { ...A64, codeRegionLo: CODE_BASE, codeRegionSize: 0x100000 }, maxInsns: 1, maxFuncs: 1, chunk: 0, fma: !nofma, nanFix: !nonan, shared,
     imports: {
       svc: () => { throw new Error("svc"); },
       unimpl: () => { unimpl = true; },
