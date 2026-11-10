@@ -143,6 +143,7 @@ let condRed: u32 = 0;
 let nowNs: u64 = 0;
 export function setNow(ns: u64): void { nowNs = ns; }
 
+const ARGS2: usize = memory.data(64);   // the arguments of a call one function makes to another
 export function call(fn: i32, a: usize): u64 {
   switch (fn) {
     // ---------- Device ----------
@@ -200,8 +201,24 @@ export function call(fn: i32, a: usize): u64 {
       store<u32>(p, O.MAGIC_POOL); store<u32>(p, flags, O.POOL_flags);
       store<u64>(p, load<u64>(b, O.PB_mem), O.POOL_mem); store<u64>(p, load<u64>(b, O.PB_size), O.POOL_size);
       store<u64>(p, 0, O.POOL_vp); store<i32>(p, 0, O.POOL_vmode);
-      // DEPARTS: a virtual pool (flags 0x200) gets no address range of its own yet (nxnative reserves one; sparse mapping is not ported)
-      if (!load<u64>(p, O.POOL_mem)) { if (flags & O.POOLF_VIRTUAL) L.redLine("MemoryPoolInitialize: virtual pools are not mapped yet (no storage)"); else L.redLine("MemoryPoolInitialize: non-virtual pool has no storage"); }
+      // DEPARTS: a virtual pool (flags 0x200) has no storage until MapVirtual points it at a physical pool (nxnative reserves an address range
+      // first, and maps true sparse pools page by page; here only one contiguous mapping is taken)
+      if (!load<u64>(p, O.POOL_mem) && !(flags & O.POOLF_VIRTUAL)) L.redLine("MemoryPoolInitialize: non-virtual pool has no storage");
+      return 1;
+    }
+    // Requests (nxnative map_req): { pool *phys, i64 physical offset, i64 virtual offset, u64 size, i32 storage class, pad }
+    case F.nvnMemoryPoolMapVirtual: {
+      const p = P(a, 0), n = I(a, 1), rq = P(a, 2), vsize = load<u64>(p, O.POOL_size);
+      for (let i = 0; i < n; i++) {
+        const r = rq + <usize>i * 40, ph = <usize>load<u64>(r);
+        if (!ph) continue;   // unmapping: the storage stays as it is
+        const pmem = load<u64>(ph, O.POOL_mem), poff = load<i64>(r, 8), voff = load<i64>(r, 16), size = load<u64>(r, 24);
+        if (!pmem) { L.redLine("MapVirtual: the physical pool has no storage"); return 0; }
+        if (voff < 0 || <u64>voff + size > vsize || <u64>poff + size > load<u64>(ph, O.POOL_size)) { L.redLine("MapVirtual: request out of range"); return 0; }
+        const base = pmem + <u64>poff - <u64>voff, cur = load<u64>(p, O.POOL_mem);
+        if (cur && cur != base) { L.redLine("MapVirtual: non-contiguous mapping (true sparse) not implemented"); return 0; }
+        store<u64>(p, base, O.POOL_mem);
+      }
       return 1;
     }
     case F.nvnMemoryPoolFinalize: store<u32>(P(a, 0), 0); return 0;
@@ -392,6 +409,19 @@ export function call(fn: i32, a: usize): u64 {
 
     // ---------- Programs ----------
     case F.nvnProgramInitialize: memory.fill(P(a, 0), 0, O.PROG_SIZE); store<u32>(P(a, 0), O.MAGIC_PROG); return 1;
+    // NVN2's program builder (nxnative prog_builder_t { device, shader data, count }): InitializeFromBuilder is Initialize + SetShaders
+    case F.nvnProgramBuilderSetDefaults: memory.fill(P(a, 0), 0, 24); return 0;
+    case F.nvnProgramBuilderSetDevice: store<u64>(P(a, 0), X(a, 1)); return 0;
+    case F.nvnProgramBuilderGetDevice: return load<u64>(P(a, 0));
+    case F.nvnProgramBuilderSetShaders: store<u64>(P(a, 0), X(a, 2), 8); store<i32>(P(a, 0), I(a, 1), 16); return 0;
+    case F.nvnProgramBuilderGetShaderCount: return <u64>load<i32>(P(a, 0), 16);
+    case F.nvnProgramInitializeFromBuilder: {
+      const p = X(a, 0), b = P(a, 1), n = load<i32>(b, 16);
+      store<u64>(ARGS2, p); call(F.nvnProgramInitialize, ARGS2);
+      if (!n) return 1;
+      store<u64>(ARGS2, p); store<u64>(ARGS2, <u64>n, 8); store<u64>(ARGS2, load<u64>(b, 8), 16);
+      return call(F.nvnProgramSetShaders, ARGS2);
+    }
     case F.nvnProgramFinalize: T.progFree(load<u64>(P(a, 0), O.PROG_serial)); store<u32>(P(a, 0), 0); return 0;
     case F.nvnProgramSetDebugLabel: return 0;
     case F.nvnProgramSetShaders: {
@@ -434,6 +464,8 @@ export function call(fn: i32, a: usize): u64 {
       store<u64>(b, 65536, O.QB_cmd_sz); store<u64>(b, 262144, O.QB_comp_sz); store<u64>(b, 16384, O.QB_ctl_sz); store<u64>(b, 4096, O.QB_flush);
       return 0;
     }
+    // NVN2 ties a queue to a primary one; the host runs every queue's submissions in order on its one queue, so the tie needs no work
+    case F.nvnQueueBuilderSetPrimaryQueue: return 0;
     case F.nvnQueueBuilderSetDevice: store<u64>(P(a, 0), X(a, 1), O.QB_dev); return 0;
     case F.nvnQueueBuilderSetFlags: store<u32>(P(a, 0), I(a, 1), O.QB_flags); return 0;
     case F.nvnQueueBuilderSetCommandMemorySize: store<u64>(P(a, 0), X(a, 1), O.QB_cmd_sz); return 0;
@@ -637,6 +669,13 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferGetCopyRowStride: return load<u64>(P(a, 0), O.CMD_copy_row);
     case F.nvnCommandBufferGetCopyImageStride: return load<u64>(P(a, 0), O.CMD_copy_image);
     case F.nvnCommandBufferFenceSync: C.fenceSync(P(a, 0), X(a, 1)); return 0;
+    // Sampler reduction (min / max of the covered texels) is kept for the getters; WebGPU samplers have no reduction mode, so draws filter as usual
+    case F.nvnSamplerBuilderSetReductionFilter: store<u8>(P(a, 0), <u8>I(a, 1), O.SB_p + O.SP_reduction); return 0;
+    case F.nvnSamplerBuilderGetReductionFilter: return load<u8>(P(a, 0), O.SB_p + O.SP_reduction);
+    case F.nvnSamplerGetReductionFilter: return load<u8>(P(a, 0), O.SAMP_p + O.SP_reduction);
+    case F.nvnTextureBuilderGetStorageClass: return 0;
+    // Guest memory is the GPU's memory: the dirty scan and pool flushes find written texels; nothing to flush here (as nxnative)
+    case F.nvnTextureFlushTexels: return 0;
     case F.nvnCommandBufferSignalEvent: C.signalEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 5)); return 0;
     case F.nvnCommandBufferWaitEvent: C.waitEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 3)); return 0;
     case F.nvnCommandBufferBindStorageBuffer: C.bindStorageBuffer(P(a, 0), I(a, 1), I(a, 2), X(a, 3), X(a, 4)); return 0;
