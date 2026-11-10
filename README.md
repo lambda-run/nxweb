@@ -18,7 +18,7 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 | Module loader (`src/loader`) | Working, 68 tests (no real game file tried) |
 | Kernel core (`src/kernel`) | Working, 63 tests |
 | Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 50 end-to-end tests under Node, 60 in Chromium: multi-threaded NSO modules, run-time modules (NRO), faults with exact pcs (host memory guarded by default), restart without reload, a per-game address-space layout, a robustness sweep (64 threads for 30 s of guest time, 500 module reloads, 2000 frames) |
-| NVN on WebGPU (`src/gfx`) | Working for 333 of 743 NVN functions (14 Node tests, 42 browser scenes); a translated guest draws through it in the page |
+| NVN on WebGPU (`src/gfx`) | Working for 333 of 743 NVN functions (14 Node tests, 46 browser scenes); a translated guest draws through it in the page |
 | Shaders (`tools/shaders`, `src/shaders`) | Chain works on hand-assembled Maxwell programs, offline and in the page (translated in a Worker, cached); no game shader has been through it |
 | File system (`src/fs`) | Working and attached: RomFS images, crash-safe saves on OPFS; 66 tests, 7 in the browser |
 | SDK take-overs (`src/hle`) | The names nxnative answers on the host (1,113 in scope: 985 implemented, 128 cut stubs for movies; `hle:test` 97 tests), attached to the runtime with one answer per name: controllers (several players, vibration), display layer, run-time modules; guests call a spread of them |

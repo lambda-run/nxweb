@@ -135,7 +135,7 @@ export const scenes2: Scene[] = [
     if (over) {
       t.rect(img, 32, 0, 64, 64, BLACK, "one block over the limit: the draw is skipped");
       const red = e.g.red();
-      t.ok(red.length === 1 && new RegExp(`uses ${max + 1} uniform buffers, this WebGPU device allows ${max} a stage`).test(red[0]), `one red line with the numbers: ${red}`);
+      t.ok(red.length === 1 && new RegExp(`needs ${max + 1} uniform buffers; this WebGPU device allows ${max} a stage \\(maxUniformBuffersPerShaderStage\\): 1 over`).test(red[0]), `one red line with the numbers: ${red}`);
       await pipesBuilt(e); t.eq(pipeStates(e), [2, 3], "that pipeline is Failed, the other Ready");
     } else console.log("this device allows 14 or more uniform buffers a stage: nothing a game binds can exceed it");
     t.eq(e.host.stats.errors, 0, "no WebGPU validation error");

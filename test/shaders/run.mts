@@ -188,9 +188,37 @@ await test("Maxwell -> SPIR-V -> WGSL: the library of the translated programs, w
   eq([f.reflection.ubos, f.reflection.uboSize, f.reflection.textures, f.reflection.outputs, f.reflection.extra], [[0], { "0": 32 }, [{ slot: 0, dim: "2d", depth: false }], [0], []], "pixel");
   if (!/@group\(0\) @binding\(16\)/.test(f.wgsl) || !/@group\(1\) @binding\(64\)/.test(f.wgsl) || !/@group\(1\) @binding\(65\)/.test(f.wgsl) || !/discard;/.test(f.wgsl)) throw new Error(f.wgsl);
   eq([o.reflection.textures, o.reflection.extra.map(e => `${e.kind}@${e.group}.${e.binding}`)], [[{ slot: 1, dim: "2d", depth: false }], ["support@0.30"]], "ps_ops: texture slot 1 and the support buffer");
+  // bindless: the handle is traced by the translator to the game's uniform slot 2 (c[5]) byte 0x28; the pass gives the texture the first free slot and reports where
+  // the host reads the handle. The library hands GfxHost.registerShader that record
+  const b = byName(maxwell, "ps_bindless").entry!;
+  eq(b.reflection.textures, [{ slot: 0, dim: "2d", depth: false, handle: { ubo: 2, offset: 0x28 } }], "ps_bindless: one texture, its handle in uniform slot 2 + 0x28");
+  if (!/@group\(1\) @binding\(64\)/.test(b.wgsl) || !/@group\(1\) @binding\(65\)/.test(b.wgsl)) throw new Error(b.wgsl);
+  if (!b.reflection.notes.some(n => /fp_t_cb5_A is bindless: slot 0 takes its handle from uniform slot 2 \+ 0x28/.test(n))) throw new Error(`no bindless note: ${b.reflection.notes}`);
+  const got: any[] = []; new ShaderLibrary(maxwell.library).registerAll({ registerShader: (key, info) => (got.push({ key, ...info }), got.length - 1) });
+  eq(got.find(g => g.key === b.key)?.textures, b.reflection.textures, "registerAll passes the handle on");
   if (/c25/.test(v.wgsl.replace(/var<private> \w+c25_/, "")) === false) throw new Error("expected the bound-size table as a private constant");
   if (/var<uniform> \w*c25/.test(v.wgsl + f.wgsl)) throw new Error("the bound-size table is still a uniform buffer");
   return `${maxwell.report.length} stages, ${maxwell.library.length} bytes`;
+});
+
+await test("SPIR-V pass: bindless texture names (handle types 0, 1, 3) are placed in free slots with their handle's place; what has no answer is refused by name", () => {
+  // the translated module, with its texture renamed as the translator names other kinds of handle (nxnative dmsh_build.py decode_ubo_tex)
+  if (!xlate || !maxwell) return "SKIPPED: dotnet or the translator is not there";
+  const spv = readFileSync(join(MX, "spv", byName(maxwell, "ps_bindless").key + ".spv"));
+  const renamed = (name: string) => {
+    const m = parse(new Uint8Array(spv)), words: number[] = [];
+    for (let i = 0; i <= name.length; i += 4) { let v = 0; for (let k = 0; k < 4 && i + k < name.length; k++) v |= name.charCodeAt(i + k) << (8 * k); words.push(v >>> 0); }
+    let n = 0;
+    for (const i of m.insts) if (i.op === 5 /* OpName */ && String.fromCharCode(...i.w.slice(1).flatMap(w => [w & 255, (w >> 8) & 255, (w >> 16) & 255, w >>> 24]).filter(c => c)) === "fp_t_cb5_A") { i.w = [i.w[0], ...words]; n++; }
+    if (n !== 1) throw new Error("the texture's name was not found");
+    return fixForWgsl(serialize(m)).bindings.filter(b => b.kind === "tex").map(b => ({ slot: b.reg, handle: b.handle }));
+  };
+  eq(renamed("fp_t_cb7_2A"), [{ slot: 0, handle: { ubo: 4, offset: 0xa8 } }], "type 0: one word");
+  eq(renamed("fp_t_cb458759_10014002"), [{ slot: 0, handle: { ubo: 4, offset: 8, sampler: { ubo: 3, offset: 0x14 } } }], "type 1: texture word in c7, sampler word in c6");   // slots = (6 + 1) << 16 | 7 (sampler bank 6, texture bank 7); handle = 1 << 28 | 5 << 14 | 2
+  eq(renamed("fp_t_cb5_3041000A"), [{ slot: 0, handle: { ubo: 2, offset: 0x28, sampler: { id: 0x104 } } }], "type 3: a constant sampler ID");
+  throws(() => renamed("fp_t_cb196613_1057000A"), /sampler is a separate sampler of the driver table \(c2 \+ 0x570\): not placed yet/, "type 1 with the sampler in c2");   // slots = (2 + 1) << 16 | 5
+  throws(() => renamed("fp_t_cb20_A"), /uniform bank 20, which is not one of the game's uniform slots/, "a bank that is no uniform slot");
+  throws(() => renamed("fp_t_cb5_2000000A"), /bindless handle of type 2/, "an unknown handle type");
 });
 
 // ---- the browser half ----
@@ -275,7 +303,7 @@ if (!process.argv.includes("--no-browser")) {
         const r: any = await page.evaluate(([f, n, b, c]: any) => (globalThis as any).translateInPage(f, n, b, c), [`${url}/build/shaders/xlate_wasm/_framework`, `${url}/build/shaders/nx_naga.wasm`, `${url}/build/shaders/maxwell`, rows]);
         eq(r.rc, 0, "the translator's exit status");
         for (const e of maxwell!.entries) { eq(r.out[e.key]?.wgsl, e.wgsl, `WGSL of ${e.key}`); eq(r.out[e.key].reflection, e.reflection, `reflection of ${e.key}`); }
-        return `.NET runtime up in ${r.startMs.toFixed(0)} ms; 3 stages translated in ${r.firstMs.toFixed(0)} ms the first time, ${r.warmMs.toFixed(0)} ms the second; pass + naga for the 3: ${r.convertMs.toFixed(0)} ms`;
+        return `.NET runtime up in ${r.startMs.toFixed(0)} ms; ${rows.length} stages translated in ${r.firstMs.toFixed(0)} ms the first time, ${r.warmMs.toFixed(0)} ms the second; pass + naga for the ${rows.length}: ${r.convertMs.toFixed(0)} ms`;
       });
       if (errors.length) { failed++; console.error(`[RED] page errors:\n${errors.join("\n")}`); }
     } finally { await browser.close(); server.close(); }

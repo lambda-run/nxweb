@@ -17,7 +17,7 @@ import { Inst } from "../kit/machine";
 import { GFX_SHADER, GfxShaderE, GfxShaderS } from "../kit/gen/tables";
 import { pipelineResetShader } from "./pipeline";
 
-// Reflection record (144 bytes), as the embedder passes it (GfxHost.registerShader fills it from the shader chain's record)
+// Reflection record (400 bytes), as the embedder passes it (GfxHost.registerShader fills it from the shader chain's record)
 export const RF_stage: usize = 0;       // u32: 0 vertex, 1 fragment, 2 compute
 export const RF_ubo: usize = 4;         // u32: bit i = uniform buffer binding i of this stage is read (0..13 the game's slots, 14 the translator's support buffer)
 export const RF_tex: usize = 8;         // u32: bit s = texture slot s of this stage is sampled
@@ -30,9 +30,17 @@ export const RF_dim: usize = 32;        // u8[32] per texture slot: 0 2D, 1 2D a
 export const RF_ubo_size: usize = 64;   // u32[16]: bytes the WGSL type of uniform binding i covers (0: not known, the bound size is used)
 export const RF_vin: usize = 128;       // u64, vertex: 2 bits a location: the class the input is declared with (0 float, 1 sint, 2 uint)
 export const RF_flags: usize = 136;     // u32: 1 = RF_vin is known (a shader without it is taken to match whatever is bound)
-export const RF_SIZE: usize = 144;
+// Bindless textures (nxnative NVN_RB_TEXU / SAMPU, dmsh_abi.h tex_ubo / samp_ubo): the shader samples slot s, but which
+// texture and sampler that is stands in the game's own uniform data, read at each draw (lower.ts slotHandle)
+export const RF_bl: usize = 140;        // u32: bit s = texture slot s is bindless: its entry in RF_blh says where the handle is
+export const RF_blh: usize = 144;       // [32] { u8 kind; u8 reg; u16 off; u8 sreg; u8 pad; u16 soff }, one a texture slot:
+                                        //   the handle is the u32 at byte `off` of this stage's uniform slot `reg` (texture ID in the low 20 bits, sampler ID in the high 12);
+                                        //   kind BL_WORD: that word alone; BL_OR: ORed with the u32 at byte `soff` of uniform slot `sreg` (the texture in one word, the
+                                        //   sampler in the other, either order); BL_SAMPLER_ID: the sampler is ID `soff`, a constant of the shader (no pool base)
+export const BL_WORD: u8 = 0, BL_OR: u8 = 1, BL_SAMPLER_ID: u8 = 3;
+export const RF_SIZE: usize = 400;
 const LIB_N: u32 = 4096;
-const LE_SIZE: usize = 152;              // u64 key, reflection record
+const LE_SIZE: usize = 408;              // u64 key, reflection record
 let LIB: usize = 0;
 // What is known about a key (machine gfx_shader), for keys the embedder has spoken of: { u64 key, Inst }
 const KEYS_N: u32 = 4096 + 256, KE_SIZE: usize = 24;

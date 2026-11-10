@@ -100,6 +100,29 @@ export function fsManyUbos(n: number): ShaderInfo {
 @fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return vec4f((${Array.from({ length: n }, (_, i) => `u${i}.c`).join(" + ")}).rgb, 1.0); }` };
 }
 
+// A fragment shader with n textures (slots 0..n-1), which it adds up
+export function fsManyTextures(n: number): ShaderInfo {
+  return { stage: "fragment", outputs: [0], textures: Array.from({ length: n }, (_, i) => ({ slot: i })),
+    wgsl: `${Array.from({ length: n }, (_, i) => `@group(1) @binding(${64 + 2 * i}) var t${i}: texture_2d<f32>; @group(1) @binding(${65 + 2 * i}) var s${i}: sampler;`).join(" ")}
+@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return vec4f((${Array.from({ length: n }, (_, i) => `textureSampleLevel(t${i}, s${i}, v.xy, 0.0)`).join(" + ")}).rgb, 1.0); }` };
+}
+// Bindless sampling (README "Bindless textures"): three textures side by side. Slot 0's handle is the word at byte 8 of fragment uniform slot 2, a slot the
+// shader does not read as a block; slot 1 is bound with BindTexture; slot 5's texture ID is the word at byte 16 of slot 2 and its sampler ID the word at
+// byte 4 of slot 3 (sampled at one fixed place between two texels, so that the filter shows)
+const BINDLESS_WGSL = `@group(1) @binding(64) var t0: texture_2d<f32>; @group(1) @binding(65) var s0: sampler; @group(1) @binding(66) var t1: texture_2d<f32>; @group(1) @binding(67) var s1: sampler;
+@group(1) @binding(74) var t5: texture_2d<f32>; @group(1) @binding(75) var s5: sampler;
+@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f {
+  let a = textureSampleLevel(t0, s0, v.xy, 0.0); let b = textureSampleLevel(t1, s1, v.xy, 0.0); let c = textureSampleLevel(t5, s5, vec2f(0.375, 0.5), 0.0);
+  if (v.x < 1.0 / 3.0) { return a; } if (v.x < 2.0 / 3.0) { return b; } return c; }`;
+SHADERS.fs_bindless = { stage: "fragment", outputs: [0], wgsl: BINDLESS_WGSL,
+  textures: [{ slot: 0, handle: { ubo: 2, offset: 8 } }, { slot: 1 }, { slot: 5, handle: { ubo: 2, offset: 16, sampler: { ubo: 3, offset: 4 } } }] };
+// The same texture slot 0 with the sampler ID a constant of the shader
+export function fsBindlessSamplerId(id: number): ShaderInfo {
+  return { stage: "fragment", outputs: [0], textures: [{ slot: 0, handle: { ubo: 2, offset: 8, sampler: { id } } }],
+    wgsl: `@group(1) @binding(64) var t0: texture_2d<f32>; @group(1) @binding(65) var s0: sampler;
+@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return textureSampleLevel(t0, s0, vec2f(0.375, 0.5), 0.0); }` };
+}
+
 export class Env {
   g!: Guest; host!: GfxHost; G!: Game; wasm!: WebAssembly.Module;
   win = 0; wtex: number[] = []; W = 64; H = 64;
