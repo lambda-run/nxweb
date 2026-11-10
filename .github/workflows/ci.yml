@@ -1,0 +1,43 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: npm test (kit, loader, kernel, a64 guests, runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: clang, lld and the llvm tools (aarch64 target)
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+      - run: pip install unicorn capstone
+      - run: npm ci
+      # test/guests/out is not in the repository: `npm test` builds the guest corpus first (clang + Unicorn)
+      - run: npm test
+
+  fuzz:
+    name: a64 instruction fuzz against Unicorn
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+      - run: pip install unicorn capstone
+      - run: npm ci
+      - run: npm run a64:fuzz

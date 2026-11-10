@@ -21,6 +21,7 @@ o.chunk = Number(opt("--chunk", String(o.chunk)));
 o.fma = !argv.includes("--nofma");
 o.nanFix = !argv.includes("--nonan");
 o.tailCalls = !argv.includes("--notail");
+o.rmodeArith = !argv.includes("--normarith");
 const only = opt("--only") ? new RegExp(opt("--only")!) : null;
 const speed = argv.includes("--speed");
 const quiet = argv.includes("--quiet");

@@ -2,8 +2,8 @@
 // through the translator per the contract's test ABI and compare stdout + exit code.
 import { A64Host } from "../../src/glue/a64_host.ts";
 
-export interface GuestOpts { budget: number; maxInsns: number; maxFuncs: number; fma: boolean; nanFix: boolean; tailCalls: boolean; depthLimit: number; chunk: number }
-export const defaultOpts: GuestOpts = { budget: 1 << 30, maxInsns: 1500, maxFuncs: 1024, fma: true, nanFix: true, tailCalls: true, depthLimit: 160, chunk: 65536 };
+export interface GuestOpts { budget: number; maxInsns: number; maxFuncs: number; fma: boolean; nanFix: boolean; tailCalls: boolean; depthLimit: number; chunk: number; rmodeArith: boolean }
+export const defaultOpts: GuestOpts = { budget: 1 << 30, maxInsns: 1500, maxFuncs: 1024, fma: true, nanFix: true, tailCalls: true, depthLimit: 160, chunk: 65536, rmodeArith: true };
 export interface Result {
   name: string; ok: boolean; why: string; insns: number; runMs: number; trMs: number; trOnlyMs: number; trInsns: number;
   funcs: number; bytes: number; slices: number; tableLen: number; modules?: number; maxModule?: number; trMem?: number;
@@ -29,7 +29,7 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
   let fault = "";
   const host: A64Host = new A64Host(translator, helpers, {
     memory, pcmapBase, codeLo: base, mapSize, maxInsns: o.maxInsns, maxFuncs: o.maxFuncs, fma: o.fma, nanFix: o.nanFix,
-    tailCalls: o.tailCalls, depthLimit: o.depthLimit, chunk: o.chunk,
+    tailCalls: o.tailCalls, depthLimit: o.depthLimit, chunk: o.chunk, rmodeArith: o.rmodeArith,
     imports: {
       svc: (n: number) => {
         const c = host.core as any;

@@ -13,6 +13,7 @@ export let optFma: bool = true;     // relaxed-simd fused multiply-add
 export let optTail: bool = true;    // wasm tail calls for jumps
 export let optNan: bool = true;     // ARM NaN generation/propagation fix-up on FP arithmetic
 export let optChunk: u32 = 65536;        // region mode: a unit also takes the untranslated BL targets in the entry's chunk (bytes, power of two; 0 = off)
+export let optRmArith: bool = true;  // scalar FADD/FSUB/FMUL/FDIV/FSQRT honour FPCR.RMode (one FPCR test per operation)
 export let optDepth: i32 = 160;     // nested guest calls before a call unwinds through the run loop (0 = off)
 
 export function setOpt(id: i32, v: u32): void {
@@ -27,6 +28,7 @@ export function setOpt(id: i32, v: u32): void {
     case 7: optNan = v != 0; break;
     case 8: optDepth = <i32>v; break;
     case 9: optChunk = v; break;
+    case 10: optRmArith = v != 0; break;
   }
 }
 
@@ -161,7 +163,9 @@ export const F_NAN2D = 9;
 export const F_NAN3S = 10;
 export const F_NAN3D = 11;
 export const F_RND = 12;
-export const NIMPF = 13;
+export const F_RARS = 13;
+export const F_RARD = 14;
+export const NIMPF = 15;
 
 export const T_I32: u8 = 0x7F;
 export const T_I64: u8 = 0x7E;

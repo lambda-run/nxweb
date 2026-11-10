@@ -21,6 +21,7 @@ export interface A64Options {
   tailCalls?: boolean;          // wasm tail calls (default true)
   nanFix?: boolean;             // ARM NaN generation/propagation on FP arithmetic (default true)
   chunk?: number;               // region mode: a unit also takes the untranslated BL targets in the same chunk of this many bytes (0 = off)
+  rmodeArith?: boolean;         // scalar FP arithmetic honours FPCR.RMode (default true)
   depthLimit?: number;          // nested guest calls before a call unwinds through run() (default 160, 0 = off)
   // called by the index-0 trampoline when a pc has no translation yet; returns a table index.
   // Default: translate a unit starting at pc. Return A64Host.STOP to stop execution instead.
@@ -37,7 +38,7 @@ export interface CoreExports {
   [name: string]: unknown;
 }
 
-const OPT = { pcmapBase: 0, codeLo: 1, mapSize: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8, chunk: 9 };
+const OPT = { pcmapBase: 0, codeLo: 1, mapSize: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8, chunk: 9, rmArith: 10 };
 
 export class A64Host {
   static readonly TRAMPOLINE = 0;
@@ -89,6 +90,7 @@ export class A64Host {
     if (o.nanFix !== undefined) t.setOpt(OPT.nan, o.nanFix ? 1 : 0);
     if (o.depthLimit !== undefined) t.setOpt(OPT.depth, o.depthLimit);
     if (o.chunk !== undefined) t.setOpt(OPT.chunk, o.chunk);
+    if (o.rmodeArith !== undefined) t.setOpt(OPT.rmArith, o.rmodeArith ? 1 : 0);
   }
 
   // give the translator the guest code bytes for [base, base + bytes.length)

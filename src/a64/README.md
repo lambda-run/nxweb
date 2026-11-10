@@ -16,12 +16,13 @@ instantiates modules, owns the function table and the pc map and provides the im
 | `fp.ts` | scalar floating point, SIMD&FP register loads/stores, AdvSIMD structure loads/stores |
 | `simd.ts` | Advanced SIMD data processing (vector and scalar-in-SIMD forms) |
 | `unit.ts` | function discovery, per-function assembly, register write-back/reload analysis, unit module builder, core module builder, `probe` |
-| `index.ts` | exports: `init, setOpt, codeBuf, setCode, entryBuf, translate, outPtr, metaBuf, buildCore, probe` |
+| `index.ts` | exports: `init, setOpt, codeBuf, setCode, resetDone, entryBuf, translate, outPtr, metaBuf, buildCore, probe` |
+| `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding; `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `rarith{s,d}`: directed-rounding scalar arithmetic) |
 
 **Core module** (`buildCore()`, bytes produced by the same encoder). Imports `env.memory`,
 `env.table`, `env.translate(pc: i64) -> i32`. Defines and exports the contract globals (`x0..x30, sp,
 pc, nf, zf, cf, vf, v0..v31, fpcr, fpsr, tpidr, tpidrro, excl_addr, excl_val, budget`, plus
-`excl_val2`), `save_ctx/load_ctx` (contract layout), `run()`, `stop`, `trampoline`, `crc32`.
+`excl_val2` and `depth`), `save_ctx/load_ctx` (contract layout), `run()`, `stop`, `trampoline`, `crc32`.
 Table index 0 is the trampoline (`if pc >= 0xFFFF_FF00 return; return_call_indirect(translate(pc))`),
 index 1 is `stop` (sets `budget = -1`, which makes every frame unwind and `run()` return; the glue's
 `translate` returns 1 when it does not want to continue). `run()` loops
@@ -32,10 +33,18 @@ index 1 is `stop` (sets `budget = -1`, which makes every frame unwind and `run()
 outside the range. The three numbers are translator options baked into the generated code.
 
 **Translation unit** = list of entry pcs -> one wasm module importing memory, table, the `cpu.*`
-globals, `env.svc/unimpl/brk/cntpct`, `cpu.crc32` and `env.table_base`; its functions are placed in
+globals, `env.svc/unimpl/brk/cntpct`, `cpu.crc32`, the `hlp.*` helpers and `env.table_base`; its functions are placed in
 the table by an active element segment at `table_base`. `metaBuf()` lists the function pcs so the
 glue can fill the pc map. BL targets inside the code window are added to the unit (up to
 `maxFuncs`) and become direct `call`s; everything else is an indirect transfer by the protocol.
+
+**Unit size (region mode, default).** `setCode` scans the window once for function entries (every BL
+target, the instruction after each RET, aligned 8-byte words pointing into the window). When a pc
+needs translating, the unit also takes every not-yet-translated entry of the same 64 KB chunk
+(`chunk` option, `maxFuncs` 1024). The translator remembers which pcs are translated, so nothing is
+translated twice and a BL to an already translated function goes through the pc map. Chosen from
+the larger-code check below: one module per function costs about 230 KB of engine memory per module;
+64 KB chunks give modules of 0.2-0.7 MB, the lowest total translate+compile time and 4x less memory.
 
 **Function discovery.** From an entry pc, follow direct branches (B, B.cond, CBZ, TBZ) inside a
 +-256 KB window; BL/BLR/SVC fall through; BR/RET/BRK end a path. The size cap (`maxInsns`, default
@@ -58,7 +67,15 @@ that are actually dirty / needed afterwards.
 
 **Calls and unwinding.** After any `call`/`call_indirect`/`svc` the caller compares `pc` with the
 return address and returns at once on mismatch (longjmp, exit, preemption). RET (and `br x30`) set
-`pc` and return; other BRs and out-of-function B are wasm tail calls.
+`pc` and return; other BRs and out-of-function B are wasm tail calls (`tailCalls: false` uses
+call + return instead and is exercised by the gates).
+
+**Call depth.** The `depth` global bounds wasm nesting: a function reads it at entry, a nested call
+announces `depth + 1`, a tail transfer hands on its own depth, `run()` resets it to 0. A function
+entered above `depthLimit` (default 160) sets `pc` to its own entry and returns; every caller
+unwinds by the pc check and `run()` continues there with an empty wasm stack. Guest recursion is
+therefore bounded only by the guest stack, and frames abandoned by a longjmp done with `br xN` are
+released at the latest when the limit is reached.
 
 **Flags** are four i32 locals/globals. A `SUBS/CMP` additionally keeps its operands in dedicated
 locals so that a following `b.cond`/`csel`/`cset`/`ccmp` in the same block is emitted as one direct
@@ -70,8 +87,17 @@ only if the address matches and memory still holds the recorded value. LDAR/STLR
 
 **Floating point.** Scalar ops work on lane 0 of the v128 and zero the upper bits on write. FMADD
 family and vector FMLA/FMLS use relaxed-simd `relaxed_madd/nmadd` (option `fma`, default on; off =
-separate multiply and add). Round-to-nearest is assumed; FPCR is stored but ignored; FPSR is stored
-but never updated by arithmetic.
+separate multiply and add). FPSR is stored but never updated by arithmetic.
+
+**NaNs (`nanFix`, default on).** After an FP operation that can produce a NaN (add, sub, mul, div,
+sqrt, min/max, fused forms, step/mulx, scalar and vector) the result is tested (`r != r`, one
+compare and a never-taken branch); only then a helper recomputes the ARM result from the operands
+(default NaN 0x7FF8.. for generated NaNs, FPProcessNaNs order and quieting for propagated ones).
+
+**Rounding mode.** FRINTI/FRINTX, SCVTF/UCVTF (scalar, vector, fixed-point) and FCVT d->s test
+FPCR.RMode and call a helper when it is not nearest. With `rmodeArith` (default on) scalar
+FADD/FSUB/FMUL/FNMUL/FDIV/FSQRT do the same (helper computes the exactly rounded directed result
+with error-free transforms). FZ, DN and AHP are ignored.
 
 **System.** NOP/hints, barriers, CLREX, MRS/MSR for TPIDR_EL0, TPIDRRO_EL0 (read), FPCR, FPSR, NZCV,
 CNTPCT_EL0/CNTVCT_EL0 (import `cntpct`), CNTFRQ_EL0 (19200000), DCZID_EL0 (4), CTR_EL0 (0x8444C004),
@@ -82,11 +108,14 @@ undecodable compiles to `unimpl(pc, insn)`; after `unimpl`/`brk` return, the fun
 ## Running the gates
 
 ```
-npm run a64:build            # asc -> build/a64/translator.wasm
+npm run a64:build            # asc -> build/a64/translator.wasm and build/a64/helpers.wasm
 npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py)
     python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N]
-npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out,
-                             #         then the same again with budget=50 (forced preemption)
+npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out, then again with
+                             #         budget=50 (forced preemption), then again without wasm tail calls
+npm run a64:browser          # Gate 2 in headless Chromium (Playwright), translator in a Worker; same three passes
+npm run a64:big              # larger-code check: generated 400k-instruction guest, time / size / memory
+    python3 test/a64/fuzz.py --strictnan     # compare NaNs bitwise too
 npm run a64:speed            # per-guest guest-instructions/second and translation time
 python3 test/a64/coverage.py # corpus instruction words the translator rejects, by mnemonic
 ```
@@ -95,7 +124,8 @@ Gate 1 (`test/a64/fuzz*.py`, `fuzz_run.ts`): per instruction class a generator p
 encodings, random register/flag/vector state and a 4 KB memory window; each case is executed on
 Unicorn (Cortex-A57 model, one instruction, or a short sequence for exclusives) and then translated
 with `maxInsns=1` and run under Node. Compared: x0..x30, sp, pc, NZCV, FPCR, TPIDR, v0..v31 and the
-memory window. Floats are compared bitwise except that NaN == NaN for the class's lane type.
+memory window. Floats are compared bitwise except that NaN == NaN for the class's lane type
+(`--strictnan` compares NaNs bitwise as well; that is clean too with `nanFix` on).
 Not compared: FPSR (cumulative exception flags are not modelled). CNTFRQ_EL0 is excluded (deliberate
 constant) and CNTPCT_EL0 (time).
 
@@ -117,7 +147,7 @@ default budget and with `--budget 50`, compares stdout and exit code. Own guests
   (+A/L forms), LDAR/STLR (+LDLAR/STLLR).
 - Scalar FP (single and double): FMOV reg/imm/general (incl. V.D[1]), FABS, FNEG, FSQRT, FADD, FSUB,
   FMUL, FDIV, FNMUL, FMAX, FMIN, FMAXNM, FMINNM, FMADD/FMSUB/FNMADD/FNMSUB, FCMP(E), FCCMP(E), FCSEL,
-  FCVT s<->d, FCVT{N,P,M,Z,A}{S,U} to W/X, SCVTF/UCVTF from W/X, fixed-point SCVTF/UCVTF/FCVTZS/FCVTZU,
+  FCVT s<->d, FCVT h<->s/d, FCVT{N,P,M,Z,A}{S,U} to W/X, SCVTF/UCVTF from W/X, fixed-point SCVTF/UCVTF/FCVTZS/FCVTZU,
   FRINT{N,P,M,Z,A,X,I}.
 - SIMD&FP loads/stores: B/H/S/D/Q in every addressing mode, pairs, literal.
 - AdvSIMD structure loads/stores: LD1/ST1 (1-4 registers), LD2/3/4, ST2/3/4, single-lane LD1..LD4 /
@@ -136,6 +166,11 @@ default budget and with `--budget 50`, compares stdout and exit code. Own guests
   MIN/MAX/MINNM/MAXNM/ABS/NEG/SQRT/FABD/FMLA/FMLS (vector and by element)/FADDP/FMAXP/FMINP/FMAXNMP/
   FMINNMP, FCMEQ/FCMGE/FCMGT/FACGE/FACGT and the #0 compares, FMAXV/FMINV/FMAXNMV/FMINNMV (4S),
   FRINT{N,P,M,Z,A,X,I}, FCVT{N,P,M,Z,A}{S,U}, SCVTF/UCVTF (plain and fixed-point), FCVTL/FCVTN.
+- Round 2 additions: FRECPE/FRSQRTE/URECPE/URSQRTE (table-exact), FRECPS/FRSQRTS (fused), FRECPX,
+  FMULX, vector and scalar; SQDMULL/SQDMLAL/SQDMLSL (vector, scalar, by element); SQSHL/UQSHL/SQRSHL/
+  UQRSHL by register; SUQADD/USQADD; scalar saturating narrows (SQXTN/UQXTN/SQXTUN, SQSHRN/UQSHRN/
+  SQRSHRN/UQRSHRN/SQSHRUN/SQRSHRUN); PMUL, PMULL (8-bit and 64-bit); AESE/AESD/AESMC/AESIMC;
+  SHA1C/P/M/H/SU0/SU1, SHA256H/H2/SU0/SU1; FCVTL/FCVTN half<->single.
 - Scalar-in-SIMD forms: ADD/SUB d, CM* d, ABS/NEG d, SHL/SSHR/USHR/SSRA/USRA/... d, SSHL/USHL/SRSHL/
   URSHL d, SQADD/UQADD/SQSUB/UQSUB, SQABS/SQNEG, SQSHL/UQSHL/SQSHLU #imm, SQDMULH/SQRDMULH, ADDP d,
   FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP, FCM*/FAC*/FABD, FCVT*/SCVTF/UCVTF, FMUL/FMLA/FMLS by element.
@@ -143,36 +178,47 @@ default budget and with `--budget 50`, compares stdout and exit code. Own guests
 ## Known gaps
 
 Not translated (compile to `unimpl`, reported only if executed):
-- FRECPE/FRSQRTE/URECPE/URSQRTE/FRECPS/FRSQRTS/FRECPX/FMULX (guest `neon_estimate` fails on these).
-- Half-precision FP (FCVT to/from h, fp16 arithmetic), FCVTXN, FJCVTZS.
-- PMUL/PMULL, crypto extensions (AES/SHA), SQDMULL/SQDMLAL/SQDMLSL, SQRSHL/UQRSHL/SQSHL/UQSHL by
-  register, SUQADD/USQADD, scalar saturating narrows (SQXTN b/h/s etc.), URECPE.
+- Half-precision arithmetic (fp16 is not on the Switch CPU), FCVTXN, FJCVTZS, vector FCVT*/SCVTF on halves.
 - LSE atomics (CAS, LDADD, SWP, ...; not on the Switch CPU), pointer authentication BR/BLR/RET forms,
-  MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, any system register not listed above.
+  MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, SHA-512/SHA-3/SM3/SM4, any system register not
+  listed above.
 
 Behavioural differences:
-- NaNs: generated NaNs have the host sign/payload (x86 produces 0xFFF8.. where ARM produces the
-  default NaN 0x7FF8..), and NaN propagation follows the host (guest `fp_nan_bits` fails).
-- Rounding mode: always round-to-nearest-even; FPCR.RMode/FZ/DN are stored but ignored (guest
-  `fpcr_modes` fails). FRINTX/FRINTI round to nearest. FPSR cumulative flags and QC are never set.
-- FMADD/FMLA are fused only when the engine's relaxed-simd madd is fused (true on x64 with FMA3 and
-  on arm64). With `fma` off they are unfused.
+- Rounding mode: vector arithmetic and the FMADD family always round to nearest; FPCR.FZ/DN/AHP are
+  ignored; FRINTX does not raise inexact. FPSR cumulative flags and QC are never set.
+- NaNs: with `nanFix` on the fuzz gate is bit-exact including NaNs on this x64 host. Operations
+  outside the list above (conversions, FRINT, FABS/FNEG, compares) rely on the host, which matches
+  ARM on x64 for every fuzzed class.
+- FMADD/FMLA/FRECPS/FRSQRTS and the directed-rounding helpers are exact only when the engine's
+  relaxed-simd madd is fused (x64 with FMA3, arm64). With `fma` off the translator emits unfused code.
 - Exclusives are compare-and-store on plain memory, not atomic across wasm threads.
-- Guest recursion uses the wasm stack: a few thousand nested guest calls exhaust the default Node
-  stack (the npm scripts pass `--stack-size=3000`). A wasm trap (out-of-bounds access, stack
-  overflow) leaves registers cached in locals unwritten.
-- Only `br x30` unwinds like RET; a longjmp/fiber switch implemented with another `br xN` keeps the
-  abandoned wasm frames alive until the target continuation returns.
+- A wasm trap (out-of-bounds access) leaves registers cached in locals unwritten.
 - One code window at a time (`setCode`); no self-modifying-code detection (`A64Host.invalidate()`
   drops all translations). Wasm memory offsets are used for the pc map, so the map must stay put.
-- Multi-structure LD2/3/4 and ST2/3/4 are lane-by-lane (correct but slow).
+- Region mode's "after RET" entry heuristic also starts functions at mid-function blocks that follow
+  an early return; such code is translated twice (about 70% extra wasm on the synthetic big guest).
+- Multi-structure LD2/3/4 and ST2/3/4 and everything behind `hlp.vop` are lane-by-lane (correct, slow).
 
-## Status (last full run)
+## Status (last full run, Node 22.23 and headless Chromium 153, x64 with FMA3)
 
-- Gate 1: 128 classes x 2000 cases = 256000 cases, 0 failures (seed 1); 192000 cases, 0 failures (seed 7).
-- Gate 2: 71 guest images (61 shared corpus + 10 own): 62 pass, 9 fail, identical with `--budget 50`.
-  Failing: `fp_nan_bits` (O0/O2/Os, NaN sign/payload), `fpcr_modes` (O0/O2/Os, non-nearest rounding),
-  `neon_estimate` (O0/O2/Os, FRECPE/FRSQRTE family not implemented).
-- Speed under Node 22 on the development machine, all guests together: about 350-400 million guest
-  instructions per second of run time (182.9 M instructions in 0.45-0.53 s); translation about
-  0.4-0.5 us per guest instruction in the translator, 1.4-1.7 us including wasm compile + instantiate.
+- Gate 1: 169 classes x 2000 cases = 338000 cases, 0 failures; the same with `--strictnan --seed 3`.
+- Gate 2 (Node): 75 guest images (61 shared corpus + 14 own): 75 pass with the default budget, with
+  `--budget 50`, and with `--notail`; no raised `--stack-size`.
+- Gate 2 (Chromium, Worker): 75 pass in the same three configurations.
+- Speed, all 75 guests (275.7 M guest instructions): Node 343-494 M instructions/s, Chromium 339 M/s;
+  translation 1.2-1.7 us per guest instruction including wasm compile + instantiate (translator alone
+  0.39-0.49 us).
+- Cost of options on the shared corpus (21 runs each, min / median of total run time, ms):
+  default 325-331 / 360-378; `--nonan` 336 / 370; `--normarith` 326 / 360; both off 314 / 348;
+  on the FP-heavy subset (fp_scalar, neon, vec_auto) default 85 / 100, `--normarith` 77 / 95, both off 79 / 87.
+- Larger-code check (`npm run a64:big`: 1.66 MB image, 404k instructions, 2602 functions):
+
+  | unit policy | modules | largest module | wasm total | translate + compile | process RSS |
+  | --- | --- | --- | --- | --- | --- |
+  | one function per unit (round 1 behaviour incl. duplicates) | 2601 | 42 KB | 25.2 MB | 3823 ms | 1160 MB |
+  | one function per unit, no duplicates | 2601 | 11 KB | 12.1 MB | 2089 ms | 591 MB |
+  | 16 KB chunks | 100 | 181 KB | 15.5 MB | 294 ms | 160 MB |
+  | 64 KB chunks (default) | 25 | 663-704 KB | 15.4-16.3 MB | 215-263 ms | 139-145 MB |
+  | 256 KB chunks | 7 | 2.5 MB | 15.4 MB | 232 ms | 136 MB |
+
+  V8 accepted every module size tried (up to 4.7 MB in one module). Translator memory is 98 MB (fixed buffers).

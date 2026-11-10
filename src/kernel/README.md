@@ -42,7 +42,9 @@ A waiting thread's result (x0, and w1 for WaitSynchronization) is written into i
 so the embedder only ever loads a context and runs it. Also: `kernel_schedule_core(core)` (one core's scheduling
 point), `kernel_clock_freeze(reason, on)` / `kernel_clock_reasons()` / `kernel_guest_ns()` / `kernel_guest_ticks()`
 (for `mrs cntpct_el0`; while reason 1 holds a guest read must wait, as GetSystemTick does), `kernel_module_add(base,
-size, roOffset, dataOffset)` / `kernel_module_remove`, `kernel_device_share(addr, size, on)`, `kernel_event_new` /
+size, roOffset, dataOffset)` / `kernel_module_remove`, `kernel_device_share(addr, size, on)`, `kernel_map_stack(base, size)` (a stack in the stack
+region for a thread the embedder starts, the main thread's; QueryMemory reports it as a mapped stack), `kernel_query_memory(addr, out)`
+(svcQueryMemory for the embedder), `kernel_event_new` /
 `_dup_readable` / `_signal` / `_clear` (events a service hands its client), `kernel_seed_entropy`, and for tests and
 dumps `kernel_thread_info`, `kernel_thread_ctx`, `kernel_count`, `kernel_check`. Every entry takes the kernel lock
 (`base.ts kLock`): today it only catches re-entry; it is the one function that becomes a real lock with Workers.

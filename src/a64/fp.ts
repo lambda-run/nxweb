@@ -2,7 +2,7 @@
 import {
   b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, vmem, mem, fc, ar, cm, cst,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, tf32, tf64, tv, emitCond, killCmp, optFma, optNan, gget,
-  G_FPCR, F_NAN1S, F_NAN2S, F_NAN3S, F_RND,
+  G_FPCR, F_NAN1S, F_NAN2S, F_NAN3S, F_RND, F_RARS, optRmArith,
   R_N, R_Z, R_C, R_V, R_V0, T_I32,
 } from "./emit";
 import { getExtended } from "./int";
@@ -247,7 +247,15 @@ export function trFp(pc: u64, insn: u32): bool {
     case 2: { // two-source
       let opcode = (insn >> 12) & 15;
       let A = d ? tf64(3) : tf32(3), B = d ? tf64(4) : tf32(4);
-      getF(rn, d); ltee(A); getF(rm, d); ltee(B);
+      let dir = optRmArith && (opcode < 4 || opcode == 8);
+      getF(rn, d); lset(A); getF(rm, d); lset(B);
+      if (dir) {
+        rmodeTest(); b(0x04); b(d ? 0x7C : 0x7D);
+        gget(G_FPCR); i32c(14); b(0x76); i32c(0x300); b(0x71); i32c(opcode == 0 || opcode == 8 ? 2 : opcode == 1 ? 3 : opcode == 2 ? 0 : 1); b(0x72);
+        lget(A); lget(B); b(0x10); leb(F_RARS + (d ? 1 : 0));
+        b(0x05);
+      }
+      lget(A); lget(B);
       switch (opcode) {
         case 0: fa(d, 0x94); break;
         case 1: fa(d, 0x95); break;
@@ -261,6 +269,7 @@ export function trFp(pc: u64, insn: u32): bool {
         default: return false;
       }
       nanFixS(d, 2);
+      if (dir) b(0x0B);
       if (opcode == 8) fa(d, 0x8C);
       setF(rd, d);
       return true;
@@ -290,7 +299,19 @@ export function trFp(pc: u64, insn: u32): bool {
       case 0: getF(rn, d); setF(rd, d); return true;
       case 1: getF(rn, d); fa(d, 0x8B); setF(rd, d); return true;
       case 2: getF(rn, d); fa(d, 0x8C); setF(rd, d); return true;
-      case 3: getF(rn, d); ltee(d ? tf64(3) : tf32(3)); fa(d, 0x91); nanFixS(d, 1); setF(rd, d); return true;
+      case 3: {
+        let A = d ? tf64(3) : tf32(3);
+        getF(rn, d); lset(A);
+        if (optRmArith) {
+          rmodeTest(); b(0x04); b(d ? 0x7C : 0x7D);
+          gget(G_FPCR); i32c(14); b(0x76); i32c(0x300); b(0x71); i32c(4); b(0x72);
+          lget(A); lget(A); b(0x10); leb(F_RARS + (d ? 1 : 0));
+          b(0x05);
+        }
+        lget(A); fa(d, 0x91); nanFixS(d, 1);
+        if (optRmArith) b(0x0B);
+        setF(rd, d); return true;
+      }
       case 4: {
         if (!d) return false;
         let X = tf64(0);

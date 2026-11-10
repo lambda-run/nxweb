@@ -11,7 +11,7 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 |---|---|
 | State machine kit (`src/kit`) | Working, tests pass |
 | ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs |
-| ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean, 62 of 71 test programs pass (see `src/a64/README.md` for gaps) |
+| ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), all 75 test programs pass in Node and Chromium |
 | Module loader (`src/loader`) | Working, tests pass (no real game file tried) |
 | Kernel core (`src/kernel`) | Working in isolation, tests pass |
 | NVN on WebGPU (`src/gfx`) | Working in isolation: 302 of 743 NVN functions, 22 browser scenes pass |

@@ -248,3 +248,25 @@ def rmode_case(rng, pc):
 
 
 S("fpcr_rmode", rmode_case)
+for ty, fp, n in TY:
+    E("fpcr_rmode_arith_%s" % n, "000 11110 ty:2 1 Rm:5 opcode:4 10 Rn:5 Rd:5", fix={"ty": ty, "opcode": [0, 1, 2, 3, 8]}, fp=fp,
+      setup=lambda r, f, pre: pre.__setitem__("fpcr", r.randrange(4) << 22))
+    E("fpcr_rmode_sqrt_%s" % n, "000 11110 ty:2 1 000011 10000 Rn:5 Rd:5", fix={"ty": ty}, fp=fp,
+      setup=lambda r, f, pre: pre.__setitem__("fpcr", r.randrange(4) << 22))
+
+
+def _edge_mul(r, f, pre):
+    # operands whose product / quotient lands around the subnormal boundary or the overflow threshold
+    import struct
+    k = r.choice((-1022, -1023, -1030, -1074, -1075, 1023, 1024))
+    e1 = r.randrange(-500, 500)
+    a = (1.0 + r.random()) * 2.0 ** e1 * r.choice((1, -1))
+    e2 = max(-1022, min(1022, (k - e1) if f["opcode"] in (0, 8) else (e1 - k)))
+    b = (1.0 + r.random()) * 2.0 ** e2 * r.choice((1, -1))
+    pre["v%d" % f["Rn"]] = struct.unpack("<Q", struct.pack("<d", a))[0]
+    if f["Rm"] != f["Rn"]:
+        pre["v%d" % f["Rm"]] = struct.unpack("<Q", struct.pack("<d", b))[0]
+    pre["fpcr"] = r.randrange(4) << 22
+
+
+E("fpcr_rmode_edge_d", "000 11110 01 1 Rm:5 opcode:4 10 Rn:5 Rd:5", fix={"opcode": [0, 1, 8]}, fp=64, setup=_edge_mul)
