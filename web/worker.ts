@@ -266,7 +266,7 @@ setInterval(status, 250);
 // 200 log lines. Nothing of it is read from guest memory: the guest's own output lines are left out.
 function report(userAgent: string): string {
   const lines = history.filter(l => l.kind !== "out").map(l => l.text);
-  const fault = rt && rt.r.rt_stop_kind() === 3 ? rt.red.filter(l => /^\[RED\] (fault: |  x0=)/.test(l)).slice(-2) : [];
+  const fault = rt && rt.r.rt_stop_kind() === 3 ? rt.stopInfo?.fault?.lines ?? [] : [];
   const live = liveStates();
   return reportText({ title: title || "nxweb report (no program loaded)", when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
     state: rt ? STATES[rt.r.rt_state()] : "Empty", stop: live.process?.match(/\((.*)\)$/)?.[1] ?? "", fault, modules: modRows, takeovers: tk,

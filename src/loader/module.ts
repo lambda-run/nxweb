@@ -759,6 +759,27 @@ export function unresolved(h: i32, out: usize, cap: u32): i32 {
 // FUNC, DT_INIT / DT_FINI, the init and fini arrays, and every relative relocation (RELA and RELR) whose value points
 // into the text. Their offsets from the module's base (u32: an image is below 4 GB whatever its address; 4-byte aligned,
 // inside the text; not deduplicated) are written to out, at most cap; returns how many there are.
+// The function symbol of module h that holds addr, for a fault report: the defined function symbol with the highest
+// value <= addr inside the module's text whose size reaches past addr (or that has no size). Writes to out (32 bytes):
+// +0 value u64 (guest address), +8 size u64, +16 name pointer u64, +24 name length u32. Returns its index, -1 none.
+export function symbolAt(h: i32, addr: u64, out: usize): i32 {
+  if (<u32>h >= nMods) return -1;
+  const m = modOf(h);
+  if (!changetype<usize>(m) || !inMemory(out, 32) || !m.relocated) return -1;
+  const lo = <u64>m.base + <u64>m.mo0, hi = lo + <u64>m.sz0;
+  if (addr < lo || addr >= hi) return -1;
+  let best: i32 = -1, bestV: u64 = 0;
+  for (let i: u32 = 1; i < m.nsym; i++) {
+    if ((symInfo(m, i) & 15) != 2 || !symShndx(m, i) || symShndx(m, i) == SHN_ABS) continue;
+    const v = symAddr(m, i), size = rd64(m, symOff(m, i) + 16);
+    if (v > addr || v < lo || (best >= 0 && v <= bestV)) continue;
+    if (size && addr - v >= size) continue;
+    best = <i32>i; bestV = v;
+  }
+  if (best < 0 || !symName(m, <u32>best)) return -1;
+  store<u64>(out, bestV, 0); store<u64>(out, rd64(m, symOff(m, <u32>best) + 16), 8); store<u64>(out, <u64>nmPtr, 16); store<u32>(out, nmLen, 24);
+  return best;
+}
 export function codeEntries(h: i32, out: usize, cap: u32): i32 {
   const m = modOf(h);
   if (!changetype<usize>(m) || !inMemory(out, <u64>cap * 4)) return ERR_ARG;

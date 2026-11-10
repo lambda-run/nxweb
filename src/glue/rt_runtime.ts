@@ -4,6 +4,7 @@
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
 import { A64Host, makeMemory64, MEM64_MAX_PAGES, type A64CacheStore, type Memory64 } from "./a64_host.ts";
 import { instantiate, addrBits } from "./wasm_abi.ts";
+import { svcLine, placeOf, frameLines, SVC_REC, type CodeRange } from "./fault_lines.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
 import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, STAGING, range } from "./rt_layout.ts";
 import { SPACE, writeKernelCfg, layoutFor, getDefaultSpace, type ProcessLayout } from "./rt_process.ts";
@@ -54,7 +55,8 @@ export const FAULT_NAMES = ["", "unimplemented", "brk", "trap", "jump", "stack",
 export interface StopInfo {
   kind: "exit" | "break" | "fault" | "killed";
   code: number;                       // exit code (exit, break)
-  fault?: { kind: typeof FAULT_NAMES[number]; thread: number; threadIndex: number; pc: bigint; aux: bigint; detail: string };
+  fault?: { kind: typeof FAULT_NAMES[number]; thread: number; threadIndex: number; pc: bigint; aux: bigint; detail: string;
+    lines: string[] };                // the fault's red lines as logged: what and where, every register, pc and x30 placed, the last SVCs
 }
 export interface RunResult {
   state: State; stop?: StopInfo;
@@ -324,6 +326,8 @@ export class Runtime {
   private str(ptr: number, len: number): string { return dec.decode(this.u8().slice(ptr, ptr + len)); }
   log(line: string): void { this.logs.push(line); this.opts.log?.(line); }
   get red(): string[] { return this.logs.filter(l => l.startsWith("[RED] ")); }
+  // what the process stopped with (as run() returns it), undefined until it stops
+  get stopInfo(): StopInfo | undefined { return this.stop; }
   // the linear memory reaches `end`
   ensure(end: number): void {
     const have = this.memory.buffer.byteLength;
@@ -674,9 +678,34 @@ export class Runtime {
     this.u8().set(bytes, this.r.rt_scratch_ptr());
     const index = ctx ? this.k.kernel_thread_of_ctx(ctx) : -1;
     const handle = index >= 0 ? this.dv().getUint32((this.threadInfo(index)) + 28, true) : 0;
+    const from = this.logs.length;
     this.r.rt_fault(kind, handle, index, index >= 0 ? ctx : 0, exact ? 1 : 0, aux, bytes.length);
     const f = this.r.rt_fault_ptr(), dv = this.dv();
-    this.stop = { kind: "fault", code: 0, fault: { kind: FAULT_NAMES[kind], thread: handle, threadIndex: index, pc: dv.getBigUint64(f + 8, true), aux, detail } };
+    if (index >= 0) this.faultLines(kind, index, handle, ctx);
+    const lines = this.logs.slice(from).filter(l => l.startsWith("[RED] "));
+    this.stop = { kind: "fault", code: 0, fault: { kind: FAULT_NAMES[kind], thread: handle, threadIndex: index, pc: dv.getBigUint64(f + 8, true), aux, detail, lines } };
+  }
+  // After the register dump: where pc and x30 are (module, symbol) and the thread's last SVCs
+  private faultLines(kind: number, index: number, handle: number, ctx: number): void {
+    const dv = this.dv(), pc = Number(dv.getBigUint64(ctx + 0x100, true)), x30 = Number(dv.getBigUint64(ctx + 30 * 8, true));
+    if (kind === FAULT.trap && this.opts.preciseFaults !== 2)
+      this.log("[RED]   the registers are as last written back (the function's entry or its last call), pc excepted; preciseFaults: 2 makes them exact");
+    const mods: CodeRange[] = [];
+    for (const t of this.text) {
+      if (t.handle >= 0) { const m = this.ld.info(t.handle); mods.push({ name: m.name, handle: t.handle, base: m.base, lo: t.lo, hi: t.hi }); }
+      else mods.push({ name: t.handle === -1 ? "image" : "jit", handle: -1, base: t.lo, lo: t.lo, hi: t.hi });
+    }
+    const sym = (h: number, a: number) => h >= 0 ? this.ld.symbolAt(h, a) : undefined;
+    const stub = (a: number) => { const id = a >= STUBS.base && a < STUBS.base + 4 * STUBS.cap ? this.ld.stubId(a) : -1; return id >= 0 && id < this.ld.x.ld_host_count() ? this.ld.hostFunction(id).name : undefined; };
+    this.log(`[RED]   pc=${hex(pc)} is ${placeOf(pc, mods, sym, stub)}; x30=${hex(x30)} is ${placeOf(x30, mods, sym, stub)}`);
+    const fp = Number(dv.getBigUint64(ctx + 29 * 8, true));
+    const frames = frameLines(dv, fp, GUARD_BASE, dv.byteLength, 16, a => placeOf(a, mods, sym, stub));
+    this.log(frames.length ? `[RED]   the frames from x29=${hex(fp)}, innermost first:` : `[RED]   no frame record at x29=${hex(fp)}`);
+    for (const f of frames) this.log("[RED]     " + f);
+    const total = this.k.kernel_svc_total(index), out = this.r.rt_scratch_ptr(), cap = Math.floor(this.r.rt_scratch_cap() / SVC_REC);
+    const n = this.k.kernel_svc_ring(index, out, cap);
+    this.log(n ? `[RED]   the last ${n} of the ${total} SVCs of thread ${hex(handle)}, oldest first:` : `[RED]   thread ${hex(handle)} made no SVC`);
+    for (let i = 0; i < n; i++) this.log("[RED]     " + svcLine(this.dv(), out + i * SVC_REC));
   }
   private threadInfo(index: number): number {
     const p = this.r.rt_scratch_ptr() + 2048;
