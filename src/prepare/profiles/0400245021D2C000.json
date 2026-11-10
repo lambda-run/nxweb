@@ -29,7 +29,7 @@
   {
    "key": "address_space",
    "value": "heap 0x8000000 alias 0x118000000 stack 0x10000000",
-   "what": "This game does not fit a 32-bit memory: the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)."
+   "what": "This game does not fit a 32-bit memory: the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed). It runs in 64-bit memory mode: heap 0.1 GB, alias 4.4 GB, pool 9.0 GB (as the profile reserves them); the tab may come to use up to 4.7 GB of real memory."
   }
  ],
  "dropped": [
@@ -60,6 +60,15 @@
    "alias": 3690921984,
    "stack": 67108864,
    "pool": 3825139712
+  },
+  "mem64": {
+   "fit": "profile",
+   "heap": 134217728,
+   "alias": 4697620480,
+   "stack": 268435456,
+   "pool": 9663676416,
+   "real": 5036834816,
+   "sentence": "runs in 64-bit memory mode: heap 0.1 GB, alias 4.4 GB, pool 9.0 GB (as the profile reserves them); the tab may come to use up to 4.7 GB of real memory"
   }
  }
 }

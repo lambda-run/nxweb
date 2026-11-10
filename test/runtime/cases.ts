@@ -358,7 +358,7 @@ export function cases(env: Env): Case[] {
     ok(m > 8 * GB && rt.memory.buffer.byteLength >= m + 0x4000, `the memory reaches the mapping: ${rt.memory.buffer.byteLength} bytes`);
     // the host reads the same bytes at the same addresses: the pattern the guest left at the heap's top and bottom
     const dv = rt.dv(), word = (a: number) => BigInt.asUintN(64, BigInt(a) * 0x9E3779B97F4A7C15n);
-    eq([dv.getBigUint64(l.heapBase, true), dv.getBigUint64(l.heapBase + HEAP - 0x1000, true)], [word(l.heapBase), word(l.heapBase + HEAP - 0x1000)], "the heap's first word and the first word of its last page, read by the host");
+    eq([dv.getBigUint64(l.heapBase, true), dv.getBigUint64(l.heapBase + HEAP - 0x1000, true)].map(hex), [word(l.heapBase), word(l.heapBase + HEAP - 0x1000)].map(hex), "the heap's first word and the first word of its last page, read by the host");
     return [c.sentence, `layout: code ${hex(l.codeBase)}, heap ${hex(l.heapBase)} + ${(l.heapSize / GB).toFixed(1)} GB, stack region ${hex(l.stackBase)}, alias ${hex(l.aliasBase)} + ${(l.aliasSize / GB).toFixed(1)} GB (page-table arena ${l.aliasArena! / MB} MB at the top of the code region)`,
       `ran in ${(performance.now() - t0).toFixed(0)} ms; the linear memory is ${(rt.memory.buffer.byteLength / GB).toFixed(2)} GB of address space` + (env.rssMb ? `, resident memory of the process grew by ${(env.rssMb() - before).toFixed(0)} MB (seven pages of the 6.2 GB heap and the mapping were touched)` : ""),
       `${rt.k.kernel_alias_leaves(0)} leaf of the alias page table in use`];

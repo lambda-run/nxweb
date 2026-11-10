@@ -659,7 +659,7 @@ test("the converted profiles: every file is what tools/prepare/convert_profiles.
   const fit = { profile: [] as string[], pool: [] as string[], short: [] as string[] };
   for (const id of Object.keys(idx.games)) {
     const p = JSON.parse(readFileSync(join(dir, id + ".json"), "utf8")) as Profile, sp = p.address_space!;
-    const l = settingsFor(p.apply, { space: sp }).layout;
+    const l = settingsFor(p.apply, { space: sp, mem64: false }).layout;
     assert.deepEqual([sp.fit, sp.note, sp.fits, sp.layout], [l.fit, l.note, l.fit !== "short", { heap: l.heapSize, alias: l.aliasSize, stack: l.stackSize, pool: l.appPool }], id);
     assert.equal(p.needs.some(n => n.key === "address_space"), l.fit === "short", `${id}: address_space is a need exactly when the layout is short`);
     fit[l.fit].push(id);

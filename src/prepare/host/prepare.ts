@@ -6,7 +6,7 @@
 import { PrepWasm, type FailReason, type Counts, type PrepState, type Cut, type NpdmInfo, type MatchRule, type MatchOutcome } from "./wasm.ts";
 import type { PrepTree, TreeListing, TreeFile } from "./tree.ts";
 import type { PrepStore } from "./store.ts";
-import type { ProfileSource, Profile, ProfileNeed, SdkCuts } from "./profiles.ts";
+import type { ProfileSource, Profile, ProfileNeed, SdkCuts, Mem64Verdict } from "./profiles.ts";
 import { PrepError, detectLayout, pickVersion, identityDir, checkDlc, loadOrder, type Layout } from "./detect.ts";
 import { DirRomDevice, PrepStorage, treeSource, blobSource, type RomIndex } from "./romdev.ts";
 import { packSource, type NupPack, type NupOptions } from "./nup.ts";
@@ -66,7 +66,7 @@ export interface ProfileOut {
   // the regions the profile reserves and what the runtime's layout rule made of them when the profile was converted
   // (tools/prepare/layout_verdict.mts: "profile" as reserved, "pool" what the pool lets the game commit, "short" not)
   space: { heap_region: number; alias_region: number; stack_region: number } | null;
-  layout: { fit: "profile" | "pool" | "short"; note: string } | null;
+  layout: { fit: "profile" | "pool" | "short"; note: string; mem64?: Mem64Verdict } | null;   // mem64: short in a 32-bit memory, fits a 64-bit one
   pool: number;                                      // the application pool the game is given (the profile's, or the default)
   graphics: { api: GraphicsApi; names: string[] };   // what main imports to draw with
   warnings: string[];
@@ -395,7 +395,7 @@ export class Prepare {
     for (const n of det.notes ?? []) warnings.push(n);
     return { found: !!p, by, id: p?.title_id ?? null, name: p?.name ?? det.control?.name ?? det.npdm.name, provisional: !p, registered, unregistered, display: display ?? det.control?.displayVersion ?? null, apply,
       pool: Number(apply.app_pool ?? DEFAULT_APP_POOL), graphics, needs: p?.needs ?? [], unconverted: p?.unconverted ?? [], load, cuts, match,
-      space: sp ? { heap_region: sp.heap_region, alias_region: sp.alias_region, stack_region: sp.stack_region } : null, layout: sp?.fit ? { fit: sp.fit, note: sp.note ?? "" } : null, warnings };
+      space: sp ? { heap_region: sp.heap_region, alias_region: sp.alias_region, stack_region: sp.stack_region } : null, layout: sp?.fit ? { fit: sp.fit, note: sp.note ?? "", ...(sp.mem64 ? { mem64: sp.mem64 } : {}) } : null, warnings };
   }
 
   private async code(det: DetectOut, prof: ProfileOut): Promise<CodeOut> {

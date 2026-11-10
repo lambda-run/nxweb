@@ -28,12 +28,18 @@ function step(name: string, fn: () => { ok: boolean; note: string }): void {
   try { r = fn(); } catch (e) { r = { ok: false, note: String(e) }; }
   steps.push({ name, ...r, ms: Date.now() - t0 });
 }
-const last = (out: string, re: RegExp) => out.split("\n").filter(l => re.test(l)).at(-1)?.trim() ?? "";
+// the runner's summary line; a runner that goes through tools/modes.mjs prints one per memory mode ("[32] ...", "[64] ...", "[64hi] ...")
+const last = (out: string, re: RegExp) => {
+  const modes = out.split("\n").filter(l => /^\[(32|64|64hi)\] /.test(l)).map(l => l.trim());
+  if (modes.length) return modes.map(l => l.replace(/; coverage:.*$/, "")).join(" | ");
+  return out.split("\n").filter(l => re.test(l)).at(-1)?.trim() ?? "";
+};
 
 const corpus = join(ROOT, "test", "guests", "out");
 if (!existsSync(corpus) || !readdirSync(corpus).some(f => f.endsWith(".json"))) {
   step("guests:build (test/guests/out is not in the repository)", () => { const r = npm("guests:build"); return { ok: r.code === 0, note: "" }; });
 }
+step("audit64", () => { const r = npm("audit64"); return { ok: r.code === 0, note: last(r.out, /^audit64:/) }; });
 step("kit:test", () => { const r = npm("kit:test"); return { ok: r.code === 0, note: last(r.out, /^kit:test:/) }; });
 step("loader:test", () => { const r = npm("loader:test"); return { ok: r.code === 0, note: last(r.out, /^loader:test:/) }; });
 step("kernel:test", () => { const r = npm("kernel:test"); return { ok: r.code === 0, note: last(r.out, /^kernel:test:/) }; });

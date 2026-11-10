@@ -43,7 +43,11 @@ export function verdictFor(det: DetectOut, prof: ProfileOut): Verdict {
     blockers.push(`This game uses ${api}; nxweb only draws NVN, the graphics interface most games use.`);
     details.push(`main imports ${g.names.join(", ")} and not nvnBootstrapLoader`);
   } else if (g.api === "nvn") details.push("graphics: NVN (main imports nvnBootstrapLoader)");
-  if (prof.layout?.fit === "short") {
+  if (prof.layout?.fit === "short" && prof.layout.mem64) {
+    // short in a 32-bit memory, and the same rule fits it in a 64-bit one: it runs in that mode, at a cost the person should know
+    gaps.push(`It needs more memory than most games: it ${prof.layout.mem64.sentence.replace(/: heap .*?\); /, ", and ")} (your computer needs that much free).`);
+    details.push(`memory: does not fit a 32-bit memory (${prof.layout.note}); ${prof.layout.mem64.sentence}`);
+  } else if (prof.layout?.fit === "short") {
     const pool = prof.pool ?? 0, regions = prof.space ? prof.space.heap_region + prof.space.alias_region + prof.space.stack_region : 0;
     blockers.push(pool > TAB_GB * 2 ** 30 ? `This game needs about ${gb(pool)} GB of memory. A browser tab can give it ${TAB_GB} GB.`
       : `This game sets aside about ${gb(regions)} GB of address space. A browser tab can give it ${TAB_GB} GB.`);

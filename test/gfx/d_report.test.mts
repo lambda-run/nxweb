@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test, guest } from "./harness.mts";
 import { Game } from "./nvn.mts";
+import { SPACE, GUEST_BASE } from "./guest.mts";
 
 const P = { RENDER_COND: 1, TS_SEGMENT: 8 }, TOP = 0x10, TIMESTAMP = 0, INPUT_VERTICES = 2;
 const ticks = (ns: bigint) => ns * 384n / 625n;
@@ -89,7 +90,7 @@ test("counter reports: an embedder with no GPU lands them itself; more than 4096
   x.gfx_reports_flush(7_000_000n);
   assert.deepEqual([at(a), x.gfx_reports_pending(), x.gfx_report_stat(0), x.gfx_report_stat(1)], [[ticks(7_000_000n), ticks(7_000_000n)], 0, 4102, 4102]);
   // a record outside guest memory, and an occlusion query
-  submit([[TIMESTAMP, 0xFFFF_FFF0], [1, a + 16]]);
+  submit([[TIMESTAMP, (SPACE.base > GUEST_BASE ? SPACE.base : 0) + 0xFFFF_FFF0], [1, a + 16]]);   // (placed above 4 GB the memory reaches past 0xFFFF_FFF0)
   assert.equal(x.gfx_reports_pending(), 0);
   assert.equal(g.red().length, 3);
 });

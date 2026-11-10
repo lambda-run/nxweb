@@ -21,7 +21,10 @@ try {
 const { chromium } = createRequire(import.meta.url)("playwright");
 const only = process.argv[2];
 const page = `<!doctype html><meta charset="utf-8"><title>nxweb runtime tests</title><script src="/main.js"></script>`;
-const corpusDir = join(ROOT, "test", "guests", "out");
+// NX_MEM (tools/modes.mjs): the page gets the wasm64 modules under the usual names, and placed high the corpus linked
+// at 0x1_8000_0000 (harness.mts loadEnv does the same for Node)
+const MODE = process.env.NX_MEM ?? "32", M64 = MODE !== "32", HI = MODE === "64hi";
+const corpusDir = HI ? join(ROOT, "test", "a64", "guests", "out_hi") : join(ROOT, "test", "guests", "out");
 const haveBig = buildBig(), shaders = shaderArtifacts();
 const TYPES: Record<string, string> = { ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".nxsl": "application/octet-stream" };
 const server = createServer((req, res) => {
@@ -33,12 +36,12 @@ const server = createServer((req, res) => {
     if (url === "/") return send(page, "text/html");
     if (url === "/worker.js") return send(readFileSync(join(OUT, "web", "worker.js")), "text/javascript");
     if (url === "/main.js") return send(readFileSync(join(OUT, "web", "main.js")), "text/javascript");
-    if (url === "/list") return send(JSON.stringify({ nso: [...Object.keys(MODULES), ...ZBIC_FILES, ...Object.keys(STORED_MODULES).filter(n => n !== "huge"), ...(haveNvn() ? Object.keys(GFX_MODULES) : [])], files: [...Object.keys(NRO_MODULES).map(n => n + ".nro"), "romfs.img", "romfs_blob.bin"], corpus: corpusList(), gfx: haveNvn(), big: haveBig ? "a64_big.O1" : null, shaders, guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : null }), "application/json");
+    if (url === "/list") return send(JSON.stringify({ nso: [...Object.keys(MODULES), ...ZBIC_FILES, ...Object.keys(STORED_MODULES).filter(n => n !== "huge"), ...(haveNvn() ? Object.keys(GFX_MODULES) : [])], files: [...Object.keys(NRO_MODULES).map(n => n + ".nro"), "romfs.img", "romfs_blob.bin"], corpus: corpusList(), mode: MODE, gfx: haveNvn(), big: haveBig && !HI ? "a64_big.O1" : null, shaders, guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : null }), "application/json");
     if (url === "/shader_worker.js") return send(readFileSync(join(OUT, "web", "shader_worker.js")), "text/javascript");
     if ((m = /^\/shaders\/([\w./-]+)$/.exec(url)) && !m[1].includes("..")) return send(readFileSync(join(SHADER_OUT, m[1])), TYPES[m[1].slice(m[1].lastIndexOf("."))] ?? "application/octet-stream");
     if ((m = /^\/guest\/([\w.]+)$/.exec(url))) return send(readFileSync(join(GUESTS, m[1])), "application/octet-stream");
     if ((m = /^\/big\/([\w.]+)$/.exec(url))) return send(readFileSync(join(BIG_DIR, m[1])), "application/octet-stream");
-    if ((m = /^\/wasm\/(\w+\.wasm)$/.exec(url))) return send(readFileSync(join(OUT, m[1])), "application/wasm");
+    if ((m = /^\/wasm\/(\w+)\.wasm$/.exec(url))) return send(readFileSync(join(OUT, m[1] + (M64 ? "64" : "") + ".wasm")), "application/wasm");
     if ((m = /^\/nso\/(\w+\.nso)$/.exec(url))) return send(readFileSync(join(GUESTS, m[1])), "application/octet-stream");
     if ((m = /^\/corpus\/([\w.]+)$/.exec(url))) return send(readFileSync(join(corpusDir, m[1])), "application/octet-stream");
   } catch { /* 404 */ }

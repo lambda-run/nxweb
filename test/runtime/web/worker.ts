@@ -9,6 +9,7 @@ import { FS_KIND } from "../../../src/glue/fs_host.ts";
 import { workerTranslator, webShaderStore } from "../../../src/glue/rt_shaders.ts";
 import { runIntCases, type IntEnv, type AudioPage } from "../int_cases.ts";
 import { GfxHost } from "../../../src/glue/gfx_host.ts";
+import { setDefaultSpace } from "../../../src/glue/rt_process.ts";
 
 const bytes = async (url: string) => new Uint8Array(await (await fetch(url)).arrayBuffer());
 
@@ -26,7 +27,7 @@ self.onmessage = async (ev: MessageEvent) => {
   if (ev.data?.audio) { audioFn?.(ev.data); return; }
   if (ev.data?.audioTestDone) { audioWaiting.get(ev.data.audioTestDone)?.(ev.data.result); audioWaiting.delete(ev.data.audioTestDone); return; }
   try {
-    const list: { nso: string[]; files: string[]; corpus: string[]; gfx: boolean; big: string | null; shaders: { library: boolean; translator: boolean; why: string }; guardRounds: number | null } = await (await fetch("/list")).json();
+    const list: { nso: string[]; files: string[]; corpus: string[]; mode: string; gfx: boolean; big: string | null; shaders: { library: boolean; translator: boolean; why: string }; guardRounds: number | null } = await (await fetch("/list")).json();
     const mod = async (n: string) => WebAssembly.compile(await bytes(`/wasm/${n}.wasm`));
     const [rt, kernel, loader, translator, helpers, gfx, fsm, hle, audio] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"].map(mod));
     const nso = new Map<string, Uint8Array>();
@@ -39,7 +40,8 @@ self.onmessage = async (ev: MessageEvent) => {
     await Promise.all(list.files.map(async n => { files.set(n, await bytes(`/guest/${n}`)); }));
     let big: CorpusGuest | undefined;
     if (list.big) { const side = await (await fetch(`/big/${list.big}.json`)).json(); big = { name: list.big, side, image: await bytes(`/big/${side.image}`), expected: await bytes(`/big/${side.expected_stdout}`) }; }
-    const env: IntEnv = { guardRounds: list.guardRounds ?? undefined, audioPage: ev.data.audio === false ? undefined : audioPage, haveGfxGuests: list.gfx, mods: { rt, kernel, loader, translator, helpers, gfx, fs: fsm, hle, audio }, nso: n => nso.get(n) ?? (() => { throw new Error("no NSO " + n); })(),
+    if (list.mode === "64hi") setDefaultSpace({ mem64: true, codeBase: 0x1_8000_0000 });
+    const env: IntEnv = { mode: list.mode, guardRounds: list.guardRounds ?? undefined, audioPage: ev.data.audio === false ? undefined : audioPage, haveGfxGuests: list.gfx, mods: { rt, kernel, loader, translator, helpers, gfx, fs: fsm, hle, audio }, nso: n => nso.get(n) ?? (() => { throw new Error("no NSO " + n); })(),
       file: n => files.get(n) ?? (() => { throw new Error("no file " + n); })(), corpus, big,
       // saves in the Origin Private File System, the container opened ahead so that a mount does not wait; the rom
       // device is the test image in a Blob (read with FileReaderSync)

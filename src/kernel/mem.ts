@@ -261,10 +261,13 @@ function mapArguments(dst: u64, src: u64, size: u64): u64 {
 
 // A stack the embedder maps for a thread it starts itself (the main thread's: on Horizon the process creator maps it
 // in the stack region before the first instruction runs). It is a MapMemory entry with no source: the source field
-// holds an address above 4 GB that no guest range can overlap, so nothing counts as borrowed and UnmapMemory cannot
-// match it. The memory reads zero. Returns false when the range is not pages inside the stack region, overlaps a
+// holds an address far above any memory that no guest range can overlap, so nothing counts as borrowed and
+// UnmapMemory cannot match it. The memory reads zero. Returns false when the range is not pages inside the stack region, overlaps a
 // mapping, the table is full or the linear memory cannot grow.
-export const NO_SOURCE: u64 = 0xFFFFFFFF00000000;
+// (0x8000_0000_0000_0000 + the destination: with the destination anywhere in a 64-bit memory the sum neither wraps
+// nor reaches a guest address; it was 0xFFFF_FFFF_0000_0000 + destination, which wraps for a stack above 4 GB and
+// then names heap memory as borrowed)
+export const NO_SOURCE: u64 = 0x8000000000000000;
 export function hostStackMap(dst: u64, size: u64): bool {
   if (!size || ((dst | size) & 0xFFF) || !contains(stackBase, stackCap, dst, size)) return false;
   if (mapFind(dst, size) || nmap == MAX_MAP || !commit(dst + size)) return false;

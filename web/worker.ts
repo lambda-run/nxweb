@@ -8,7 +8,7 @@ import { RtGfx } from "../src/glue/rt_gfx.ts";
 import { GfxHost } from "../src/glue/gfx_host.ts";
 import { RtInput, KEYBOARD, type PadState } from "../src/glue/rt_input.ts";
 import { demoShaders } from "../test/runtime/gfx_cases.ts";
-import { webCacheStore } from "../src/glue/a64_host.ts";
+import { webCacheStore, hasMemory64 } from "../src/glue/a64_host.ts";
 import { RtShaders, workerTranslator, webShaderStore, type ShaderTranslator } from "../src/glue/rt_shaders.ts";
 import { RtFs } from "../src/glue/rt_fs.ts";
 import { RtAudio } from "../src/glue/rt_audio.ts";
@@ -51,6 +51,18 @@ const requestDevice = async (): Promise<any> => {
   gpuInfo += "; GPU times: " + (d.features?.has?.("timestamp-query") ? "WebGPU timestamp queries" : "estimated on the CPU (this device has no timestamp-query)");
   return d;
 };
+// The modules built for a 64-bit memory (wasm/<name>64.wasm), fetched and compiled when the first process needs them:
+// a game whose profile does not fit a 32-bit memory (rt_process.ts layoutChoice; the hand-off's options say so), or
+// any program when the page was opened with ?mem64=1 (for measuring the mode)
+let mods64: Promise<RuntimeModules> | undefined;
+const forceMem64 = /[?&]mem64=1\b/.test(self.location?.search ?? "");
+function modules64(): Promise<RuntimeModules> {
+  return mods64 ??= (async () => {
+    const mod = async (n: string) => WebAssembly.compileStreaming(fetch(`wasm/${n}64.wasm`));
+    const [r, kernel, loader, translator, helpers, g, fsm, hlem, aud] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"].map(mod));
+    return { rt: r, kernel, loader, translator, helpers, gfx: g, fs: fsm, hle: hlem, audio: aud };
+  })();
+}
 async function init() {
   const mod = async (n: string) => WebAssembly.compileStreaming(fetch(`wasm/${n}.wasm`));
   const [r, kernel, loader, translator, helpers, g, fsm, hlem, aud] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"].map(mod));
@@ -100,15 +112,22 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   const code = files.reduce((a, f) => a + nsoImageBytes(f.bytes) + 0x1000, 0);
   const layout = game?.layout ?? (code + CODE_SPARE > SPACE.codeSize ? layoutFor({ code }) : undefined);
   // a prepared game: its address space, kernel settings and stack from its profile and NPDM (rt_handoff.ts)
-  const me = rt = new Runtime(mods, { clock: "wall", guard, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
+  // the memory mode: the layout's (a profile that is short in 32 bits comes with the layout for a 64-bit memory)
+  const mem64 = !!layout?.mem64 || forceMem64;
+  let set = mods;
+  if (mem64) {
+    try { if (!hasMemory64()) throw new Error("this browser has no 64-bit WebAssembly memory"); set = await modules64(); }
+    catch (e: any) { log(`[RED] page: this program needs the 64-bit memory mode and it cannot be had here (${e?.message ?? e})`); rt = undefined as any; status(); return; }
+  }
+  const me = rt = new Runtime(set, { clock: "wall", guard, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
     layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
-  optionsNote = `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
+  optionsNote = (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
     (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");
   for (const n of game?.notes ?? []) log("page: " + n);
   faultSeen = false;
   title = `nxweb report: ${o.name ?? files.map(f => f.name).join(" + ")}`;
   // a lost device: the replayer asks here for a new one (the page's test button destroys the device on purpose)
-  gfx = new RtGfx(me, mods.gfx!, { device: device ?? undefined, canvas: device ? canvas : undefined, nextFrame: () => new Promise(res => (self as any).requestAnimationFrame(res)),
+  gfx = new RtGfx(me, set.gfx!, { device: device ?? undefined, canvas: device ? canvas : undefined, nextFrame: () => new Promise(res => (self as any).requestAnimationFrame(res)),
     requestDevice: async () => { device = await requestDevice(); return device; }, profile: game?.gfx });
   // shaders: a library the user gave first, then translation in the page (stored by key and chain version)
   try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined }); }
@@ -117,7 +136,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   // controller applet's prompt is a dialog of the page, vibration goes to the player's controller; the input box, the
   // web view, shared fonts and native images have no page side yet (the table answers as nxnative does windowless)
   const myInput: { v?: RtInput } = {};
-  hle = attachHle(me, mods.hle!, { config: { opmode: 1, ...game?.hle }, gfx, front: {
+  hle = attachHle(me, set.hle!, { config: { opmode: 1, ...game?.hle }, gfx, front: {
     ctrlPrompt: (min, max, answer) => { ctrlAnswer = answer; post({ type: "ctrlPrompt", min, max }); return true; },
     vibration: s => { const source = myInput.v?.sourceOf(s.player) ?? 0; if (source) post({ type: "vibration", source, low: Math.max(s.motors[0].amplitudeLow, s.motors[1].amplitudeLow), high: Math.max(s.motors[0].amplitudeHigh, s.motors[1].amplitudeHigh) }); },
   } });
@@ -125,8 +144,8 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   for (const [source, pad] of sources) input.set(source, pad);   // what is held or connected right now
   const g = gfx, inp = input;
   g.onPresentQueued(f => inp.frame(f));
-  audio = new RtAudio(me, mods.audio!, { hle, send: (m, t) => post(m, t ?? []) });
-  fsys = new RtFs(me, mods.fs!, storage, game ? { programId: game.programId } : undefined);
+  audio = new RtAudio(me, set.audio!, { hle, send: (m, t) => post(m, t ?? []) });
+  fsys = new RtFs(me, set.fs!, storage, game ? { programId: game.programId } : undefined);
   for (const [key, info] of shaders) if (gfx.registerShader(key, info) < 0) log(`[RED] page: shader ${key} was not accepted`);
   o.hooks?.(me);
   // which transitions each machine takes in this process (the machines table)
@@ -315,7 +334,7 @@ self.onmessage = async (ev: MessageEvent) => {
       const from = nup ? `out of ${nup.name} (${(nup.file.size / 2 ** 20).toFixed(1)} MB, read in place)` : "from the folder";
       try { const st = new OpfsStorage(msg.saveId); await st.preopen(FS_KIND.SAVE); await st.preopen(FS_KIND.DEVICE_SAVE); saves = st; fsNote = `saves in OPFS under ${msg.saveId}, RomFS of ${msg.rom?.sizes.length ?? 0} files ${from}, ${msg.aoc.length} add-on contents`; }
       catch (e: any) { saves = new MemStorage(); fsNote = `no OPFS here (${e?.message ?? e}): saves are kept in memory`; }
-      await load(files, [], undefined, { name: `${msg.name} (${msg.titleId}, ${msg.displayVersion ?? "v" + msg.version})`, game: handoffOptions(msg, { codeBytes: files.reduce((a, f) => a + nsoImageBytes(f.bytes) + 0x1000, 0) }), storage: storageFromMessage(msg, saves, { sha256: prepWasm ? b => prepWasm!.sha256(b) : undefined, log: l => log(l) }),
+      await load(files, [], undefined, { name: `${msg.name} (${msg.titleId}, ${msg.displayVersion ?? "v" + msg.version})`, game: handoffOptions(msg, { codeBytes: files.reduce((a, f) => a + nsoImageBytes(f.bytes) + 0x1000, 0), mem64: "auto" }), storage: storageFromMessage(msg, saves, { sha256: prepWasm ? b => prepWasm!.sha256(b) : undefined, log: l => log(l) }),
         hooks: me => me.register({ name: "demo_frames", fn: () => 0 }) });
     }
     else if (m.type === "pause") rt?.requestPause();
