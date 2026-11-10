@@ -30,10 +30,14 @@ export function putn(ptr: usize, len: u32): void {
   for (let i: u32 = 0; i < len && i < 96; i++) { const c = load<u8>(ptr + i); putc(c >= 32 && c < 127 ? c : 63); }
   if (len > 96) puts("...");
 }
-// Start a red line: "[RED] loader: "
-export function red(): void { lineLen = 0; puts("[RED] loader: "); }
-// Start an ordinary line: "loader: "
-export function info(): void { lineLen = 0; puts("loader: "); }
+// The module the lines are about (its name's bytes), or none: every line starts with it
+let ctxPtr: usize = 0, ctxLen: u32 = 0;
+export function context(ptr: usize, len: u32): void { ctxPtr = ptr; ctxLen = len; }
+function putContext(): void { if (ctxLen) { putn(ctxPtr, ctxLen); puts(": "); } }
+// Start a red line: "[RED] loader: <module>: "
+export function red(): void { lineLen = 0; puts("[RED] loader: "); putContext(); }
+// Start an ordinary line: "loader: <module>: "
+export function info(): void { lineLen = 0; puts("loader: "); putContext(); }
 // Finish the line: log it; a red one also becomes the last error
 export function emit(): void {
   if (lineLen >= 5 && load<u8>(LINE) == 91 && load<u8>(LINE, 1) == 82) { memory.copy(ERR, LINE, <usize>lineLen); errLen = lineLen; }

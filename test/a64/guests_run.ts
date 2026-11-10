@@ -44,6 +44,7 @@ function runGuest(dir: string, file: string): Result {
           const p = Number(c.x0.value & 0xFFFFFFFFn), l = Number(c.x1.value & 0xFFFFFFFFn);
           const m = new Uint8Array(memory.buffer, p, l);
           for (let i = 0; i < l; i++) out.push(m[i]);
+          c.x0.value = 0n;
         } else if (n === 0x07) {
           exitCode = Number(c.x0.value & 0xFFFFFFFFn);
           c.pc.value = 0xFFFFFFF0n;
@@ -95,7 +96,7 @@ let pass = 0, failn = 0;
 let totInsns = 0, totRun = 0, totTr = 0, totTrInsns = 0;
 if (!quiet) console.log(`budget=${budget} maxInsns=${maxInsns} fma=${fma}`);
 for (const dir of dirs) {
-  for (const f of readdirSync(dir).filter(f => f.endsWith(".json")).sort()) {
+  for (const f of readdirSync(dir).filter(f => f.endsWith(".json") && f !== "manifest.json").sort()) {
     if (only && !only.test(f)) continue;
     let r: Result;
     try { r = runGuest(dir, f); } catch (e) { r = { name: f, ok: false, why: "runner: " + String(e), insns: 0, runMs: 0, trMs: 0, trInsns: 0, funcs: 0, bytes: 0, slices: 0 }; }

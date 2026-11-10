@@ -10,7 +10,12 @@
     "kit:test": "node test/kit/run.mts",
     "guests:build": "python3 tools/build_guests.py",
     "guests:check": "python3 tools/build_guests.py --check",
-    "guests:run": "python3 tools/ref_run.py"
+    "guests:run": "python3 tools/ref_run.py",
+    "a64:build": "asc src/a64/index.ts -o build/a64/translator.wasm -O2 --runtime stub --enable simd",
+    "a64:fuzz": "npm run -s a64:build && python3 test/a64/fuzz.py",
+    "a64:guests:build": "python3 test/a64/guests/build.py",
+    "a64:guests": "npm run -s a64:build && npm run -s a64:guests:build && node --stack-size=3000 test/a64/guests_run.ts && node --stack-size=3000 test/a64/guests_run.ts --budget 50 --quiet",
+    "a64:speed": "npm run -s a64:build && node --stack-size=3000 test/a64/guests_run.ts --speed"
   },
   "keywords": [],
   "author": "",

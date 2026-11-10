@@ -228,7 +228,8 @@ test("generator: the check passes on the committed files and sees a changed defi
   assert.deepEqual(check(changed), ["src/kit/gen/tables.ts: out of date", "docs/machines/thread.md: out of date"]);
   const extra: MachineDef[] = [...defs, { ...defs[0], id: defs.length, name: "extra" }];
   assert.deepEqual(check(extra), ["src/kit/gen/tables.ts: out of date", "docs/machines/extra.md: missing"]);
-  assert.deepEqual(check(defs.slice(0, 2)), ["src/kit/gen/tables.ts: out of date", "docs/machines/thread.md: no machine of this name is defined any more"]);
+  const gone = defs.slice(2).map(d => `docs/machines/${d.name}.md: no machine of this name is defined any more`).sort();
+  assert.deepEqual(check(defs.slice(0, 2)), ["src/kit/gen/tables.ts: out of date", ...gone]);
 });
 
 test("generator: the diagram and the constants come from the table", () => {

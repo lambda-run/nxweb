@@ -5,7 +5,7 @@ extern int host_forced(int);
 
 int plugin_state = 99;
 int plugin_values[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-volatile int plugin_bss[256];
+volatile int plugin_bss[2048];   // 8 KiB: an NRO's data is padded to a page out of the bss, and some bss must be left
 int *plugin_ptr = &plugin_values[4];
 int (*plugin_fp)(int) = shared_fn;
 

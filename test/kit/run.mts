@@ -2,7 +2,7 @@
 // runs every test of test/kit/*.test.mts in this process, then applies the coverage rule: a transition of any
 // machine's table that no test exercised fails the run.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { check } from "../../src/kit/host/gen.mts";
@@ -23,6 +23,13 @@ try {
 
 const dir = import.meta.dirname;
 for (const f of readdirSync(dir).filter(f => f.endsWith(".test.mts")).sort()) await import(pathToFileURL(join(dir, f)).href);
+// Other areas test their own machines here too: test/<area>/*.machine.test.mts, written against this harness, so the
+// coverage rule below covers every machine in the tree.
+for (const area of readdirSync(join(dir, "..")).sort()) {
+  const d = join(dir, "..", area);
+  if (area === "kit" || !statSync(d).isDirectory()) continue;
+  for (const f of readdirSync(d).filter(f => f.endsWith(".machine.test.mts")).sort()) await import(pathToFileURL(join(d, f)).href);
+}
 
 for (const t of tests) {
   try { t.fn(); console.log(`ok   ${t.name}`); }

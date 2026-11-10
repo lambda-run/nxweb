@@ -159,6 +159,20 @@ function translateInsn(pc: u64, insn: u32): void {
   if (!ok) { rollback(p, e, i); emitTrap(F_UNIMPL, pc, insn); }
 }
 
+// is this instruction word translatable? (coverage tooling)
+export function probe(insn: u32): i32 {
+  beginFunction(); setNBlk(1); setCurBlk(0); succ0[0] = -1; succ1[0] = -1;
+  let pc = codeBase;
+  let ok = false;
+  let op0 = (insn >> 25) & 15;
+  if ((op0 & 14) == 8) ok = trDpImm(pc, insn);
+  else if ((op0 & 14) == 10) ok = trBranchSys(pc, insn);
+  else if ((op0 & 5) == 4) ok = (insn & (1 << 26)) ? trLoadStoreVec(pc, insn) : trLoadStoreInt(pc, insn);
+  else if ((op0 & 7) == 5) ok = trDpReg(pc, insn);
+  else if ((op0 & 7) == 7) ok = trFp(pc, insn);
+  return ok ? 1 : 0;
+}
+
 // analysis state
 const BLK_CAP = 16384;
 const evStart = new StaticArray<i32>(BLK_CAP + 1);

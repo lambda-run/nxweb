@@ -8,6 +8,9 @@ Nothing from any game is ever committed. Red log lines start with `[RED] `.
 - `src/kit/`, `test/kit/`, `docs/machines/` : state machine kit
 - `src/a64/`, `test/a64/`                   : ARM64 -> WebAssembly translator and its differential tests
 - `test/guests/`, `tools/`                  : ARM64 test programs, their build, the Unicorn reference runner
+- `src/loader/`, `test/loader/`, `tools/elf2nso.py` : NSO/NRO loader
+- `src/kernel/`, `test/kernel/`              : Horizon kernel core (threads, sync, memory SVCs)
+- `src/gfx/`, `test/gfx/`                    : NVN on WebGPU (recorder in AssemblyScript, replayer in glue)
 - `src/glue/`                               : TypeScript glue (shared; add files, do not rewrite others')
 - Root `package.json`: add your own npm scripts under a prefix (`kit:*`, `a64:*`, `guests:*`); do not
   remove others'. Do not `git commit`; the coordinator commits.
@@ -50,3 +53,8 @@ Returning from the entry function to 0xFFFF_FFF0 also ends the run with exit cod
 - `svc #0x27` returns 0 in x0.
 - Sidecar numbers (`base`, `entry`, `bss_end`, `stack_top`) are JSON numbers. Sidecars also carry `exit_code` and `insn_count`.
 - Assembly-only programs produce one variant named `asm`.
+
+## State machines
+Every lifecycle uses the kit (src/kit/README.md). An area keeps its definitions in `src/<area>/defs/*.json` and its
+machine tests in `test/<area>/*.machine.test.mts`; `npm run kit:diagrams` regenerates tables and diagrams, and
+`npm run kit:test` fails while any transition of any machine has no test.

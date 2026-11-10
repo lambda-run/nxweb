@@ -1,6 +1,6 @@
 // Machine definitions (src/kit/defs/*.json): loading, validation and the binary table layout.
 // Node/TypeScript side of the kit. The AssemblyScript side (machine.ts) reads the same layout.
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -74,17 +74,32 @@ export function validate(raw: any, file: string): MachineDef {
   return { id: raw.id, name: raw.name, doc: raw.doc, states, initial: raw.initial, final, data, events, transitions: raw.transitions, file };
 }
 
-// All definitions, ordered by id. Ids must be 0..n-1 without gaps: the id is the index in the wasm directory.
+// All definitions: the kit's own (src/kit/defs) first, ordered by their declared id, then every other area's
+// (src/<area>/defs/*.json) ordered by area and file name. The id used in the wasm directory is the position in that
+// list, so areas can add machines independently; a declared "id" outside the kit's folder is ignored. Code refers to
+// machines by the generated constants, never by number.
 export function loadDefs(dir = DEFS_DIR): MachineDef[] {
-  const defs = readdirSync(dir).filter(f => f.endsWith(".json")).sort()
-    .map(f => {
-      const d = validate(JSON.parse(readFileSync(join(dir, f), "utf8")), f);
-      if (f !== d.name + ".json") throw new Error(`${f}: the file must be named ${d.name}.json`);
-      return d;
-    })
-    .sort((a, b) => a.id - b.id);
+  const read = (d: string, f: string, id?: number): MachineDef => {
+    const raw = JSON.parse(readFileSync(join(d, f), "utf8"));
+    if (id !== undefined || !Number.isInteger(raw.id)) raw.id = id ?? 0;
+    const def = validate(raw, f);
+    if (f !== def.name + ".json") throw new Error(`${f}: the file must be named ${def.name}.json`);
+    return def;
+  };
+  const list = (d: string) => readdirSync(d).filter(f => f.endsWith(".json")).sort();
+  const defs = list(dir).map(f => read(dir, f)).sort((x, y) => x.id - y.id);
+  if (dir === DEFS_DIR) {
+    const src = join(KIT_DIR, "..");
+    for (const area of readdirSync(src).sort()) {
+      const d = join(src, area, "defs");
+      if (area === "kit" || !existsSync(d)) continue;
+      for (const f of list(d)) defs.push(read(d, f, defs.length));
+    }
+  }
+  const seen = new Set<string>();
   defs.forEach((d, i) => {
-    if (d.id !== i) throw new Error(`${d.file}: machine ids must be 0..${defs.length - 1} without gaps or duplicates (found ${d.id} at position ${i})`);
+    if (seen.has(d.name)) throw new Error(`${d.file}: duplicate machine name ${d.name}`);
+    seen.add(d.name); d.id = i;
   });
   return defs;
 }
