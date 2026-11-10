@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { test, both, Fs, FN, MANGLED, R, NXNATIVE, KIND } from "./harness.mts";
+import { test, both, Fs, FN, MANGLED, R, NXNATIVE, KIND, BEYOND } from "./harness.mts";
 import { MemStorage } from "../../src/glue/fs_host.ts";
 import { namesOf } from "../../src/fs/host/gen_names.mts";
 
@@ -74,7 +74,7 @@ test("constants: cache sizes, length limits, save sizes, free space, flags (nxna
   assert.equal(fs.callSync("MountSaveRO", fs.str("other"), 0x0100000000009999n, 0), R.TARGET_NOT_FOUND);
   assert.equal(fs.red.length, 1);
   // a pointer outside linear memory is refused, not written through
-  assert.equal(fs.callSync("QueryRomCache", 0xFFFFFFF8), R.FAIL);
+  assert.equal(fs.callSync("QueryRomCache", BEYOND + 0xF8), R.FAIL);
   assert.equal(fs.callSync("QueryRomCache", 0), R.FAIL);
 });
 

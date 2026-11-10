@@ -3,10 +3,10 @@
 // Policy lives in the AssemblyScript modules (scheduling and waits: src/kernel; lifecycle, clock arithmetic, fault
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
 import { A64Host, makeMemory64, MEM64_MAX_PAGES, type A64CacheStore, type Memory64 } from "./a64_host.ts";
-import { instantiate } from "./wasm_abi.ts";
+import { instantiate, addrBits } from "./wasm_abi.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
 import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, STAGING, range } from "./rt_layout.ts";
-import { SPACE, writeKernelCfg, type ProcessLayout } from "./rt_process.ts";
+import { SPACE, writeKernelCfg, layoutFor, getDefaultSpace, type ProcessLayout } from "./rt_process.ts";
 
 export interface RuntimeModules {
   rt: WebAssembly.Module; kernel: WebAssembly.Module; loader: WebAssembly.Module;
@@ -25,7 +25,8 @@ export interface RuntimeOptions {
   reserve4g?: boolean;                // allocate the whole 4 GB at once instead of growing on demand (default false; memory32 only)
   // The linear memory is a 64-bit one (up to 16 GB) and `mods` is the wasm64 set (rt64.wasm, kernel64.wasm, ...,
   // translator64.wasm, helpers64.wasm): for a process whose layout does not fit below 4 GB (rt_process.ts
-  // layoutFor(want, { mem64: true })), or to place any process anywhere in 16 GB. Default false.
+  // layoutFor(want, { mem64: true })), or to place any process anywhere in 16 GB. Default: what `mods` were built
+  // for (their address tables say), so handing over the wasm64 set is enough.
   mem64?: boolean;
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
@@ -230,7 +231,12 @@ export class Runtime {
     // One memory for everything. It starts as the host area and grows on demand (the kernel grows it for the heap,
     // stacks and thread-local slots; ensure() for images), up to the 4 GB a wasm32 memory can have.
     // (memory64: up to the 16 GB the engines give a 64-bit memory; made by a64_host.ts makeMemory64)
-    const m64 = this.mem64 = !!opts.mem64;
+    const m64 = this.mem64 = opts.mem64 ?? addrBits(mods.rt) === 64;
+    // no layout given: the kernel's default one, unless the default space is another (rt_process.ts setDefaultSpace)
+    const space = getDefaultSpace();
+    const layout = opts.layout ?? (space.codeBase !== undefined && space.codeBase !== SPACE.codeBase && !!space.mem64 === m64 ? layoutFor({}, space) : undefined);
+    if (layout?.mem64 && !m64) throw new Error("runtime: the process layout is one for a 64-bit memory; the Runtime needs mem64 and the wasm64 modules");
+    if (layout && opts.codeBase === undefined) this.nextBase = layout.codeBase;
     if (m64) { this.m64 = makeMemory64({ initial: HOST_END / 65536, maximum: MEM64_MAX_PAGES }); this.memory = this.m64.memory; }
     else this.memory = new WebAssembly.Memory({ initial: this.opts.reserve4g ? 65536 : HOST_END / 65536, maximum: 65536 });
     this.addrEnd = m64 ? BigInt(MEM64_MAX_PAGES) * 65536n : 0x1_0000_0000n;
@@ -242,6 +248,7 @@ export class Runtime {
       abort: () => { throw new Error("abort in an AssemblyScript module"); },
     };
     this.env = env;
+    this.memImports = this.m64 ? this.m64.imports() : {};
     this.r = instantiate(mods.rt, { env }, { mem64: m64, name: "rt.wasm" });
     const lx = instantiate<LoaderExports>(mods.loader, { env }, { mem64: m64, name: "loader.wasm" });
     this.k = instantiate(mods.kernel, { env }, { mem64: m64, name: "kernel.wasm" });
@@ -250,23 +257,30 @@ export class Runtime {
     this.r.rt_clock_init(this.opts.clock === "wall" ? 1 : 0, BigInt(this.opts.nsPerUnit));
     const arena = range("loader arena");
     this.ld = new Loader(lx, { arena: arena.lo, arenaLen: arena.hi - arena.lo, stubBase: STUBS.base, stubCap: STUBS.cap });
-    if (opts.layout) {
+    if (layout) {
       const p = this.r.rt_scratch_ptr() + 2048;
-      writeKernelCfg(this, p, opts.layout);
+      writeKernelCfg(this, p, layout);
       if (this.k.kernel_init(p) !== 0) throw new Error("runtime: kernel_init refused the process layout: " + this.red.join("; "));
-      this.stackRegion = opts.layout.stackBase;
-      this.codeEnd = opts.layout.codeBase + opts.layout.codeSize;
+      this.stackRegion = layout.stackBase;
+      this.codeEnd = layout.codeBase + layout.codeSize;
       // the heap region and what follows it without a gap (layoutFor: the stack region, then the alias region)
-      const l = opts.layout, d = this.dataSpace = { lo: l.heapBase, hi: l.heapBase + l.heapSize };
+      const l = layout, d = this.dataSpace = { lo: l.heapBase, hi: l.heapBase + l.heapSize };
       if (l.stackBase === d.hi) { d.hi += l.stackSize; if (l.aliasBase === d.hi) d.hi += l.aliasSize; }
-      if (opts.layout.fit === "short") this.log("[RED] runtime: " + opts.layout.note);
-      else if (opts.layout.note) this.log("runtime: " + opts.layout.note);
+      // an alias region beyond what the kernel's static page-table leaves cover: the rest of its table is the top of
+      // the code region (the layout made the region that much larger), the kernel's from here on
+      if (l.aliasArena) {
+        this.codeEnd -= l.aliasArena;
+        this.ensure(this.codeEnd + l.aliasArena);
+        this.k.kernel_alias_arena(this.codeEnd, l.aliasArena);
+      }
+      if (layout.fit === "short") this.log("[RED] runtime: " + layout.note);
+      else if (layout.note) this.log("runtime: " + layout.note);
     } else if (this.k.kernel_init(0) !== 0) throw new Error("runtime: kernel_init refused the default layout");
 
     this.a64 = new A64Host(mods.translator, mods.helpers, {
       memory: this.memory, mem64: m64,
       // the entry bitmap covers the first 256 MB of the code region, wherever the layout puts it
-      layout: opts.layout && opts.layout.codeBase !== A64.codeRegionLo ? { ...A64, codeRegionLo: opts.layout.codeBase } : A64,
+      layout: layout && layout.codeBase !== A64.codeRegionLo ? { ...A64, codeRegionLo: layout.codeBase } : A64,
       maxInsns: opts.maxInsns, maxFuncs: opts.maxFuncs, depthLimit: opts.depthLimit, tailCalls: opts.tailCalls, fma: opts.fma, nanFix: opts.nanFix,
       cntYield: true, preciseFaults: opts.preciseFaults, guardBase: (opts.guard ?? GUARD_DEFAULT) ? GUARD_BASE : 0,
       onTranslate: (pc: bigint) => this.onTranslate(pc),
@@ -297,6 +311,8 @@ export class Runtime {
   // What every AssemblyScript module on this memory imports as "env" (the memory, the log, and on a 64-bit memory the
   // two functions tools/asc64 puts in place of memory.size / memory.grow): for the glue of the attached parts
   readonly env: Record<string, unknown>;
+  // ... and of those only what reaches the memory (empty for a 32-bit memory): for a part that has an env of its own
+  readonly memImports: Record<string, unknown>;
   // A guest register as an index into the memory. memory32: wrapped to 32 bits (docs/CONTRACT.md); memory64: the
   // whole value (an address beyond the memory traps or is refused where it is used)
   addr(v: bigint): number { return this.mem64 ? Number(BigInt.asUintN(64, v)) : Number(v & M32); }

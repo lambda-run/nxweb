@@ -5,10 +5,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { KIT_DIR } from "../../src/kit/host/defs.mts";
 import { readMachines, type WasmMachine } from "../../src/kit/host/reader.mts";
+import { makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 import { HleHost, type HleEnv, type HleRegs, type HleResult, type TextRequest, type HlePending, type VibrationState } from "../../src/glue/hle_host.ts";
 
 export const ROOT = join(KIT_DIR, "..", "..");
-export const WASM = join(ROOT, "build", "hle", "hle.wasm");
+// NX_MEM (tools/modes.mjs): "32" (default) hle.wasm, whose own memory is the guest memory; "64" hle64.wasm on a
+// 64-bit memory made here; "64hi" the same with the fake guest's memory (everything alloc() gives out: argument
+// blocks, strings, the SDK objects the take-overs fill, host-allocated blocks) and its code addresses above 4 GB.
+export const MODE = process.env.NX_MEM ?? "32";
+export const M64 = MODE !== "32";
+export const HI = MODE === "64hi" ? 0x1_8000_0000 : 0;
+export const WASM = join(ROOT, "build", "hle", M64 ? "hle64.wasm" : "hle.wasm");
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 export const RES_FAIL = 0x2A2n;
 export const MACHINES = ["oe_focus", "oe_msg", "oe_notify_event", "hle_exit", "nifm_request", "swkbd_request", "swkbd_inline", "web_session",
@@ -67,6 +74,7 @@ export class Hle {
   roLog: string[] = []; nroSerial = 0;
   jit = { allocs: [] as { rx: bigint; ro: bigint; rxSize: bigint; roSize: bigint }[], written: [] as [bigint, bigint, bigint][], freed: [] as bigint[], fail: false };
   private base: number; private top: number;
+  private growBy: (pages: number) => void;
 
   constructor(o: { cover?: boolean } = {}) {
     module ??= new WebAssembly.Module(readFileSync(WASM));
@@ -83,7 +91,7 @@ export class Hle {
       guestSym: n => t.syms.get(n) ?? 0n,
       guestCall: (fn, args) => { t.guestCalls.push({ fn, args }); const f = t.fns.get(fn); if (!f) throw new Error(`test: guest call to ${fn.toString(16)}, which is no function`); return BigInt(f(...args) ?? 0); },
       moduleOf: a => t.modules.findIndex(m => a >= m.lo && a < m.hi),
-      stubAddr: id => 0x07FC_0000n + 4n * BigInt(id),
+      stubAddr: id => 0x07FC_0000n + 4n * BigInt(id),   // the stub region is host-area memory in every mode
       hostAlloc: n => BigInt(t.alloc(Number(n))),
       clockFreeze: (r, on) => { t.freezes.push([r, on]); },
       textRequest: r => { t.textRequests.push(r); t.onText?.(r); },
@@ -116,9 +124,11 @@ export class Hle {
       jitCodeWritten: (rx, off, size) => { t.jit.written.push([rx, off, size]); },
       jitFree: rx => { t.jit.freed.push(rx); },
     };
-    this.host = new HleHost(module, env);
-    const end = (this.host.x.hle_static_end() + 0xFFFF) & ~0xFFFF;
-    if (this.host.memory.buffer.byteLength < end + (2 << 20)) this.host.memory.grow(Math.ceil((end + (2 << 20) - this.host.memory.buffer.byteLength) / 65536));
+    const mem = M64 ? makeMemory64({ initial: 64, maximum: MEM64_MAX_PAGES }) : null;
+    this.host = mem ? new HleHost(module, env, mem.memory, mem.imports()) : new HleHost(module, env);
+    this.growBy = pages => { if (mem) mem.grow(pages); else this.host.memory.grow(pages); };
+    const end = HI + Math.ceil(this.host.x.hle_static_end() / 0x10000) * 0x10000;
+    if (this.host.memory.buffer.byteLength < end + (2 << 20)) this.growBy(Math.ceil((end + (2 << 20) - this.host.memory.buffer.byteLength) / 65536));
     this.base = this.top = end;
     if (o.cover !== false) { this.host.x.kit_cover_enable(1); live.push(this); }
   }
@@ -130,7 +140,7 @@ export class Hle {
   // ---- guest memory ----
   alloc(n: number, fill = 0): number {
     const p = this.top; this.top += (n + 15) & ~15;
-    if (this.top > this.host.memory.buffer.byteLength) this.host.memory.grow(Math.ceil((this.top - this.host.memory.buffer.byteLength) / 65536));
+    if (this.top > this.host.memory.buffer.byteLength) this.growBy(Math.ceil((this.top - this.host.memory.buffer.byteLength) / 65536));
     this.u8.fill(fill, p, p + n);
     return p;
   }
@@ -178,7 +188,7 @@ export class Hle {
   w0(name: string | number, ...x: (bigint | number)[]): number { return Number(this.call(name, ...x).x0 & 0xFFFF_FFFFn); }
   // A guest function for the take-overs to call back: its made-up address
   fn(f: (...args: bigint[]) => bigint | number | void, name?: string): bigint {
-    const a = 0x0900_0000n + BigInt(this.fns.size) * 0x10n; this.fns.set(a, f); if (name) this.syms.set(name, a); return a;
+    const a = BigInt(HI) + 0x0900_0000n + BigInt(this.fns.size) * 0x10n; this.fns.set(a, f); if (name) this.syms.set(name, a); return a;
   }
   // The SDK's nn::os as the binding code calls it: CreateSystemEvent(event, clear mode, inter-process) makes a kernel
   // event, GetWritableHandleOfSystemEvent gives its write end. `created` records each

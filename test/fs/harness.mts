@@ -10,16 +10,24 @@ import { readMachines, type KitExports, type WasmMachine } from "../../src/kit/h
 import { FsHost, fsIsPending, fsToken, FS_RETRY, FS_KIND, DEV, type FsStorage, type FsDevice, type FsExports } from "../../src/glue/fs_host.ts";
 
 import { writeStamp } from "../../src/kit/host/stamp.mts";
+import { buildPair } from "../../tools/asc64/abi.mjs";
+import { makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 export const ROOT = join(KIT_DIR, "..", "..");
-export const WASM = join(ROOT, "build", "fs", "fs.wasm");
+// NX_MEM (tools/modes.mjs): "32" (default) fs.wasm, whose own memory is the guest memory; "64" fs64.wasm on a 64-bit
+// memory made here; "64hi" the same with the scripted guest's memory (paths, read and write buffers, the structures
+// the calls fill) above 4 GB. The arena is host-area memory in the runtime and stays low.
+export const MEM_MODE = process.env.NX_MEM ?? "32";
+export const M64 = MEM_MODE !== "32";
+export const HI = MEM_MODE === "64hi" ? 0x1_8000_0000 : 0;
+export const BEYOND = HI + 0xFFFF_FF00;   // an address outside the linear memory in every mode
+export const WASM = join(ROOT, "build", "fs", M64 ? "fs64.wasm" : "fs.wasm");
 export const SCRATCH = process.env.FS_TEST_TMP ?? join(ROOT, "build", "fs", "tmp");
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 
 export function build(): void {
   mkdirSync(dirname(WASM), { recursive: true });
-  execFileSync(process.execPath, [join(ROOT, "node_modules", "assemblyscript", "bin", "asc.js"), "src/fs/index.ts", "-o", WASM, "--runtime", "stub", "-O2"],
-    { cwd: ROOT, stdio: "inherit" });
-  writeStamp(WASM);
+  buildPair("src/fs/index.ts", join("build", "fs", "fs.wasm"), ["--runtime", "stub", "-O2"], { args64: ["--runtime", "stub", "-O2", "--importMemory"] });
+  writeStamp(join(ROOT, "build", "fs", "fs.wasm")); writeStamp(join(ROOT, "build", "fs", "fs64.wasm"));
 }
 
 // Fn ids by nxnative's identifier (h_fs_<x>), from src/fs/names.ts
@@ -52,7 +60,9 @@ export class Fs {
 
   constructor(storage: FsStorage, o: FsOptions = {}) {
     module ??= new WebAssembly.Module(readFileSync(WASM));
+    const mem = M64 ? makeMemory64({ initial: 16, maximum: MEM64_MAX_PAGES }) : null;
     this.host = new FsHost(module, o.async ? new AsyncStorage(storage) : storage, {
+      ...(mem ? { memory: mem.memory, memEnv: mem.imports() } : {}),
       log: l => { this.logs.push(l); if (process.env.FS_TEST_LOG) console.log("    | " + l); },
       saveFailed: e => { this.saveFailed.push(e); },
       completed: (token, r) => {
@@ -63,16 +73,16 @@ export class Fs {
     });
     this.x = this.host.x as FsExports & KitExports;
     const guest = o.guest ?? (8 << 20), arena = o.arena ?? (64 << 20);
-    const end = (this.x.fs_static_end() + 0xFFFF) & ~0xFFFF;
-    const have = this.x.memory.buffer.byteLength;
-    if (end + guest + arena > have) this.x.memory.grow(Math.ceil((end + guest + arena - have) / 65536));
-    this.base = this.top = end; this.limit = end + guest;
-    this.x.fs_init(end + guest, arena);
+    const end = Math.ceil(this.x.fs_static_end() / 0x10000) * 0x10000;
+    const have = this.host.memory.buffer.byteLength, top = HI ? HI + guest : end + guest + arena;
+    if (top > have) { const n = Math.ceil((top - have) / 65536); if (mem) mem.grow(n); else this.x.memory.grow(n); }
+    this.base = this.top = HI ? HI : end; this.limit = this.base + guest;
+    this.x.fs_init(HI ? end : end + guest, arena);
     if (o.cover !== false) { this.x.kit_cover_enable(1); live.push(this); }
   }
   get red(): string[] { return this.logs.filter(l => l.startsWith("[RED] ")); }
-  get dv(): DataView { return new DataView(this.x.memory.buffer); }
-  get u8(): Uint8Array { return new Uint8Array(this.x.memory.buffer); }
+  get dv(): DataView { return new DataView(this.host.memory.buffer); }
+  get u8(): Uint8Array { return new Uint8Array(this.host.memory.buffer); }
 
   // ---- guest memory ----
   alloc(n: number): number {

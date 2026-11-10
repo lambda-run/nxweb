@@ -39,7 +39,7 @@ export class AudioDevice implements AudioDeviceLike {
     this.transport = o.transport ?? (haveSab && x.memory.buffer instanceof SharedArrayBuffer ? "direct" : haveSab && (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated ? "sab" : "message");
     const open: Record<string, unknown> = { cmd: "open", cap, sampleRate: o.sampleRate };
     const transfer: Transferable[] = [];
-    if (this.transport === "direct") { open.sab = x.memory.buffer; open.hdr = x.audio_ring_ptr() >>> 0; open.data = x.audio_ring_data() >>> 0; }
+    if (this.transport === "direct") { open.sab = x.memory.buffer; open.hdr = x.audio_ring_ptr(); open.data = x.audio_ring_data(); }
     else if (this.transport === "sab") {
       this.sab = new SharedArrayBuffer(32 + cap * 8);
       this.sh = new Int32Array(this.sab, 0, 8); this.sd = new Float32Array(this.sab, 32, cap * 2);

@@ -88,7 +88,7 @@ export function le(): void { envLog(LINE, lineLen); }
 @inline export function memEnd(): u64 { return <u64>memory.size() << 16; }
 // Whether [p, p + n) is non-null and inside linear memory
 export function gok(p: u64, n: u64): bool {
-  const a = <u64><u32>p;
+  const a = sizeof<usize>() == 8 ? p : <u64><u32>p;   // a 32-bit memory wraps the address (contract); a 64-bit memory takes all of it
   return a != 0 && n <= memEnd() && a <= memEnd() - n;
 }
 // Length of the NUL-terminated guest string at p, or -1 (null, or no NUL within max bytes / before the memory ends)

@@ -10,6 +10,8 @@ export type { Capture, CaptureImage } from "./gfx_capture.ts";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type GPU = any;
 
+// a size down to a multiple of 4, without a 32-bit operator (a guest range may be 2 GB or more)
+const down4 = (v: number) => Math.floor(v / 4) * 4;
 export interface GfxExports {
   memory?: WebAssembly.Memory;
   gfx_init(arena: number, bytes: number): number;
@@ -232,7 +234,9 @@ export class GfxHost {
   }
 
   // The recorder's imports that belong to the replayer; the embedder adds env.log, env.gfx_guest_call, env.gfx_proc_address
-  imports() { return { gfx_exec: (ptr: number, len: number) => this.exec(ptr >>> 0, len >>> 0) }; }
+  // (ptr is an address: a number from wasm_abi.ts instantiate(), in either build; a module instantiated without it
+  // on a 32-bit memory hands an i32 over, which is negative from 2 GB on)
+  imports() { return { gfx_exec: (ptr: number, len: number) => this.exec(ptr < 0 ? ptr + 4294967296 : ptr, len >>> 0) }; }
   attach(x: GfxExports) { this.x = x; x.gfx_host_caps?.(this.caps); }
   private red(key: string, line: string) { if (!this.redOnce.has(key)) { this.redOnce.add(key); this.log(`[RED] ${line}`); } }
   private get dv() { return new DataView(this.memory.buffer); }
@@ -291,7 +295,7 @@ export class GfxHost {
   // keyHex: the 16 hex digits of a stage's key, sha256(control section + code)[0..8] (src/gfx/shader.ts). info: the
   // shader chain's reflection record with the WGSL. -1 (with a red line) when it needs a binding the replayer lacks
   registerShader(keyHex: string, info: ShaderInfo): number {
-    const dv = this.dv, r = this.x.gfx_scratch() >>> 0, bit = (a?: number[]) => (a ?? []).reduce((m, i) => m | (1 << i), 0) >>> 0;
+    const dv = this.dv, r = Number(this.x.gfx_scratch()), bit = (a?: number[]) => (a ?? []).reduce((m, i) => m | (1 << i), 0) >>> 0;
     const unknown = (info.extra ?? []).filter(e => e.kind !== "support");
     if (unknown.length) { this.log(`[RED] shader ${keyHex} needs bindings the replayer does not provide (${unknown.map(e => e.kind).join(", ")}): not registered`); return -1; }
     const support = info.support || (info.extra ?? []).some(e => e.kind === "support"), st = info.stage === "vertex" ? 0 : info.stage === "fragment" ? 1 : 2;
@@ -443,7 +447,7 @@ export class GfxHost {
     const cap = Math.max(256, 2 ** Math.ceil(Math.log2(size))) * (kind === 1 ? 2 : 1);
     if (e && e.used === this.flushNo) { this.inUse.push(e.buf); e = undefined; }       // still referenced by the open encoder: leave it, take another
     const b = e?.buf ?? this.alloc(cap);
-    const n = Math.min(cap, (size + 3) & ~3, this.memory.buffer.byteLength - addr) & ~3;
+    const n = down4(Math.min(cap, down4(size + 3), this.memory.buffer.byteLength - addr));
     if (kind === 1) {   // 8-bit indices: WebGPU has none, widened to 16
       const src = this.u8.subarray(addr, addr + size), wide = new Uint16Array((size + 1) & ~1);
       for (let i = 0; i < size; i++) wide[i] = src[i];
@@ -464,7 +468,7 @@ export class GfxHost {
   }
   private storageBuffer(addr: number, size: number, write: boolean): { buf: GPU; off: number; size: number } | null {
     if (!addr || !size || addr + size > this.memory.buffer.byteLength) { this.red(`sb${addr}`, `a dispatch binds storage outside the guest's memory (address 0x${addr.toString(16)} size ${size}): not bound`); return null; }
-    const bsize = (size + 3) & ~3;
+    const bsize = down4(size + 3);
     if (!write) { const b = this.upload(addr, size, 3); return b && { buf: b, off: this.upOff, size: bsize }; }
     const key = `${addr}:${size}`, hash = this.x.gfx_hash(addr, size);
     let r = this.gpuRanges.get(key);
@@ -474,7 +478,7 @@ export class GfxHost {
     if (over) return { buf: over.buf, off: addr - over.addr, size: bsize };
     for (const o of this.gpuRanges.values()) if (o !== r && addr < o.addr + o.size && o.addr < addr + size) this.red("sboverlap", "storage ranges written by compute passes overlap without one containing the other: each keeps its own GPU copy until read back");
     const buf = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(bsize))));
-    this.device.queue.writeBuffer(buf, 0, this.u8, addr, Math.min(bsize, this.memory.buffer.byteLength - addr) & ~3);
+    this.device.queue.writeBuffer(buf, 0, this.u8, addr, down4(Math.min(bsize, this.memory.buffer.byteLength - addr)));
     this.stats.uploads++; this.stats.uploadBytes += bsize;
     if (r) { this.inUse.push(r.buf); r.buf = buf; r.hash = hash; } else this.gpuRanges.set(key, r = { addr, size, buf, hash, pending: 0 });
     return { buf, off: 0, size: bsize };
@@ -483,7 +487,7 @@ export class GfxHost {
     const r = this.gpuRanges.get(`${addr}:${size}`);
     if (!r) return;
     this.endPass();
-    const n = (size + 3) & ~3, buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
+    const n = down4(size + 3), buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
     this.encoder().copyBufferToBuffer(r.buf, 0, buf, 0, n);
     r.pending++;
     this.queuedBufs.push({ buf, range: r });
@@ -596,7 +600,7 @@ export class GfxHost {
     if (!g) { g = this.device.createBindGroup({ layout, entries }); this.groups.set(key, g); this.stats.bindGroups++; }
     return g;
   }
-  private u64(dv: DataView, p: number) { return dv.getUint32(p, true) + dv.getUint32(p + 4, true) * 4294967296; }
+  private u64(dv: DataView, p: number) { return dv.getUint32(p, true) + dv.getUint32(p + 4, true) * 4294967296; }   // an address or a serial of the recorder: 8 bytes in every record, a number here
 
   private beginPass(dv: DataView, p: number) {
     const n = dv.getUint32(p + 8, true), flags = dv.getUint32(p + 12, true);
@@ -808,7 +812,7 @@ export class GfxHost {
     this.pass.drawIndexed(c.n, inst, 0, baseVertex, baseInst);
   }
   private sampler(index: number, compare: boolean, filtering = true): GPU {
-    const p = (this.x.gfx_sampler_table() >>> 0) + index * 48, dv = this.dv, registered = index > 0 && dv.getUint8(p + 40) !== 0;
+    const p = Number(this.x.gfx_sampler_table()) + index * 48, dv = this.dv, registered = index > 0 && dv.getUint8(p + 40) !== 0;
     const key = (registered ? Array.from(this.u8.subarray(p, p + 40)).join(",") : "default") + (compare ? "c" : "") + (filtering ? "" : "n");
     let s = this.samplers.get(key);
     if (s) return s;
@@ -1042,8 +1046,8 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   private texData(dv: DataView, p: number) {
     const t = this.texture(this.u64(dv, p + 8));
     if (!t) return;
-    const what = dv.getUint32(p + 52, true);
-    const level = dv.getUint32(p + 16, true), z = dv.getUint32(p + 20, true), y = dv.getUint32(p + 24, true), slices = dv.getUint32(p + 36, true), ptr = dv.getUint32(p + 40, true), pitch = dv.getUint32(p + 44, true), x = dv.getUint32(p + 48, true);
+    const what = dv.getUint32(p + 56, true);
+    const level = dv.getUint32(p + 16, true), z = dv.getUint32(p + 20, true), y = dv.getUint32(p + 24, true), slices = dv.getUint32(p + 36, true), ptr = this.u64(dv, p + 40), pitch = dv.getUint32(p + 48, true), x = dv.getUint32(p + 52, true);
     const f = t.fmt, up = (v: number, b: number) => Math.ceil(v / b) * b, lw = up(Math.max(1, t.gpu.width >> level), f.bw), lh = up(Math.max(1, t.gpu.height >> level), f.bh);
     const w = Math.min(dv.getUint32(p + 28, true), lw - x), h = Math.min(dv.getUint32(p + 32, true), lh - y), rows = h / f.bh;
     if (w <= 0 || h <= 0 || level >= t.gpu.mipLevelCount) return;
@@ -1082,14 +1086,14 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.stats.snapshots++;
   }
   private present(dv: DataView, p: number) {
-    const serial = this.u64(dv, p + 8), t = this.texture(serial), win = dv.getUint32(p + 32, true), index = dv.getUint32(p + 36, true);
+    const serial = this.u64(dv, p + 8), t = this.texture(serial), win = this.u64(dv, p + 32), index = dv.getUint32(p + 40, true);
     this.lastPresented = serial; this.stats.presents++;
     if (t && this.context) {
       const c = [0, 1, 2, 3].map(i => dv.getInt32(p + 16 + i * 4, true)), uv = c[2] > 0 && c[3] > 0 ? [c[0] / t.width, c[1] / t.height, c[2] / t.width, c[3] / t.height] : [0, 0, 1, 1];
-      if (dv.getUint32(p + 40, true) & 1) { uv[1] += uv[3]; uv[3] = -uv[3]; }
+      if (dv.getUint32(p + 44, true) & 1) { uv[1] += uv[3]; uv[3] = -uv[3]; }
       this.blit(this.view(t, t.gpu, null, "2d"), uv, this.context.getCurrentTexture().createView(), this.canvasFormat, null, true);
     }
-    if (dv.getUint32(p + 40, true) & 1) this.presentFlips++;
+    if (dv.getUint32(p + 44, true) & 1) this.presentFlips++;
     this.flush();
     this.imageEvent(win, index, 0);
     const gen = this.gen;

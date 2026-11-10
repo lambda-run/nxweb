@@ -29,7 +29,7 @@ export class RtFs {
   constructor(rt: Runtime, module: WebAssembly.Module, storage: FsStorage, o: RtFsOptions = {}) {
     this.rt = rt;
     this.host = new FsHost(module, storage, {
-      memory: rt.memory, log: l => rt.log(l), saveFailed: o.saveFailed ?? (e => rt.log(`[RED] fs: a save could not be written (error ${e})`)),
+      memory: rt.memory, memEnv: rt.memImports, log: l => rt.log(l), saveFailed: o.saveFailed ?? (e => rt.log(`[RED] fs: a save could not be written (error ${e})`)),
       completed: (token, result) => {
         const wake = this.done.get(token);
         this.done.delete(token);
@@ -39,13 +39,13 @@ export class RtFs {
     });
     this.x = this.host.x;
     const st = range("fs static"), arena = range("fs arena");
-    if (rt.r.rt_static_check(98, BigInt(st.lo), BigInt(st.hi), BigInt(this.x.fs_static_end() >>> 0))) throw new Error("runtime: the fs module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
+    if (rt.r.rt_static_check(98, BigInt(st.lo), BigInt(st.hi), BigInt(this.x.fs_static_end()))) throw new Error("runtime: the fs module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
     this.x.fs_init(arena.lo, arena.hi - arena.lo);
     if (o.programId !== undefined) this.x.fs_set_program_id(o.programId);
     const names = this.host.names();
     // whether the game imports MountSaveData decides what device save data is (src/fs/README.md): the module learns
     // it from the lookups, so every name is looked up as a loader would
-    const p = (rt.r.rt_scratch_ptr() >>> 0) + 3200, enc = new TextEncoder();
+    const p = rt.r.rt_scratch_ptr() + 3200, enc = new TextEncoder();
     for (const n of names) {
       rt.u8().set(enc.encode(n.name + "\0"), p);
       const id = this.x.fs_lookup(p);

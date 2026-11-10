@@ -42,7 +42,7 @@ export async function browserTests(only?: string): Promise<{ ran: number; failed
     const page = await browser.newPage();
     const errors: string[] = [];
     page.on("pageerror", (e: Error) => errors.push(String(e)));
-    await page.goto(`${url}/test/gfx/test.html${only ? `?only=${encodeURIComponent(only)}` : ""}`);
+    await page.goto(`${url}/test/gfx/test.html?mem=${process.env.NX_MEM ?? "32"}${only ? `&only=${encodeURIComponent(only)}` : ""}`);
     const r = await page.evaluate("window.__gfx");
     if (r.fatal) throw new Error(`the scene page failed: ${r.fatal}\n${errors.join("\n")}`);
     console.log(`\nscenes in headless Chromium, WebGPU adapter: ${r.adapter || "(no info)"}; features ${r.features.join(", ")}\n     adapter limits: ${r.limits}`);

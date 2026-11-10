@@ -738,8 +738,8 @@ export function present(tex: usize, crop: usize, window: usize, index: i32): voi
   passBreak();
   contentNeed(load<u64>(tex, O.TEX_serial));
   const o = H.hostRec(H.H_PRESENT, 48);
-  store<u64>(o, load<u64>(tex, O.TEX_serial), 8); memory.copy(o + 16, crop, 16); store<u32>(o, <u32>window, 32); store<u32>(o, index, 36);
-  store<u32>(o, originLowerLeft ? 1 : 0, 40);      // stored bottom-up: shown flipped
+  store<u64>(o, load<u64>(tex, O.TEX_serial), 8); memory.copy(o + 16, crop, 16); store<u64>(o, window, 32); store<u32>(o, index, 40);   // the window is the game's object: its address, 8 bytes
+  store<u32>(o, originLowerLeft ? 1 : 0, 44);      // stored bottom-up: shown flipped
   H.hostRec(H.H_FLUSH, 8);
   H.hostFlush();
 }

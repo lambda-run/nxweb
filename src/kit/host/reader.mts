@@ -17,7 +17,7 @@ export const REASONS = ["", "no transition", "unknown event", "bad data"];
 // The records still in the ring, oldest first (at most kit_trace_cap(); older ones were overwritten)
 export function readTrace(x: KitExports): TraceRecord[] {
   const total = x.kit_trace_total() >>> 0, cap = x.kit_trace_cap(), rec = x.kit_trace_rec();
-  const dv = new DataView(x.memory.buffer), base = x.kit_trace_ptr() >>> 0, out: TraceRecord[] = [];
+  const dv = new DataView(x.memory.buffer), base = Number(x.kit_trace_ptr()), out: TraceRecord[] = [];
   for (let n = Math.max(0, total - cap); n < total; n++) {
     const p = base + (n % cap) * rec, fl = dv.getUint8(p + 13);
     out.push({ seq: dv.getUint32(p, true), instance: dv.getUint32(p + 4, true), machine: dv.getUint16(p + 8, true),
@@ -36,7 +36,7 @@ export interface WasmMachine {
 // The machines as the compiled module has them
 export function readMachines(x: KitExports): WasmMachine[] {
   const mem = new Uint8Array(x.memory.buffer), dv = new DataView(x.memory.buffer);
-  const blob = x.kit_blob_ptr() >>> 0, hits = x.kit_hits_ptr() >>> 0, out: WasmMachine[] = [];
+  const blob = Number(x.kit_blob_ptr()), hits = Number(x.kit_hits_ptr()), out: WasmMachine[] = [];
   for (let id = 0; id < x.kit_machine_count(); id++) {
     const rec = blob + id * DIR_REC;
     const nS = mem[rec + 12], nE = mem[rec + 13], tab = blob + dv.getUint32(rec, true);

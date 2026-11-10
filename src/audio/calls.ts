@@ -18,7 +18,7 @@ let args: usize = 0;
 // @ts-ignore: decorator
 @inline function P(i: i32): usize { return gp(X(i)); }
 // @ts-ignore: decorator
-@inline function K(i: i32): u32 { return <u32>X(i); }
+@inline function K(i: i32): u64 { return X(i); }   // a guest object's address as the key of the host's record of it: the whole register
 // @ts-ignore: decorator
 @inline function I(i: i32): i32 { return <i32>X(i); }
 // @ts-ignore: decorator
@@ -71,9 +71,9 @@ function openAt(g: usize, ev: usize, name: usize, param: usize): u32 {
   const rate = load<i32>(param);
   if (!ch) ch = 2;
   if (rate && rate != <i32>RATE) { red(); puts("AudioOut sample rate "); putu(<u32>rate); puts(" not supported (48 kHz only): the open fails"); end(); return RES_FAIL; }
-  const old = out.outOfKey(<u32>g);
+  const old = out.outOfKey(g);
   if (old != null) out.close(old, lr());   // opened again without a close
-  const o = out.open(<u32>g, out.KIND_GUEST, ev ? eventBind(ev, 1) : 0, ch, name, lr());
+  const o = out.open(g, out.KIND_GUEST, ev ? eventBind(ev, 1) : 0, ch, name, lr());
   if (o == null) return RES_FAIL;
   info(g, ch, out.STATE_STOPPED);
   return RES_OK;
@@ -117,12 +117,12 @@ export function call(fn: u32, argsPtr: usize): i32 {
     case Fn.au_SetBuf: { const b = P(0); store<u64>(b, X(1)); store<u64>(b, X(2), 8); store<u64>(b, X(3), 16); return RET_VOID; }
     case Fn.au_BufPtr: return ret(load<u64>(P(0)));
     case Fn.au_BufSize: return ret(load<u64>(P(0), 16));
-    case Fn.au_Append: { const o = ao(fn, 0); return ret(o != null && P(1) && out.append(o, <u32>P(1), 0, 0, 0) ? 1 : 0); }   // false when the queue is full
+    case Fn.au_Append: { const o = ao(fn, 0); return ret(o != null && P(1) && out.append(o, P(1), 0, 0, 0) ? 1 : 0); }   // false when the queue is full
     case Fn.au_Released: {
       const o = ao(fn, 0);
       if (o == null) return ret(0);
       const s = out.takeReleased(o);
-      return ret(s < 0 ? 0 : load<u32>(o.slot(<u32>s), 16));
+      return ret(s < 0 ? 0 : load<u64>(o.slot(<u32>s), out.SLOT_GUEST));
     }
     // ---------- AudioIn: the host has no microphone ----------
     case Fn.ai_List: return ret(0);
@@ -140,7 +140,7 @@ export function call(fn: u32, argsPtr: usize): i32 {
     case Fn.os_StartN: {
       const list = P(0), n = I(1);
       for (let i = 0; i < n; i++) {
-        const s = stream.find(<u32>load<u64>(list + (<usize>i << 3)));
+        const s = stream.find(load<u64>(list + (<usize>i << 3)));
         if (s == null) { noObject(fn, "OutputStream", load<u64>(list + (<usize>i << 3))); return ret(RES_FAIL); }
         out.start(stream.outOf(s), lr());
       }
@@ -193,7 +193,7 @@ export function call(fn: u32, argsPtr: usize): i32 {
     case Fn.ad_Channels: case Fn.ad_Channels7: return ret(2);
     case Fn.ad_SetVol: devVol = F(0); return RET_VOID;   // kept for the getter, not applied
     case Fn.ad_GetVol: return retF(devVol);
-    case Fn.ad_SetAutoTune: autoTune = K(0) & 1; return RET_VOID;
+    case Fn.ad_SetAutoTune: autoTune = <u32>K(0) & 1; return RET_VOID;
     case Fn.ad_AutoTune: return ret(autoTune);
     case Fn.ad_Notify: case Fn.ad_Notify21: { if (notifyOut) return ret(0x499); notifyOut = true; eventBind(P(0), 0); return ret(RES_OK); }
     case Fn.ad_NotifyIn: { if (notifyIn) return ret(0x499); notifyIn = true; eventBind(P(0), 0); return ret(RES_OK); }

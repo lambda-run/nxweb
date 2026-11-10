@@ -115,15 +115,17 @@ class Ren {
   h0: u64; h1: u64;   // AudioRendererHandle (renderer object, client state)
   sys: u64;           // its AudioRenderSystem, from its first render or update (renOfSys)
   sink: i32;          // its render sink (rsink.ts), -1: none
-  thread: u32;        // the render thread's ThreadType (0x200 bytes of the arena), 0: none
+  private pad: u32;
   stack: u64;         // what the SDK's malloc gave for its stack
+  private i0: u64; private i1: u64; private t0: u64; private t1: u64;   // the two kit instances (inst, tinst)
+  thread: u64;        // the render thread's ThreadType (0x200 bytes of the arena: anywhere in the memory), 0: none
   // @ts-ignore: decorator
   @inline get inst(): Inst { return Inst.at(changetype<usize>(this) + 40); }
   // @ts-ignore: decorator
   @inline get tinst(): Inst { return Inst.at(changetype<usize>(this) + 56); }
 }
-const REN_SIZE: usize = 72;
-const RENS: usize = memory.data(288);
+const REN_SIZE: usize = 80;
+const RENS: usize = memory.data(320);
 let rensInit = false;
 function renAt(i: i32): Ren {
   if (!rensInit) {
@@ -163,28 +165,28 @@ export function stat(i: i32, which: i32): u64 {
 // gets one of these instead, alive until Close; it becomes a kernel event (auto-clear: a kernel event wakes every
 // waiter, a local one only the first), and the game's object gets a copy of its readable handle.
 const NREV: i32 = 4;
-const REV: usize = memory.data(64);   // per slot: +0 u64 the renderer it belongs to (0 free, 1 taken), +8 u32 its memory, +12 u32 the binding's token
+const REV: usize = memory.data(96);   // per slot (24 bytes): +0 u64 the renderer it belongs to (0 free, 1 taken), +8 u64 its memory (a block of the arena), +16 u32 the binding's token
 function revTake(): usize {
   for (let i = 0; i < NREV; i++) {
-    const p = REV + (<usize>i << 4);
+    const p = REV + <usize>i * 24;
     if (load<u64>(p)) continue;
-    let m = <usize>load<u32>(p, 8);
-    if (!m) { m = arenaAlloc(0x80); if (!m) return 0; store<u32>(p, <u32>m, 8); }
+    let m = <usize>load<u64>(p, 8);
+    if (!m) { m = arenaAlloc(0x80); if (!m) return 0; store<u64>(p, m, 8); }
     memory.fill(m, 0, 0x80);
-    store<u64>(p, 1); store<u32>(p, 0, 12);
+    store<u64>(p, 1); store<u32>(p, 0, 16);
     return m;
   }
   return 0;
 }
-function revSlot(m: usize): usize { for (let i = 0; i < NREV; i++) { const p = REV + (<usize>i << 4); if (m && <usize>load<u32>(p, 8) == m) return p; } return 0; }
+function revSlot(m: usize): usize { for (let i = 0; i < NREV; i++) { const p = REV + <usize>i * 24; if (m && <usize>load<u64>(p, 8) == m) return p; } return 0; }
 function revSet(m: usize, obj: u64): void { const p = revSlot(m); if (p) store<u64>(p, obj); }
-function revFind(obj: u64): usize { for (let i = 0; i < NREV; i++) { const p = REV + (<usize>i << 4); if (obj > 1 && load<u64>(p) == obj) return <usize>load<u32>(p, 8); } return 0; }
+function revFind(obj: u64): usize { for (let i = 0; i < NREV; i++) { const p = REV + <usize>i * 24; if (obj > 1 && load<u64>(p) == obj) return <usize>load<u64>(p, 8); } return 0; }
 
 // ---- work buffers the host supplies (nxnative objmap_put(handle[0], owned)) ----
 const NOWNED: i32 = 8;
-const OWNED: usize = memory.data(128);   // +0 u64 the renderer, +8 u32 the arena block
-function ownedPut(obj: u64, raw: usize): void { for (let i = 0; i < NOWNED; i++) { const p = OWNED + (<usize>i << 4); if (!load<u32>(p, 8)) { store<u64>(p, obj); store<u32>(p, <u32>raw, 8); return; } } }
-function ownedDel(obj: u64): usize { for (let i = 0; i < NOWNED; i++) { const p = OWNED + (<usize>i << 4); if (load<u32>(p, 8) && load<u64>(p) == obj) { const raw = <usize>load<u32>(p, 8); store<u32>(p, 0, 8); return raw; } } return 0; }
+const OWNED: usize = memory.data(128);   // +0 u64 the renderer, +8 u64 the arena block
+function ownedPut(obj: u64, raw: usize): void { for (let i = 0; i < NOWNED; i++) { const p = OWNED + (<usize>i << 4); if (!load<u64>(p, 8)) { store<u64>(p, obj); store<u64>(p, raw, 8); return; } } }
+function ownedDel(obj: u64): usize { for (let i = 0; i < NOWNED; i++) { const p = OWNED + (<usize>i << 4); if (load<u64>(p, 8) && load<u64>(p) == obj) { const raw = <usize>load<u64>(p, 8); store<u64>(p, 0, 8); return raw; } } return 0; }
 
 // ---- red lines, once each ----
 const ONCE: usize = memory.data(16);
@@ -412,7 +414,7 @@ function opened(f: Frame, x0: u64): i32 {
       if (!attach || !getr) missing(3, "nn::os::AttachReadableHandleToSystemEvent / GetReadableHandleOfSystemEvent");
       if (destroy) guestCall(destroy, <u64>sev);
       const p = revSlot(sev);
-      if (p) store<u32>(p, eventBind(sev, 1), 12);
+      if (p) store<u32>(p, eventBind(sev, 1), 16);
       // managed (the game's DestroySystemEvent closes its copy), EventClearMode_AutoClear
       if (attach && getr) guestCall(attach, ev, <u64>handleDup(<u32>guestCall(getr, <u64>sev)), 1, 1);
       revSet(sev, h0);
@@ -435,7 +437,7 @@ function opened(f: Frame, x0: u64): i32 {
     slot.inst.step(AudioRenE.NoThread);
     return done(f, r);
   }
-  slot.thread = <u32>tt;
+  slot.thread = tt;
   slot.inst.step(AudioRenE.Opened);
   return call(fMalloc, STACK + 0xfff);
 }
@@ -509,7 +511,7 @@ function closeResume(f: Frame): i32 {
   if (sev) {   // the SDK's Close does not touch the event; destroying it closes the renderer's ends, and the game's copied read end stays the game's
     const destroy = guestFn("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
     if (destroy) guestCall(destroy, <u64>sev);
-    const p = revSlot(sev), tok = load<u32>(p, 12);
+    const p = revSlot(sev), tok = load<u32>(p, 16);
     if (tok) eventRelease(tok);
     revSet(sev, 0);
   }

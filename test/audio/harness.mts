@@ -3,6 +3,8 @@
 // the two clocks as plain numbers, kernel events as a table, and a fake device the test drives by hand: it sets
 // the device's state and plays the worklet's part on the ring header (take frames, count a callback).
 import { execFileSync } from "node:child_process";
+import { buildPair } from "../../tools/asc64/abi.mjs";
+import { makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 import { readFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { KIT_DIR } from "../../src/kit/host/defs.mts";
@@ -11,14 +13,19 @@ import { AudioHost, RING, DEV, OUT_S, BUF_S, RET, REQ, REN_S, REN_THREAD_S, OPUS
 
 export { RING, DEV, OUT_S, BUF_S, RET, REQ, REN_S, REN_THREAD_S, OPUS_PENDING };
 export const ROOT = join(KIT_DIR, "..", "..");
-export const WASM = join(ROOT, "build", "audio", "audio.wasm");
+// NX_MEM (tools/modes.mjs): "32" (default) audio.wasm, whose own memory is the guest memory; "64" audio64.wasm on a
+// 64-bit memory made here; "64hi" the same with the scripted guest's memory and the arena (host-allocated in the
+// runtime: pages of the code region) above 4 GB.
+export const MEM_MODE = process.env.NX_MEM ?? "32";
+export const M64 = MEM_MODE !== "32";
+export const HI = MEM_MODE === "64hi" ? 0x1_8000_0000 : 0;
+export const WASM = join(ROOT, "build", "audio", M64 ? "audio64.wasm" : "audio.wasm");
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 export const MACHINES = ["audio_buf", "audio_out", "opus_req", "audio_ren", "audio_ren_thread", "audio_render", "audio_ren_update"];
 
 export function build(): void {
   mkdirSync(dirname(WASM), { recursive: true });
-  execFileSync(process.execPath, [join(ROOT, "node_modules", "assemblyscript", "bin", "asc.js"), "src/audio/index.ts", "-o", WASM, "--runtime", "stub", "-O2"],
-    { cwd: ROOT, stdio: "inherit" });
+  buildPair("src/audio/index.ts", join("build", "audio", "audio.wasm"), ["--runtime", "stub", "-O2"], { args64: ["--runtime", "stub", "-O2", "--importMemory"] });
 }
 
 // Fn ids by nxnative's identifier (h_<x>), from src/audio/names.ts
@@ -69,12 +76,13 @@ export class Au {
       embedder.handleDup = h => h ? h + 0x1000 : 0;
       embedder.guestCall = (fn, x) => { const name = this.sdkName.get(fn); if (!name) throw new Error(`guest call of ${fn.toString(16)}`); this.sdkCalls.push(name); return BigInt.asUintN(64, BigInt(sdk[name](x, this))); };
     }
-    this.host = new AudioHost(module, embedder);
+    const mem = M64 ? makeMemory64({ initial: 16, maximum: MEM64_MAX_PAGES }) : null;
+    this.host = mem ? new AudioHost(module, embedder, mem.memory, mem.imports()) : new AudioHost(module, embedder);
     this.x = this.host.x;
     const guest = o.guest ?? (8 << 20), arena = o.arena ?? (16 << 20);
-    const end = (this.x.audio_static_end() + 0xFFFF) & ~0xFFFF;
+    const end = HI + Math.ceil(this.x.audio_static_end() / 0x10000) * 0x10000;
     const have = this.x.memory.buffer.byteLength;
-    if (end + guest + arena > have) this.x.memory.grow(Math.ceil((end + guest + arena - have) / 65536));
+    if (end + guest + arena > have) { const n = Math.ceil((end + guest + arena - have) / 65536); if (mem) mem.grow(n); else this.x.memory.grow(n); }
     this.top = end; this.limit = end + guest;
     this.x.audio_init(end + guest, arena);
     if (o.cover !== false) { this.x.kit_cover_enable(1); live.push(this); }

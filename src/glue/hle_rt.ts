@@ -67,7 +67,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     realNs: () => front.realNs?.() ?? BigInt(Date.now()) * 1_000_000n,
     timeZone: t => front.timeZone?.(t) ?? jsZone(t),
     entropy: out => { for (let i = 0; i < out.length; i += 65536) crypto.getRandomValues(out.subarray(i, Math.min(out.length, i + 65536)) as Uint8Array<ArrayBuffer>); },
-    eventNew: () => { const p = o.scratch ?? ((rt.r.rt_scratch_ptr() >>> 0) + 3080); const r = rt.k.kernel_event_new(p) >>> 0; return { r, w: new DataView(rt.memory.buffer).getUint32(p, true) }; },
+    eventNew: () => { const p = o.scratch ?? (rt.r.rt_scratch_ptr() + 3080); const r = rt.k.kernel_event_new(p) >>> 0; return { r, w: new DataView(rt.memory.buffer).getUint32(p, true) }; },
     eventSignal: h => { const ok = rt.k.kernel_event_signal(h) !== 0; rt.requestWake(); return ok; },
     eventClear: h => rt.k.kernel_event_clear(h) !== 0,
     eventDupReadable: h => rt.k.kernel_event_dup_readable(h) >>> 0,
@@ -101,7 +101,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
       }
     },
     // ---- controllers ----
-    stackArg: i => { const sp = Number(rt.core.sp.value & 0xFFFF_FFFFn); return rt.dv().getBigUint64(sp + 8 * i, true); },
+    stackArg: i => { const sp = rt.addr(rt.core.sp.value); return rt.dv().getBigUint64(sp + 8 * i, true); },
     ctrlPrompt: front.ctrlPrompt ? (min, max) => front.ctrlPrompt!(min, max, ok => { host.ctrlAnswer(ok); rt.requestWake(); }) : undefined,
     vibration: front.vibration ? s => front.vibration!(s) : undefined,
     joyMouseWanted: on => front.joyMouseWanted?.(on),
@@ -134,7 +134,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     jitCodeWritten: (rx, off, size) => rt.jitCodeWritten(Number(rx), Number(off), Number(size)),
     jitFree: (rx, rxSize, ro, roSize) => rt.jitFree(Number(rx), Number(rxSize), Number(ro), Number(roSize)),
   };
-  host = new HleHost(module, env, rt.memory);
+  host = new HleHost(module, env, rt.memory, rt.memImports);
   if (o.config) host.config(o.config);
   rt.onHandleClosed(h => host.handleClosed(h));
   if (gfx) gfx.onPresentQueued(frames => {
@@ -144,7 +144,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
   if (front.vibration) host.haptics({ output: true });
   rt.expectOutsideEvents();   // the front end's reports (focus, operation mode, an answer) signal events the guest waits on
   const st = range("hle static");
-  if (rt.r.rt_static_check(97, BigInt(st.lo), BigInt(st.hi), BigInt(host.x.hle_static_end() >>> 0))) throw new Error("runtime: the hle module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
+  if (rt.r.rt_static_check(97, BigInt(st.lo), BigInt(st.hi), BigInt(host.x.hle_static_end()))) throw new Error("runtime: the hle module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
 
   const finish = (cpu: HostCpu, id: number, r: HleResult): HostResult => {
     if (r.wait) {
@@ -167,7 +167,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
   function invoke(cpu: HostCpu, id: number): HostResult {
     const prev = cur; cur = cpu;
     try {
-      const a = cpu.args() >>> 0, dv = cpu.dv(), x: bigint[] = [], d: bigint[] = [];
+      const a = cpu.args(), dv = cpu.dv(), x: bigint[] = [], d: bigint[] = [];
       for (let i = 0; i < 8; i++) { x.push(dv.getBigUint64(a + 8 * i, true)); d.push(dv.getBigUint64(a + 64 + 8 * i, true)); }
       return finish(cpu, id, host.call(id, { x, d, x8: cpu.x(8), lr: cpu.lr }));
     } finally { cur = prev; }

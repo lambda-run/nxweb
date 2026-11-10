@@ -45,7 +45,7 @@ const DIR_REC = 16, NONE = 0xff;
 export function machineRows(memory: WebAssembly.Memory, parts: { name: string; x: KitPart }[], live: Record<string, string> = {}): MachineRow[] {
   if (!parts.length) return [];
   const mem = new Uint8Array(memory.buffer), dv = new DataView(memory.buffer);
-  const first = parts[0].x, n = first.kit_machine_count(), blob0 = first.kit_blob_ptr() >>> 0;
+  const first = parts[0].x, n = first.kit_machine_count(), blob0 = first.kit_blob_ptr();
   const rows: MachineRow[] = [], defs: { states: string[]; events: string[] }[] = [];
   for (let id = 0; id < n; id++) {
     const rec = blob0 + id * DIR_REC, nS = mem[rec + 12], nE = mem[rec + 13], tab = blob0 + dv.getUint32(rec, true);
@@ -59,13 +59,13 @@ export function machineRows(memory: WebAssembly.Memory, parts: { name: string; x
   }
   const lastSeq = new Array<number>(n).fill(-1);
   for (const part of parts) {
-    const x = part.x, blob = x.kit_blob_ptr() >>> 0, hits = x.kit_hits_ptr() >>> 0, used = new Set<number>();
+    const x = part.x, blob = x.kit_blob_ptr(), hits = x.kit_hits_ptr(), used = new Set<number>();
     for (let id = 0; id < n; id++) {
       const rec = blob + id * DIR_REC, cells = mem[rec + 12] * mem[rec + 13], h = hits + dv.getUint32(rec + 8, true);
       let t = 0; for (let c = 0; c < cells; c++) if (mem[h + c]) t++;
       if (t) { rows[id].taken = Math.max(rows[id].taken, t); used.add(id); }
     }
-    const total = x.kit_trace_total() >>> 0, cap = x.kit_trace_cap(), size = x.kit_trace_rec(), base = x.kit_trace_ptr() >>> 0;
+    const total = x.kit_trace_total() >>> 0, cap = x.kit_trace_cap(), size = x.kit_trace_rec(), base = x.kit_trace_ptr();
     for (let k = Math.max(0, total - cap); k < total; k++) {
       const q = base + (k % cap) * size, id = dv.getUint16(q + 8, true);
       if (id >= n) continue;

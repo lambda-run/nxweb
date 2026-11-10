@@ -14,7 +14,10 @@ export const AOMAX: i32 = 8;
 export const QMAX: u32 = 64;       // pending buffers of one output (AppendAudioOutBuffer answers false beyond)
 export const RELMAX: u32 = 64;     // released and not yet taken back
 const SLOTS: i32 = 128;            // QMAX + RELMAX
-const SLOT_SIZE: usize = 32;       // +0 Inst, +16 guest AudioOutBuffer (0: a host block), +20 data, +24 size, +28 aux
+// A slot: +0 Inst, +16 u64 guest AudioOutBuffer (0: a host block), +24 u64 data, +32 u32 size, +36 u32 aux. The two
+// addresses are 8 bytes in either build: guest memory and host-allocated blocks may lie above 4 GB in a 64-bit memory
+const SLOT_SIZE: usize = 40;
+export const SLOT_GUEST: usize = 16, SLOT_DATA: usize = 24, SLOT_SIZE_: usize = 32, SLOT_AUX: usize = 36;
 export const STATE_STARTED: u32 = 0, STATE_STOPPED: u32 = 1, FMT_PCM16: u32 = 2;
 export const KIND_GUEST: u32 = 0, KIND_STREAM: u32 = 1, KIND_SINK: u32 = 2;
 
@@ -24,7 +27,6 @@ export class Out {
   used: u32;
   index: u32;
   id: u32;          // open sequence number (#N in the log)
-  key: u32;         // the guest AudioOut object; 0 for a host output (OutputStream, render sink)
   kind: u32;
   ch: u32;
   event: u32;       // token of the game's release event, 0 when the game polls
@@ -39,6 +41,7 @@ export class Out {
   relFull: u32;     // the released queue is full: consumption stands still until the game takes one (logged once)
   oddCh: u32;
   relNoted: u32;
+  key: u64;         // the guest AudioOut object (its address); 0 for a host output (OutputStream, render sink)
   underN: u64; underB: u64;   // times the queue was empty when the consumer needed data / bytes of silence instead
   appended: u64; released: u64; reclaimed: u64; signals: u64; consumed: u64;
   epoch: u64;       // silent sink: guest time its frame count starts at
@@ -64,12 +67,12 @@ export class Out {
   // @ts-ignore: decorator
   @inline get releasedCount(): u32 { return this.relTail - this.relHead; }
 }
-const OUT_SIZE: usize = 464 + 128 * 32;   // 4560
-const OUTS: usize = memory.data(36480);   // AOMAX * OUT_SIZE
+const OUT_SIZE: usize = 464 + 128 * 40;   // 5584
+const OUTS: usize = memory.data(44672);   // AOMAX * OUT_SIZE
 
 // @ts-ignore: decorator
 @inline export function outAt(i: i32): Out { return changetype<Out>(OUTS + <usize>i * OUT_SIZE); }
-export function outOfKey(key: u32): Out | null {
+export function outOfKey(key: u64): Out | null {
   for (let i = 0; i < AOMAX; i++) { const o = outAt(i); if (o.used && o.key == key && o.kind == KIND_GUEST) return o; }
   return null;
 }
@@ -101,7 +104,7 @@ function lifeNote(o: Out, what: string, lr: u64): void {
 function putc32(): void { puts(" "); }
 
 // ---- open / close ----
-export function open(key: u32, kind: u32, event: u32, ch: u32, name: usize, lr: u64): Out | null {
+export function open(key: u64, kind: u32, event: u32, ch: u32, name: usize, lr: u64): Out | null {
   let o: Out | null = null;
   for (let i = 0; i < AOMAX && o == null; i++) if (!outAt(i).used) { o = outAt(i); o.index = i; }
   if (o == null) { red(); puts("audio: more than "); putu(AOMAX); puts(" AudioOuts open at once: the open fails"); end(); return null; }
@@ -188,12 +191,12 @@ function relFullNote(o: Out): void {
 }
 
 // guest: the game's AudioOutBuffer, or 0 with data / size for a host block (aux is the owner's)
-export function append(o: Out, guest: u32, data: u32, size: u32, aux: u32): bool {
+export function append(o: Out, guest: u64, data: u64, size: u32, aux: u32): bool {
   if (isSilent(o.state)) sinkAdvance(o);   // an empty queue has been playing silence up to now: the buffer starts here
   if (o.pending >= QMAX || !o.nfree) return false;
   const s = <u32>load<u8>(o.freePtr + --o.nfree), p = o.slot(s);
   if (!Inst.at(p).step(AudioBufE.Append)) { o.nfree++; return false; }
-  store<u32>(p, guest, 16); store<u32>(p, data, 20); store<u32>(p, size, 24); store<u32>(p, aux, 28);
+  store<u64>(p, guest, SLOT_GUEST); store<u64>(p, data, SLOT_DATA); store<u32>(p, size, SLOT_SIZE_); store<u32>(p, aux, SLOT_AUX);
   store<u8>(o.qPtr + (o.qTail++ & (QMAX - 1)), <u8>s);
   o.appended++;
   return true;
@@ -211,8 +214,8 @@ export function takeReleased(o: Out): i32 {
 
 // A guest buffer's pointer and size are read when the consumer reaches it, as nxnative reads them when it plays
 function latch(p: usize): void {
-  const g = <usize>load<u32>(p, 16);
-  if (g) { store<u32>(p, <u32>load<u64>(g), 20); store<u32>(p, <u32>min(load<u64>(g, 16), <u64>0x7FFFFFFF), 24); }
+  const g = <usize>load<u64>(p, SLOT_GUEST);
+  if (g) { store<u64>(p, load<u64>(g), SLOT_DATA); store<u32>(p, <u32>min(load<u64>(g, 16), <u64>0x7FFFFFFF), SLOT_SIZE_); }
 }
 
 // Take n bytes off the pending queue for the consumer (dst == 0: the silent sink, which only counts them). A buffer
@@ -225,10 +228,10 @@ export function pull(o: Out, dst: usize, n: u32): void {
     }
     const s = <u32>load<u8>(o.qPtr + (o.qHead & (QMAX - 1))), p = o.slot(s), b = Inst.at(p);
     if (b.state == AudioBufS.Appended) { latch(p); b.step(AudioBufE.Play); }
-    const size = load<u32>(p, 24);
+    const size = load<u32>(p, SLOT_SIZE_);
     const k = o.pos < size ? min(size - o.pos, n) : 0;
     if (k) {
-      if (dst) { memory.copy(dst, <usize>load<u32>(p, 20) + o.pos, k); dst += k; }
+      if (dst) { memory.copy(dst, <usize>load<u64>(p, SLOT_DATA) + o.pos, k); dst += k; }
       n -= k; o.pos += k; o.consumed += k;
     }
     if (o.pos < size) return;   // n is used up
@@ -244,8 +247,8 @@ export function queuedFrames(o: Out): u64 {
   let bytes: u64 = 0;
   for (let q = o.qHead; q != o.qTail; q++) {
     const p = o.slot(<u32>load<u8>(o.qPtr + (q & (QMAX - 1))));
-    const g = <usize>load<u32>(p, 16);
-    bytes += Inst.at(p).state == AudioBufS.Appended && g ? min(load<u64>(g, 16), <u64>0x7FFFFFFF) : <u64>load<u32>(p, 24);
+    const g = <usize>load<u64>(p, SLOT_GUEST);
+    bytes += Inst.at(p).state == AudioBufS.Appended && g ? min(load<u64>(g, 16), <u64>0x7FFFFFFF) : <u64>load<u32>(p, SLOT_SIZE_);
   }
   return bytes > o.pos ? (bytes - o.pos) / o.frameBytes : 0;
 }
@@ -286,8 +289,8 @@ export function sinkAdvance(o: Out): void {
 export function sinkDeadline(o: Out): u64 {
   if (!isSilent(o.state) || o.qHead == o.qTail || o.releasedCount == RELMAX) return NEVER;
   const p = o.slot(<u32>load<u8>(o.qPtr + (o.qHead & (QMAX - 1))));
-  let size = <u64>load<u32>(p, 24);
-  if (Inst.at(p).state == AudioBufS.Appended) { const g = <usize>load<u32>(p, 16); if (g) size = min(load<u64>(g, 16), <u64>0x7FFFFFFF); }
+  let size = <u64>load<u32>(p, SLOT_SIZE_);
+  if (Inst.at(p).state == AudioBufS.Appended) { const g = <usize>load<u64>(p, SLOT_GUEST); if (g) size = min(load<u64>(g, 16), <u64>0x7FFFFFFF); }
   const fb = <u64>o.frameBytes;
   const rem = size > o.pos ? (size - o.pos + fb - 1) / fb : 0;
   const f = o.sinkFrames + rem;

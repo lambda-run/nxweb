@@ -1,0 +1,2238 @@
+# tools/audit64.allow: the reviewed sites of tools/audit64.mjs (docs/CONTRACT.md, "Addresses"). Tab-separated:
+# file, class, how many times the expression occurs in the file, the expression, and for class A the reason.
+# Classes:
+#   D  32-bit data at an address: a field the format or the Switch ABI fixes at 4 bytes is read or written; the value is not an address
+#   C  a value that is not an address is cast: a count, index, id, handle, flag, character, colour, enum, or a size the format bounds below 4 GB
+#   H  a pointer into the host area (a module's static data, or its arena when that is a range of the layout table): below 0x0800_0000 in both memory modes
+#   O  an offset inside one file, image, record or arena (bounded by its size, below 4 GB), added to a usize base
+#   W  the documented wrap: memory32 wraps a guest register to 32 bits, and this site does it only in that build (the wasm64 build takes the other branch)
+#   B  glue: a bit operation on a value that is not an address (flags, pixels, hashes, instruction words, BigInt arithmetic, a count)
+#   V  glue: 32-bit data read or written at an address (DataView / typed array over a field that is 4 bytes); the value is not an address
+#   S  glue: an index or size inside the host area or inside one small buffer (below 2 GB by the layout table)
+#   A  reviewed one by one: the reason is on the entry
+#   ?  NOT REVIEWED: found by --update where the rules see an address-like operand
+# Trees not audited site by site:
+#   src/a64/  the translator, done in phase 1: instruction words and immediates are 32 bits by the architecture; its own gates run it with code and data above 4 GB (npm run a64:guests, a64:fuzz)
+#   src/prepare/  the prepare step's module has a memory of its own (wasm32, below 4 GB by construction) and never holds a guest address of the running process
+#   src/kit/  the state machine kit: ids, table offsets and trace records in a module's static data
+#   src/shaders/  SPIR-V words
+#   /gen/  generated tables
+#   /names.ts  generated name tables
+#   src/glue/wasm_abi.ts  the one place where addresses are converted: its >>> 0 is the wasm32 build's result of an address
+#   src/glue/a64_host.ts  the translator's glue, done in phase 1 (mem64 throughout; its 32-bit operations are on instruction words, table indices and the memory32 pc map)
+src/audio/base.ts	?	1	& 0xFFFFFFFF
+src/audio/base.ts	?	1	<i32>n
+src/audio/base.ts	?	1	<u32>(aEnd - aBase)
+src/audio/base.ts	?	1	<u32>(size - need)
+src/audio/base.ts	C	1	<u32>need
+src/audio/base.ts	?	2	<usize>load<u32>(p)
+src/audio/base.ts	D	6	load<u32>(p)
+src/audio/base.ts	D	2	load<u32>(p, 4)
+src/audio/base.ts	D	1	load<u32>(q)
+src/audio/base.ts	D	1	load<u32>(q, 4)
+src/audio/base.ts	D	1	store<u32>(aBase, 0, 4)
+src/audio/base.ts	?	1	store<u32>(aBase, <u32>(aEnd - aBase))
+src/audio/base.ts	D	1	store<u32>(p + need, 0, 4)
+src/audio/base.ts	?	1	store<u32>(p + need, <u32>(size - need))
+src/audio/base.ts	D	1	store<u32>(p, 1, 4)
+src/audio/base.ts	D	1	store<u32>(p, <u32>need)
+src/audio/base.ts	D	1	store<u32>(p, load<u32>(p) + load<u32>(q))
+src/audio/base.ts	D	1	store<u32>(ptr - 16, 0, 4)
+src/audio/calls.ts	C	1	<i32>RATE
+src/audio/calls.ts	?	1	<i32>X(i)
+src/audio/calls.ts	C	1	<u32>K(0)
+src/audio/calls.ts	C	1	<u32>load<u16>(param, 4)
+src/audio/calls.ts	C	1	<u32>rate
+src/audio/calls.ts	C	1	<u32>s
+src/audio/calls.ts	D	1	load<i32>(p, 0x2c)
+src/audio/calls.ts	D	1	load<i32>(param)
+src/audio/calls.ts	D	1	store<i32>(PARAM, 1, 0x2c)
+src/audio/calls.ts	D	1	store<i32>(PARAM, 1, 0x30)
+src/audio/calls.ts	D	1	store<u32>(g, RATE)
+src/audio/calls.ts	D	1	store<u32>(g, ch, 4)
+src/audio/calls.ts	D	1	store<u32>(g, out.FMT_PCM16, 8)
+src/audio/calls.ts	D	1	store<u32>(g, state, 12)
+src/audio/cmdlist.ts	?	1	<i32>header && <usize>n <= e - q
+src/audio/cmdlist.ts	?	1	<i32>load<i16>(q + (hdr21 ? 2 : hdr6 ? 4 : 6))
+src/audio/cmdlist.ts	C	1	<i32>load<i16>(q, 6)
+src/audio/cmdlist.ts	C	1	<i32>load<u8>(q, 1)
+src/audio/cmdlist.ts	C	1	<i32>load<u8>(q, 5)
+src/audio/cmdlist.ts	C	1	<u32>sinkId << 8
+src/audio/cmdlist.ts	D	1	load<i32>(HIST + (<usize>(sinkId & 63) << 2))
+src/audio/cmdlist.ts	D	1	load<i32>(HIST + (<usize>k << 2))
+src/audio/cmdlist.ts	D	1	load<i32>(h)
+src/audio/cmdlist.ts	D	1	load<u32>(b + (sink4 ? 0x120 : 0x130))
+src/audio/cmdlist.ts	D	1	load<u32>(cl, 0x14)
+src/audio/cmdlist.ts	D	1	load<u32>(cl, 0x18)
+src/audio/cmdlist.ts	D	1	load<u32>(cl, 4)
+src/audio/cmdlist.ts	D	1	load<u32>(q + <usize>(0x130 + sinkBody()))
+src/audio/cmdlist.ts	D	1	load<u32>(q)
+src/audio/cmdlist.ts	D	1	load<u32>(q, 0x120)
+src/audio/cmdlist.ts	D	1	store<i32>(h, load<i32>(h) + 1)
+src/audio/cmdlist.ts	D	1	store<u32>(SINK_LOGGED, 0)
+src/audio/dev.ts	D	2	load<u32>(RING + off)
+src/audio/dev.ts	D	2	store<u32>(RING + off, v)
+src/audio/index.ts	C	1	<i32>arg
+src/audio/index.ts	C	1	<i32>load<u8>(out.outAt(i).slot(slot))
+src/audio/mix.ts	?	1	<i32>(v > 32767 ? 32767 : v < -32768 ? -32768 : v)
+src/audio/mix.ts	C	1	<i32>k * L
+src/audio/mix.ts	C	1	<i32>n * L
+src/audio/mix.ts	C	2	<i32>rsL
+src/audio/mix.ts	C	2	<i32>rsM
+src/audio/mix.ts	?	1	<u32>((<i64>rsQ + <i64>rsL + <i64>(nOut - 1) * <i64>rsM) / <i64>rsL)
+src/audio/mix.ts	?	1	<u32>(<u64>inRate * MAXPHASE / outRate)
+src/audio/mix.ts	?	1	<u32>(t / <i64>rsM)
+src/audio/mix.ts	C	1	<u32>min(least, 0x7FFFFFFF)
+src/audio/opus.ts	?	1	<i32>((changetype<usize>(d) - DECS) / DEC_REC)
+src/audio/opus.ts	?	1	<i32>((changetype<usize>(m) - MGRS) / MGR_REC)
+src/audio/opus.ts	C	2	<i32>((h >> 16) & 0xFF)
+src/audio/opus.ts	C	1	<i32>(m.ioTotal - m.ioUsed)
+src/audio/opus.ts	C	1	<i32>(which == 0 ? d.nwait : which == 1 ? d.nexec : d.ndone)
+src/audio/opus.ts	C	1	<i32>load<u32>(p, 28)
+src/audio/opus.ts	?	4	<i32>v - 1
+src/audio/opus.ts	C	1	<u32>(load<u32>(p, 32))
+src/audio/opus.ts	C	1	<u32>d.ch * 2
+src/audio/opus.ts	C	1	<u32>d.ch * 2 > MAX_PCM
+src/audio/opus.ts	C	5	<u32>decIndex(d)
+src/audio/opus.ts	C	1	<u32>got
+src/audio/opus.ts	C	1	<u32>guestCall(init, soft, <u64>rate, <u64>ch, work, ws)
+src/audio/opus.ts	C	1	<u32>guestCall(sdk(S.Decode), d.soft, USED, USED + 8, pcm, MAX_PCM, p + 32, size)
+src/audio/opus.ts	C	3	<u32>io
+src/audio/opus.ts	C	1	<u32>io + SPARE
+src/audio/opus.ts	?	1	<u32>load<u16>(m.freeStack + (<usize>(--m.nfree) << 1))
+src/audio/opus.ts	C	2	<u32>mgrIndex(m)
+src/audio/opus.ts	C	1	<u32>r
+src/audio/opus.ts	?	1	<u32>samples
+src/audio/opus.ts	?	1	<u32>samples * <u32>d.ch * 2
+src/audio/opus.ts	?	1	<u32>samples * <u32>d.ch * 2 > MAX_PCM
+src/audio/opus.ts	?	1	<u32>size
+src/audio/opus.ts	D	1	load<i32>(USED, 8)
+src/audio/opus.ts	D	1	load<i32>(p, 24)
+src/audio/opus.ts	D	1	load<u32>(m.req(n - 1), 16)
+src/audio/opus.ts	D	2	load<u32>(p, 16)
+src/audio/opus.ts	D	3	load<u32>(p, 20)
+src/audio/opus.ts	D	1	load<u32>(p, 28)
+src/audio/opus.ts	D	1	load<u32>(p, 32)
+src/audio/opus.ts	D	1	store<i32>(USED, 0, 8)
+src/audio/opus.ts	D	1	store<i32>(p, 0, 24)
+src/audio/opus.ts	?	1	store<i32>(p, samples, 24)
+src/audio/opus.ts	D	1	store<i32>(samples, 0)
+src/audio/opus.ts	D	1	store<i32>(samples, load<i32>(p, 24))
+src/audio/opus.ts	D	1	store<u32>(m.req(d.tail - 1), slot + 1, 16)
+src/audio/opus.ts	D	1	store<u32>(p, 0, 16)
+src/audio/opus.ts	D	1	store<u32>(p, <u32>decIndex(d), 28)
+src/audio/opus.ts	?	1	store<u32>(p, <u32>samples * <u32>d.ch * 2, 20)
+src/audio/opus.ts	?	1	store<u32>(p, <u32>size, 20)
+src/audio/out.ts	?	1	<i32>(o.inst.data & 15)
+src/audio/out.ts	C	1	<i32>s
+src/audio/out.ts	?	1	<u32>(k * fb)
+src/audio/out.ts	C	1	<u32>load<u8>(o.freePtr + --o.nfree)
+src/audio/out.ts	C	3	<u32>load<u8>(o.qPtr + (o.qHead & (QMAX - 1)))
+src/audio/out.ts	C	1	<u32>load<u8>(o.qPtr + (q & (QMAX - 1)))
+src/audio/out.ts	C	2	<u32>load<u8>(o.relPtr + (o.relHead++ & (RELMAX - 1)))
+src/audio/out.ts	C	1	<u32>min(load<u64>(g, 16), <u64>0x7FFFFFFF)
+src/audio/out.ts	C	1	<u32>s
+src/audio/out.ts	D	3	load<u32>(p, SLOT_SIZE_)
+src/audio/out.ts	D	1	store<u32>(p, <u32>min(load<u64>(g, 16), <u64>0x7FFFFFFF), SLOT_SIZE_)
+src/audio/out.ts	D	1	store<u32>(p, aux, SLOT_AUX)
+src/audio/out.ts	?	1	store<u32>(p, size, SLOT_SIZE_)
+src/audio/ren.ts	?	1	<i32>((changetype<usize>(f) - FRAMES) / FRAME_SIZE)
+src/audio/ren.ts	?	1	<i32>((changetype<usize>(r) - RENS) / REN_SIZE)
+src/audio/ren.ts	C	1	<i32>(w << 6)
+src/audio/ren.ts	?	1	<i32>f.a4
+src/audio/ren.ts	C	1	<i32>guestCall(fDevice, sys)
+src/audio/ren.ts	C	1	<i32>guestCall(fMode, sys)
+src/audio/ren.ts	C	1	<u32>1 << rd
+src/audio/ren.ts	C	1	<u32>guestCall(getr, <u64>sev)
+src/audio/ren.ts	C	2	<u32>i
+src/audio/ren.ts	C	2	<u32>k
+src/audio/ren.ts	?	2	<u32>x0
+src/audio/ren.ts	D	1	load<i32>(g)
+src/audio/ren.ts	D	1	load<i32>(g, 0x10)
+src/audio/ren.ts	D	1	load<i32>(g, 0x14)
+src/audio/ren.ts	D	1	load<i32>(g, 0x18)
+src/audio/ren.ts	D	1	load<i32>(g, 0x24)
+src/audio/ren.ts	D	1	load<i32>(g, 0xc)
+src/audio/ren.ts	D	1	load<i32>(g, 4)
+src/audio/ren.ts	D	1	load<i32>(g, 8)
+src/audio/ren.ts	D	1	load<i32>(g, P_DEVICE)
+src/audio/ren.ts	D	1	load<i32>(g, P_MODE)
+src/audio/ren.ts	D	1	load<i32>(s, 0x48)
+src/audio/ren.ts	D	1	load<i32>(s, 0x4c)
+src/audio/ren.ts	D	2	load<u32>(f + (<usize>i << 2))
+src/audio/ren.ts	D	1	load<u32>(p)
+src/audio/ren.ts	D	1	load<u32>(p, 16)
+src/audio/ren.ts	D	1	load<u32>(p, 4)
+src/audio/ren.ts	D	1	store<i32>(dst, 1, P_DEVICE)
+src/audio/ren.ts	D	1	store<i32>(dst, 1, P_MODE)
+src/audio/ren.ts	D	1	store<u32>(REQ, REQ_CALL)
+src/audio/ren.ts	D	2	store<u32>(REQ, REQ_DONE)
+src/audio/ren.ts	D	1	store<u32>(REQ, REQ_WAIT)
+src/audio/ren.ts	D	1	store<u32>(p, 0, 16)
+src/audio/ren.ts	D	1	store<u32>(p, eventBind(sev, 1), 16)
+src/audio/rsink.ts	?	1	<i32>((<i64>load<i32>(mix + chan(idx, 0, idxSize) * stride + o) * CF + c + <i64>load<i32>(mix +
+src/audio/rsink.ts	?	1	<i32>((<i64>load<i32>(mix + chan(idx, 1, idxSize) * stride + o) * CF + c + <i64>load<i32>(mix +
+src/audio/rsink.ts	C	1	<i32>nearest(l)
+src/audio/rsink.ts	C	1	<i32>nearest(r)
+src/audio/rsink.ts	C	2	<i32>s.out
+src/audio/rsink.ts	C	1	<u32>RS_T
+src/audio/rsink.ts	C	1	<u32>load<u8>(s.freeList + --s.nfree)
+src/audio/rsink.ts	?	1	<u32>p
+src/audio/rsink.ts	C	1	<u32>slot
+src/audio/rsink.ts	D	1	load<i32>(ST + (<usize>n << 2))
+src/audio/rsink.ts	D	2	load<i32>(mix + chan(idx, 0, idxSize) * stride + o)
+src/audio/rsink.ts	D	2	load<i32>(mix + chan(idx, 1, idxSize) * stride + o)
+src/audio/rsink.ts	D	1	load<i32>(mix + chan(idx, 2, idxSize) * stride + o)
+src/audio/rsink.ts	D	1	load<i32>(mix + chan(idx, 3, idxSize) * stride + o)
+src/audio/rsink.ts	D	1	load<i32>(mix + chan(idx, 4, idxSize) * stride + o)
+src/audio/rsink.ts	D	1	load<i32>(mix + chan(idx, 5, idxSize) * stride + o)
+src/audio/rsink.ts	D	1	load<i32>(p + (<usize>w << 2))
+src/audio/rsink.ts	D	1	load<i32>(x + (<usize>(2 * k + 1) << 2))
+src/audio/rsink.ts	D	1	load<i32>(x + (<usize>(2 * k) << 2))
+src/audio/rsink.ts	D	1	load<u32>(o.slot(<u32>slot), out.SLOT_AUX)
+src/audio/rsink.ts	D	1	load<u32>(p, 0x34)
+src/audio/rsink.ts	D	1	load<u32>(p, 0x38)
+src/audio/rsink.ts	D	1	load<u32>(p, 12)
+src/audio/rsink.ts	D	1	load<u32>(p, 16)
+src/audio/rsink.ts	D	1	load<u32>(p, 20)
+src/audio/rsink.ts	D	1	load<u32>(p, 24)
+src/audio/rsink.ts	D	1	load<u32>(p, 28)
+src/audio/rsink.ts	D	1	load<u32>(p, 36)
+src/audio/rsink.ts	D	1	load<u32>(p, 4)
+src/audio/rsink.ts	D	1	load<u32>(p, 40)
+src/audio/rsink.ts	D	1	load<u32>(p, 8)
+src/audio/rsink.ts	D	1	load<u32>(s.cqN + (<usize>(s.cqHead % CQ) << 2))
+src/audio/rsink.ts	D	1	store<i32>(ST + (<usize>(2 * n + 1) << 2), r)
+src/audio/rsink.ts	D	1	store<i32>(ST + (<usize>(2 * n) << 2), l)
+src/audio/rsink.ts	D	1	store<i32>(io + (<usize>(2 * m + 1) << 2), <i32>nearest(r))
+src/audio/rsink.ts	D	1	store<i32>(io + (<usize>(2 * m) << 2), <i32>nearest(l))
+src/audio/rsink.ts	D	1	store<u32>(s.cqN + (<usize>(s.cqTail % CQ) << 2), nout)
+src/audio/stream.ts	C	1	<i32>RATE
+src/audio/stream.ts	C	2	<i32>p
+src/audio/stream.ts	C	1	<i32>s.cap - <i32>s.queued
+src/audio/stream.ts	C	1	<i32>s.out
+src/audio/stream.ts	C	2	<i32>s.queued
+src/audio/stream.ts	C	1	<i32>v
+src/audio/stream.ts	C	2	<u32>ch
+src/audio/stream.ts	C	1	<u32>ch * 4
+src/audio/stream.ts	C	3	<u32>frames
+src/audio/stream.ts	C	1	<u32>frames * <u32>ch * 4
+src/audio/stream.ts	C	1	<u32>frames * s.ch
+src/audio/stream.ts	C	1	<u32>frames > s.cap - s.queued
+src/audio/stream.ts	C	3	<u32>off
+src/audio/stream.ts	C	1	<u32>slot
+src/audio/stream.ts	D	1	load<i32>(fmtPtr)
+src/audio/stream.ts	D	1	load<i32>(fmtPtr, 4)
+src/audio/stream.ts	D	1	load<i32>(fmtPtr, 8)
+src/audio/stream.ts	D	1	load<u32>(o.slot(<u32>slot), out.SLOT_AUX)
+src/audio/stream.ts	D	1	load<u32>(s.fifo + (<usize>(s.fHead & 63) << 2))
+src/audio/stream.ts	D	1	store<u32>(s.fifo + (<usize>(s.fTail++ & 63) << 2), <u32>off)
+src/fs/base.ts	?	1	<i32>i
+src/fs/base.ts	?	1	<u32>(aEnd - aBase)
+src/fs/base.ts	?	1	<u32>(ps + size)
+src/fs/base.ts	?	1	<u32>(size - need)
+src/fs/base.ts	?	1	<u32>b
+src/fs/base.ts	?	2	<u32>cur
+src/fs/base.ts	?	1	<u32>need
+src/fs/base.ts	?	1	<u32>next
+src/fs/base.ts	?	1	<u32>p
+src/fs/base.ts	C	1	<u32>rest
+src/fs/base.ts	?	1	<u32>size
+src/fs/base.ts	?	1	<usize>load<u32>(b)
+src/fs/base.ts	?	3	<usize>load<u32>(cur)
+src/fs/base.ts	?	3	<usize>load<u32>(cur, 4)
+src/fs/base.ts	?	1	<usize>load<u32>(prev)
+src/fs/base.ts	D	1	store<u32>(aHead, 0, 4)
+src/fs/base.ts	?	1	store<u32>(aHead, <u32>(aEnd - aBase))
+src/fs/base.ts	?	1	store<u32>(b, <u32>cur, 4)
+src/fs/base.ts	?	1	store<u32>(b, <u32>size)
+src/fs/base.ts	?	1	store<u32>(cur, <u32>need)
+src/fs/base.ts	?	1	store<u32>(prev, <u32>(ps + size))
+src/fs/base.ts	?	1	store<u32>(prev, <u32>b, 4)
+src/fs/base.ts	?	1	store<u32>(prev, <u32>cur, 4)
+src/fs/base.ts	D	1	store<u32>(prev, <u32>rest, 4)
+src/fs/base.ts	?	1	store<u32>(rest, <u32>(size - need))
+src/fs/base.ts	?	1	store<u32>(rest, <u32>next, 4)
+src/fs/fs.ts	?	1	<i32>MAX_MOUNT || (count && !<usize>names)
+src/fs/fs.ts	?	1	<i32>a0
+src/fs/fs.ts	?	6	<i32>a1
+src/fs/fs.ts	C	3	<i32>i
+src/fs/fs.ts	C	1	<i32>i + 1
+src/fs/fs.ts	C	4	<i32>load<u32>(p, 24)
+src/fs/fs.ts	C	1	<i32>load<u32>(snap + <usize>pos * 8)
+src/fs/fs.ts	C	1	<i32>m.state
+src/fs/fs.ts	?	1	<i32>p.v0
+src/fs/fs.ts	C	1	<i32>s.inst.data
+src/fs/fs.ts	C	1	<i32>save(<u32>i)
+src/fs/fs.ts	C	2	<i32>si
+src/fs/fs.ts	C	1	<u32>(i - start)
+src/fs/fs.ts	C	1	<u32>(mask)
+src/fs/fs.ts	C	1	<u32>1 << mTarget(<u32>i)
+src/fs/fs.ts	C	2	<u32>1 << si
+src/fs/fs.ts	?	2	<u32>a2
+src/fs/fs.ts	C	1	<u32>c
+src/fs/fs.ts	C	1	<u32>colon
+src/fs/fs.ts	C	1	<u32>ctz<u32>(mask)
+src/fs/fs.ts	C	1	<u32>gstrlen(name, 4096)
+src/fs/fs.ts	C	1	<u32>gstrlen(p.a0, 4096)
+src/fs/fs.ts	C	3	<u32>gstrlen(path, 4096)
+src/fs/fs.ts	C	18	<u32>i
+src/fs/fs.ts	C	1	<u32>load<u16>(PSTK + <usize>n * 2)
+src/fs/fs.ts	C	2	<u32>load<u16>(c)
+src/fs/fs.ts	C	2	<u32>load<u16>(p)
+src/fs/fs.ts	C	1	<u32>load<u16>(p, 18)
+src/fs/fs.ts	C	10	<u32>load<u16>(p, 20)
+src/fs/fs.ts	C	1	<u32>load<u16>(slot, 18)
+src/fs/fs.ts	C	1	<u32>load<u8>(p + k)
+src/fs/fs.ts	C	1	<u32>load<u8>(p, 16)
+src/fs/fs.ts	C	1	<u32>m
+src/fs/fs.ts	?	1	<u32>n
+src/fs/fs.ts	C	7	<u32>nl
+src/fs/fs.ts	?	1	<u32>p.a3
+src/fs/fs.ts	C	2	<u32>p.token
+src/fs/fs.ts	?	7	<u32>p.v0
+src/fs/fs.ts	C	1	<u32>s.charCodeAt(k)
+src/fs/fs.ts	C	3	<u32>si
+src/fs/fs.ts	?	1	<u32>snap
+src/fs/fs.ts	C	2	<u32>token - 1
+src/fs/fs.ts	C	1	<u32>token > MAX_PEND || pend(<u32>token - 1)
+src/fs/fs.ts	?	1	<u32>v
+src/fs/fs.ts	?	1	<u32>wf
+src/fs/fs.ts	?	3	<usize>load<u32>(p, 24)
+src/fs/fs.ts	D	8	load<u32>(p, 24)
+src/fs/fs.ts	D	5	load<u32>(p, 28)
+src/fs/fs.ts	D	2	load<u32>(p, 32)
+src/fs/fs.ts	D	1	load<u32>(p, 36)
+src/fs/fs.ts	D	1	load<u32>(snap + <usize>pos * 8)
+src/fs/fs.ts	D	1	load<u32>(snap + <usize>pos * 8, 4)
+src/fs/fs.ts	D	1	store<i32>(<usize>a0, 0)
+src/fs/fs.ts	D	1	store<i32>(<usize>out, type)
+src/fs/fs.ts	D	1	store<u32>(p, 0, 24)
+src/fs/fs.ts	D	2	store<u32>(p, 0, 28)
+src/fs/fs.ts	D	1	store<u32>(p, 0, 32)
+src/fs/fs.ts	D	1	store<u32>(p, 0, 36)
+src/fs/fs.ts	?	1	store<u32>(p, <u32>n, 24)
+src/fs/fs.ts	?	1	store<u32>(p, <u32>snap, 24)
+src/fs/fs.ts	?	1	store<u32>(p, count, 28)
+src/fs/fs.ts	D	1	store<u32>(p, dChildDir(m, gEnt), 32)
+src/fs/fs.ts	D	2	store<u32>(p, gEnt, 24)
+src/fs/fs.ts	D	1	store<u32>(p, nSerial(s, n), 28)
+src/fs/fs.ts	D	1	store<u32>(p, phase, 36)
+src/fs/fs.ts	D	2	store<u32>(p, pos, 32)
+src/fs/fs.ts	D	1	store<u32>(snap + <usize>k * 8, <u32>c)
+src/fs/fs.ts	D	1	store<u32>(snap + <usize>k * 8, nSerial(s, c), 4)
+src/fs/romfs.ts	?	1	<i32>i
+src/fs/romfs.ts	C	1	<i32>nImg - 1
+src/fs/romfs.ts	?	1	<u32>load<u64>(h, 16)
+src/fs/romfs.ts	?	1	<u32>load<u64>(h, 32)
+src/fs/romfs.ts	?	1	<u32>load<u64>(h, 48)
+src/fs/romfs.ts	?	1	<u32>load<u64>(h, 64)
+src/fs/romfs.ts	?	1	<u32>load<u8>(map + (off >> 5))
+src/fs/romfs.ts	C	1	<u32>load<u8>(name + i)
+src/fs/romfs.ts	C	1	<u32>nd
+src/fs/romfs.ts	C	1	<u32>nf
+src/fs/romfs.ts	D	2	load<u32>(dm + p)
+src/fs/romfs.ts	D	1	load<u32>(dm + p, 12)
+src/fs/romfs.ts	D	1	load<u32>(dm + p, 16)
+src/fs/romfs.ts	D	1	load<u32>(dm + p, 20)
+src/fs/romfs.ts	D	1	load<u32>(dm + p, 4)
+src/fs/romfs.ts	D	1	load<u32>(dm + p, 8)
+src/fs/romfs.ts	D	2	load<u32>(fm + p)
+src/fs/romfs.ts	D	1	load<u32>(fm + p, 24)
+src/fs/romfs.ts	D	1	load<u32>(fm + p, 28)
+src/fs/romfs.ts	D	1	load<u32>(fm + p, 4)
+src/fs/romfs.ts	D	1	load<u32>(m.dh + <usize>(romHash(parent, name, len) % m.dhN) * 4)
+src/fs/romfs.ts	D	1	load<u32>(m.dh + <usize>b * 4)
+src/fs/romfs.ts	D	1	load<u32>(m.dm + d)
+src/fs/romfs.ts	D	1	load<u32>(m.dm + d, 12)
+src/fs/romfs.ts	D	1	load<u32>(m.dm + d, 16)
+src/fs/romfs.ts	D	1	load<u32>(m.dm + d, 20)
+src/fs/romfs.ts	D	1	load<u32>(m.dm + d, 4)
+src/fs/romfs.ts	D	1	load<u32>(m.dm + d, 8)
+src/fs/romfs.ts	D	1	load<u32>(m.fh + <usize>(romHash(parent, name, len) % m.fhN) * 4)
+src/fs/romfs.ts	D	1	load<u32>(m.fh + <usize>b * 4)
+src/fs/romfs.ts	D	1	load<u32>(m.fm + f)
+src/fs/romfs.ts	D	1	load<u32>(m.fm + f, 24)
+src/fs/romfs.ts	D	1	load<u32>(m.fm + f, 28)
+src/fs/romfs.ts	D	1	load<u32>(m.fm + f, 4)
+src/fs/romfs.ts	D	1	load<u32>(tab + p + fixed - 4)
+src/fs/save.ts	?	1	<i32>cap - 1
+src/fs/save.ts	C	2	<i32>i
+src/fs/save.ts	C	1	<i32>nSave - 1
+src/fs/save.ts	C	1	<i32>s.nodeCap
+src/fs/save.ts	?	1	<u32>(bytes - done)
+src/fs/save.ts	?	1	<u32>count
+src/fs/save.ts	?	4	<u32>len
+src/fs/save.ts	C	1	<u32>load<u16>(e, 6)
+src/fs/save.ts	?	2	<u32>manLen
+src/fs/save.ts	C	1	<u32>n < s.nodeCap && (nFlags(s, n) & (NF_USED | NF_DEAD))
+src/fs/save.ts	C	1	<u32>n < s.nodeCap && (nFlags(s, n) & NF_USED)
+src/fs/save.ts	?	2	<u32>nm
+src/fs/save.ts	?	1	<usize>load<u32>(np(s, n), 20)
+src/fs/save.ts	?	1	<usize>load<u32>(s.nodes + <usize>i * NODE, 20)
+src/fs/save.ts	D	1	load<i32>(map + <usize>parent * 4)
+src/fs/save.ts	D	1	load<i32>(np(s, n))
+src/fs/save.ts	D	1	load<i32>(np(s, n), 4)
+src/fs/save.ts	D	1	load<i32>(np(s, n), 8)
+src/fs/save.ts	D	3	load<i32>(p)
+src/fs/save.ts	D	1	load<i32>(p, 12)
+src/fs/save.ts	D	1	load<i32>(p, 8)
+src/fs/save.ts	D	1	load<u32>(e)
+src/fs/save.ts	D	1	load<u32>(man)
+src/fs/save.ts	D	1	load<u32>(man, 4)
+src/fs/save.ts	D	1	load<u32>(man, 8)
+src/fs/save.ts	D	1	load<u32>(np(s, n), 48)
+src/fs/save.ts	D	1	load<u32>(np(s, n), 52)
+src/fs/save.ts	D	1	load<u32>(np(s, parent), 56)
+src/fs/save.ts	?	1	store<i32>(map + <usize>i * 4, n)
+src/fs/save.ts	D	1	store<i32>(map, 0)
+src/fs/save.ts	?	1	store<i32>(np(s, head), n, 12)
+src/fs/save.ts	D	1	store<i32>(np(s, next), prev, 12)
+src/fs/save.ts	?	1	store<i32>(np(s, parent), n, 4)
+src/fs/save.ts	D	1	store<i32>(np(s, parent), next, 4)
+src/fs/save.ts	D	1	store<i32>(np(s, prev), next, 8)
+src/fs/save.ts	D	1	store<i32>(p + <usize>i * NODE, s.nodeFree)
+src/fs/save.ts	D	2	store<i32>(p, -1)
+src/fs/save.ts	D	3	store<i32>(p, -1, 12)
+src/fs/save.ts	D	2	store<i32>(p, -1, 4)
+src/fs/save.ts	D	3	store<i32>(p, -1, 8)
+src/fs/save.ts	D	1	store<i32>(p, head, 8)
+src/fs/save.ts	D	1	store<i32>(p, parent)
+src/fs/save.ts	D	1	store<i32>(p, s.nodeFree)
+src/fs/save.ts	D	1	store<u32>(man, 1, 4)
+src/fs/save.ts	D	1	store<u32>(man, MAGIC_MAN)
+src/fs/save.ts	?	1	store<u32>(man, count, 8)
+src/fs/save.ts	?	1	store<u32>(np(s, cur), ++count, 56)
+src/fs/save.ts	?	1	store<u32>(np(s, n), <u32>nm, 20)
+src/fs/save.ts	D	1	store<u32>(np(s, n), nOpen(s, n) + 1, 48)
+src/fs/save.ts	D	2	store<u32>(p, ++s.serial, 52)
+src/fs/save.ts	?	1	store<u32>(p, <u32>nm, 20)
+src/fs/save.ts	?	1	store<u32>(p, k, 48)
+src/fs/save.ts	D	1	store<u32>(p, parent == 0 ? 0 : load<u32>(np(s, parent), 56))
+src/gfx/astc.ts	C	1	<i32>(T & 0xff)
+src/gfx/astc.ts	C	1	<i32>(l0 + (v1 & 0x3f), 255)
+src/gfx/astc.ts	?	1	<i32>(v & 0xff)
+src/gfx/astc.ts	C	1	<i32>below < <i32>start
+src/gfx/astc.ts	C	1	<i32>start
+src/gfx/astc.ts	?	1	<u32>(lo >> 11)
+src/gfx/astc.ts	?	1	<u32>lo & 0x7ff
+src/gfx/astc.ts	?	1	<u32>load<i32>(e + (<usize>c << 2))
+src/gfx/astc.ts	?	1	<u32>load<i32>(e + 16 + (<usize>c << 2))
+src/gfx/astc.ts	C	1	<u32>load<u8>(q + row + step)
+src/gfx/astc.ts	C	1	<u32>load<u8>(q + row + step, 1)
+src/gfx/astc.ts	C	1	<u32>load<u8>(q + row)
+src/gfx/astc.ts	C	1	<u32>load<u8>(q + row, 1)
+src/gfx/astc.ts	C	1	<u32>load<u8>(q + step)
+src/gfx/astc.ts	C	1	<u32>load<u8>(q + step, 1)
+src/gfx/astc.ts	C	1	<u32>load<u8>(q)
+src/gfx/astc.ts	C	1	<u32>load<u8>(q, 1)
+src/gfx/astc.ts	C	1	<u32>load<u8>(wr)
+src/gfx/astc.ts	C	1	<u32>load<u8>(wr, 1)
+src/gfx/astc.ts	C	1	<u32>load<u8>(wr, 2)
+src/gfx/astc.ts	?	2	<u32>v & ((1 << n) - 1)
+src/gfx/astc.ts	D	1	load<i32>(CV + (i << 2))
+src/gfx/astc.ts	D	1	load<i32>(e + (<usize>c << 2))
+src/gfx/astc.ts	D	1	load<i32>(e + 16 + (<usize>c << 2))
+src/gfx/astc.ts	D	1	load<u32>(s + (i << 2))
+src/gfx/astc.ts	D	1	load<u32>(s, 12)
+src/gfx/astc.ts	D	1	load<u32>(s, 16)
+src/gfx/astc.ts	D	1	load<u32>(s, 20)
+src/gfx/astc.ts	D	1	load<u32>(s, 24)
+src/gfx/astc.ts	D	1	load<u32>(s, 28)
+src/gfx/astc.ts	D	1	load<u32>(s, 32)
+src/gfx/astc.ts	D	1	load<u32>(s, 4)
+src/gfx/astc.ts	D	1	load<u32>(s, 8)
+src/gfx/astc.ts	?	1	store<i32>(CV + (<usize>i << 2), unqColor(load<u8>(VALS + (<usize>i << 1)), load<u8>(VALS + (<us
+src/gfx/astc.ts	D	1	store<i32>(e, clamp8(a), 12)
+src/gfx/astc.ts	D	1	store<i32>(e, clamp8(b), 8)
+src/gfx/astc.ts	D	1	store<i32>(e, clamp8(g), 4)
+src/gfx/astc.ts	D	1	store<i32>(e, clamp8(r))
+src/gfx/astc.ts	D	1	store<u32>(out + <usize>y * pitch + (<usize>x << 2), c)
+src/gfx/astc.ts	D	1	store<u32>(out + <usize>y * pitch + (<usize>x << 2), px)
+src/gfx/astc.ts	?	1	store<u32>(s + (i << 2), (v * v) >> (i & 1 ? sh1 : sh2))
+src/gfx/astc.ts	D	1	store<u32>(s, (r >> 12) & 15, 16)
+src/gfx/astc.ts	D	1	store<u32>(s, (r >> 16) & 15, 20)
+src/gfx/astc.ts	D	1	store<u32>(s, (r >> 20) & 15, 24)
+src/gfx/astc.ts	D	1	store<u32>(s, (r >> 24) & 15, 28)
+src/gfx/astc.ts	D	1	store<u32>(s, (r >> 28) & 15, 32)
+src/gfx/astc.ts	D	1	store<u32>(s, (r >> 4) & 15, 8)
+src/gfx/astc.ts	D	1	store<u32>(s, (r >> 8) & 15, 12)
+src/gfx/astc.ts	D	1	store<u32>(s, r & 15, 4)
+src/gfx/cmd.ts	C	1	<u32>i < 16 && n <= 0xffffffff
+src/gfx/cmd.ts	?	1	<u32>i >= 16
+src/gfx/cmd.ts	?	1	<u32>load<u64>(rg, 8)
+src/gfx/cmd.ts	?	1	<u32>m
+src/gfx/cmd.ts	?	2	<u32>n
+src/gfx/cmd.ts	?	1	<u32>payload + 15
+src/gfx/cmd.ts	C	1	<u32>st < 6 && <u32>i < 16 && n <= 0xffffffff
+src/gfx/cmd.ts	?	1	<usize>load<u32>(s)
+src/gfx/cmd.ts	?	2	<usize>load<u32>(s, 4)
+src/gfx/cmd.ts	D	2	load<i32>(c, O.CMD_samp_base)
+src/gfx/cmd.ts	D	2	load<i32>(c, O.CMD_tex_base)
+src/gfx/cmd.ts	D	1	load<i32>(d, O.TEX_d + O.TD_height)
+src/gfx/cmd.ts	D	1	load<i32>(d, O.TEX_d + O.TD_width)
+src/gfx/cmd.ts	D	1	load<i32>(rgba + (i << 2))
+src/gfx/cmd.ts	D	1	load<i32>(s, O.TEX_d + O.TD_height)
+src/gfx/cmd.ts	D	1	load<i32>(s, O.TEX_d + O.TD_width)
+src/gfx/cmd.ts	D	1	load<u32>(h + (<usize>i << 3))
+src/gfx/cmd.ts	D	1	load<u32>(rgba + (i << 2))
+src/gfx/cmd.ts	D	2	load<u32>(s)
+src/gfx/cmd.ts	D	2	load<u32>(s, 8)
+src/gfx/cmd.ts	D	1	store<i32>(c + (tex ? O.CMD_tex_base : O.CMD_samp_base), dpoolBase(pool, tex))
+src/gfx/cmd.ts	?	1	store<i32>(r + 4 + (<usize>which << 2), v)
+src/gfx/cmd.ts	D	3	store<i32>(r, 0)
+src/gfx/cmd.ts	D	1	store<i32>(r, 1, 12)
+src/gfx/cmd.ts	D	1	store<i32>(r, 1, 20)
+src/gfx/cmd.ts	D	1	store<i32>(r, 1, 4)
+src/gfx/cmd.ts	D	1	store<i32>(r, 1, O.P_COPY_T2T_dr + 20)
+src/gfx/cmd.ts	D	1	store<i32>(r, 1, O.P_COPY_T2T_sr + 20)
+src/gfx/cmd.ts	D	1	store<i32>(r, O.COPY_RESOLVE, O.P_COPY_T2T_flags)
+src/gfx/cmd.ts	D	2	store<i32>(r, baseInstance, 16)
+src/gfx/cmd.ts	D	1	store<i32>(r, baseVertex, 12)
+src/gfx/cmd.ts	D	1	store<i32>(r, bits)
+src/gfx/cmd.ts	D	1	store<i32>(r, dmask & 0xff, 4)
+src/gfx/cmd.ts	D	1	store<i32>(r, face)
+src/gfx/cmd.ts	D	2	store<i32>(r, first)
+src/gfx/cmd.ts	D	2	store<i32>(r, first, 4)
+src/gfx/cmd.ts	D	1	store<i32>(r, flags, O.P_COPY_B2T_flags)
+src/gfx/cmd.ts	D	1	store<i32>(r, flags, O.P_COPY_T2T_flags)
+src/gfx/cmd.ts	?	1	store<i32>(r, h, 12)
+src/gfx/cmd.ts	?	2	store<i32>(r, i, 4)
+src/gfx/cmd.ts	?	1	store<i32>(r, i, O.P_DRAW_IDX_ind + 16)
+src/gfx/cmd.ts	?	1	store<i32>(r, i, O.P_DRAW_ind + 16)
+src/gfx/cmd.ts	D	1	store<i32>(r, index, O.P_CLEAR_COLOR_index)
+src/gfx/cmd.ts	D	1	store<i32>(r, instances, 12)
+src/gfx/cmd.ts	D	1	store<i32>(r, instances, 20)
+src/gfx/cmd.ts	D	2	store<i32>(r, itype, 4)
+src/gfx/cmd.ts	D	1	store<i32>(r, kind)
+src/gfx/cmd.ts	D	1	store<i32>(r, load<i32>(d, O.TEX_d + O.TD_height), O.P_COPY_T2T_dr + 16)
+src/gfx/cmd.ts	D	1	store<i32>(r, load<i32>(d, O.TEX_d + O.TD_width), O.P_COPY_T2T_dr + 12)
+src/gfx/cmd.ts	D	1	store<i32>(r, load<i32>(s, O.TEX_d + O.TD_height), O.P_COPY_T2T_sr + 16)
+src/gfx/cmd.ts	D	1	store<i32>(r, load<i32>(s, O.TEX_d + O.TD_width), O.P_COPY_T2T_sr + 12)
+src/gfx/cmd.ts	D	1	store<i32>(r, mask, O.P_CLEAR_COLOR_mask)
+src/gfx/cmd.ts	?	4	store<i32>(r, n, 4)
+src/gfx/cmd.ts	?	3	store<i32>(r, n, 8)
+src/gfx/cmd.ts	?	1	store<i32>(r, n, O.P_SET_RT_n)
+src/gfx/cmd.ts	D	1	store<i32>(r, on ? 1 : 0)
+src/gfx/cmd.ts	D	4	store<i32>(r, prim)
+src/gfx/cmd.ts	?	1	store<i32>(r, sb, 20)
+src/gfx/cmd.ts	D	2	store<i32>(r, slot, 4)
+src/gfx/cmd.ts	D	1	store<i32>(r, smask, 12)
+src/gfx/cmd.ts	?	1	store<i32>(r, st | O.BIND_TEX1_NOBASE)
+src/gfx/cmd.ts	?	4	store<i32>(r, st)
+src/gfx/cmd.ts	D	1	store<i32>(r, stages, 8)
+src/gfx/cmd.ts	D	1	store<i32>(r, stencil, 8)
+src/gfx/cmd.ts	?	1	store<i32>(r, tb, 16)
+src/gfx/cmd.ts	D	1	store<i32>(r, w, 8)
+src/gfx/cmd.ts	D	1	store<i32>(r, which, 16)
+src/gfx/cmd.ts	D	2	store<i32>(r, x)
+src/gfx/cmd.ts	D	2	store<i32>(r, y, 4)
+src/gfx/cmd.ts	D	1	store<i32>(r, z, 8)
+src/gfx/cmd.ts	D	1	store<u32>(c, O.MAGIC_CMD, O.CMD_magic)
+src/gfx/cmd.ts	D	1	store<u32>(cur, 16, 4)
+src/gfx/cmd.ts	D	1	store<u32>(cur, O.OP_JUMP)
+src/gfx/cmd.ts	D	1	store<u32>(p, 0)
+src/gfx/cmd.ts	D	1	store<u32>(p, O.OP_END)
+src/gfx/cmd.ts	D	1	store<u32>(p, op)
+src/gfx/cmd.ts	D	1	store<u32>(p, size, 4)
+src/gfx/cmd.ts	?	1	store<u32>(r, <u32>load<u64>(rg, 8), 4)
+src/gfx/cmd.ts	?	1	store<u32>(r, <u32>n, 4)
+src/gfx/cmd.ts	D	1	store<u32>(r, first)
+src/gfx/cmd.ts	D	1	store<u32>(s, 0, 8)
+src/gfx/cmd.ts	D	2	store<u32>(s, 1, 8)
+src/gfx/cmd.ts	?	1	store<u32>(s, <u32>m)
+src/gfx/cmd.ts	?	1	store<u32>(s, <u32>n, 4)
+src/gfx/dispatch.ts	?	1	<i32>((v >> 10) & 127)
+src/gfx/dispatch.ts	?	1	<i32>((v >> 17) & 127)
+src/gfx/dispatch.ts	?	1	<i32>((v >> 24) & 127)
+src/gfx/dispatch.ts	?	1	<i32>((v >> 3) & 127)
+src/gfx/dispatch.ts	?	1	<i32>((v >> 31) & 7)
+src/gfx/dispatch.ts	?	1	<i32>((v >> 34) & 7)
+src/gfx/dispatch.ts	C	1	<i32>([ 55, 15, 14, 65536, 256, 8, 16, 4, 16, 32, 16, 4, 4, 4, 16, 32, 32, 256, 256, 4, 8, 512
+src/gfx/dispatch.ts	C	2	<i32>load<u16>(e)
+src/gfx/dispatch.ts	C	1	<i32>load<u8>(e + 3 + k)
+src/gfx/dispatch.ts	C	1	<i32>load<u8>(l)
+src/gfx/dispatch.ts	C	1	<i32>load<u8>(name + k)
+src/gfx/dispatch.ts	C	2	<u32>(T.dpoolBase(P(a, 0), false) + I(a, 1))
+src/gfx/dispatch.ts	C	1	<u32>(T.dpoolBase(P(a, 0), true) + I(a, 1))
+src/gfx/dispatch.ts	?	1	<u32>1 << width
+src/gfx/dispatch.ts	C	7	<u32>I(a, 1)
+src/gfx/dispatch.ts	C	1	<u32>I(a, 2)
+src/gfx/dispatch.ts	C	1	<u32>NVN_NFUNC ? load<u8>(STATUS + <usize>id)
+src/gfx/dispatch.ts	?	2	<u32>X(a, 1)
+src/gfx/dispatch.ts	C	1	<u32>id < <u32>NVN_NFUNC ? load<u8>(STATUS + <usize>id)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.TB_d + O.TD_flags)
+src/gfx/dispatch.ts	C	2	<u32>load<i32>(P(a, 0), O.TB_d + O.TD_format)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.TB_d + O.TD_samples)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.TB_d + O.TD_target)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.TEX_d + O.TD_flags)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.TEX_d + O.TD_format)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.TEX_d + O.TD_samples)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.TEX_d + O.TD_target)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.WB_interval)
+src/gfx/dispatch.ts	C	1	<u32>load<i32>(P(a, 0), O.WIN_interval)
+src/gfx/dispatch.ts	?	1	<u32>off
+src/gfx/dispatch.ts	D	1	load<i32>(DEVINFO + (<usize>w << 2))
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.DPOOL_n)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.TB_d + O.TD_flags)
+src/gfx/dispatch.ts	D	2	load<i32>(P(a, 0), O.TB_d + O.TD_format)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.TB_d + O.TD_samples)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.TB_d + O.TD_target)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.TEX_d + O.TD_flags)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.TEX_d + O.TD_format)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.TEX_d + O.TD_samples)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.TEX_d + O.TD_target)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.WB_interval)
+src/gfx/dispatch.ts	D	1	load<i32>(P(a, 0), O.WIN_interval)
+src/gfx/dispatch.ts	D	1	load<i32>(a + (i << 3))
+src/gfx/dispatch.ts	D	1	load<i32>(r)
+src/gfx/dispatch.ts	D	1	load<i32>(r, 12)
+src/gfx/dispatch.ts	D	1	load<i32>(r, 4)
+src/gfx/dispatch.ts	D	1	load<i32>(r, 8)
+src/gfx/dispatch.ts	D	9	load<u32>(P(a, 0))
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), 4)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.DEV_depth_mode)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.DEV_origin)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.PB_flags)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.POOL_flags)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TB_d + O.TD_depth)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TB_d + O.TD_height)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TB_d + O.TD_levels)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TB_d + O.TD_width)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TEX_d + O.TD_depth)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TEX_d + O.TD_height)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TEX_d + O.TD_levels)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TEX_d + O.TD_stride)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 0), O.TEX_d + O.TD_width)
+src/gfx/dispatch.ts	D	1	load<u32>(P(a, 1))
+src/gfx/dispatch.ts	D	1	load<u32>(TMP_L, O.TL_align)
+src/gfx/dispatch.ts	D	1	load<u32>(TMP_L, O.TL_bpb)
+src/gfx/dispatch.ts	D	1	load<u32>(a + (i << 3))
+src/gfx/dispatch.ts	D	1	load<u32>(b, O.PB_flags)
+src/gfx/dispatch.ts	D	1	load<u32>(d, O.DEV_origin)
+src/gfx/dispatch.ts	D	1	load<u32>(p)
+src/gfx/dispatch.ts	D	1	load<u32>(p, O.POOL_flags)
+src/gfx/dispatch.ts	D	1	load<u32>(pool, O.POOL_flags)
+src/gfx/dispatch.ts	D	1	load<u32>(t)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.TB_d + O.TD_depth)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.TB_d + O.TD_flags)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.TB_d + O.TD_format)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.TB_d + O.TD_height)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.TB_d + O.TD_levels)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.TB_d + O.TD_samples)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.TB_d + O.TD_target)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.TB_d + O.TD_width)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.WB_interval)
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 0), I(a, 1), O.WIN_interval)
+src/gfx/dispatch.ts	?	1	store<i32>(P(a, 1), <i32>((v >> 3) & 127))
+src/gfx/dispatch.ts	?	1	store<i32>(P(a, 1), <i32>((v >> 31) & 7))
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 1), load<u16>(v, O.VIEW_format))
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 1), load<u16>(v, O.VIEW_min_layer))
+src/gfx/dispatch.ts	D	2	store<i32>(P(a, 1), load<u8>(p, O.SP_cmp_mode))
+src/gfx/dispatch.ts	D	2	store<i32>(P(a, 1), load<u8>(p, O.SP_minf))
+src/gfx/dispatch.ts	D	2	store<i32>(P(a, 1), load<u8>(p, O.SP_ws))
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 1), load<u8>(v, O.VIEW_base_level))
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 1), load<u8>(v, O.VIEW_target))
+src/gfx/dispatch.ts	?	1	store<i32>(P(a, 1), v & 0xff)
+src/gfx/dispatch.ts	?	1	store<i32>(P(a, 2), <i32>((v >> 10) & 127))
+src/gfx/dispatch.ts	?	1	store<i32>(P(a, 2), <i32>((v >> 34) & 7))
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 2), load<u16>(v, O.VIEW_nlayers))
+src/gfx/dispatch.ts	D	2	store<i32>(P(a, 2), load<u8>(p, O.SP_cmp_func))
+src/gfx/dispatch.ts	D	2	store<i32>(P(a, 2), load<u8>(p, O.SP_magf))
+src/gfx/dispatch.ts	D	2	store<i32>(P(a, 2), load<u8>(p, O.SP_wt))
+src/gfx/dispatch.ts	D	1	store<i32>(P(a, 2), load<u8>(v, O.VIEW_nlevels))
+src/gfx/dispatch.ts	?	1	store<i32>(P(a, 3), <i32>((v >> 17) & 127))
+src/gfx/dispatch.ts	D	2	store<i32>(P(a, 3), load<u8>(p, O.SP_wr))
+src/gfx/dispatch.ts	?	1	store<i32>(P(a, 4), <i32>((v >> 24) & 127))
+src/gfx/dispatch.ts	D	1	store<i32>(b, 1, O.TB_d + O.TD_target)
+src/gfx/dispatch.ts	D	1	store<i32>(b, 1, O.WB_interval)
+src/gfx/dispatch.ts	?	1	store<i32>(b, l ? <i32>load<u8>(l) + 1 : 0, O.TB_d + O.TD_pkg_block_h)
+src/gfx/dispatch.ts	?	1	store<i32>(b, n, O.WB_ntex)
+src/gfx/dispatch.ts	D	2	store<i32>(d, 1, O.TD_depth)
+src/gfx/dispatch.ts	D	1	store<i32>(d, 1, O.TD_height)
+src/gfx/dispatch.ts	D	3	store<i32>(d, I(a, 1), O.TD_width)
+src/gfx/dispatch.ts	D	2	store<i32>(d, I(a, 2), O.TD_height)
+src/gfx/dispatch.ts	D	1	store<i32>(d, I(a, 3), O.TD_depth)
+src/gfx/dispatch.ts	D	1	store<i32>(out, 0)
+src/gfx/dispatch.ts	?	1	store<i32>(out, w == 0 ? apiMajor : w == 1 ? apiMinor : load<i32>(DEVINFO + (<usize>w << 2)))
+src/gfx/dispatch.ts	D	1	store<i32>(p, 0, O.POOL_vmode)
+src/gfx/dispatch.ts	?	1	store<i32>(q, !d || load<u32>(d, O.DEV_origin) == 0 ? 1 : 0, O.QUEUE_origin_ll)
+src/gfx/dispatch.ts	D	1	store<i32>(tp, I(a, 3), O.DPOOL_n)
+src/gfx/dispatch.ts	D	1	store<i32>(w, I(a, 1))
+src/gfx/dispatch.ts	D	1	store<i32>(w, I(a, 2), 4)
+src/gfx/dispatch.ts	D	1	store<i32>(w, I(a, 3), 8)
+src/gfx/dispatch.ts	D	1	store<i32>(w, I(a, 4), 12)
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), (1 << 2) | (2 << 3))
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), (3 << 8) | (8 << 12))
+src/gfx/dispatch.ts	D	10	store<u32>(P(a, 0), 0)
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), 0xffffffff)
+src/gfx/dispatch.ts	?	1	store<u32>(P(a, 0), <u32>X(a, 1))
+src/gfx/dispatch.ts	?	1	store<u32>(P(a, 0), <u32>X(a, 1), O.TB_d + O.TD_stride)
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), I(a, 1))
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), I(a, 1), 4)
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), I(a, 1), O.DEV_depth_mode)
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), I(a, 1), O.DEV_origin)
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), I(a, 1), O.PB_flags)
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), I(a, 1), O.QB_flags)
+src/gfx/dispatch.ts	D	1	store<u32>(P(a, 0), O.MAGIC_PROG)
+src/gfx/dispatch.ts	D	1	store<u32>(b, 1, O.TB_d + O.TD_depth)
+src/gfx/dispatch.ts	D	1	store<u32>(b, 1, O.TB_d + O.TD_height)
+src/gfx/dispatch.ts	D	1	store<u32>(b, 1, O.TB_d + O.TD_levels)
+src/gfx/dispatch.ts	D	1	store<u32>(b, 1, O.TB_d + O.TD_width)
+src/gfx/dispatch.ts	D	1	store<u32>(buf, O.MAGIC_BUF)
+src/gfx/dispatch.ts	D	1	store<u32>(d, O.MAGIC_DEV)
+src/gfx/dispatch.ts	D	1	store<u32>(d, load<u32>(P(a, 1)), O.DEV_flags)
+src/gfx/dispatch.ts	?	1	store<u32>(p, (load<u32>(p) & ~m) | ((v << shift) & m))
+src/gfx/dispatch.ts	D	1	store<u32>(p, O.MAGIC_POOL)
+src/gfx/dispatch.ts	D	1	store<u32>(p, flags, O.POOL_flags)
+src/gfx/dispatch.ts	?	1	store<u32>(p, n, O.PROG_nstage)
+src/gfx/dispatch.ts	D	1	store<u32>(q, O.MAGIC_QUEUE)
+src/gfx/dispatch.ts	D	1	store<u32>(s, O.MAGIC_SAMP)
+src/gfx/dispatch.ts	D	1	store<u32>(t, O.MAGIC_TEX)
+src/gfx/fmt.ts	C	1	<i32>((x >> 23) & 0xff)
+src/gfx/fmt.ts	C	1	<u32>(f)
+src/gfx/fmt.ts	C	1	<u32>e << 10
+src/gfx/fmt.ts	C	1	<u32>load<u8>(SI + i)
+src/gfx/fmt.ts	C	1	<u32>load<u8>(UI + i)
+src/gfx/host/gen_names.mts	B	1	for (const n of group) abiOf.set(n, fl | (/\bRETF\(/.test(body) ? 16 : 0));
+src/gfx/host/gen_names.mts	B	1	for (const { n, i } of order) { offs.push(bytes.length); bytes.push(i & 0xff, i >> 8, n.length, ...Buffer.from(n, " ")); }
+src/gfx/hostops.ts	C	1	<u32>n
+src/gfx/hostops.ts	?	1	<u32>size
+src/gfx/hostops.ts	?	1	store<u32>(p, <u32>size, 4)
+src/gfx/hostops.ts	D	1	store<u32>(p, op)
+src/gfx/index.ts	C	1	<u32>NVN_NFUNC ? load<u8>(ABI + <usize>fnId)
+src/gfx/index.ts	C	1	<u32>benchSample(tex, n)
+src/gfx/index.ts	C	1	<u32>fenceLast()
+src/gfx/index.ts	C	1	<u32>finishFenceLast()
+src/gfx/index.ts	C	1	<u32>fnId < <u32>NVN_NFUNC ? load<u8>(ABI + <usize>fnId)
+src/gfx/index.ts	C	1	<u32>syncFenceOf(sync)
+src/gfx/index.ts	C	1	<u32>syncWaitFence()
+src/gfx/index.ts	C	1	<u32>texLevelOffset(desc, level)
+src/gfx/log.ts	?	1	<i32>((v >> (<u64>k * 4)) & 15)
+src/gfx/log.ts	?	1	<i32>(v % 10)
+src/gfx/lower.ts	C	1	<i32>(scH, 0)
+src/gfx/lower.ts	C	1	<i32>(scW, 0)
+src/gfx/lower.ts	?	1	<i32>stream < nstream ? load<u64>(VSTREAM + (<usize>stream << 3))
+src/gfx/lower.ts	C	1	<u32>(<u32>orig, 15)
+src/gfx/lower.ts	?	3	<u32>(h & 0xfffff)
+src/gfx/lower.ts	?	1	<u32>(h >> 20)
+src/gfx/lower.ts	C	1	<u32>(sv & ~O.BIND_TEX1_NOBASE)
+src/gfx/lower.ts	C	1	<u32>(x1 - x0)
+src/gfx/lower.ts	C	1	<u32>(y1 - y0)
+src/gfx/lower.ts	?	1	<u32>SUPPORT_BYTES
+src/gfx/lower.ts	?	1	<u32>h >> 20
+src/gfx/lower.ts	C	1	<u32>load<i32>(q, 16)
+src/gfx/lower.ts	C	1	<u32>load<i32>(r, 12)
+src/gfx/lower.ts	C	1	<u32>load<i32>(r, 8)
+src/gfx/lower.ts	?	3	<u32>load<i64>(r, O.COPY_STRIDES_OFF + 8)
+src/gfx/lower.ts	?	3	<u32>load<i64>(r, O.COPY_STRIDES_OFF)
+src/gfx/lower.ts	C	1	<u32>load<u16>(view, O.VIEW_format)
+src/gfx/lower.ts	C	1	<u32>load<u16>(view, O.VIEW_min_layer)
+src/gfx/lower.ts	?	1	<u32>load<u64>(VBUF + (<usize>s << 4), 8)
+src/gfx/lower.ts	?	1	<u32>load<u64>(WR + (<usize>i << 4), 8)
+src/gfx/lower.ts	?	1	<u32>load<u64>(b, 8)
+src/gfx/lower.ts	C	1	<u32>orig
+src/gfx/lower.ts	?	1	<u32>size
+src/gfx/lower.ts	C	1	<u32>x0
+src/gfx/lower.ts	C	1	<u32>y0
+src/gfx/lower.ts	?	1	<usize>load<i32>(a)
+src/gfx/lower.ts	?	1	<usize>load<i32>(a, 4)
+src/gfx/lower.ts	D	8	load<i32>(a)
+src/gfx/lower.ts	D	1	load<i32>(a, 12)
+src/gfx/lower.ts	D	2	load<i32>(a, 16)
+src/gfx/lower.ts	D	1	load<i32>(a, 20)
+src/gfx/lower.ts	D	5	load<i32>(a, 4)
+src/gfx/lower.ts	D	3	load<i32>(a, 8)
+src/gfx/lower.ts	D	1	load<i32>(a, O.P_BIND_HANDLES_defer)
+src/gfx/lower.ts	D	1	load<i32>(ind, 12)
+src/gfx/lower.ts	D	1	load<i32>(q, 16)
+src/gfx/lower.ts	D	1	load<i32>(r)
+src/gfx/lower.ts	D	1	load<i32>(r, 12)
+src/gfx/lower.ts	D	1	load<i32>(r, 4)
+src/gfx/lower.ts	D	1	load<i32>(r, 8)
+src/gfx/lower.ts	D	1	load<i32>(r, O.P_CLEAR_COLOR_index)
+src/gfx/lower.ts	D	1	load<i32>(r, O.P_CLEAR_COLOR_mask)
+src/gfx/lower.ts	D	1	load<i32>(r, O.P_DRAW_IDX_base_vertex)
+src/gfx/lower.ts	D	1	load<i32>(r, O.P_DRAW_IDX_itype)
+src/gfx/lower.ts	D	1	load<i32>(r, O.P_SET_RT_n)
+src/gfx/lower.ts	D	1	load<i32>(t, O.TEX_d + O.TD_samples)
+src/gfx/lower.ts	D	1	load<u32>(<usize>addr + off)
+src/gfx/lower.ts	D	1	load<u32>(PK.KEY + PK.PK_attr + (<usize>loc << 2))
+src/gfx/lower.ts	D	1	load<u32>(PK.KEY, PK.PK_attr_mask)
+src/gfx/lower.ts	D	1	load<u32>(RT_NEW + 8 * RT_E, RT_h)
+src/gfx/lower.ts	D	1	load<u32>(RT_NEW + 8 * RT_E, RT_w)
+src/gfx/lower.ts	D	1	load<u32>(RT_NEW + <usize>i * RT_E, RT_h)
+src/gfx/lower.ts	D	1	load<u32>(RT_NEW + <usize>i * RT_E, RT_w)
+src/gfx/lower.ts	D	1	load<u32>(VATTR + (<usize>loc << 2))
+src/gfx/lower.ts	D	5	load<u32>(a)
+src/gfx/lower.ts	D	1	load<u32>(a, 12)
+src/gfx/lower.ts	D	8	load<u32>(a, 4)
+src/gfx/lower.ts	D	3	load<u32>(a, 8)
+src/gfx/lower.ts	D	3	load<u32>(b)
+src/gfx/lower.ts	D	1	load<u32>(cnt)
+src/gfx/lower.ts	D	2	load<u32>(d, RT_fmt)
+src/gfx/lower.ts	D	1	load<u32>(d, RT_layer)
+src/gfx/lower.ts	D	1	load<u32>(d, RT_level)
+src/gfx/lower.ts	D	1	load<u32>(d, RT_samples)
+src/gfx/lower.ts	D	2	load<u32>(ind)
+src/gfx/lower.ts	D	1	load<u32>(ind, 12)
+src/gfx/lower.ts	D	1	load<u32>(ind, 16)
+src/gfx/lower.ts	D	2	load<u32>(ind, 4)
+src/gfx/lower.ts	D	3	load<u32>(ind, 8)
+src/gfx/lower.ts	D	1	load<u32>(libRefl(curVs), RF_io)
+src/gfx/lower.ts	D	1	load<u32>(libRefl(id), RF_bl)
+src/gfx/lower.ts	D	1	load<u32>(p)
+src/gfx/lower.ts	D	1	load<u32>(p, 4)
+src/gfx/lower.ts	D	1	load<u32>(prog)
+src/gfx/lower.ts	D	1	load<u32>(progC)
+src/gfx/lower.ts	D	1	load<u32>(r)
+src/gfx/lower.ts	D	1	load<u32>(r, 16)
+src/gfx/lower.ts	D	1	load<u32>(r, 4)
+src/gfx/lower.ts	D	2	load<u32>(r, 8)
+src/gfx/lower.ts	D	1	load<u32>(r, O.P_COPY_T2T_flags)
+src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_IDX_instances)
+src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_first)
+src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_instances)
+src/gfx/lower.ts	D	1	load<u32>(rf + RF_ubo_size + (<usize>i << 2))
+src/gfx/lower.ts	D	2	load<u32>(rf, RF_bl)
+src/gfx/lower.ts	D	1	load<u32>(rf, RF_flags)
+src/gfx/lower.ts	D	1	load<u32>(rf, RF_img)
+src/gfx/lower.ts	D	1	load<u32>(rf, RF_ssbo)
+src/gfx/lower.ts	D	1	load<u32>(rf, RF_ssbo_w)
+src/gfx/lower.ts	D	2	load<u32>(rf, RF_tex)
+src/gfx/lower.ts	D	1	load<u32>(rf, RF_ubo)
+src/gfx/lower.ts	D	1	load<u32>(src + (<usize>i << 3))
+src/gfx/lower.ts	D	1	load<u32>(t)
+src/gfx/lower.ts	D	1	load<u32>(t, O.TEX_d + O.TD_format)
+src/gfx/lower.ts	D	1	load<u32>(t, O.TEX_d + O.TD_height)
+src/gfx/lower.ts	D	1	load<u32>(t, O.TEX_d + O.TD_width)
+src/gfx/lower.ts	D	2	load<u32>(t, RT_fmt)
+src/gfx/lower.ts	D	2	load<u32>(t, RT_h)
+src/gfx/lower.ts	D	1	load<u32>(t, RT_layer)
+src/gfx/lower.ts	D	1	load<u32>(t, RT_level)
+src/gfx/lower.ts	D	1	load<u32>(t, RT_samples)
+src/gfx/lower.ts	D	2	load<u32>(t, RT_w)
+src/gfx/lower.ts	D	1	store<i32>(o, baseVertex, 24)
+src/gfx/lower.ts	D	1	store<u32>(H.hostRec(H.H_STENCIL_REF, 16), stRef, 8)
+src/gfx/lower.ts	D	1	store<u32>(e, bits & 2 ? <u32>load<u16>(view, O.VIEW_min_layer) : 0, RT_layer)
+src/gfx/lower.ts	D	1	store<u32>(e, fmt, RT_fmt)
+src/gfx/lower.ts	D	1	store<u32>(e, level, RT_level)
+src/gfx/lower.ts	D	1	store<u32>(e, mipExt(load<u32>(t, O.TEX_d + O.TD_height), level), RT_h)
+src/gfx/lower.ts	D	1	store<u32>(e, mipExt(load<u32>(t, O.TEX_d + O.TD_width), level), RT_w)
+src/gfx/lower.ts	?	1	store<u32>(e, s > 1 ? 4 : 1, RT_samples)
+src/gfx/lower.ts	D	1	store<u32>(k + PK.PK_attr + (<usize>loc << 2), a)
+src/gfx/lower.ts	D	1	store<u32>(k, chmask, PK.PK_chmask)
+src/gfx/lower.ts	D	1	store<u32>(k, need, PK.PK_attr_mask)
+src/gfx/lower.ts	?	1	store<u32>(o, (pendColor >> i) & 1, 20)
+src/gfx/lower.ts	?	1	store<u32>(o, <u32>load<i64>(r, O.COPY_STRIDES_OFF + 8), 60)
+src/gfx/lower.ts	?	1	store<u32>(o, <u32>load<i64>(r, O.COPY_STRIDES_OFF), 56)
+src/gfx/lower.ts	D	2	store<u32>(o, baseInstance, 20)
+src/gfx/lower.ts	D	1	store<u32>(o, conv, 24)
+src/gfx/lower.ts	D	1	store<u32>(o, conv, 28)
+src/gfx/lower.ts	D	2	store<u32>(o, count, 12)
+src/gfx/lower.ts	D	1	store<u32>(o, curCsPipe, 8)
+src/gfx/lower.ts	D	1	store<u32>(o, first, 8)
+src/gfx/lower.ts	D	1	store<u32>(o, img, 60)
+src/gfx/lower.ts	D	1	store<u32>(o, index, 40)
+src/gfx/lower.ts	D	2	store<u32>(o, instances, 16)
+src/gfx/lower.ts	D	1	store<u32>(o, itype, 8)
+src/gfx/lower.ts	D	1	store<u32>(o, layer, 28)
+src/gfx/lower.ts	D	1	store<u32>(o, level, 24)
+src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(r, O.P_COPY_T2T_flags), 88)
+src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(t, RT_fmt), 16)
+src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(t, RT_layer), 12)
+src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(t, RT_level), 8)
+src/gfx/lower.ts	D	1	store<u32>(o, originLowerLeft ? 1 : 0, 44)
+src/gfx/lower.ts	D	1	store<u32>(o, row, 56)
+src/gfx/lower.ts	D	1	store<u32>(o, viewLayer(r + O.P_COPY_B2T_view, has), 28)
+src/gfx/lower.ts	D	1	store<u32>(o, viewLayer(r + O.P_COPY_T2T_dv, hd), 36)
+src/gfx/lower.ts	D	1	store<u32>(o, viewLayer(r + O.P_COPY_T2T_sv, hs), 28)
+src/gfx/lower.ts	D	1	store<u32>(o, viewLevel(r + O.P_COPY_B2T_view, has), 24)
+src/gfx/lower.ts	D	1	store<u32>(o, viewLevel(r + O.P_COPY_T2T_dv, hd), 32)
+src/gfx/lower.ts	D	1	store<u32>(o, viewLevel(r + O.P_COPY_T2T_sv, hs), 24)
+src/gfx/lower.ts	D	1	store<u32>(o, x, 12)
+src/gfx/lower.ts	D	1	store<u32>(o, y, 16)
+src/gfx/lower.ts	D	1	store<u32>(o, z, 20)
+src/gfx/lower.ts	?	1	store<u32>(r, (hasDepth ? 1 : 0) | (pendDepth ? 2 : 0) | (pendStencil ? 4 : 0), 12)
+src/gfx/lower.ts	D	1	store<u32>(r, (st < 2 && snapped(serial) ? 1 : 0) | (hasView ? 2 : 0), 24)
+src/gfx/lower.ts	D	1	store<u32>(r, 14, 12)
+src/gfx/lower.ts	?	1	store<u32>(r, <u32>(h >> 20) & 0xfff, 28)
+src/gfx/lower.ts	?	1	store<u32>(r, <u32>SUPPORT_BYTES, 16)
+src/gfx/lower.ts	?	1	store<u32>(r, <u32>load<u64>(VBUF + (<usize>s << 4), 8), 12)
+src/gfx/lower.ts	?	1	store<u32>(r, <u32>load<u64>(WR + (<usize>i << 4), 8), 16)
+src/gfx/lower.ts	?	1	store<u32>(r, <u32>load<u64>(b, 8), 24)
+src/gfx/lower.ts	?	1	store<u32>(r, <u32>size, 24)
+src/gfx/lower.ts	D	1	store<u32>(r, curPipe, 8)
+src/gfx/lower.ts	?	3	store<u32>(r, i, 12)
+src/gfx/lower.ts	D	1	store<u32>(r, index, 12)
+src/gfx/lower.ts	D	1	store<u32>(r, kind, 8)
+src/gfx/lower.ts	D	1	store<u32>(r, load<u32>(d, RT_fmt), 368)
+src/gfx/lower.ts	D	1	store<u32>(r, load<u32>(d, RT_layer), 364)
+src/gfx/lower.ts	D	1	store<u32>(r, load<u32>(d, RT_level), 360)
+src/gfx/lower.ts	?	1	store<u32>(r, load<u32>(rf + RF_ubo_size + (<usize>i << 2)), 28)
+src/gfx/lower.ts	D	1	store<u32>(r, mask, 16)
+src/gfx/lower.ts	D	1	store<u32>(r, pendStencilV, 20)
+src/gfx/lower.ts	D	1	store<u32>(r, rH, 20)
+src/gfx/lower.ts	D	1	store<u32>(r, rH, 48)
+src/gfx/lower.ts	D	1	store<u32>(r, rW, 16)
+src/gfx/lower.ts	D	1	store<u32>(r, rW, 44)
+src/gfx/lower.ts	D	1	store<u32>(r, rX, 36)
+src/gfx/lower.ts	D	1	store<u32>(r, rX, 8)
+src/gfx/lower.ts	D	1	store<u32>(r, rY, 12)
+src/gfx/lower.ts	D	1	store<u32>(r, rY, 40)
+src/gfx/lower.ts	D	1	store<u32>(r, rtH, 28)
+src/gfx/lower.ts	D	1	store<u32>(r, rtN, 8)
+src/gfx/lower.ts	D	1	store<u32>(r, rtW, 24)
+src/gfx/lower.ts	?	1	store<u32>(r, s, 8)
+src/gfx/lower.ts	D	1	store<u32>(r, slot, 12)
+src/gfx/lower.ts	D	5	store<u32>(r, st, 8)
+src/gfx/lower.ts	D	1	store<u32>(r, stencil, 24)
+src/gfx/lower.ts	D	1	store<u32>(r, w | (hasView ? 2 : 0), 24)
+src/gfx/lower.ts	D	1	store<u32>(r, w, 28)
+src/gfx/pipeline.ts	?	4	<i32>i
+src/gfx/pipeline.ts	C	1	<i32>instOf(id)
+src/gfx/pipeline.ts	C	3	<u32>e
+src/gfx/pipeline.ts	C	1	<u32>load<u16>(e, PK_fs)
+src/gfx/pipeline.ts	C	1	<u32>load<u16>(e, PK_vs)
+src/gfx/pipeline.ts	D	1	load<u32>(e, 400)
+src/gfx/pipeline.ts	D	3	load<u32>(e, 404)
+src/gfx/pipeline.ts	D	2	load<u32>(entry(id), 404)
+src/gfx/pipeline.ts	D	1	load<u32>(k + i)
+src/gfx/pipeline.ts	D	1	store<u32>(e, 1, 404)
+src/gfx/pipeline.ts	D	1	store<u32>(e, h, 400)
+src/gfx/pipeline.ts	D	3	store<u32>(r, <u32>e, 12)
+src/gfx/pipeline.ts	?	3	store<u32>(r, i, 8)
+src/gfx/sha256.ts	C	1	<u32>([ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0x
+src/gfx/sha256.ts	C	1	<u32>(a, 13)
+src/gfx/sha256.ts	C	1	<u32>(a, 2)
+src/gfx/sha256.ts	C	1	<u32>(a, 22)
+src/gfx/sha256.ts	C	1	<u32>(e, 11)
+src/gfx/sha256.ts	C	1	<u32>(e, 25)
+src/gfx/sha256.ts	C	1	<u32>(e, 6)
+src/gfx/sha256.ts	?	1	<u32>(load<u32>(H + (<usize>i << 2)))
+src/gfx/sha256.ts	?	1	<u32>(load<u32>(p + (<usize>i << 2)))
+src/gfx/sha256.ts	C	1	<u32>(w15, 18)
+src/gfx/sha256.ts	C	1	<u32>(w15, 7)
+src/gfx/sha256.ts	C	1	<u32>(w2, 17)
+src/gfx/sha256.ts	C	1	<u32>(w2, 19)
+src/gfx/sha256.ts	C	1	<u32>take
+src/gfx/sha256.ts	D	1	load<u32>(H + (<usize>i << 2))
+src/gfx/sha256.ts	D	2	load<u32>(H)
+src/gfx/sha256.ts	D	2	load<u32>(H, 12)
+src/gfx/sha256.ts	D	2	load<u32>(H, 16)
+src/gfx/sha256.ts	D	2	load<u32>(H, 20)
+src/gfx/sha256.ts	D	2	load<u32>(H, 24)
+src/gfx/sha256.ts	D	2	load<u32>(H, 28)
+src/gfx/sha256.ts	D	2	load<u32>(H, 4)
+src/gfx/sha256.ts	D	2	load<u32>(H, 8)
+src/gfx/sha256.ts	D	1	load<u32>(K + (<usize>i << 2))
+src/gfx/sha256.ts	D	1	load<u32>(W + (<usize>(i - 15) << 2))
+src/gfx/sha256.ts	D	1	load<u32>(W + (<usize>(i - 16) << 2))
+src/gfx/sha256.ts	D	1	load<u32>(W + (<usize>(i - 2) << 2))
+src/gfx/sha256.ts	D	1	load<u32>(W + (<usize>(i - 7) << 2))
+src/gfx/sha256.ts	D	1	load<u32>(W + (<usize>i << 2))
+src/gfx/sha256.ts	D	1	load<u32>(p + (<usize>i << 2))
+src/gfx/sha256.ts	?	1	store<u32>(DIGEST + (<usize>i << 2), bswap<u32>(load<u32>(H + (<usize>i << 2))))
+src/gfx/sha256.ts	D	1	store<u32>(H, 0x1f83d9ab, 24)
+src/gfx/sha256.ts	D	1	store<u32>(H, 0x3c6ef372, 8)
+src/gfx/sha256.ts	D	1	store<u32>(H, 0x510e527f, 16)
+src/gfx/sha256.ts	D	1	store<u32>(H, 0x5be0cd19, 28)
+src/gfx/sha256.ts	D	1	store<u32>(H, 0x6a09e667)
+src/gfx/sha256.ts	D	1	store<u32>(H, 0x9b05688c, 20)
+src/gfx/sha256.ts	D	1	store<u32>(H, 0xa54ff53a, 12)
+src/gfx/sha256.ts	D	1	store<u32>(H, 0xbb67ae85, 4)
+src/gfx/sha256.ts	D	1	store<u32>(H, load<u32>(H) + a)
+src/gfx/sha256.ts	D	1	store<u32>(H, load<u32>(H, 12) + d, 12)
+src/gfx/sha256.ts	D	1	store<u32>(H, load<u32>(H, 16) + e, 16)
+src/gfx/sha256.ts	D	1	store<u32>(H, load<u32>(H, 20) + f, 20)
+src/gfx/sha256.ts	D	1	store<u32>(H, load<u32>(H, 24) + g, 24)
+src/gfx/sha256.ts	D	1	store<u32>(H, load<u32>(H, 28) + h, 28)
+src/gfx/sha256.ts	D	1	store<u32>(H, load<u32>(H, 4) + b, 4)
+src/gfx/sha256.ts	D	1	store<u32>(H, load<u32>(H, 8) + c, 8)
+src/gfx/sha256.ts	?	1	store<u32>(W + (<usize>i << 2), bswap<u32>(load<u32>(p + (<usize>i << 2))))
+src/gfx/sha256.ts	?	1	store<u32>(W + (<usize>i << 2), load<u32>(W + (<usize>(i - 16) << 2)) + s0 + load<u32>(W + (<usi
+src/gfx/shader.ts	C	1	<i32>(libCount - 1)
+src/gfx/shader.ts	C	1	<i32>Inst.at(p)
+src/gfx/shader.ts	C	2	<i32>i
+src/gfx/shader.ts	C	1	<i32>load<i16>(slot)
+src/gfx/shader.ts	C	1	<u32>(load<u32>(prog, PROG_nstage), 6)
+src/gfx/shader.ts	C	1	<u32>(nMissing, 64)
+src/gfx/shader.ts	C	1	<u32>load<u8>(e, PE_ok)
+src/gfx/shader.ts	D	1	load<u32>(c)
+src/gfx/shader.ts	D	1	load<u32>(c, 0x20)
+src/gfx/shader.ts	D	1	load<u32>(c, 0x44)
+src/gfx/shader.ts	D	1	load<u32>(c, 0x704)
+src/gfx/shader.ts	D	1	load<u32>(c, 4)
+src/gfx/shader.ts	D	1	load<u32>(e, PE_shader + 12)
+src/gfx/shader.ts	D	1	load<u32>(libRefl(id), RF_stage)
+src/gfx/shader.ts	D	1	load<u32>(prog, PROG_nstage)
+src/gfx/shader.ts	D	1	store<u32>(CTL, 0, 0x30)
+src/gfx/shader.ts	D	1	store<u32>(e, libVersion, PE_shader + 12)
+src/gfx/sync.ts	D	2	load<u32>(s)
+src/gfx/sync.ts	D	1	store<u32>(s, 0)
+src/gfx/sync.ts	D	1	store<u32>(s, MAGIC_SYNC)
+src/gfx/tables.ts	D	2	load<i32>(t + (<usize>i << 4), 8)
+src/gfx/tables.ts	D	1	store<i32>(t + (<usize>i << 4), base, 8)
+src/gfx/texcontent.ts	C	1	<i32>inst(e)
+src/gfx/texcontent.ts	C	1	<u32>(16 - (b & 15), bEnd - b)
+src/gfx/texcontent.ts	?	1	<u32>(<u32>(OUT_BYTES / orb), 1)
+src/gfx/texcontent.ts	?	2	<u32>(OUT_BYTES / orb)
+src/gfx/texcontent.ts	?	1	<u32>(SCRATCH_BYTES / per)
+src/gfx/texcontent.ts	?	1	<u32>(b + <u32>wb, gRowBytes)
+src/gfx/texcontent.ts	?	1	<u32>(band, <u32>(OUT_BYTES / orb))
+src/gfx/texcontent.ts	C	1	<u32>(band, nby - y0)
+src/gfx/texcontent.ts	C	1	<u32>(gRows, y0 + band)
+src/gfx/texcontent.ts	C	1	<u32>(load<u32>(d, O.TD_levels), 1)
+src/gfx/texcontent.ts	C	2	<u32>(load<u32>(region, 20), 1)
+src/gfx/texcontent.ts	?	1	<u32>(nUploadBytes >> 10)
+src/gfx/texcontent.ts	?	1	<u32>(serial & 0xffff)
+src/gfx/texcontent.ts	C	4	<u32>load<i32>(d, O.TD_format)
+src/gfx/texcontent.ts	?	1	<u32>pitch
+src/gfx/texcontent.ts	?	1	<u32>wb
+src/gfx/texcontent.ts	D	2	load<i32>(d, O.TD_flags)
+src/gfx/texcontent.ts	D	7	load<i32>(d, O.TD_format)
+src/gfx/texcontent.ts	D	1	load<i32>(d, O.TD_samples)
+src/gfx/texcontent.ts	D	3	load<i32>(d, O.TD_target)
+src/gfx/texcontent.ts	D	1	load<u32>(d, O.TD_height)
+src/gfx/texcontent.ts	D	1	load<u32>(d, O.TD_levels)
+src/gfx/texcontent.ts	D	2	load<u32>(d, O.TD_stride)
+src/gfx/texcontent.ts	D	2	load<u32>(d, O.TD_width)
+src/gfx/texcontent.ts	D	2	load<u32>(e, TE_checked)
+src/gfx/texcontent.ts	D	1	load<u32>(e, TE_last_full)
+src/gfx/texcontent.ts	D	2	load<u32>(region)
+src/gfx/texcontent.ts	D	2	load<u32>(region, 12)
+src/gfx/texcontent.ts	D	2	load<u32>(region, 16)
+src/gfx/texcontent.ts	D	2	load<u32>(region, 20)
+src/gfx/texcontent.ts	D	2	load<u32>(region, 4)
+src/gfx/texcontent.ts	D	2	load<u32>(region, 8)
+src/gfx/texcontent.ts	D	2	load<u32>(s + (i << 2))
+src/gfx/texcontent.ts	D	1	store<u32>(e, 0, TE_checked)
+src/gfx/texcontent.ts	D	1	store<u32>(e, submitNo, TE_checked)
+src/gfx/texcontent.ts	D	2	store<u32>(e, submitNo, TE_last_full)
+src/gfx/texcontent.ts	D	1	store<u32>(o + (i << 2), unpack16(f, load<u16>(s + (i << 1))))
+src/gfx/texcontent.ts	D	1	store<u32>(r, 0, 60)
+src/gfx/texcontent.ts	?	1	store<u32>(r, <u32>pitch, 48)
+src/gfx/texcontent.ts	?	1	store<u32>(r, h, 32)
+src/gfx/texcontent.ts	D	1	store<u32>(r, level, 16)
+src/gfx/texcontent.ts	D	1	store<u32>(r, slices, 36)
+src/gfx/texcontent.ts	D	1	store<u32>(r, w, 28)
+src/gfx/texcontent.ts	D	1	store<u32>(r, what, 56)
+src/gfx/texcontent.ts	D	1	store<u32>(r, x, 52)
+src/gfx/texcontent.ts	D	1	store<u32>(r, y, 24)
+src/gfx/texcontent.ts	D	1	store<u32>(r, z, 20)
+src/gfx/texlayout.ts	C	1	<i32>load<u8>(r)
+src/gfx/texlayout.ts	C	1	<i32>load<u8>(r, 1)
+src/gfx/texlayout.ts	C	1	<u32>(pkg - 1)
+src/gfx/texlayout.ts	C	1	<u32>1 << (td - 1)
+src/gfx/texlayout.ts	C	1	<u32>1 << sparseTileD3(bpb)
+src/gfx/texlayout.ts	C	1	<u32>1 << td
+src/gfx/texlayout.ts	C	1	<u32>1 << th
+src/gfx/texlayout.ts	C	1	<u32>1 << tileD
+src/gfx/texlayout.ts	C	1	<u32>128 >> (sparseTileH3(bpb) + sparseTileD3(bpb))
+src/gfx/texlayout.ts	C	1	<u32>128 >> sparseTileH(bpb)
+src/gfx/texlayout.ts	C	1	<u32>8 << (th - 1)
+src/gfx/texlayout.ts	C	1	<u32>8 << shp
+src/gfx/texlayout.ts	C	1	<u32>8 << sparseTileH(bpb)
+src/gfx/texlayout.ts	C	1	<u32>8 << sparseTileH3(bpb)
+src/gfx/texlayout.ts	?	1	<u32>SPARSE_TILE : 512
+src/gfx/texlayout.ts	C	1	<u32>sparseTileD3(bpb)
+src/gfx/texlayout.ts	C	1	<u32>sparseTileH(bpb)
+src/gfx/texlayout.ts	C	1	<u32>sparseTileH(fBpb)
+src/gfx/texlayout.ts	C	1	<u32>sparseTileH3(bpb)
+src/gfx/texlayout.ts	D	4	load<i32>(d, TD_flags)
+src/gfx/texlayout.ts	D	3	load<i32>(d, TD_format)
+src/gfx/texlayout.ts	D	2	load<i32>(d, TD_pkg_block_h)
+src/gfx/texlayout.ts	D	2	load<i32>(d, TD_samples)
+src/gfx/texlayout.ts	D	5	load<i32>(d, TD_target)
+src/gfx/texlayout.ts	D	2	load<u32>(TMP_L, TL_layers)
+src/gfx/texlayout.ts	D	2	load<u32>(TMP_L, TL_tileD)
+src/gfx/texlayout.ts	D	2	load<u32>(TMP_L, TL_tileH)
+src/gfx/texlayout.ts	D	2	load<u32>(d, TD_depth)
+src/gfx/texlayout.ts	D	3	load<u32>(d, TD_height)
+src/gfx/texlayout.ts	D	2	load<u32>(d, TD_levels)
+src/gfx/texlayout.ts	D	1	load<u32>(d, TD_stride)
+src/gfx/texlayout.ts	D	3	load<u32>(d, TD_width)
+src/gfx/texlayout.ts	D	1	store<u32>(o, 0, TL_tileD)
+src/gfx/texlayout.ts	D	1	store<u32>(o, 0, TL_tileH)
+src/gfx/texlayout.ts	D	1	store<u32>(o, 512, TL_align)
+src/gfx/texlayout.ts	D	1	store<u32>(o, align, TL_align)
+src/gfx/texlayout.ts	D	1	store<u32>(o, bpb == 12 ? 4 : bpb, TL_align)
+src/gfx/texlayout.ts	D	1	store<u32>(o, bpb, TL_bpb)
+src/gfx/texlayout.ts	D	1	store<u32>(o, layered ? sz : 1, TL_layers)
+src/gfx/texlayout.ts	?	1	store<u32>(o, sparseOf(d) ? <u32>SPARSE_TILE : 512, TL_align)
+src/gfx/texlayout.ts	D	1	store<u32>(o, tileD, TL_tileD)
+src/gfx/texlayout.ts	D	1	store<u32>(o, tileH, TL_tileH)
+src/gfx/window.ts	D	1	load<i32>(b, O.WB_interval)
+src/gfx/window.ts	D	1	load<i32>(b, O.WB_nactive)
+src/gfx/window.ts	D	1	load<i32>(b, O.WB_ntex)
+src/gfx/window.ts	D	1	load<i32>(t, O.TEX_d + O.TD_height)
+src/gfx/window.ts	D	1	load<i32>(t, O.TEX_d + O.TD_width)
+src/gfx/window.ts	D	1	load<i32>(w, O.WIN_crop + 12)
+src/gfx/window.ts	D	1	load<i32>(w, O.WIN_crop + 8)
+src/gfx/window.ts	D	1	load<i32>(w, O.WIN_nactive)
+src/gfx/window.ts	D	1	load<i32>(w, O.WIN_next)
+src/gfx/window.ts	D	3	load<i32>(w, O.WIN_ntex)
+src/gfx/window.ts	D	1	load<u32>(t)
+src/gfx/window.ts	D	1	load<u32>(w)
+src/gfx/window.ts	D	1	store<i32>(idxOut, idx)
+src/gfx/window.ts	D	1	store<i32>(r, 0)
+src/gfx/window.ts	D	1	store<i32>(r, 0, 4)
+src/gfx/window.ts	?	1	store<i32>(r, t ? load<i32>(t, O.TEX_d + O.TD_height) : 0, 12)
+src/gfx/window.ts	?	1	store<i32>(r, t ? load<i32>(t, O.TEX_d + O.TD_width) : 0, 8)
+src/gfx/window.ts	D	1	store<i32>(w, load<i32>(b, O.WB_interval), O.WIN_interval)
+src/gfx/window.ts	D	1	store<i32>(w, load<i32>(b, O.WB_nactive), O.WIN_nactive)
+src/gfx/window.ts	D	1	store<i32>(w, load<i32>(b, O.WB_ntex), O.WIN_ntex)
+src/gfx/window.ts	D	1	store<i32>(w, next + 1, O.WIN_next)
+src/gfx/window.ts	D	1	store<u32>(w, O.MAGIC_WIN)
+src/glue/audio_device.ts	B	1	const a = (m as { audio?: Record<string, unknown> } | null)?.audio;
+src/glue/audio_device.ts	B	1	const n = (wr - this.sent) >>> 0;
+src/glue/audio_device.ts	B	1	for (let i = 0; i < n; i++) { const p = (((this.sent + i) >>> 0) & (cap - 1)) << 1; pcm[2 * i] = d[p]; pcm[2 * i + 1] = d[p + 1]; }
+src/glue/audio_device.ts	B	1	for (let i = 0; i < n; i++) { const p = (((this.sent + i) >>> 0) & (cap - 1)) << 1; this.sd[p] = d[p]; this.sd[p + 1] = d[p + 1]; }
+src/glue/audio_device.ts	B	1	private report: { rd: number; cb: number; under: number } | null = null;
+src/glue/audio_device.ts	V	1	private sh: Int32Array | null = null; private sd: Float32Array | null = null;
+src/glue/audio_device.ts	V	1	this.sh = new Int32Array(this.sab, 0, 8); this.sd = new Float32Array(this.sab, 32, cap * 2);
+src/glue/audio_device_main.ts	B	1	const a = (m as { audio?: Record<string, unknown> } | null)?.audio;
+src/glue/audio_host.ts	B	1	audio_event_release: (t: number) => embedder.eventRelease?.(t >>> 0),
+src/glue/audio_host.ts	B	1	audio_event_signal: (t: number) => embedder.eventSignal(t >>> 0),
+src/glue/audio_host.ts	B	1	audio_handle_dup: (h: number) => embedder.handleDup?.(h >>> 0) ?? 0,
+src/glue/audio_host.ts	B	1	audio_opus_decode: (d: number, req: number, p: number, n: number, out: number, cap: number) => this.embedder.opus ? this.embedder.opus.decode(d, req >>> 0, byte
+src/glue/audio_host.ts	B	1	const x = this.x, dv = this.dv, total = x.kit_trace_total() >>> 0, cap = x.kit_trace_cap(), rec = x.kit_trace_rec(), base = x.kit_trace_ptr(), m = x.audio_out_m
+src/glue/audio_host.ts	V	1	if (dv.getUint16(p + 8, true) === m && dv.getUint32(p + 4, true) === id && !(dv.getUint8(p + 13) & 1)) r.push(OUT_S[dv.getUint8(p + 11)]);
+src/glue/audio_host.ts	?	1	ringHeader(): Int32Array { return new Int32Array(this.x.memory.buffer, this.x.audio_ring_ptr(), 8); }
+src/glue/audio_worklet.ts	B	1	Atomics.store(h, 1, (rd + k) | 0); Atomics.add(h, 4, 1);
+src/glue/audio_worklet.ts	B	1	const pcm: Float32Array = m.pcm, n = pcm.length >> 1, wr = this.h[0], d = this.d, mask = this.mask;
+src/glue/audio_worklet.ts	V	1	else { this.h = new Int32Array(8); this.h[2] = p.cap; this.d = new Float32Array(p.cap * 2); }
+src/glue/audio_worklet.ts	B	1	for (let i = 0; i < k; i++) { const p = ((rd + i) & mask) << 1; L[i] = d[p]; if (R) R[i] = d[p + 1]; }
+src/glue/audio_worklet.ts	B	1	for (let i = 0; i < n; i++) { const k = ((wr + i) & mask) << 1; d[k] = pcm[2 * i]; d[k + 1] = pcm[2 * i + 1]; }
+src/glue/audio_worklet.ts	V	1	h: Int32Array; d: Float32Array; mask: number; shared: boolean;
+src/glue/audio_worklet.ts	B	1	h[1] = (rd + k) | 0; h[4]++;
+src/glue/audio_worklet.ts	V	1	if (p.sab) { this.h = new Int32Array(p.sab, p.hdr, 8); this.d = new Float32Array(p.sab, p.data, p.cap * 2); }
+src/glue/audio_worklet.ts	B	1	if (this.feed && (++this.quanta & 1) === 0) this.feed.postMessage({ rd: h[1], cb: h[4], under: h[3] });
+src/glue/audio_worklet.ts	B	1	let avail = (wr - rd) >>> 0;
+src/glue/audio_worklet.ts	B	1	this.h[0] = (wr + n) | 0; this.h[5] = m.live;
+src/glue/fs_host.ts	B	1	export const fsIsPending = (r: bigint) => (r >> 32n) === -1n;
+src/glue/fs_host.ts	B	1	export const fsToken = (r: bigint) => Number(r & 0xFFFFFFFFn);
+src/glue/fs_host.ts	B	1	len >>>= 0;
+src/glue/fs_host.ts	B	1	onImportError: ((e: unknown) => void) | undefined;
+src/glue/fs_host.ts	B	1	return d.write(Number(off), new Uint8Array(this.memory.buffer, ptr, len >>> 0));
+src/glue/fs_romfs_one.ts	?	1	const DATA = 0x200, tables = (DATA + bytes.length + 3) & ~3, pad = tables - (DATA + bytes.length);
+src/glue/fs_romfs_one.ts	?	1	const dirMeta = 0x18, fileMeta = 0x20 + ((nm.length + 3) & ~3), buckets = 3;
+src/glue/fs_romfs_one.ts	V	1	const u32 = (off: number, v: number) => tv.setUint32(pad + off, v, true);
+src/glue/fs_romfs_one.ts	B	1	for (const c of name) h = (((h >>> 5) | (h << 27)) ^ c) >>> 0;
+src/glue/fs_romfs_one.ts	B	1	let h = (parent ^ 123456789) >>> 0;
+src/glue/gfx_capture.ts	V	1	attrs.push(` $ $ `format ${hex(a & 0xff)}` $ $ $ $ `, divisor ${dv.getUint32(k + 252 + st * 8, true)}` `);
+src/glue/gfx_capture.ts	V	1	case 1: return ` $ $ $ $ $ `x${dv.getUint32(p + 40, true)}` $ $ $ ` samples ${dv.getInt32(p + 28, true)}` `;
+src/glue/gfx_capture.ts	V	1	const a = dv.getUint32(k + 120 + loc * 4, true), st = a >>> 27;
+src/glue/gfx_capture.ts	B	1	const b = dv.getBigUint64(k + 40 + i * 8, true), fld = (sh: number, w: number) => Number((b >> BigInt(sh)) & ((1n << BigInt(w)) - 1n));
+src/glue/gfx_capture.ts	B	1	const ds = dv.getBigUint64(k + 32, true), fld = (sh: number, w: number) => Number((ds >> BigInt(sh)) & ((1n << BigInt(w)) - 1n));
+src/glue/gfx_capture.ts	V	1	const i32s = (dv: DataView, p: number, n: number) => Array.from({ length: n }, (_, i) => dv.getInt32(p + i * 4, true)).join(" ");
+src/glue/gfx_capture.ts	V	1	const n = dv.getUint32(p + 8, true), flags = dv.getUint32(p + 12, true), parts: string[] = [];
+src/glue/gfx_capture.ts	V	1	const ncolor = dv.getUint8(k + 10), flags = dv.getUint8(k + 21), cull = dv.getUint8(k + 5), blendEn = dv.getUint8(k + 22), chmask = dv.getUint32(k + 28, true);
+src/glue/gfx_capture.ts	V	1	const u64 = (dv: DataView, p: number) => dv.getUint32(p, true) + dv.getUint32(p + 4, true) * 4294967296;
+src/glue/gfx_capture.ts	V	1	for (let loc = 0, m = dv.getUint32(k + 116, true); m; loc++, m >>>= 1) {
+src/glue/gfx_capture.ts	B	1	if (!(m & 1)) continue;
+src/glue/gfx_capture.ts	B	1	if ((blendEn >> i) & 1) {
+src/glue/gfx_capture.ts	B	1	if (b & 1) s.push(` $ $ `);
+src/glue/gfx_capture.ts	B	1	if (b & 16) s.push(" ");
+src/glue/gfx_capture.ts	B	1	if (b & 2) s.push(` $ $ `);
+src/glue/gfx_capture.ts	B	1	if (b & 4) s.push(` $ `);
+src/glue/gfx_capture.ts	B	1	if (b & 8) s.push(` $ `);
+src/glue/gfx_capture.ts	V	1	if (flags & 1) parts.push(` $ $ $ $ `clear ${+dv.getFloat32(p + 16, true).toFixed(5)}` $ ` stencil clear ${dv.getUint32(p + 20, true)}` `);
+src/glue/gfx_formats.ts	B	1	export function hostFormat(format: number, caps: number): (NvnFormat & { conv?: boolean }) | undefined {
+src/glue/gfx_formats.ts	B	1	if (n) return caps & 2 ? F(n[0], n[2]) : { ...F(n[1], n[2]), conv: true };
+src/glue/gfx_formats.ts	B	1	return caps & 1 ? F(` $ $ $ `, 16, undefined, " ", bw, bh) : { ...F(srgb ? " " : " ", 4), conv: true };
+src/glue/gfx_host.ts	V	1	baseVertex = dv.getInt32(p + 24, true);
+src/glue/gfx_host.ts	B	1	bindless |= 1 << t.slot;
+src/glue/gfx_host.ts	V	1	buffers[stream] ??= { arrayStride: dv.getUint32(k + PK.stream + stream * 8, true), stepMode: divisor ? " " : " ", attributes: [] };
+src/glue/gfx_host.ts	B	1	buffers[stream].attributes.push({ shaderLocation: loc, offset: (a >>> 8) & 0x7ffff, format: vf ?? " " });
+src/glue/gfx_host.ts	B	1	c = this.uaCur = this.uaPool.pop() ?? { buf: this.newBuffer({ size: UA_CHUNK, usage: 0x08 | 0x40 }), staging: new Uint8Array(UA_CHUNK), used: 0 };
+src/glue/gfx_host.ts	?	1	c.used = (off + size + this.uaAlign - 1) & ~(this.uaAlign - 1);
+src/glue/gfx_host.ts	V	1	case H.BUF_READBACK: this.bufReadback(this.u64(dv, p + 8), dv.getUint32(p + 16, true)); break;
+src/glue/gfx_host.ts	V	1	case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16),
+src/glue/gfx_host.ts	V	1	case H.PIPELINE: if (this.pass && !this.computePass) this.usePipeline(dv.getUint32(p + 8, true)); break;
+src/glue/gfx_host.ts	V	1	case H.PIPELINE_CREATE: this.createPipeline(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true)); break;
+src/glue/gfx_host.ts	V	1	case H.SCISSOR: this.pass.setScissorRect(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true)); break;
+src/glue/gfx_host.ts	V	1	case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (
+src/glue/gfx_host.ts	V	1	case H.STENCIL_REF: this.pass.setStencilReference(dv.getUint32(p + 8, true)); break;
+src/glue/gfx_host.ts	V	1	case H.UBO: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), need: dv.g
+src/glue/gfx_host.ts	V	1	case H.UBO_DATA: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: 0, size: 0, need: 0, data: this.u8.slice(p + 24, p + 24 + dv.
+src/glue/gfx_host.ts	V	1	case H.VBUF: { const b = this.upload(this.u64(dv, p + 16), dv.getUint32(p + 12, true), 0); if (b) this.pass.setVertexBuffer(dv.getUint32(p + 8, true), b, this.u
+src/glue/gfx_host.ts	B	1	classes[loc] = CLASSES[Number((dv.getBigUint64(k + PK.vin, true) >> BigInt(loc * 2)) & 3n)] ?? " ";
+src/glue/gfx_host.ts	V	1	colorAttachments.push({ view: this.attachView(t, dv.getUint32(o + 8, true), dv.getUint32(o + 12, true), af), loadOp: clear ? " " : " ", storeOp: " ",
+src/glue/gfx_host.ts	B	1	const UA_CHUNK = 1 << 20, UA_ALIGN = 256;
+src/glue/gfx_host.ts	V	1	const [sl, sy, dl, dy] = [24, 28, 32, 36].map(o => dv.getUint32(p + o, true)), sr = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 40 + i * 4, true)), dr = [0, 1, 
+src/glue/gfx_host.ts	V	1	const a = dv.getUint32(k + PK.attr + loc * 4, true), fmt = a & 0xff, stream = a >>> 27, vf = NVN_FORMATS[fmt]?.vtx;
+src/glue/gfx_host.ts	V	1	const a: any = { view: this.attachView(t, dv.getUint32(p + 360, true), dv.getUint32(p + 364, true)) };
+src/glue/gfx_host.ts	B	1	const b = dv.getBigUint64(k + PK.blend + i * 8, true), fld = (s: number, w: number) => Number((b >> BigInt(s)) & ((1n << BigInt(w)) - 1n));
+src/glue/gfx_host.ts	B	1	const buf = this.newBuffer({ size: Math.max(4, out.length * 4), usage: 0x10 | 0x08 });
+src/glue/gfx_host.ts	B	1	const buf = this.newBuffer({ size: row * h, usage: 0x01 | 0x08 });
+src/glue/gfx_host.ts	B	1	const buf = this.newBuffer({ size: srcRow * by * depth, usage: 0x01 | 0x08 });
+src/glue/gfx_host.ts	V	1	const bx = Math.ceil(r[3] / f.bw), by = Math.ceil(r[4] / f.bh), depth = Math.max(1, r[5]), wb = bx * f.bpb, row = dv.getUint32(p + 56, true) || wb, img = dv.get
+src/glue/gfx_host.ts	V	1	const c = [0, 1, 2, 3].map(i => dv.getInt32(p + 16 + i * 4, true)), uv = c[2] > 0 && c[3] > 0 ? [c[0] / t.width, c[1] / t.height, c[2] / t.width, c[3] / t.heigh
+src/glue/gfx_host.ts	V	1	const clear = dv.getUint32(o + 20, true) !== 0;
+src/glue/gfx_host.ts	V	1	const conv = dv.getUint32(p + (op === H.DRAW ? 24 : 28), true);
+src/glue/gfx_host.ts	V	1	const count = dv.getUint32(p + 12, true), inst = dv.getUint32(p + 16, true), baseInst = dv.getUint32(p + 20, true);
+src/glue/gfx_host.ts	V	1	const divisor = dv.getUint32(k + PK.stream + stream * 8 + 4, true);
+src/glue/gfx_host.ts	B	1	const ds = dv.getBigUint64(k + PK.ds, true), fld = (s: number, w: number) => Number((ds >> BigInt(s)) & ((1n << BigInt(w)) - 1n));
+src/glue/gfx_host.ts	B	1	const dv = this.dv, r = Number(this.x.gfx_scratch()), bit = (a?: number[]) => (a ?? []).reduce((m, i) => m | (1 << i), 0) >>> 0;
+src/glue/gfx_host.ts	B	1	const f = t.fmt, up = (v: number, b: number) => Math.ceil(v / b) * b, lw = up(Math.max(1, t.gpu.width >> level), f.bw), lh = up(Math.max(1, t.gpu.height >> leve
+src/glue/gfx_host.ts	V	1	const flags = dv.getUint32(p + 24, true);
+src/glue/gfx_host.ts	B	1	const gone = this.x.gfx_device_restored() >>> 0;
+src/glue/gfx_host.ts	?	1	const have = u ? (u.data ? u.data.length : u.size) : 0, size = Math.min(max, Math.max(16, ((u?.need || have) + 15) & ~15));
+src/glue/gfx_host.ts	V	1	const itype = dv.getUint32(p + 8, true), addr = this.u64(dv, p + 32), isz = itype === 2 ? 4 : itype === 1 ? 2 : 1;
+src/glue/gfx_host.ts	V	1	const itype = dv.getUint32(p + 8, true), count = dv.getUint32(p + 12, true), isz = itype === 2 ? 4 : itype === 1 ? 2 : 1;
+src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 16, true), z = dv.getUint32(p + 20, true), y = dv.getUint32(p + 24, true), slices = dv.getUint32(p + 36, true), ptr = this.u64(dv
+src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 24, true), layer = dv.getUint32(p + 28, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 32 + i * 4, true)), f = t.fmt;
+src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 24, true), layer = dv.getUint32(p + 28, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 32 + i * 4, true));
+src/glue/gfx_host.ts	B	2	const lo = (b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, hi = (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0;
+src/glue/gfx_host.ts	B	1	const n = down4(size + 3), buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
+src/glue/gfx_host.ts	V	1	const n = dv.getUint32(p + 8, true), flags = dv.getUint32(p + 12, true);
+src/glue/gfx_host.ts	V	1	const ncolor = dv.getUint8(k + PK.ncolor), chmask = dv.getUint32(k + PK.chmask, true), blendEn = dv.getUint8(k + PK.blendEn), written = new Set(fs.outputs ?? []
+src/glue/gfx_host.ts	B	1	const nib = (chmask >>> (4 * i)) & 15, t: any = { format: f.tex, writeMask: written.has(i) ? nib : 0 };
+src/glue/gfx_host.ts	V	1	const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
+src/glue/gfx_host.ts	V	1	const pi = this.passInfo!, kind = dv.getUint32(p + 8, true), index = dv.getUint32(p + 12, true), mask = dv.getUint32(p + 16, true);
+src/glue/gfx_host.ts	B	1	const pw = Math.max(1, t.width >> level), ph = t.target === 0 || t.target === 3 ? 1 : Math.max(1, t.height >> level), w = Math.ceil(pw / t.fmt.bw), h = Math.cei
+src/glue/gfx_host.ts	V	1	const row = dv.getUint32(p + 56, true) || bx * f.bpb, rows = dv.getUint32(p + 60, true) ? Math.floor(dv.getUint32(p + 60, true) / row) : by;
+src/glue/gfx_host.ts	V	1	const serial = this.u64(dv, p + 8), d = p + 16, format = dv.getInt32(d + 4, true);
+src/glue/gfx_host.ts	V	1	const serial = this.u64(dv, p + 8), t = this.texture(serial), win = this.u64(dv, p + 32), index = dv.getUint32(p + 40, true);
+src/glue/gfx_host.ts	B	1	const src = this.newTexture({ size: { width: w, height: h }, format: " ", usage: 0x04 | 0x02 });
+src/glue/gfx_host.ts	?	1	const src = this.u8.subarray(addr, addr + size), wide = new Uint16Array((size + 1) & ~1);
+src/glue/gfx_host.ts	B	1	const sw = Math.max(1, s.width >> sl), sh = Math.max(1, s.height >> sl);
+src/glue/gfx_host.ts	B	1	const ub = this.newBuffer({ size: 16, usage: 0x40 | 0x08 });
+src/glue/gfx_host.ts	V	1	const vf = hostFormat(dv.getUint32(o + 16, true), this.caps)?.tex, af = vf && vf === SRGB_TWIN[t.fmt.tex!] ? vf : t.fmt.tex!;
+src/glue/gfx_host.ts	B	1	const vmod = flags & 2 ? this.variantModule(vsId, classes) : this.module(vsId);
+src/glue/gfx_host.ts	V	1	const w = Math.min(dv.getUint32(p + 28, true), lw - x), h = Math.min(dv.getUint32(p + 32, true), lh - y), rows = h / f.bh;
+src/glue/gfx_host.ts	V	1	const w = dv.getUint32(p + 44, true), h = dv.getUint32(p + 48, true);
+src/glue/gfx_host.ts	B	1	const want = hostFormat(view[4] | view[5] << 8, this.caps)?.tex;
+src/glue/gfx_host.ts	V	1	const what = dv.getUint32(p + 56, true);
+src/glue/gfx_host.ts	V	1	depth: dv.getUint32(d + 24, true), levels: dv.getUint32(d + 28, true), views: new Map(), fmt: hostFormat(format, this.caps)! });
+src/glue/gfx_host.ts	V	1	dv.setBigUint64(r + 128, vin, true); dv.setUint32(r + 136, 1, true);
+src/glue/gfx_host.ts	V	1	dv.setUint32(r + 12, bit(st === 0 ? info.attributes : info.outputs), true); dv.setUint32(r + 16, depth >>> 0, true);
+src/glue/gfx_host.ts	V	1	dv.setUint32(r + 140, bindless >>> 0, true);
+src/glue/gfx_host.ts	V	1	dv.setUint32(r + 20, bit((info.storage ?? []).map(b => b.slot)), true); dv.setUint32(r + 24, bit((info.storage ?? []).filter(b => b.write).map(b => b.slot)), tr
+src/glue/gfx_host.ts	V	1	dv.setUint32(r + 28, (bit((info.images ?? []).map(b => b.slot)) | bit((info.images ?? []).filter(b => (b.access ?? " ") !== " ").map(b => b.slot)) << 8) >>> 0, 
+src/glue/gfx_host.ts	V	1	dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0)) >>> 0, true); dv.setUint32(r + 8, bit((info.textures ?? []).map(t => t
+src/glue/gfx_host.ts	V	1	for (const [slot, size] of Object.entries(info.uboSize ?? {})) if (+slot < 14) dv.setUint32(r + 64 + +slot * 4, size, true);
+src/glue/gfx_host.ts	B	1	for (const l of info.attributes ?? []) vin |= BigInt(Math.max(0, CLASSES.indexOf(info.attributeTypes[l] ?? " "))) << BigInt(l * 2);
+src/glue/gfx_host.ts	B	1	for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? " "))); if (t.depth) depth |= 1 << t.slot; }
+src/glue/gfx_host.ts	V	1	for (let loc = 0, m = dv.getUint32(k + PK.attrMask, true); m; loc++, m >>>= 1) {
+src/glue/gfx_host.ts	B	1	if (!(m & 1)) continue;
+src/glue/gfx_host.ts	B	1	if (!g) { const b = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(b, 0, new Float32Array(this.fix)); g = this.device.createBin
+src/glue/gfx_host.ts	V	1	if (!this.usePipeline(dv.getUint32(p + 8, true))) return;
+src/glue/gfx_host.ts	B	1	if (!tx || !(tx.gpu.usage & 0x08)) { this.red(` $ `, ` $ $ `a ${tx.fmt.tex} texture is bound, which WebGPU cannot bind as a storage image` `); return false; }
+src/glue/gfx_host.ts	?	1	if (!v) { v = t.gpu.createView({ ...(format ? { format, usage: t.gpu.usage & ~0x08 } : {}), dimension: t.gpu.dimension === " " ? " " : " ", baseMipLevel: level,
+src/glue/gfx_host.ts	B	1	if ((bits & 16) && (view[10] !== 2 || view[11] !== 3 || view[12] !== 4 || view[13] !== 5)) this.red(" ", " ");
+src/glue/gfx_host.ts	B	1	if ((bits & 8) && !dim) d.dimension = vt === 2 ? " " : vt === 8 ? " " : vt === 9 ? " " : vt === 4 || vt === 3 ? " " : " ";
+src/glue/gfx_host.ts	B	1	if ((blendEn >> i) & 1) {
+src/glue/gfx_host.ts	V	1	if ((dv.getUint32(p + 88, true) & 0x40000000) && s.gpu.sampleCount > 1 && d.gpu.sampleCount === 1) { this.resolve(s, sl, sy, d, dl, dy); return; }
+src/glue/gfx_host.ts	B	1	if ((dv.getUint8(k + PK.offsetEn) & 4) && df.kind === " " && prim >= 4) {
+src/glue/gfx_host.ts	B	1	if (bits & 1) { d.baseMipLevel = view[2]; d.mipLevelCount = Math.max(1, Math.min(view[3] || 1, t.gpu.mipLevelCount - view[2])); }
+src/glue/gfx_host.ts	B	1	if (bits & 2) { d.baseArrayLayer = view[6] | view[7] << 8; d.arrayLayerCount = Math.max(1, view[8] | view[9] << 8); }
+src/glue/gfx_host.ts	B	1	if (bits & 4) {
+src/glue/gfx_host.ts	B	1	if (dim === " ") v = this.newTexture({ size: { width: 1, height: 1, depthOrArrayLayers: 1 }, dimension: " ", format: " ", usage: 0x04 | 0x02 }).createView();
+src/glue/gfx_host.ts	V	1	if (dv.getUint32(p + 44, true) & 1) this.presentFlips++;
+src/glue/gfx_host.ts	V	1	if (dv.getUint32(p + 44, true) & 1) { uv[1] += uv[3]; uv[3] = -uv[3]; }
+src/glue/gfx_host.ts	B	1	if (f.kind === " ") { d.depthCompare = " "; d.depthWriteEnabled = !!(kind && (mask & 1)); }
+src/glue/gfx_host.ts	B	1	if (flags & 1) {
+src/glue/gfx_host.ts	B	1	if (flags & 1) { if (this.device.features?.has?.(" ")) primitive.unclippedDepth = true; else this.red(" ", " "); }
+src/glue/gfx_host.ts	B	1	if (kind && f.stencil && (mask >> 8)) { const op = { compare: " ", passOp: " ", failOp: " ", depthFailOp: " " }; d.stencilFront = op; d.stencilBack = op; d.sten
+src/glue/gfx_host.ts	V	1	if (kind) this.pass.setStencilReference(dv.getUint32(p + 24, true) & 0xff);
+src/glue/gfx_host.ts	V	1	if (op === H.DRAW) this.pass.draw(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 8, true), dv.getUint32(p + 20, true));
+src/glue/gfx_host.ts	B	1	if (s.gpu.format !== d.gpu.format || s.gpu.width !== Math.max(1, d.gpu.width >> dl) || s.gpu.height !== Math.max(1, d.gpu.height >> dl)) { this.red(" ", ` $ $ $
+src/glue/gfx_host.ts	B	1	if (t.fmt.kind === " " && t.fmt.stencil) d.aspect = view && (view[0] & 0x20) && (view[0] >> 6) === 1 ? " " : " ";
+src/glue/gfx_host.ts	B	1	if (t.fmt.kind === " ") { a.depthLoadOp = flags & 2 ? " " : " "; a.depthStoreOp = " "; a.depthClearValue = Math.min(1, Math.max(0, dv.getFloat32(p + 16, true)))
+src/glue/gfx_host.ts	V	1	if (t.fmt.stencil) { a.stencilLoadOp = flags & 4 ? " " : " "; a.stencilStoreOp = " "; a.stencilClearValue = dv.getUint32(p + 20, true); }
+src/glue/gfx_host.ts	B	1	if (u?.data) { const b = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(u.data.length)))); this.device.queue.writeBuffer(b, 0, u.data); this.inUse.push(b); r
+src/glue/gfx_host.ts	?	1	if (want && want !== t.fmt.tex) { if (want === SRGB_TWIN[t.fmt.tex!]) { d.format = want; d.usage = t.gpu.usage & ~0x08; } else this.red(` $ $ `, ` $ $ `); }
+src/glue/gfx_host.ts	B	1	images?: { slot: number; format: string; access?: " " | " " | " "; dim?: " " | " " | " " }[];
+src/glue/gfx_host.ts	B	1	imports() { return { gfx_exec: (ptr: number, len: number) => this.exec(ptr < 0 ? ptr + 4294967296 : ptr, len >>> 0) }; }
+src/glue/gfx_host.ts	B	1	let usage = 0x04 | (ms ? 0 : 0x01 | 0x02 );
+src/glue/gfx_host.ts	B	1	onDeviceLost: ((info: { reason?: string; message?: string }) => void) | null = null;
+src/glue/gfx_host.ts	B	1	onDeviceRestored: ((texturesGone: number) => void) | null = null;
+src/glue/gfx_host.ts	B	1	onFence: ((fence: number) => void) | null = null;
+src/glue/gfx_host.ts	B	1	onImage: ((window: number, index: number, what: number) => void) | null = null;
+src/glue/gfx_host.ts	B	1	onShaderVariant: ((keyHex: string, classes: Record<number, VinClass>) => string | undefined) | null = null;
+src/glue/gfx_host.ts	B	1	private alloc(cap: number): GPU { return this.pool.get(cap)?.pop() ?? this.newBuffer({ size: cap, usage: 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80 }); }
+src/glue/gfx_host.ts	B	1	private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; records: number; d
+src/glue/gfx_host.ts	B	1	private img = new Map<number, { serial: number; view: Uint8Array | null }>();
+src/glue/gfx_host.ts	B	1	private passInfo: { colorFmt: (string | null)[]; depthFmt: string | null; samples: number; w: number; h: number; targets: { name: string; serial: number; level:
+src/glue/gfx_host.ts	B	1	private scratchStorage(): GPU { return (this.scratchSt ??= this.newBuffer({ size: 65536, usage: 0x80 | 0x08 })); }
+src/glue/gfx_host.ts	B	1	private shaders: { info: ShaderInfo; key: string; module?: GPU; variants?: Map<string, GPU | null> }[] = [];
+src/glue/gfx_host.ts	B	1	private storageBuffer(addr: number, size: number, write: boolean): { buf: GPU; off: number; size: number } | null {
+src/glue/gfx_host.ts	V	1	private u64(dv: DataView, p: number) { return dv.getUint32(p, true) + dv.getUint32(p + 4, true) * 4294967296; }
+src/glue/gfx_host.ts	B	1	private zeroBuffer(): GPU { return (this.zero ??= this.newBuffer({ size: 65536, usage: 0x40 | 0x08 })); }
+src/glue/gfx_host.ts	?	1	return buf ? { buf, off: this.upOff, size: Math.min(buf.size - this.upOff, (u!.size + 15) & ~15) } : { buf: this.zeroBuffer(), off: 0, size: 65536 };
+src/glue/gfx_host.ts	?	1	src = itype === 2 ? new Uint32Array(this.memory.buffer, addr, count) : itype === 1 ? new Uint16Array(this.memory.buffer, addr, count) : new Uint8Array(this.memo
+src/glue/gfx_host.ts	B	1	t.snap ??= this.newTexture({ size: { width: g.width, height: g.height, depthOrArrayLayers: g.depthOrArrayLayers }, format: g.format, dimension: g.dimension, mip
+src/glue/gfx_host.ts	V	1	targets.push({ name: " ", serial: t.serial, level: dv.getUint32(p + 360, true), layer: dv.getUint32(p + 364, true) });
+src/glue/gfx_host.ts	V	1	targets.push({ name: ` $ `, serial: t.serial, level: dv.getUint32(o + 8, true), layer: dv.getUint32(o + 12, true) });
+src/glue/gfx_host.ts	V	1	this.blit(sv, [sr[0] / sw, sr[1] / sh, sr[3] / sw, sr[4] / sh], this.attachView(d, dl, dy + dr[2]), d.fmt.tex!, [dr[0], dr[1], dr[3], dr[4]], (dv.getUint32(p + 
+src/glue/gfx_host.ts	B	1	this.caps = (has(" ") && !this.opts.forceAstcDecode ? 1 : 0) | (has(" ") ? 2 : 0);
+src/glue/gfx_host.ts	V	1	this.device.queue.writeBuffer(buf, 0, new Uint32Array(out));
+src/glue/gfx_host.ts	B	1	this.dummy ??= this.newTexture({ size: { width: 1, height: 1, depthOrArrayLayers: 6 }, format: " ", usage: 0x04 | 0x02 });
+src/glue/gfx_host.ts	B	1	this.encoder().copyTextureToTexture({ texture: g, mipLevel: l }, { texture: t.snap, mipLevel: l }, { width: Math.max(1, g.width >> l), height: Math.max(1, g.hei
+src/glue/gfx_host.ts	V	1	this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
+src/glue/gfx_host.ts	V	1	this.pass.drawIndexed(count, dv.getUint32(p + 16, true), 0, dv.getInt32(p + 24, true), dv.getUint32(p + 20, true));
+src/glue/gfx_host.ts	V	1	this.pass.setScissorRect(dv.getUint32(p + 36, true), dv.getUint32(p + 40, true), w, h);
+src/glue/gfx_host.ts	V	1	this.passInfo = { colorFmt, depthFmt, samples, w: dv.getUint32(p + 24, true), h: dv.getUint32(p + 28, true), targets };
+src/glue/gfx_host.ts	V	1	this.tex.set(dv.getUint32(p + 8, true) * 64 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), snap: (flags & 1) !== 0, view: flags & 2 ? this.u8.sli
+src/glue/gfx_host.ts	V	1	this.textures.set(serial, { serial, target: dv.getInt32(d, true), format, flags: dv.getInt32(d + 8, true), samples: dv.getInt32(d + 12, true), width: dv.getUint
+src/glue/gfx_host.ts	B	1	variant?: (classes: Record<number, VinClass>) => string | undefined;
+src/glue/gfx_host.ts	V	1	} else { const first = dv.getUint32(p + 8, true); src = Array.from({ length: count }, (_, i) => first + i); key = `$ $ $ `; }
+src/glue/hle_host.ts	B	1	LSL: 1n << 24n, LSR: 1n << 25n, RSL: 1n << 26n, RSR: 1n << 27n, SHAKE: 1n << 63n } as const;
+src/glue/hle_host.ts	B	1	Plus: 1n << 10n, Minus: 1n << 11n, Left: 1n << 12n, Up: 1n << 13n, Right: 1n << 14n, Down: 1n << 15n,
+src/glue/hle_host.ts	V	1	[snap.lx, snap.ly, snap.rx, snap.ry].forEach((v, i) => dv.setInt32(0x10 + 4 * i, Math.max(-STICK_MAX, Math.min(STICK_MAX, Math.round(v ?? 0))), true));
+src/glue/hle_host.ts	V	1	const n = Math.min(16, snap.touches.length); dv.setUint32(0xE8, n, true);
+src/glue/hle_host.ts	B	1	dv.setBigUint64(8, (u64(snap.buttons ?? 0) & ~BTN.SHAKE) | (snap.shake ? BTN.SHAKE : 0n), true);
+src/glue/hle_host.ts	V	1	dv.setBigUint64(o, u64(j.buttons ?? 0), true); dv.setInt32(o + 8, Math.round(j.stick?.[0] ?? 0), true); dv.setInt32(o + 12, Math.round(j.stick?.[1] ?? 0), true)
+src/glue/hle_host.ts	V	1	dv.setInt32(out, z.offset, true); dv.setInt32(out + 4, z.dst ? 1 : 0, true);
+src/glue/hle_host.ts	V	1	dv.setUint32(0, f, true);
+src/glue/hle_host.ts	V	1	dv.setUint32(4, (snap.sourceId ?? 0) >>> 0, true);
+src/glue/hle_host.ts	B	1	env.exitRequest(EXIT_REASON[reason] ?? " ", u64(value), new Uint8Array(mem()).slice(p, p + (n >>> 0))),
+src/glue/hle_host.ts	V	1	env.textRequest({ title: s(0), sub: s(8), guide: s(16), initial: s(24), maxChars: dv.getInt32(q + 32, true), minChars: dv.getInt32(q + 36, true),
+src/glue/hle_host.ts	V	1	env.vibration({ player: dv.getInt32(q, true), epoch: dv.getBigUint64(q + 8, true), motors: [v(16), v(32)] });
+src/glue/hle_host.ts	B	1	export const BTN = { A: 1n << 0n, B: 1n << 1n, X: 1n << 2n, Y: 1n << 3n, LS: 1n << 4n, RS: 1n << 5n, L: 1n << 6n, R: 1n << 7n, ZL: 1n << 8n, ZR: 1n << 9n,
+src/glue/hle_host.ts	B	1	f |= IN.joyL << side;
+src/glue/hle_host.ts	V	1	for (let i = 0; i < n; i++) dv.setInt32(p + 4 * i, indices[i], true);
+src/glue/hle_host.ts	V	1	for (let i = 0; i < n; i++) { const t = snap.touches[i], o = 0xF0 + 12 * i; dv.setUint32(o, t.id >>> 0, true); dv.setFloat32(o + 4, t.x, true); dv.setFloat32(o 
+src/glue/hle_host.ts	B	1	get holds(): (keyof typeof HOLD)[] { const m = this.x.hle_hold_state(); return (Object.keys(HOLD) as (keyof typeof HOLD)[]).filter(k => (m >> HOLD[k]) & 1); }
+src/glue/hle_host.ts	B	1	get padSlotMask(): number { return this.x.hle_pad_slot(4, 0) >>> 0; }
+src/glue/hle_host.ts	B	1	get viCrop(): { x: number; y: number; w: number; h: number } | null {
+src/glue/hle_host.ts	B	1	get viLayer(): { w: number; h: number } | null { const v = this.x.hle_vi_layer_size() >>> 0; return v ? { w: v & 0xFFFF, h: v >>> 16 } : null; }
+src/glue/hle_host.ts	B	1	hle_event_clear: (h: number) => env.eventClear(h >>> 0) ? 1 : 0,
+src/glue/hle_host.ts	B	1	hle_event_dup_readable: (h: number) => env.eventDupReadable(h >>> 0),
+src/glue/hle_host.ts	V	1	hle_event_new: (w: number) => { const e = env.eventNew(); if (w) new DataView(mem()).setUint32(w, e.w, true); return e.r; },
+src/glue/hle_host.ts	B	1	hle_event_signal: (h: number) => env.eventSignal(h >>> 0) ? 1 : 0,
+src/glue/hle_host.ts	B	1	hle_native_image_blank: (w: number, h: number) => env.nativeImageBlank(w >>> 0, h >>> 0),
+src/glue/hle_host.ts	B	1	hle_native_image_blank_free: (h: number) => env.nativeImageBlankFree(h >>> 0),
+src/glue/hle_host.ts	B	1	hle_vi_crop: (cx: number, cy: number, w: number, h: number) => env.viCrop?.(cx >>> 0, cy >>> 0, w >>> 0, h >>> 0),
+src/glue/hle_host.ts	B	1	hle_vi_layer: (w: number, h: number) => env.viLayer?.(w >>> 0, h >>> 0),
+src/glue/hle_host.ts	B	1	hle_web_open: (path: number, cb: number, hidden: number, delay: number, pulse: number) => env.webOpen(str(path), str(cb), hidden !== 0, delay >>> 0, pulse >>> 0
+src/glue/hle_host.ts	B	1	if (f & RET.d0) r.d0 = u64(x.hle_ret_d0());
+src/glue/hle_host.ts	B	1	if (f & RET.wait) r.wait = { handle: x.hle_wait_handle() >>> 0, timeoutNs: BigInt.asIntN(64, x.hle_wait_timeout()) };
+src/glue/hle_host.ts	B	1	if (f & RET.x1) r.x1 = u64(x.hle_ret_x1());
+src/glue/hle_host.ts	B	1	if (j.clearMotion) f |= IN.clrJmotionL << side;
+src/glue/hle_host.ts	B	1	if (j.motion) { f |= IN.jmotionL << side; v3(o + 0x10, j.motion.acc); v3(o + 0x1C, j.motion.rot); dv.setBigUint64(o + 0x28, u64(j.motion.sampleNs), true); }
+src/glue/hle_host.ts	V	1	if (j.mouse) { f |= IN.mouseL << side; const q = 0xD0 + 12 * side; dv.setInt32(q, j.mouse.dx, true); dv.setInt32(q + 4, j.mouse.dy, true); dv.setUint32(q + 8, (
+src/glue/hle_host.ts	B	1	jitMemory?(rxSize: bigint, roSize: bigint): { rx: bigint; ro: bigint } | null;
+src/glue/hle_host.ts	V	1	kind: dv.getInt32(q + 40, true) ? " " : " " });
+src/glue/hle_host.ts	B	1	padSlot(op: " " | " " | " " | " ", sourceId: number): number { return this.x.hle_pad_slot(op === " " ? 0 : op === " " ? 1 : op === " " ? 2 : 3, sourceId >>> 0);
+src/glue/hle_host.ts	B	1	playerNpad(player: number): number { return this.x.hle_player_npad(player) >>> 0; }
+src/glue/hle_host.ts	?	1	return u64(env.roLoad(u64(image), size >>> 0, new Uint8Array(mem()).slice(sha, sha + 32), alone !== 0));
+src/glue/hle_host.ts	B	1	return v ? { x: Number(v & 0xFFFFn), y: Number((v >> 16n) & 0xFFFFn), w: Number((v >> 32n) & 0xFFFFn), h: Number(v >> 48n) } : null;
+src/glue/hle_host.ts	V	1	return { buttons: Number(dv.getBigUint64(p, true)), axes: [dv.getInt32(p + 8, true), dv.getInt32(p + 12, true), dv.getInt32(p + 16, true), dv.getInt32(p + 20, t
+src/glue/hle_rt.ts	B	1	const name = /\(([^)]+)\)$/.exec(d.toString())?.[1]?.split(" ").map(w => w[0]).join("") ?? " ";
+src/glue/hle_rt.ts	B	1	eventDupReadable: h => rt.k.kernel_event_dup_readable(h) >>> 0,
+src/glue/hle_rt.ts	V	1	eventNew: () => { const p = o.scratch ?? (rt.r.rt_scratch_ptr() + 3080); const r = rt.k.kernel_event_new(p) >>> 0; return { r, w: new DataView(rt.memory.buffer)
+src/glue/rt_audio.ts	B	1	const n = this.o.arenaBytes ?? 16 << 20, base = this.rt.hostAlloc(n);
+src/glue/rt_audio.ts	V	1	const p = rt.r.rt_scratch_ptr() + 3088, r = rt.k.kernel_event_new(p) >>> 0, w = rt.dv().getUint32(p, true);
+src/glue/rt_audio.ts	V	1	const rt = this.rt, q = this.req, dv = cpu.dv(), kind = dv.getUint32(q, true);
+src/glue/rt_audio.ts	B	1	handleDup: h => rt.k.kernel_event_dup_readable(h) >>> 0,
+src/glue/rt_audio.ts	B	1	if (kind & 1) cpu.setX(0, dv.getBigUint64(this.req + 8, true));
+src/glue/rt_audio.ts	V	1	if (kind === RET.V0) { cpu.setD(0, BigInt(d.getUint32(block + 64, true))); return; }
+src/glue/rt_audio.ts	B	1	return kind & 1 ? d.getBigUint64(block, true) : undefined;
+src/glue/rt_gfx.ts	B	1	const SYNC_FOREVER = 1n << 62n;
+src/glue/rt_gfx.ts	B	1	const abi = this.abi[id] ?? 0, floats = abi & 15, retF = (abi & 16) !== 0;
+src/glue/rt_gfx.ts	B	1	const done = this.host.fence(x.gfx_finish_fence() >>> 0);
+src/glue/rt_gfx.ts	B	1	const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= rt.u8().length;
+src/glue/rt_gfx.ts	B	1	const interval = getInterval >= 0 ? Number(this.x.nvn_call(getInterval, k.args) & 0xFFn) : 1;
+src/glue/rt_gfx.ts	B	1	const n = cpu.w(1) | 0, sd = Number(cpu.x(2));
+src/glue/rt_gfx.ts	V	1	const own = dv.getUint32(c + 0x20, true), nctl = own >= 0x760 && own < 0x880 ? own : 0x880, ncode = dv.getUint32(c + 0x704, true);
+src/glue/rt_gfx.ts	B	1	const res = this.call(id, k.args), fence = x.gfx_wait_fence() >>> 0;
+src/glue/rt_gfx.ts	B	1	const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
+src/glue/rt_gfx.ts	B	1	for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
+src/glue/rt_gfx.ts	V	1	if (dv.getUint32(c, true) === 0x98761234 && dv.getUint32(c + 4, true) === 0xc9) return null;
+src/glue/rt_gfx.ts	B	1	if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
+src/glue/rt_gfx.ts	B	1	private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
+src/glue/rt_gfx.ts	B	1	this.shownAt[n & 255] = BigInt(Math.round(performance.now() * 1e6));
+src/glue/rt_gfx.ts	B	1	viLayerCrop: { x: number; y: number; w: number; h: number } | null = null;
+src/glue/rt_gfx.ts	B	1	viLayerSize: { w: number; h: number } | null = null;
+src/glue/rt_gfx.ts	B	1	viPresentedNs(ticket: bigint): bigint { const n = Number(ticket); return n > 0 && n <= this.stats.shown && n > this.stats.shown - 256 ? this.shownAt[n & 255] ??
+src/glue/rt_handoff.ts	B	1	const fnv = (s: string) => { let h = 0xcbf29ce484222325n; for (let i = 0; i < s.length; i++) h = BigInt.asUintN(64, (h ^ BigInt(s.charCodeAt(i))) * 0x100000001b
+src/glue/rt_handoff.ts	B	1	npdm: { stackSize?: number } | null | undefined;
+src/glue/rt_handoff.ts	B	1	return { ...s, programId: /^[0-9a-fA-F]{1,16}$/.test(m.programId) ? BigInt(" " + m.programId) : 0n, cutsKey, notes };
+src/glue/rt_handoff.ts	B	1	space?: { heap_region?: number; alias_region?: number; stack_region?: number } | null };
+src/glue/rt_input.ts	B	1	Plus: 1 << 10, Minus: 1 << 11, Left: 1 << 12, Up: 1 << 13, Right: 1 << 14, Down: 1 << 15 } as const;
+src/glue/rt_input.ts	B	1	const m = /^(\d+):([^~]+)(?:~(\d+))?$/.exec(tok);
+src/glue/rt_input.ts	B	1	const s = /^([LR])(-?\d+)\/(-?\d+)$/.exec(k);
+src/glue/rt_input.ts	B	1	const snap: InputSnapshot = { connected: true, sourceId: source, buttons: BigInt(p.buttons >>> 0) & ~HBTN.SHAKE, shake: p.shake, lx: p.lx, ly: p.ly, rx: p.rx, r
+src/glue/rt_input.ts	B	1	export const BTN = { A: 1 << 0, B: 1 << 1, X: 1 << 2, Y: 1 << 3, LS: 1 << 4, RS: 1 << 5, L: 1 << 6, R: 1 << 7, ZL: 1 << 8, ZR: 1 << 9,
+src/glue/rt_layout.ts	B	1	export const STUBS = { base: range(" ").lo, cap: (range(" ").hi - range(" ").lo) >>> 2 };
+src/glue/rt_process.ts	B	1	appPool: fit === " " ? Math.min(pool, room - stack) : pool, memUsed: used, sysResource: w.sysResource ?? 0, programId: w.programId ?? 0n, flags: (w.mapLimit ? 1
+src/glue/rt_process.ts	B	1	const MB = 1 << 20, GB = 1024 * MB, up = (v: number, a: number) => Math.ceil(v / a) * a;
+src/glue/rt_process.ts	V	1	for (let i = 0; i < 3; i++) end = Math.max(end, dv.getUint32(0x14 + 16 * i, true) + dv.getUint32(0x18 + 16 * i, true));
+src/glue/rt_process.ts	B	1	programId: id && /^[0-9a-fA-F]{1,16}$/.test(id) ? BigInt(" " + id) : 0n, mapLimit: apply.mem_map_limit === " " || apply.mem_map_limit === " " };
+src/glue/rt_process.ts	V	1	return up(end + dv.getUint32(0x3C, true), 0x1000);
+src/glue/rt_report.ts	V	1	const rec = blob + id * DIR_REC, cells = mem[rec + 12] * mem[rec + 13], h = hits + dv.getUint32(rec + 8, true);
+src/glue/rt_report.ts	V	1	const rec = blob0 + id * DIR_REC, nS = mem[rec + 12], nE = mem[rec + 13], tab = blob0 + dv.getUint32(rec, true);
+src/glue/rt_report.ts	B	1	const total = x.kit_trace_total() >>> 0, cap = x.kit_trace_cap(), size = x.kit_trace_rec(), base = x.kit_trace_ptr();
+src/glue/rt_report.ts	B	1	counters: Record<string, string | number>;
+src/glue/rt_report.ts	B	1	export function refusedTotal(parts: { name: string; x: KitPart }[]): number { return parts.reduce((a, p) => a + (p.x.kit_refused_total() >>> 0), 0); }
+src/glue/rt_report.ts	V	1	let p = blob0 + dv.getUint32(rec + 4, true);
+src/glue/rt_runtime.ts	B	1	const act = (a: Omit<Action, typeof ACTION> & { kind: " " | " " | " " }): Action => ({ [ACTION]: a.kind, pc: a.pc, event: a.event, timeout: a.timeout, resume: a
+src/glue/rt_runtime.ts	B	1	const c = this.core, pc = Number(c.pc.value as bigint), id = (pc - STUBS.base) >>> 2;
+src/glue/rt_runtime.ts	V	1	const closing = n === 0x16 && this.closeHooks.length ? this.dv().getUint32(ctx, true) : 0;
+src/glue/rt_runtime.ts	V	1	const dv = this.dv(), lo = Number(dv.getBigUint64(q, true)), size = Number(dv.getBigUint64(q + 8, true)), state = dv.getUint32(q + 16, true);
+src/glue/rt_runtime.ts	V	1	const handle = index >= 0 ? this.dv().getUint32((this.threadInfo(index)) + 28, true) : 0;
+src/glue/rt_runtime.ts	V	1	const insn = this.dv().getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
+src/glue/rt_runtime.ts	B	1	const leb = (v: number) => { const n: number[] = []; do { let b = v & 0x7F; v >>>= 7; if (v) b |= 0x80; n.push(b); } while (v); return n; };
+src/glue/rt_runtime.ts	B	2	const r = Number((c.x0.value as bigint) & M32);
+src/glue/rt_runtime.ts	?	1	const sp = (sp0 - BigInt(8 * (args.length - 8))) & ~15n, dv = this.dv();
+src/glue/rt_runtime.ts	V	1	const thread = this.dv().getUint32(this.threadInfo(index) + 28, true);
+src/glue/rt_runtime.ts	V	1	dv.setUint32(slot, res.event!, true);
+src/glue/rt_runtime.ts	V	1	get thread() { return index >= 0 ? rt.dv().getUint32(rt.threadInfo(index) + 28, true) : 0; },
+src/glue/rt_runtime.ts	V	1	if (!ev) { const p = this.r.rt_scratch_ptr() + 3072; const r = this.k.kernel_event_new(p); ev = { r, w: this.dv().getUint32(p, true), thread }; this.threadEvent
+src/glue/rt_runtime.ts	B	1	if (this.k.kernel_clock_reasons() & 2) {
+src/glue/rt_runtime.ts	B	1	jitAlloc(rxSize: number, roSize: number): { rx: bigint; ro: bigint } | null {
+src/glue/rt_runtime.ts	B	1	private borrowed: { lo: number; hi: number } | null = null;
+src/glue/rt_runtime.ts	B	1	private pendFault: { kind: number; detail: string; aux: bigint; exact: boolean } | null = null;
+src/glue/rt_runtime.ts	V	1	private sleeper: Int32Array | null = null;
+src/glue/rt_runtime.ts	B	1	private wake: (() => void) | null = null;
+src/glue/rt_runtime.ts	B	1	readonly opts: Required<Pick<RuntimeOptions, " " | " " | " " | " ">> & RuntimeOptions;
+src/glue/rt_runtime.ts	?	1	this.codeIds.push({ key: `$ $ `, lo: base, size: image.length & ~3 });
+src/glue/rt_runtime.ts	B	1	this.faultNow(FAULT.load, (e instanceof Error ? e.message : String(e)).replace(/^\[RED\] /, ""));
+src/glue/rt_runtime.ts	V	1	this.sleeper ??= new Int32Array(new SharedArrayBuffer(4));
+src/glue/rt_runtime.ts	B	1	unimpl: (pc: bigint, insn: number) => this.fault(FAULT.unimplemented, ` $ $ `, BigInt(insn >>> 0), true),
+src/glue/rt_runtime.ts	B	1	w: (i: number) => Number((c[" " + i].value as bigint) & M32),
+src/glue/rt_shader_worker.ts	V	1	const c1o = cdv.getUint32(0x700, true), c1t = cdv.getUint32(0x704, true), c1 = c1t > c1o && c1t <= code.length ? code.subarray(c1o, c1t) : new Uint8Array(0);
+src/glue/rt_shader_worker.ts	V	1	const magic = dv.getUint32(0, true);
+src/glue/rt_shader_worker.ts	V	1	const type = (dv.getUint32(0x30, true) >>> 10) & 15;
+src/glue/rt_shader_worker.ts	V	1	if (cdv.getUint32(4, true) === 0xc9) throw new Error(" ");
+src/glue/rt_shader_worker.ts	V	1	if (control.length < 0x708 || cdv.getUint32(0, true) !== 0x98761234) throw new Error(" ");
+src/glue/rt_shader_worker.ts	V	1	if (stage === " " && control.length > 0x71c && (cdv.getUint32(0x718, true) & 1)) job.early_fragment_tests = true;
+src/glue/rt_shader_worker.ts	B	1	let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null;
+src/hle/account.ts	D	1	store<i32>(n, 0)
+src/hle/account.ts	D	1	store<i32>(n, 1)
+src/hle/account.ts	D	1	store<i32>(n, k)
+src/hle/base.ts	?	2	<i32>STR_CAP - 1
+src/hle/base.ts	?	1	<i32>i
+src/hle/base.ts	?	1	<u32>((v >> sh) & 15)
+src/hle/base.ts	?	1	<u32>(v % 10)
+src/hle/base.ts	?	1	<u32>(v)
+src/hle/base.ts	D	1	load<i32>(STRLEN + (<usize>k << 2))
+src/hle/base.ts	D	1	load<i32>(a + (<usize>i << 3))
+src/hle/base.ts	D	1	load<u32>(SCRATCH4)
+src/hle/base.ts	D	1	load<u32>(a + (<usize>i << 3))
+src/hle/base.ts	D	1	store<i32>(STRLEN + (<usize>k << 2), -1)
+src/hle/base.ts	?	1	store<i32>(STRLEN + (<usize>k << 2), n)
+src/hle/base.ts	D	1	store<u32>(SCRATCH4, 0)
+src/hle/base.ts	D	1	store<u32>(w, load<u32>(SCRATCH4))
+src/hle/cal.ts	C	1	<i32>(((days % 7) + 11) % 7)
+src/hle/cal.ts	C	1	<i32>((rem / 60) % 60)
+src/hle/cal.ts	?	1	<i32>(cY - 1900)
+src/hle/cal.ts	C	1	<i32>(days - daysFromCivil(cY, 1, 1))
+src/hle/cal.ts	C	1	<i32>(doy - (153 * mp + 2) / 5 + 1)
+src/hle/cal.ts	C	1	<i32>(mp < 10 ? mp + 3 : mp - 9)
+src/hle/cal.ts	C	1	<i32>(rem % 60)
+src/hle/cal.ts	C	1	<i32>(rem / 3600)
+src/hle/cal.ts	D	1	load<i32>(TZ)
+src/hle/cal.ts	D	1	load<i32>(TZ, 4)
+src/hle/cal.ts	D	1	store<i32>(p, 0, 36)
+src/hle/cal.ts	D	1	store<i32>(p, tHour, 8)
+src/hle/cal.ts	D	1	store<i32>(p, tIsdst, 32)
+src/hle/cal.ts	D	1	store<i32>(p, tMday, 12)
+src/hle/cal.ts	D	1	store<i32>(p, tMin, 4)
+src/hle/cal.ts	D	1	store<i32>(p, tMon, 16)
+src/hle/cal.ts	D	1	store<i32>(p, tSec)
+src/hle/cal.ts	D	1	store<i32>(p, tWday, 24)
+src/hle/cal.ts	D	1	store<i32>(p, tYday, 28)
+src/hle/cal.ts	D	1	store<i32>(p, tYear, 20)
+src/hle/codec_video.ts	?	1	<u32><u16>X(a, 2)
+src/hle/codec_video.ts	?	1	<u32><u16>X(a, 3)
+src/hle/codec_video.ts	D	1	store<u32>(out, CV_MAGIC, 12)
+src/hle/codec_video.ts	D	1	store<u32>(out, W(a, 2), 4)
+src/hle/codec_video.ts	D	1	store<u32>(out, W(a, 3), 8)
+src/hle/haptics.ts	C	1	<u32>1 << p
+src/hle/haptics.ts	D	1	load<i32>(e)
+src/hle/haptics.ts	D	1	load<i32>(e, 4)
+src/hle/haptics.ts	D	1	store<i32>(s, p)
+src/hle/hid.ts	?	1	<i32>((h >> 16) & 1)
+src/hle/hid.ts	C	1	<i32>(dev & 1)
+src/hle/hid.ts	C	1	<i32>(joyActive(p) && joySplit(p) && splitTarget(p) >= 0)
+src/hle/hid.ts	C	2	<i32><i16>load<i32>(j, 12)
+src/hle/hid.ts	C	2	<i32><i16>load<i32>(j, 8)
+src/hle/hid.ts	?	1	<i32><i16>load<i32>(snap(p) + S_AX + (<usize>i << 2))
+src/hle/hid.ts	C	1	<i32>C(a, 1)
+src/hle/hid.ts	?	1	<i32>JCMS_RING && have - k > 0
+src/hle/hid.ts	C	1	<i32>cfg(CFG_PHONE_MOTION)
+src/hle/hid.ts	C	1	<i32>connectedId()
+src/hle/hid.ts	C	1	<i32>ctz<u32>(targets)
+src/hle/hid.ts	C	5	<i32>id
+src/hle/hid.ts	C	1	<i32>id : -1
+src/hle/hid.ts	?	1	<i32>n
+src/hle/hid.ts	C	1	<i32>nearest<f32>(<f32>dx * NMOUSE_SCALE)
+src/hle/hid.ts	C	1	<i32>nearest<f32>(<f32>dy * NMOUSE_SCALE)
+src/hle/hid.ts	?	1	<i32>nearest<f32>(load<f32>(NM_POS + (k << 3)))
+src/hle/hid.ts	?	1	<i32>nearest<f32>(load<f32>(NM_POS + (k << 3), 4))
+src/hle/hid.ts	C	1	<i32>type
+src/hle/hid.ts	?	1	<u32>((h >> 8) & 0xff)
+src/hle/hid.ts	?	1	<u32>(h & 1)
+src/hle/hid.ts	C	1	<u32>(style ? ctz<u32>(style) : 0)
+src/hle/hid.ts	C	1	<u32>(style)
+src/hle/hid.ts	C	1	<u32>(targets)
+src/hle/hid.ts	C	1	<u32>1 << (type - 3)
+src/hle/hid.ts	C	1	<u32>1 << id
+src/hle/hid.ts	C	1	<u32>1 << id : id == NPAD_HANDHELD ? 1 << 8 : id == 0x10 ? 1 << 9 : 0
+src/hle/hid.ts	C	1	<u32>1 << id : was & ~(<u32>1 << id)
+src/hle/hid.ts	C	2	<u32>1 << p
+src/hle/hid.ts	C	1	<u32>1 << p : 0
+src/hle/hid.ts	C	1	<u32>1 << p : 1 | mergedPlayers()
+src/hle/hid.ts	C	2	<u32>1 << pad
+src/hle/hid.ts	C	1	<u32>1 << pad : 1 | mergedPlayers()
+src/hle/hid.ts	C	7	<u32>DM_PLAYERS
+src/hle/hid.ts	C	1	<u32>DM_PLAYERS && ((singleMask >> id) & 1)
+src/hle/hid.ts	C	1	<u32>DM_PLAYERS && joyActive(<i32>id)
+src/hle/hid.ts	C	1	<u32>DM_PLAYERS && reported(<i32>id)
+src/hle/hid.ts	C	1	<u32>DM_PLAYERS ? <u32>1 << id : id == NPAD_HANDHELD ? 1 << 8 : id == 0x10 ? 1 << 9 : 0
+src/hle/hid.ts	C	1	<u32>DM_PLAYERS ? load<u8>(LED + <usize>id)
+src/hle/hid.ts	C	1	<u32>gestureFill(P(a, 0), I(a, 1), monoNs())
+src/hle/hid.ts	?	1	<u32>i
+src/hle/hid.ts	C	2	<u32>i << 16
+src/hle/hid.ts	C	1	<u32>jcmsCopy(P(a, 0), I(a, 1), load<u32>(h))
+src/hle/hid.ts	C	1	<u32>k : NPAD_HANDHELD
+src/hle/hid.ts	?	1	<u32>n
+src/hle/hid.ts	C	7	<u32>p
+src/hle/hid.ts	C	1	<u32>prompt()
+src/hle/hid.ts	C	1	<u32>q : id
+src/hle/hid.ts	C	1	<u32>r
+src/hle/hid.ts	C	2	<u32>reported(p)
+src/hle/hid.ts	C	1	<u32>sixStates(P(a, 0), I(a, 1), load<u32>(P(a, 2)))
+src/hle/hid.ts	C	1	<u32>vMotor : 0
+src/hle/hid.ts	D	1	load<i32>(NM_D + (k << 3))
+src/hle/hid.ts	D	1	load<i32>(NM_D + (k << 3), 4)
+src/hle/hid.ts	D	1	load<i32>(NM_LAST + (<usize>p << 2))
+src/hle/hid.ts	D	2	load<i32>(j, 12)
+src/hle/hid.ts	D	2	load<i32>(j, 8)
+src/hle/hid.ts	D	1	load<i32>(q)
+src/hle/hid.ts	D	1	load<i32>(q, 4)
+src/hle/hid.ts	D	1	load<i32>(snap(p) + S_AX + (<usize>i << 2))
+src/hle/hid.ts	D	1	load<i32>(t)
+src/hle/hid.ts	D	1	load<i32>(t, 4)
+src/hle/hid.ts	D	1	load<u32>(NM_STATE + (k << 2))
+src/hle/hid.ts	D	9	load<u32>(P(a, 0))
+src/hle/hid.ts	D	4	load<u32>(P(a, 1))
+src/hle/hid.ts	D	3	load<u32>(P(a, 2))
+src/hle/hid.ts	D	1	load<u32>(SINGLE_KEEP + (<usize>p << 2))
+src/hle/hid.ts	D	1	load<u32>(WH)
+src/hle/hid.ts	D	1	load<u32>(dst)
+src/hle/hid.ts	D	1	load<u32>(dst, S_NTOUCH)
+src/hle/hid.ts	D	5	load<u32>(h)
+src/hle/hid.ts	D	1	load<u32>(handles + (<usize>i << 2))
+src/hle/hid.ts	D	2	load<u32>(idp)
+src/hle/hid.ts	D	1	load<u32>(ids + (<usize>i << 2))
+src/hle/hid.ts	D	1	load<u32>(q, 8)
+src/hle/hid.ts	D	2	load<u32>(s)
+src/hle/hid.ts	D	2	load<u32>(s, 4)
+src/hle/hid.ts	D	1	load<u32>(snap(p))
+src/hle/hid.ts	D	1	load<u32>(t, 8)
+src/hle/hid.ts	D	1	store<i32>(NM_D + (k << 3), <i32>nearest<f32>(<f32>dx * NMOUSE_SCALE))
+src/hle/hid.ts	D	1	store<i32>(NM_D + (k << 3), <i32>nearest<f32>(<f32>dy * NMOUSE_SCALE), 4)
+src/hle/hid.ts	D	1	store<i32>(NM_LAST + (<usize>p << 2), -1)
+src/hle/hid.ts	D	1	store<i32>(NM_LAST + (<usize>p << 2), side)
+src/hle/hid.ts	D	1	store<i32>(P(a, 0), nmW)
+src/hle/hid.ts	D	1	store<i32>(P(a, 1), nmH)
+src/hle/hid.ts	D	1	store<i32>(e, dx, 0x10)
+src/hle/hid.ts	D	1	store<i32>(e, dy, 0x14)
+src/hle/hid.ts	D	1	store<i32>(info, <i32>connectedId(), 4)
+src/hle/hid.ts	D	1	store<i32>(info, count)
+src/hle/hid.ts	?	1	store<i32>(out, <i32>nearest<f32>(load<f32>(NM_POS + (k << 3))), 0x10)
+src/hle/hid.ts	?	1	store<i32>(out, <i32>nearest<f32>(load<f32>(NM_POS + (k << 3), 4)), 0x14)
+src/hle/hid.ts	D	1	store<i32>(out, a0, 8)
+src/hle/hid.ts	D	1	store<i32>(out, a1, 12)
+src/hle/hid.ts	D	1	store<i32>(out, a2, 16)
+src/hle/hid.ts	D	1	store<i32>(out, a3, 20)
+src/hle/hid.ts	?	1	store<i32>(out, load<i32>(NM_D + (k << 3)), 0x18)
+src/hle/hid.ts	?	1	store<i32>(out, load<i32>(NM_D + (k << 3), 4), 0x1c)
+src/hle/hid.ts	D	1	store<i32>(s, 0, 12)
+src/hle/hid.ts	D	1	store<i32>(s, 0, 8)
+src/hle/hid.ts	D	2	store<i32>(s, a0, 0x10)
+src/hle/hid.ts	D	2	store<i32>(s, a1, 0x14)
+src/hle/hid.ts	D	2	store<i32>(s, a2, 0x18)
+src/hle/hid.ts	D	2	store<i32>(s, a3, 0x1c)
+src/hle/hid.ts	D	1	store<i32>(t, rKind, 4)
+src/hle/hid.ts	D	1	store<i32>(t, rPad)
+src/hle/hid.ts	?	1	store<i32>(u, m, 4)
+src/hle/hid.ts	D	1	store<i32>(u, p)
+src/hle/hid.ts	D	1	store<u32>(NM_STATE + (k << 2), state)
+src/hle/hid.ts	D	1	store<u32>(SINGLE_KEEP + (<usize>id << 2), keep)
+src/hle/hid.ts	D	1	store<u32>(c, 0xff0f0f0f, 4)
+src/hle/hid.ts	D	1	store<u32>(c, 0xff828282)
+src/hle/hid.ts	D	1	store<u32>(dst, load<u32>(s, 4), 4)
+src/hle/hid.ts	D	1	store<u32>(e, state & 3, 0x18)
+src/hle/hid.ts	D	1	store<u32>(h + (<usize>i << 2), <u32>(style ? ctz<u32>(style) : 0) | (id & 0xff) << 8 | <u32>i <
+src/hle/hid.ts	D	1	store<u32>(h + (<usize>i << 2), base | <u32>i << 16)
+src/hle/hid.ts	D	1	store<u32>(info, on ? 1 + <u32>vMotor : 0, 4)
+src/hle/hid.ts	D	1	store<u32>(info, on ? 1 : 0)
+src/hle/hid.ts	?	1	store<u32>(out, 2 | ((load<u32>(NM_STATE + (k << 2)) & MOUSE_ON_SURFACE) ? 1 : 0), 0x2c)
+src/hle/hid.ts	D	1	store<u32>(out, q >= 0 ? <u32>q : id)
+src/hle/hid.ts	?	1	store<u32>(out, side ? ((b & BTN_R) ? 1 : 0) | ((b & BTN_ZR) ? 2 : 0) : ((b & BTN_L) ? 1 : 0) |
+src/hle/hid.ts	D	2	store<u32>(s, 1, 0x58)
+src/hle/hid.ts	D	1	store<u32>(s, ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WI
+src/hle/hid.ts	D	1	store<u32>(s, ATTR_CONNECTED | (left ? ATTR_LEFT_CONN : 0) | (right ? ATTR_RIGHT_CONN : 0), 0x20
+src/hle/hid.ts	D	1	store<u32>(snap(0), IN_CONNECTED)
+src/hle/hid.ts	D	1	store<u32>(t, kindStyle(rPad, rKind, id), 8)
+src/hle/index.ts	?	1	<i32>load<u16>(SORTED + (<usize>hit << 1))
+src/hle/index.ts	?	1	<i32>load<u16>(SORTED + (<usize>mid << 1))
+src/hle/index.ts	C	1	<i32>load<u8>(p + i)
+src/hle/index.ts	C	1	<i32>load<u8>(q + i)
+src/hle/index.ts	C	1	<i32>padSlotMask()
+src/hle/index.ts	?	1	<usize>load<u32>(DNAME_OFF + (<usize>id << 2))
+src/hle/index.ts	?	2	<usize>load<u32>(NAME_OFF + (<usize>id << 2))
+src/hle/index.ts	D	2	load<u32>(CALLS + (<usize>id << 2))
+src/hle/index.ts	D	2	load<u32>(OP_OFF + (<usize>id << 2))
+src/hle/index.ts	?	1	store<u32>(CALLS + (<usize>id << 2), load<u32>(CALLS + (<usize>id << 2)) + 1)
+src/hle/jit.ts	C	3	<u32>-1
+src/hle/jit.ts	C	1	<u32>i
+src/hle/jit.ts	C	1	<u32>load<u8>(sha + <usize>k)
+src/hle/jit.ts	?	1	<u32>nroSize
+src/hle/jit.ts	C	2	<u32>ret
+src/hle/jit.ts	D	2	load<i32>(RET)
+src/hle/jit.ts	D	1	load<i32>(a + 16)
+src/hle/jit.ts	D	1	load<i32>(a + 24)
+src/hle/jit.ts	D	1	load<u32>(b, 0x10)
+src/hle/jit.ts	D	1	load<u32>(nro, 0x18)
+src/hle/jit.ts	D	2	store<i32>(RET, -1)
+src/hle/libc.ts	C	2	<i32>((bits >> 52) & 0x7FF)
+src/hle/libc.ts	C	1	<i32>c - 48 : c >= 97 && c <= 122 ? <i32>c - 87 : c >= 65 && c <= 90 ? <i32>c - 55 : 99
+src/hle/libc.ts	C	1	<i32>c - 55 : 99
+src/hle/libc.ts	C	1	<i32>c - 87 : c >= 65 && c <= 90 ? <i32>c - 55 : 99
+src/hle/libc.ts	C	1	<i32>load<u8>(p + i)
+src/hle/libc.ts	C	2	<i32>load<u8>(p)
+src/hle/libc.ts	C	1	<i32>load<u8>(q + i)
+src/hle/libc.ts	C	1	<i32>load<u8>(q)
+src/hle/libc.ts	C	1	<i32>parseI64(P(a, 0), 0, 10)
+src/hle/libc.ts	C	1	<i32>x - <i32>y
+src/hle/libc.ts	C	1	<i32>y
+src/hle/libc.ts	?	1	<u32>((v / div) % 10)
+src/hle/libc.ts	C	1	<u32>(<i32>x - <i32>y)
+src/hle/libc.ts	C	1	<u32><i32>parseI64(P(a, 0), 0, 10)
+src/hle/libc.ts	?	1	<u32>d
+src/hle/libc.ts	D	2	load<i32>(p)
+src/hle/libc.ts	D	2	load<i32>(p, 12)
+src/hle/libc.ts	D	2	load<i32>(p, 16)
+src/hle/libc.ts	D	2	load<i32>(p, 20)
+src/hle/libc.ts	D	2	load<i32>(p, 4)
+src/hle/libc.ts	D	2	load<i32>(p, 8)
+src/hle/libc.ts	D	1	load<i32>(tm)
+src/hle/libc.ts	D	1	load<i32>(tm, 12)
+src/hle/libc.ts	D	1	load<i32>(tm, 16)
+src/hle/libc.ts	D	1	load<i32>(tm, 20)
+src/hle/libc.ts	D	1	load<i32>(tm, 24)
+src/hle/libc.ts	D	1	load<i32>(tm, 28)
+src/hle/libc.ts	D	1	load<i32>(tm, 4)
+src/hle/libc.ts	D	1	load<i32>(tm, 8)
+src/hle/libc.ts	D	1	store<i32>(ep, 0)
+src/hle/libc.ts	D	1	store<i32>(ep, e - 1022 + adj)
+src/hle/libc.ts	D	2	store<i32>(p, 0, 32)
+src/hle/lifecycle.ts	?	1	<i32>reason
+src/hle/lifecycle.ts	C	1	<u32>m()
+src/hle/mii.ts	?	1	<u32>MESH_Z_LEN
+src/hle/mii.ts	?	1	<u32>MII_MESH_AT
+src/hle/mii.ts	D	1	load<i32>(desc, 4)
+src/hle/mii.ts	D	1	store<i32>(P(a, 1), miiGet(P(a, 2), I(a, 3), I(a, 4), CHARINFO + 4))
+src/hle/mii.ts	D	1	store<i32>(P(a, 1), miiGet(P(a, 2), I(a, 3), I(a, 4), CHARINFO))
+src/hle/mii.ts	D	1	store<u32>(e + CHARINFO, 1)
+src/hle/mii.ts	D	1	store<u32>(e, 0x10, 56)
+src/hle/mii.ts	D	1	store<u32>(e, 6, 60)
+src/hle/mii.ts	D	1	store<u32>(e, 8, 36)
+src/hle/mii.ts	?	1	store<u32>(e, <u32>MESH_Z_LEN, 8)
+src/hle/mii.ts	?	1	store<u32>(e, <u32>MII_MESH_AT)
+src/hle/mii.ts	D	1	store<u32>(e, MII_MESH, 4)
+src/hle/mii.ts	D	1	store<u32>(out + 0xc + 4 * i, 0x1000)
+src/hle/mii.ts	D	1	store<u32>(out + 0xc + 4 * parts + 4 * i, 0x1000)
+src/hle/misc.ts	C	1	<u32>h
+src/hle/misc.ts	C	1	<u32>i < load<u32>(type, 4)
+src/hle/misc.ts	?	1	<u32>n
+src/hle/misc.ts	C	1	<u32>w
+src/hle/misc.ts	D	2	load<i32>(AOC + (<usize>(k - 1) << 2))
+src/hle/misc.ts	D	1	load<i32>(AOC + (<usize>i << 2))
+src/hle/misc.ts	D	1	load<i32>(p + (<usize>i << 2))
+src/hle/misc.ts	D	2	load<u32>(type + 8 + (<usize>i << 2))
+src/hle/misc.ts	D	2	load<u32>(type)
+src/hle/misc.ts	D	2	load<u32>(type, 4)
+src/hle/misc.ts	?	1	store<i32>(AOC + (<usize>k << 2), v)
+src/hle/misc.ts	D	1	store<i32>(masked, 0)
+src/hle/misc.ts	?	1	store<i32>(out + (<usize>w << 2), load<i32>(AOC + (<usize>i << 2)))
+src/hle/misc.ts	D	2	store<u32>(masks + (<usize>i << 2), 0)
+src/hle/misc.ts	D	1	store<u32>(type + 8 + (<usize>i << 2), nativeImageBlank(<u32>w, <u32>h))
+src/hle/misc.ts	?	1	store<u32>(type, <u32>n, 4)
+src/hle/misc.ts	D	1	store<u32>(type, CHAT_VIDEO_MAGIC)
+src/hle/motion.ts	C	1	<i32>(s0 > s1)
+src/hle/motion.ts	C	1	<i32>(s0 > s2)
+src/hle/motion.ts	C	1	<i32>(s1 > s2)
+src/hle/motion.ts	?	1	<usize>load<i32>(m + (<usize>i << 2))
+src/hle/motion.ts	D	1	load<i32>(T)
+src/hle/motion.ts	D	1	load<i32>(T, 4)
+src/hle/motion.ts	D	1	load<i32>(T, 8)
+src/hle/motion.ts	D	1	load<i32>(s, 72)
+src/hle/motion.ts	?	1	store<i32>(T + (<usize>i << 2), a)
+src/hle/motion.ts	D	1	store<i32>(m + (<usize>i << 2), i)
+src/hle/motion.ts	D	1	store<i32>(s, 1, 72)
+src/hle/net.ts	?	1	<i32>load<i16>(SELP + (i << 3), 6)
+src/hle/net.ts	C	1	<i32>load<i16>(e, 4)
+src/hle/net.ts	?	1	<i32>ms
+src/hle/net.ts	?	1	<u32><u16>load<i16>(p + (<usize>i << 3), 4)
+src/hle/net.ts	?	1	<u32>r
+src/hle/net.ts	C	2	<u32>skerr
+src/hle/net.ts	D	1	load<i32>(SELP + (i << 3))
+src/hle/net.ts	D	1	load<i32>(e)
+src/hle/net.ts	D	1	load<i32>(efd(fd), 12)
+src/hle/net.ts	D	1	load<i32>(efd(fd), 8)
+src/hle/net.ts	D	1	load<i32>(efd(i), 8)
+src/hle/net.ts	D	1	load<i32>(p + (<usize>i << 3))
+src/hle/net.ts	D	1	load<u32>(WH)
+src/hle/net.ts	D	1	store<i32>(SELP + (np << 3), fd)
+src/hle/net.ts	D	1	store<i32>(efd(fd), 0, 8)
+src/hle/net.ts	D	1	store<i32>(efd(i), 1, 8)
+src/hle/net.ts	D	1	store<i32>(efd(i), I(a, 1), 12)
+src/hle/oe.ts	C	1	<i32>(W(a, 0) & 1)
+src/hle/oe.ts	C	1	<i32>(b & 15)
+src/hle/oe.ts	C	1	<i32>(b >> 4)
+src/hle/oe.ts	C	1	<i32>c - 48 : c >= 97 && c <= 102 ? <i32>c - 87 : c >= 65 && c <= 70 ? <i32>c - 55 : -1
+src/hle/oe.ts	C	1	<i32>c - 55 : -1
+src/hle/oe.ts	C	1	<i32>c - 87 : c >= 65 && c <= 70 ? <i32>c - 55 : -1
+src/hle/oe.ts	C	1	<i32>cfg(CFG_OPMODE)
+src/hle/oe.ts	C	1	<i32>cfg(CFG_PREV_PROGRAM)
+src/hle/oe.ts	C	3	<i32>front()
+src/hle/oe.ts	C	2	<i32>seen()
+src/hle/oe.ts	C	1	<u32><i32>cfg(CFG_PREV_PROGRAM)
+src/hle/oe.ts	C	2	<u32>dmOpmode()
+src/hle/oe.ts	C	1	<u32>inactivityMode
+src/hle/oe.ts	C	1	<u32>index
+src/hle/oe.ts	C	1	<u32>parseU64(t + 4, 0, 0)
+src/hle/oe.ts	D	1	load<u32>(POPPED)
+src/hle/oe.ts	D	1	load<u32>(RING + (<usize>mqh << 2))
+src/hle/oe.ts	D	1	load<u32>(WH)
+src/hle/oe.ts	D	1	store<i32>(h, con ? 1080 : 720)
+src/hle/oe.ts	D	1	store<i32>(w, con ? 1920 : 1280)
+src/hle/oe.ts	D	1	store<u32>(LP + len, <u32>parseU64(t + 4, 0, 0))
+src/hle/oe.ts	D	1	store<u32>(POPPED, 0)
+src/hle/oe.ts	D	1	store<u32>(RING + (<usize>((mqh + mqn) % MQ) << 2), m)
+src/hle/oe.ts	D	1	store<u32>(out, m)
+src/hle/offline.ts	C	1	<u32>getErrno()
+src/hle/offline.ts	D	1	load<u32>(P(a, 0))
+src/hle/offline.ts	D	1	store<u32>(out + (<usize>i << 2), 0)
+src/hle/offline.ts	D	1	store<u32>(p, 0)
+src/hle/ops.ts	C	1	<i32>load<u32>(p, 4)
+src/hle/ops.ts	C	1	<i32>load<u32>(p, 8)
+src/hle/ops.ts	?	1	<u32>v
+src/hle/ops.ts	D	1	load<u32>(p)
+src/hle/ops.ts	D	1	load<u32>(p, 12)
+src/hle/ops.ts	D	9	load<u32>(p, 4)
+src/hle/ops.ts	D	4	load<u32>(p, 8)
+src/hle/ops.ts	?	1	store<u32>(ptr, <u32>v)
+src/hle/os.ts	C	1	<u32>t
+src/hle/os.ts	?	1	<usize>load<u32>(ENVP + (<usize>i << 2))
+src/hle/os.ts	D	1	store<u32>(ENVP + (<usize>envN << 2), <u32>t)
+src/hle/padslots.ts	C	1	<u32>i
+src/hle/padslots.ts	C	2	<u32>slot(i)
+src/hle/ro.ts	C	1	<u32>i
+src/hle/ro.ts	C	1	<u32>load<u8>(sha + <usize>k)
+src/hle/ro.ts	?	1	<usize>load<u32>(r + hdr)
+src/hle/ro.ts	D	2	load<u32>(h, 0x10)
+src/hle/ro.ts	D	1	load<u32>(h, 0x18)
+src/hle/ro.ts	D	1	load<u32>(h, 0x38)
+src/hle/ro.ts	D	1	load<u32>(r + hdr, 4)
+src/hle/ro.ts	D	1	load<u32>(r)
+src/hle/ro.ts	D	1	load<u32>(rm, 8)
+src/hle/ro.ts	D	1	store<u32>(rm, 0, 12)
+src/hle/ro.ts	D	1	store<u32>(rm, 0, 8)
+src/hle/ro.ts	D	1	store<u32>(rm, 1, 8)
+src/hle/sdk16.ts	?	1	<u32>(<u32>(len - 8) ^ 0x49621806)
+src/hle/sdk16.ts	?	1	<u32>(len - 8)
+src/hle/sdk16.ts	C	1	<u32>NLANG
+src/hle/sdk16.ts	?	1	<u32>NLANG ? load<u64>(langs() + (<usize>lang << 3))
+src/hle/sdk16.ts	?	1	<u32>lang < <u32>NLANG ? load<u64>(langs() + (<usize>lang << 3))
+src/hle/sdk16.ts	C	1	<u32>lang >= <u32>NLANG
+src/hle/sdk16.ts	C	1	<u32>t
+src/hle/sdk16.ts	D	1	load<i32>(P(a, 0))
+src/hle/sdk16.ts	D	1	load<i32>(P(a, 1))
+src/hle/sdk16.ts	D	1	load<u32>(r)
+src/hle/sdk16.ts	D	1	load<u32>(res)
+src/hle/sdk16.ts	?	1	store<i32>(count, n)
+src/hle/sdk16.ts	D	1	store<i32>(n, 0)
+src/hle/sdk16.ts	D	1	store<i32>(n, 1)
+src/hle/sdk16.ts	D	1	store<u32>(P(a, 0), hidConnectedNpad())
+src/hle/sdk16.ts	D	1	store<u32>(e, 0, 4)
+src/hle/sdk16.ts	D	1	store<u32>(e, <u32>t)
+src/hle/sdk16.ts	D	1	store<u32>(p, 0x18029a7f)
+src/hle/sdk16.ts	?	1	store<u32>(p, bswap<u32>(<u32>(len - 8) ^ 0x49621806), 4)
+src/hle/sf.ts	C	1	<i32>(b & 15)
+src/hle/sf.ts	C	1	<i32>(b >> 4)
+src/hle/sf.ts	?	1	<i32>i : -1
+src/hle/sf.ts	C	1	<u32>(words < 0x3ff ? words : 0x3ff)
+src/hle/sf.ts	D	1	load<i32>(r, 20)
+src/hle/sf.ts	D	1	load<i32>(r, 28)
+src/hle/sf.ts	D	2	load<i32>(rec(i), 16)
+src/hle/sf.ts	D	1	load<i32>(rec(i), 20)
+src/hle/sf.ts	D	1	load<i32>(rec(i), 28)
+src/hle/sf.ts	D	1	load<u32>(m + <usize>cm, 4)
+src/hle/sf.ts	D	1	load<u32>(m + <usize>hin)
+src/hle/sf.ts	D	1	load<u32>(m + <usize>hin, 4)
+src/hle/sf.ts	D	1	load<u32>(m + <usize>hin, 8)
+src/hle/sf.ts	D	1	load<u32>(m)
+src/hle/sf.ts	D	2	load<u32>(m, 4)
+src/hle/sf.ts	D	1	load<u32>(p)
+src/hle/sf.ts	D	1	load<u32>(r, 24)
+src/hle/sf.ts	D	1	store<i32>(r, 1, 16)
+src/hle/sf.ts	D	1	store<i32>(r, answer, 28)
+src/hle/sf.ts	D	1	store<i32>(r, domain, 20)
+src/hle/sf.ts	D	1	store<i32>(rec(i), 0, 16)
+src/hle/sf.ts	D	1	store<i32>(rec(i), 1, 20)
+src/hle/sf.ts	D	1	store<u32>(P(a, 0), 1)
+src/hle/sf.ts	D	1	store<u32>(P(a, 0), sfNew(rec(i), load<i32>(rec(i), 20), load<i32>(rec(i), 28)))
+src/hle/sf.ts	D	1	store<u32>(m, 2, 8)
+src/hle/sf.ts	D	1	store<u32>(m, <u32>(words < 0x3ff ? words : 0x3ff), 4)
+src/hle/sf.ts	D	1	store<u32>(m, copy, 12)
+src/hle/sf.ts	D	1	store<u32>(m, load<u32>(m, 4) | 0x80000000, 4)
+src/hle/sf.ts	D	1	store<u32>(o, 0, 12)
+src/hle/sf.ts	D	1	store<u32>(o, 0x4f434653)
+src/hle/sf.ts	D	1	store<u32>(o, res, 8)
+src/hle/sf.ts	D	1	store<u32>(o, ver, 4)
+src/hle/sf.ts	D	2	store<u32>(out, h)
+src/hle/sf.ts	D	1	store<u32>(r, 0, 24)
+src/hle/sf.ts	D	1	store<u32>(r, key, 24)
+src/hle/sha256.ts	C	1	<u32>([ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0x
+src/hle/sha256.ts	C	1	<u32>([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be
+src/hle/sha256.ts	C	1	<u32>(a, 13)
+src/hle/sha256.ts	C	1	<u32>(a, 2)
+src/hle/sha256.ts	C	1	<u32>(a, 22)
+src/hle/sha256.ts	C	1	<u32>(e, 11)
+src/hle/sha256.ts	C	1	<u32>(e, 25)
+src/hle/sha256.ts	C	1	<u32>(e, 6)
+src/hle/sha256.ts	?	1	<u32>(load<u32>(H + (<usize>k << 2)))
+src/hle/sha256.ts	?	1	<u32>(load<u32>(p + (<usize>i << 2)))
+src/hle/sha256.ts	C	1	<u32>(w15, 18)
+src/hle/sha256.ts	C	1	<u32>(w15, 7)
+src/hle/sha256.ts	C	1	<u32>(w2, 17)
+src/hle/sha256.ts	C	1	<u32>(w2, 19)
+src/hle/sha256.ts	D	1	load<u32>(H + (<usize>k << 2))
+src/hle/sha256.ts	D	2	load<u32>(H)
+src/hle/sha256.ts	D	2	load<u32>(H, 12)
+src/hle/sha256.ts	D	2	load<u32>(H, 16)
+src/hle/sha256.ts	D	2	load<u32>(H, 20)
+src/hle/sha256.ts	D	2	load<u32>(H, 24)
+src/hle/sha256.ts	D	2	load<u32>(H, 28)
+src/hle/sha256.ts	D	2	load<u32>(H, 4)
+src/hle/sha256.ts	D	2	load<u32>(H, 8)
+src/hle/sha256.ts	D	1	load<u32>(K + (<usize>i << 2))
+src/hle/sha256.ts	D	1	load<u32>(WS + (<usize>(i - 15) << 2))
+src/hle/sha256.ts	D	1	load<u32>(WS + (<usize>(i - 16) << 2))
+src/hle/sha256.ts	D	1	load<u32>(WS + (<usize>(i - 2) << 2))
+src/hle/sha256.ts	D	1	load<u32>(WS + (<usize>(i - 7) << 2))
+src/hle/sha256.ts	D	1	load<u32>(WS + (<usize>i << 2))
+src/hle/sha256.ts	D	1	load<u32>(p + (<usize>i << 2))
+src/hle/sha256.ts	D	1	store<u32>(H, load<u32>(H) + a)
+src/hle/sha256.ts	D	1	store<u32>(H, load<u32>(H, 12) + d, 12)
+src/hle/sha256.ts	D	1	store<u32>(H, load<u32>(H, 16) + e, 16)
+src/hle/sha256.ts	D	1	store<u32>(H, load<u32>(H, 20) + f, 20)
+src/hle/sha256.ts	D	1	store<u32>(H, load<u32>(H, 24) + g, 24)
+src/hle/sha256.ts	D	1	store<u32>(H, load<u32>(H, 28) + h, 28)
+src/hle/sha256.ts	D	1	store<u32>(H, load<u32>(H, 4) + b, 4)
+src/hle/sha256.ts	D	1	store<u32>(H, load<u32>(H, 8) + c, 8)
+src/hle/sha256.ts	?	1	store<u32>(WS + (<usize>i << 2), bswap<u32>(load<u32>(p + (<usize>i << 2))))
+src/hle/sha256.ts	?	1	store<u32>(WS + (<usize>i << 2), load<u32>(WS + (<usize>(i - 16) << 2)) + s0 + load<u32>(WS + (<
+src/hle/sha256.ts	?	1	store<u32>(out + (<usize>k << 2), bswap<u32>(load<u32>(H + (<usize>k << 2))))
+src/hle/swkbd.ts	?	2	<i32>n
+src/hle/swkbd.ts	?	1	<u32>i
+src/hle/swkbd.ts	C	1	<u32>req()
+src/hle/swkbd.ts	D	1	load<i32>(arg + ARG_INIT_LEN)
+src/hle/swkbd.ts	D	1	load<i32>(arg + ARG_INIT_OFF)
+src/hle/swkbd.ts	D	1	load<i32>(arg + ARG_MAXLEN)
+src/hle/swkbd.ts	D	1	load<i32>(arg + ARG_MINLEN)
+src/hle/swkbd.ts	D	1	load<i32>(arg, 0x20)
+src/hle/swkbd.ts	D	1	load<i32>(ik(i), 84)
+src/hle/swkbd.ts	D	1	load<i32>(r, 72)
+src/hle/swkbd.ts	D	1	load<i32>(r, 76)
+src/hle/swkbd.ts	D	1	load<i32>(r, 80)
+src/hle/swkbd.ts	D	1	load<u32>(WH)
+src/hle/swkbd.ts	D	1	store<i32>(REQ, kind, 40)
+src/hle/swkbd.ts	D	1	store<i32>(REQ, maxChars, 32)
+src/hle/swkbd.ts	D	1	store<i32>(REQ, minChars, 36)
+src/hle/swkbd.ts	?	1	store<i32>(STRARG, <i32>n, 0x3ec)
+src/hle/swkbd.ts	?	1	store<i32>(STRARG, <i32>n, 0x3f8)
+src/hle/swkbd.ts	D	1	store<i32>(ik(i), 1, 72)
+src/hle/swkbd.ts	D	1	store<i32>(ik(i), 1, 76)
+src/hle/swkbd.ts	D	1	store<i32>(ik(i), 1, 80)
+src/hle/swkbd.ts	D	1	store<i32>(ik(i), max > 0 && max <= 500 ? max : 0, 84)
+src/hle/swkbd.ts	D	1	store<i32>(r, 0, 72)
+src/hle/swkbd.ts	D	1	store<i32>(r, 0, 76)
+src/hle/swkbd.ts	D	1	store<i32>(r, 0, 80)
+src/hle/sysevent.ts	C	1	<u32>guestCall1(fnGetW, <u64>ev)
+src/hle/sysevent.ts	C	1	<u32>guestCall3(fnCreate, <u64>ev, <u64>autoclear, 1)
+src/hle/sysevent.ts	D	5	load<u32>(TAB + <usize>i * REC, 8)
+src/hle/sysevent.ts	D	1	load<u32>(WOUT)
+src/hle/sysevent.ts	D	1	store<u32>(WOUT, 0)
+src/hle/sysevent.ts	D	1	store<u32>(p, 1, 12)
+src/hle/sysevent.ts	D	1	store<u32>(p, wh, 8)
+src/hle/time.ts	C	1	<i32>tGmtoff
+src/hle/time.ts	C	1	<u32>r
+src/hle/time.ts	D	1	store<i32>(ai, <i32>tGmtoff, 20)
+src/hle/time.ts	D	1	store<i32>(count, n > 0 ? 1 : 0)
+src/hle/time.ts	D	1	store<u32>(ai, tIsdst > 0 ? 1 : 0, 16)
+src/hle/time.ts	D	1	store<u32>(ai, tWday)
+src/hle/time.ts	D	1	store<u32>(ai, tYday, 4)
+src/hle/touch.ts	C	1	<i32>(v * <f32>(hi + 1))
+src/hle/touch.ts	?	1	<i32>gw : 16
+src/hle/touch.ts	C	3	<i32>id
+src/hle/touch.ts	C	1	<u32>NF
+src/hle/touch.ts	C	1	<u32>i
+src/hle/touch.ts	D	1	load<i32>(GLAST)
+src/hle/touch.ts	D	1	load<i32>(f)
+src/hle/touch.ts	D	1	load<i32>(f, 4)
+src/hle/touch.ts	D	1	load<i32>(g + 4 + (<usize>i << 3))
+src/hle/touch.ts	D	1	load<i32>(g + 8 + (<usize>i << 3))
+src/hle/touch.ts	D	2	load<i32>(g)
+src/hle/touch.ts	D	3	load<i32>(g, 36)
+src/hle/touch.ts	D	3	load<i32>(g, 40)
+src/hle/touch.ts	D	1	load<i32>(le, 16)
+src/hle/touch.ts	D	1	load<i32>(le, 24)
+src/hle/touch.ts	D	1	load<i32>(le, 28)
+src/hle/touch.ts	D	1	load<i32>(le, 32)
+src/hle/touch.ts	D	1	load<i32>(le, 36)
+src/hle/touch.ts	D	1	load<i32>(le, 60)
+src/hle/touch.ts	D	1	load<u32>(e)
+src/hle/touch.ts	D	1	store<i32>(f, 0, 4)
+src/hle/touch.ts	D	1	store<i32>(g + 4 + (<usize>n << 3), clampi(load<f32>(f, 8), 1279))
+src/hle/touch.ts	D	1	store<i32>(g + 8 + (<usize>n << 3), clampi(load<f32>(f, 12), 719))
+src/hle/touch.ts	D	1	store<i32>(g, 1)
+src/hle/touch.ts	D	1	store<i32>(g, 1, 4)
+src/hle/touch.ts	D	1	store<i32>(g, mx, 36)
+src/hle/touch.ts	D	1	store<i32>(g, my, 40)
+src/hle/touch.ts	D	1	store<i32>(g, n)
+src/hle/touch.ts	D	1	store<i32>(gf(id), 0)
+src/hle/touch.ts	D	1	store<i32>(out, k, 8)
+src/hle/touch.ts	D	1	store<i32>(s, 30, 0x18)
+src/hle/touch.ts	D	1	store<i32>(s, 30, 0x1c)
+src/hle/touch.ts	D	1	store<i32>(s, clampi(load<f32>(p), 1279), 0x10)
+src/hle/touch.ts	D	1	store<i32>(s, clampi(load<f32>(p, 4), 719), 0x14)
+src/hle/touch.ts	D	1	store<i32>(s, dx, 32)
+src/hle/touch.ts	D	1	store<i32>(s, dy, 36)
+src/hle/touch.ts	D	1	store<i32>(s, gn, 60)
+src/hle/touch.ts	D	1	store<i32>(s, iabs(ldx) > iabs(ldy) ? (ldx > 0 ? GD_RIGHT : GD_LEFT) : (ldy > 0 ? GD_DOWN : GD_U
+src/hle/touch.ts	D	1	store<i32>(s, id, 0xc)
+src/hle/touch.ts	D	1	store<i32>(s, ldx, 32)
+src/hle/touch.ts	D	1	store<i32>(s, ldy, 36)
+src/hle/touch.ts	D	1	store<i32>(s, load<i32>(g, 36), 24)
+src/hle/touch.ts	D	1	store<i32>(s, load<i32>(g, 40), 28)
+src/hle/touch.ts	D	1	store<i32>(s, type, 16)
+src/hle/touch.ts	D	1	store<u32>(s, attr, 48)
+src/hle/touch.ts	D	1	store<u32>(s, attr, 8)
+src/hle/vi.ts	C	1	<i32>([1280, 720, 1920, 1080, 2560, 1440, 3840, 2160])
+src/hle/vi.ts	C	1	<i32>cfg(CFG_DISPLAY_H)
+src/hle/vi.ts	C	1	<i32>cfg(CFG_DISPLAY_W)
+src/hle/vi.ts	?	1	<u32>((v >> 16) & 0xffff)
+src/hle/vi.ts	?	1	<u32>((v >> 32) & 0xffff)
+src/hle/vi.ts	C	1	<u32>([0x4e49574e, 0, 0, 0])
+src/hle/vi.ts	C	1	<u32>([0x50534944, 0])
+src/hle/vi.ts	C	1	<u32>([0x5259414c, 0])
+src/hle/vi.ts	?	1	<u32>(v & 0xffff)
+src/hle/vi.ts	?	1	<u32>(v >> 48)
+src/hle/vi.ts	C	1	<u32>h
+src/hle/vi.ts	C	1	<u32>h << 16
+src/hle/vi.ts	C	1	<u32>w
+src/hle/vi.ts	C	1	<u32>w | <u32>h << 16
+src/hle/vi.ts	D	1	load<i32>(RESK + (<usize>i << 3))
+src/hle/vi.ts	D	1	load<i32>(RESK + (<usize>i << 3), 4)
+src/hle/vi.ts	D	1	load<i32>(RESK + (<usize>r << 3))
+src/hle/vi.ts	D	1	load<i32>(RESK + (<usize>r << 3), 4)
+src/hle/vi.ts	D	1	load<i32>(s)
+src/hle/vi.ts	D	1	load<i32>(s, 4)
+src/hle/vi.ts	D	1	store<u32>(out, r)
+src/hle/web.ts	?	1	<i32>n
+src/hle/web.ts	?	1	<u32>n
+src/hle/web.ts	?	1	<u32>sz
+src/hle/web.ts	D	1	load<u32>(MSGN + (<usize>i << 2))
+src/hle/web.ts	D	1	load<u32>(WH)
+src/hle/web.ts	D	1	load<u32>(v)
+src/hle/web.ts	?	1	store<u32>(MSGN + (<usize>i << 2), <u32>n)
+src/kernel/base.ts	D	1	load<u32>(<usize>addr)
+src/kernel/base.ts	?	1	store<u32>(<usize>addr, v)
+src/kernel/clock.ts	C	1	<u32>c.state
+src/kernel/handle.ts	C	1	<i32>hObj(h)
+src/kernel/handle.ts	?	1	<usize>load<u32>(p, 4)
+src/kernel/handle.ts	D	1	load<i32>(EVT + (<usize>e << 3))
+src/kernel/handle.ts	D	1	load<i32>(EVT + (<usize>i << 3))
+src/kernel/handle.ts	D	3	load<i32>(p)
+src/kernel/handle.ts	D	1	load<i32>(q)
+src/kernel/handle.ts	D	1	load<u32>(EVT + (<usize>e << 3), 4)
+src/kernel/handle.ts	D	2	load<u32>(TAB + (<usize>i << 3))
+src/kernel/handle.ts	D	1	load<u32>(TAB + (<usize>slotOf(h) << 3), 4)
+src/kernel/handle.ts	D	2	load<u32>(p)
+src/kernel/handle.ts	D	1	store<i32>(p, load<i32>(p) + 1)
+src/kernel/handle.ts	D	1	store<i32>(p, load<i32>(p) - 1)
+src/kernel/handle.ts	D	1	store<i32>(p, refs)
+src/kernel/handle.ts	D	1	store<i32>(q, load<i32>(q) + 1)
+src/kernel/handle.ts	D	1	store<u32>(EVT + (<usize>e << 3), on ? 1 : 0, 4)
+src/kernel/handle.ts	D	1	store<u32>(p, 0, 4)
+src/kernel/handle.ts	D	1	store<u32>(p, obj, 4)
+src/kernel/handle.ts	D	1	store<u32>(p, type)
+src/kernel/index.ts	C	1	<i32>e
+src/kernel/index.ts	C	1	<i32>t.x(0)
+src/kernel/index.ts	C	1	<u32>i
+src/kernel/index.ts	C	1	<u32>t.index
+src/kernel/index.ts	D	1	load<i32>(REFS + (<usize>e << 2))
+src/kernel/index.ts	D	1	load<i32>(p)
+src/kernel/index.ts	D	1	store<i32>(out, t.core, 20)
+src/kernel/index.ts	D	1	store<i32>(out, t.eff, 16)
+src/kernel/index.ts	D	1	store<i32>(out, t.prio, 12)
+src/kernel/index.ts	D	1	store<i32>(out, t.runCore, 24)
+src/kernel/index.ts	D	1	store<i32>(out, t.syncRefs, 72)
+src/kernel/index.ts	D	1	store<i32>(out, t.wn, 76)
+src/kernel/index.ts	D	1	store<i32>(out, t.wowner, 88)
+src/kernel/index.ts	D	1	store<i32>(p, load<i32>(p) + 1)
+src/kernel/index.ts	D	1	store<u32>(out, 0, 28)
+src/kernel/index.ts	D	1	store<u32>(out, 1, 0)
+src/kernel/index.ts	D	1	store<u32>(out, mem.qAttr, 20)
+src/kernel/index.ts	D	1	store<u32>(out, mem.qPerm, 24)
+src/kernel/index.ts	D	1	store<u32>(out, mem.qState, 16)
+src/kernel/index.ts	D	1	store<u32>(out, t.cancel ? 1 : 0, 80)
+src/kernel/index.ts	D	1	store<u32>(out, t.closed ? 1 : 0, 84)
+src/kernel/index.ts	D	1	store<u32>(out, t.handle, 28)
+src/kernel/index.ts	D	1	store<u32>(out, t.state, 4)
+src/kernel/index.ts	D	1	store<u32>(out, t.waitKind, 8)
+src/kernel/mem.ts	?	1	<i32>((end - have + 0xFFFF) >> 16)
+src/kernel/mem.ts	?	2	<u32>((arenaHi - arenaLo) / LEAF_BYTES)
+src/kernel/mem.ts	?	1	<u32>((d << LEAF_SHIFT) + k)
+src/kernel/mem.ts	?	1	<u32>(POOL_LEAVES - poolUsed)
+src/kernel/sched.ts	D	1	load<i32>(CUR + (<usize>c << 2))
+src/kernel/sched.ts	D	1	store<i32>(CUR + (<usize>c << 2), i)
+src/kernel/svc.ts	C	1	<i32>ctz<u64>(s.mask)
+src/kernel/svc.ts	C	1	<i32>ctz<u64>(t.mask)
+src/kernel/svc.ts	C	2	<i32>hObj(h)
+src/kernel/svc.ts	C	1	<i32>t.x(4)
+src/kernel/svc.ts	C	1	<i32>t.x(5)
+src/kernel/svc.ts	C	1	<i32>v < val
+src/kernel/svc.ts	C	1	<i32>v == val : <i32>v < val
+src/kernel/svc.ts	C	1	<i32>x0
+src/kernel/svc.ts	C	6	<i32>x1
+src/kernel/svc.ts	C	1	<i32>x1 == 1
+src/kernel/svc.ts	C	3	<i32>x2
+src/kernel/svc.ts	C	1	<i32>x3
+src/kernel/svc.ts	C	1	<u32>(c >= 0 ? c : t.mask ? <i32>ctz<u64>(t.mask) : 0)
+src/kernel/svc.ts	C	5	<u32>e
+src/kernel/svc.ts	?	1	<u32>id
+src/kernel/svc.ts	C	1	<u32>nt.index
+src/kernel/svc.ts	C	1	<u32>nv
+src/kernel/svc.ts	C	1	<u32>s.core : 0
+src/kernel/svc.ts	C	1	<u32>val
+src/kernel/svc.ts	C	9	<u32>x0
+src/kernel/svc.ts	C	1	<u32>x0 | WAITERS_BIT
+src/kernel/svc.ts	C	3	<u32>x1
+src/kernel/svc.ts	C	3	<u32>x2
+src/kernel/svc.ts	D	1	load<u32>(c, C_FPCR)
+src/kernel/svc.ts	D	1	load<u32>(c, C_FPSR)
+src/kernel/svc.ts	D	1	load<u32>(c, C_NZCV)
+src/kernel/svc.ts	D	1	store<u32>(o, 0, 0x10C)
+src/kernel/svc.ts	D	1	store<u32>(o, load<u32>(c, C_FPCR), 0x310)
+src/kernel/svc.ts	D	1	store<u32>(o, load<u32>(c, C_FPSR), 0x314)
+src/kernel/svc.ts	D	1	store<u32>(o, load<u32>(c, C_NZCV) << 28, 0x108)
+src/kernel/svc.ts	D	1	store<u32>(writeOut, hNew(O_EVENT_W, <u32>e))
+src/kernel/sync.ts	C	4	<i32>(ref & 0xFFFF)
+src/kernel/sync.ts	C	2	<i32>hObj(h)
+src/kernel/sync.ts	C	1	<u32>e
+src/kernel/sync.ts	C	1	<u32>t.index
+src/kernel/thread.ts	?	1	<i32>(d / STRIDE)
+src/kernel/thread.ts	C	1	<i32>s : MAX_THREADS
+src/kernel/thread.ts	C	1	<u32>KthreadWaitKind.address
+src/kernel/thread.ts	C	1	<u32>KthreadWaitKind.clock
+src/kernel/thread.ts	C	1	<u32>KthreadWaitKind.condvar
+src/kernel/thread.ts	C	1	<u32>KthreadWaitKind.lock
+src/kernel/thread.ts	C	1	<u32>KthreadWaitKind.sleep
+src/kernel/thread.ts	C	1	<u32>KthreadWaitKind.sync
+src/kernel/thread.ts	C	2	<u32>i
+src/kernel/thread.ts	?	1	<u32>t.id
+src/kernel/thread.ts	C	1	<u32>this.index
+src/kernel/thread.ts	C	1	<u32>this.m.data
+src/kernel/thread.ts	D	1	load<u32>(changetype<usize>(this) + WOBJ_OFF + (<usize>i << 2))
+src/kernel/thread.ts	?	1	store<u32>(changetype<usize>(this) + WOBJ_OFF + (<usize>i << 2), v)
+src/loader/host/loader.mts	V	1	const ids = Array.from({ length: Math.min(n, cap) }, (_, i) => this.dv.getUint32(this.scratch + 4 * i, true));
+src/loader/host/loader.mts	?	1	return Float64Array.from(new Uint32Array(this.x.memory.buffer, out, Math.min(n, cap)), off => base + off);
+src/loader/lz4.ts	?	1	<i32>(d - dst)
+src/loader/lz4.ts	C	1	<u32>load<u8>(s++)
+src/loader/module.ts	?	1	<i32>(v - 1)
+src/loader/module.ts	C	2	<i32>count
+src/loader/module.ts	C	1	<i32>h
+src/loader/module.ts	C	1	<i32>id
+src/loader/module.ts	C	1	<i32>id : -1
+src/loader/module.ts	C	1	<i32>k.index
+src/loader/module.ts	?	1	<i32>load<u32>(LOADED + (<usize>i << 2))
+src/loader/module.ts	C	1	<i32>load<u32>(hostRec(id), 20)
+src/loader/module.ts	C	1	<i32>m.index
+src/loader/module.ts	C	1	<i32>modAt(<u32>h)
+src/loader/module.ts	C	1	<i32>rd32(m, mod0 + 12)
+src/loader/module.ts	C	1	<i32>rd32(m, mod0 + 4)
+src/loader/module.ts	C	1	<i32>rd32(m, mod0 + 8)
+src/loader/module.ts	?	1	<u32>(arenaTop - arena)
+src/loader/module.ts	?	1	<u32>(copy - arena)
+src/loader/module.ts	?	1	<u32>(finiArraySz / 8)
+src/loader/module.ts	C	2	<u32>(inf >> 32)
+src/loader/module.ts	?	1	<u32>(initArraySz / 8)
+src/loader/module.ts	?	1	<u32>(mod0 + <u64><i64><i32>rd32(m, mod0 + 12))
+src/loader/module.ts	?	1	<u32>(mod0 + <u64><i64><i32>rd32(m, mod0 + 8))
+src/loader/module.ts	?	1	<u32>(pltrelsz / RELA)
+src/loader/module.ts	?	1	<u32>(relasz / RELA)
+src/loader/module.ts	?	1	<u32>(relrsz / 8)
+src/loader/module.ts	?	1	<u32>(strtab + strsz)
+src/loader/module.ts	?	1	<u32>(v - base)
+src/loader/module.ts	C	1	<u32>dyn
+src/loader/module.ts	?	1	<u32>fini
+src/loader/module.ts	?	1	<u32>finiArray
+src/loader/module.ts	?	1	<u32>gnuHash
+src/loader/module.ts	C	5	<u32>h
+src/loader/module.ts	C	1	<u32>h < nMods ? <i32>modAt(<u32>h)
+src/loader/module.ts	C	2	<u32>h >= nMods
+src/loader/module.ts	C	1	<u32>h >= nMods || !inMemory(name, len)
+src/loader/module.ts	?	1	<u32>hash
+src/loader/module.ts	?	4	<u32>i
+src/loader/module.ts	C	3	<u32>id
+src/loader/module.ts	C	3	<u32>inf
+src/loader/module.ts	?	1	<u32>init
+src/loader/module.ts	?	1	<u32>initArray
+src/loader/module.ts	?	1	<u32>jmprel
+src/loader/module.ts	C	1	<u32>m.inst.data : 0
+src/loader/module.ts	?	1	<u32>mod0
+src/loader/module.ts	?	1	<u32>n
+src/loader/module.ts	?	1	<u32>nsym
+src/loader/module.ts	C	2	<u32>rd64(m, e + 8)
+src/loader/module.ts	?	1	<u32>rela
+src/loader/module.ts	?	1	<u32>relr
+src/loader/module.ts	C	1	<u32>si
+src/loader/module.ts	?	1	<u32>size
+src/loader/module.ts	?	1	<u32>strtab
+src/loader/module.ts	?	1	<u32>symtab
+src/loader/module.ts	?	1	<usize>load<u32>(hostRec(id))
+src/loader/module.ts	?	2	<usize>load<u32>(r)
+src/loader/module.ts	D	1	load<i32>(hostRec(id), 16)
+src/loader/module.ts	D	1	load<i32>(r, 16)
+src/loader/module.ts	D	5	load<u32>(LOADED + (<usize>i << 2))
+src/loader/module.ts	D	2	load<u32>(hostIdx + (<usize>j << 2))
+src/loader/module.ts	D	1	load<u32>(hostRec(id), 12)
+src/loader/module.ts	D	3	load<u32>(hostRec(id), 20)
+src/loader/module.ts	D	1	load<u32>(hostRec(id), 4)
+src/loader/module.ts	D	1	load<u32>(m.base + <usize>off)
+src/loader/module.ts	D	2	load<u32>(r, 12)
+src/loader/module.ts	D	2	load<u32>(r, 20)
+src/loader/module.ts	D	1	load<u32>(r, 24)
+src/loader/module.ts	D	2	load<u32>(r, 4)
+src/loader/module.ts	D	1	load<u32>(r, 8)
+src/loader/module.ts	D	2	load<u32>(tab + (<usize>j << 2))
+src/loader/module.ts	D	1	store<i32>(r, -1, 16)
+src/loader/module.ts	D	1	store<i32>(r, <i32>m.index, 16)
+src/loader/module.ts	D	1	store<u32>(LOADED + (<usize>nLoaded << 2), m.index)
+src/loader/module.ts	D	1	store<u32>(hostIdx + (<usize>j << 2), id + 1)
+src/loader/module.ts	?	1	store<u32>(out + (<usize>count << 2), <u32>(v - base))
+src/loader/module.ts	D	1	store<u32>(out + (<usize>count << 2), <u32>id)
+src/loader/module.ts	D	1	store<u32>(r, 0, 12)
+src/loader/module.ts	D	1	store<u32>(r, 0, 24)
+src/loader/module.ts	?	1	store<u32>(r, <u32>(copy - arena))
+src/loader/module.ts	D	1	store<u32>(r, h, 8)
+src/loader/module.ts	D	1	store<u32>(r, kind, 20)
+src/loader/module.ts	D	1	store<u32>(r, len, 4)
+src/loader/module.ts	D	1	store<u32>(r, load<u32>(r, 12) + 1, 12)
+src/loader/module.ts	D	1	store<u32>(r, mark, 24)
+src/loader/module.ts	D	1	store<u32>(stubBase + (<usize>id << 2), id & 0xFFFF)
+src/loader/module.ts	?	1	store<u32>(tab + (<usize>j << 2), i)
+src/loader/nso.ts	C	1	<u32>image
+src/loader/nso.ts	C	1	<u32>n
+src/loader/nso.ts	C	1	<u32>n != sz
+src/loader/nso.ts	D	4	load<u32>(changetype<usize>(this) + offsetof<Layout>(" ") + (<usize>i << 2))
+src/loader/nso.ts	D	1	load<u32>(file + 0x20 + (<usize>i << 3))
+src/loader/nso.ts	D	1	load<u32>(file + 0x24 + (<usize>i << 3))
+src/loader/nso.ts	D	1	load<u32>(file + 0x60 + (<usize>i << 2))
+src/loader/nso.ts	D	2	load<u32>(file)
+src/loader/nso.ts	D	1	load<u32>(file, 0x0C)
+src/loader/nso.ts	D	1	load<u32>(file, 0x10)
+src/loader/nso.ts	D	1	load<u32>(file, 0x18)
+src/loader/nso.ts	D	1	load<u32>(file, 0x1C)
+src/loader/nso.ts	D	1	load<u32>(file, 0x38)
+src/loader/nso.ts	D	1	load<u32>(file, 0x3C)
+src/loader/nso.ts	D	1	load<u32>(h)
+src/loader/nso.ts	D	1	load<u32>(h, 4)
+src/loader/nso.ts	D	1	load<u32>(h, 8)
+src/loader/nso.ts	D	1	store<u32>(set + offsetof<Layout>(" ") + (<usize>i << 2), fo)
+src/loader/nso.ts	D	1	store<u32>(set + offsetof<Layout>(" ") + (<usize>i << 2), mo)
+src/loader/nso.ts	D	2	store<u32>(set + offsetof<Layout>(" ") + (<usize>i << 2), o)
+src/loader/nso.ts	D	1	store<u32>(set + offsetof<Layout>(" ") + (<usize>i << 2), st)
+src/loader/nso.ts	D	3	store<u32>(set + offsetof<Layout>(" ") + (<usize>i << 2), sz)
+src/loader/sha256.ts	C	1	<u32>([ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0x
+src/loader/sha256.ts	C	1	<u32>(a, 13)
+src/loader/sha256.ts	C	1	<u32>(a, 2)
+src/loader/sha256.ts	C	1	<u32>(a, 22)
+src/loader/sha256.ts	C	1	<u32>(e, 11)
+src/loader/sha256.ts	C	1	<u32>(e, 25)
+src/loader/sha256.ts	C	1	<u32>(e, 6)
+src/loader/sha256.ts	?	1	<u32>(load<u32>(H + (i << 2)))
+src/loader/sha256.ts	?	1	<u32>(load<u32>(p + (i << 2)))
+src/loader/sha256.ts	C	1	<u32>(w15, 18)
+src/loader/sha256.ts	C	1	<u32>(w15, 7)
+src/loader/sha256.ts	C	1	<u32>(w2, 17)
+src/loader/sha256.ts	C	1	<u32>(w2, 19)
+src/loader/sha256.ts	D	1	load<u32>(H + (i << 2))
+src/loader/sha256.ts	D	2	load<u32>(H)
+src/loader/sha256.ts	D	2	load<u32>(H, 12)
+src/loader/sha256.ts	D	2	load<u32>(H, 16)
+src/loader/sha256.ts	D	2	load<u32>(H, 20)
+src/loader/sha256.ts	D	2	load<u32>(H, 24)
+src/loader/sha256.ts	D	2	load<u32>(H, 28)
+src/loader/sha256.ts	D	2	load<u32>(H, 4)
+src/loader/sha256.ts	D	2	load<u32>(H, 8)
+src/loader/sha256.ts	D	1	load<u32>(K + (i << 2))
+src/loader/sha256.ts	D	1	load<u32>(W + ((i - 15) << 2))
+src/loader/sha256.ts	D	1	load<u32>(W + ((i - 16) << 2))
+src/loader/sha256.ts	D	1	load<u32>(W + ((i - 2) << 2))
+src/loader/sha256.ts	D	1	load<u32>(W + ((i - 7) << 2))
+src/loader/sha256.ts	D	1	load<u32>(W + (i << 2))
+src/loader/sha256.ts	D	1	load<u32>(p + (i << 2))
+src/loader/sha256.ts	D	1	store<u32>(H, 0x1f83d9ab, 24)
+src/loader/sha256.ts	D	1	store<u32>(H, 0x3c6ef372, 8)
+src/loader/sha256.ts	D	1	store<u32>(H, 0x510e527f, 16)
+src/loader/sha256.ts	D	1	store<u32>(H, 0x5be0cd19, 28)
+src/loader/sha256.ts	D	1	store<u32>(H, 0x6a09e667)
+src/loader/sha256.ts	D	1	store<u32>(H, 0x9b05688c, 20)
+src/loader/sha256.ts	D	1	store<u32>(H, 0xa54ff53a, 12)
+src/loader/sha256.ts	D	1	store<u32>(H, 0xbb67ae85, 4)
+src/loader/sha256.ts	D	1	store<u32>(H, load<u32>(H) + a)
+src/loader/sha256.ts	D	1	store<u32>(H, load<u32>(H, 12) + d, 12)
+src/loader/sha256.ts	D	1	store<u32>(H, load<u32>(H, 16) + e, 16)
+src/loader/sha256.ts	D	1	store<u32>(H, load<u32>(H, 20) + f, 20)
+src/loader/sha256.ts	D	1	store<u32>(H, load<u32>(H, 24) + g, 24)
+src/loader/sha256.ts	D	1	store<u32>(H, load<u32>(H, 28) + h, 28)
+src/loader/sha256.ts	D	1	store<u32>(H, load<u32>(H, 4) + b, 4)
+src/loader/sha256.ts	D	1	store<u32>(H, load<u32>(H, 8) + c, 8)
+src/loader/sha256.ts	?	1	store<u32>(W + (i << 2), bswap<u32>(load<u32>(p + (i << 2))))
+src/loader/sha256.ts	?	1	store<u32>(W + (i << 2), load<u32>(W + ((i - 16) << 2)) + s0 + load<u32>(W + ((i - 7) << 2)) + s
+src/loader/sha256.ts	?	1	store<u32>(out + (i << 2), bswap<u32>(load<u32>(H + (i << 2))))
+src/loader/util.ts	C	1	<u32>load<u8>(ptr + i)
+src/runtime/index.ts	C	1	<u32>(proc().data >> 32)
+src/runtime/index.ts	C	2	<u32>code
+src/runtime/index.ts	C	1	<u32>proc()
+src/runtime/index.ts	D	1	load<u32>(ctx, 0x108)
+src/runtime/index.ts	D	1	store<i32>(FAULT, threadIndex, 24)
+src/runtime/index.ts	D	1	store<u32>(FAULT, kind, 0)
+src/runtime/index.ts	D	1	store<u32>(FAULT, threadHandle, 4)
+web/build.mts	B	1	const normal = await units({}), insns = await units({ maxInsns: 1, budget: 1 << 20 });
+web/build.mts	B	1	const nso = buildDoom(l => console.error(" " + l.replace(/^doom: /, " ")));
+web/build.mts	B	1	const one = { maxInsns: 1, budget: 1 << 20 };
+web/main.ts	B	1	else if (/\.(romfs|img|istorage)$/i.test(f.name)) { rom = f; addLog([{ text: ` $ $ `, kind: "" }]); }
+web/main.ts	B	1	function showCapture(m: { text: string; images: { name: string; width: number; height: number; format: string; png: Uint8Array | null }[] }) {
+web/main.ts	B	1	h >>>= 0;
+web/main.ts	B	1	let h = 0x811c9dc5; for (const c of gp.id + " " + gp.index) { h ^= c.charCodeAt(0); h = Math.imul(h, 0x01000193); }
+web/prepare.ts	B	1	const esc = (s: string) => s.replace(/[&<>" "&" "&amp;" "<" "&lt;" ">" "&gt;" "'
+web/prepare.ts	B	1	const fmtBytes = (n: number) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(2) + " " : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + " " : n >= 1024 ? (n / 1024).toFix
+web/prepare.ts	B	1	const inside = res.state === " " && res.reason === " " ? (tree as { filesMatching?: (re: RegExp) => { path: string; file: File }[] }).filesMatching?.(/^[^/]+\.n
+web/prepare.ts	B	1	const started: Partial<Record<StageName, number>> = {};
+web/prepare.ts	B	1	storeDir = " " + tree.name.replace(/[^A-Za-z0-9._-]/g, " ").slice(0, 80);
+web/prepare_build.mts	B	1	const path = normalize(decodeURIComponent(url)).replace(/^(\.\.[/\\])+/, "");
+web/prepare_build.mts	B	1	export function servePrepare(port: number, extra?: (url: string) => { body: Buffer | string; type: string } | null): Promise<{ server: Server; url: string }> {
+web/serve.mts	B	1	const path = normalize(decodeURIComponent((req.url ?? " ").split(" ")[0])).replace(/^(\.\.[/\\])+/, "");
+web/shots.mts	B	1	const chunk = (t: string, d: Buffer) => { const b = Buffer.alloc(12 + d.length); b.writeUInt32BE(d.length, 0); b.write(t, 4, " "); d.copy(b, 8); b.writeUInt32BE
+web/worker.ts	B	1	const c: Record<string, string | number> = { slices: rt.stats.slices, SVCs: rt.stats.svcs, " ": rt.stats.hostCalls, " ": rt.units, " ": rt.disposed ? 0 : rt.a64
+web/worker.ts	B	1	const fault = rt && rt.r.rt_stop_kind() === 3 ? rt.red.filter(l => /^\[RED\] (fault: | x0=)/.test(l)).slice(-2) : [];
+web/worker.ts	B	1	function counters(): Record<string, string | number> {
+web/worker.ts	B	1	let ctrlAnswer: ((ok: boolean) => void) | null = null;
+web/worker.ts	B	1	let doomState: { rt: Runtime; gametic: number; gamestate: number; menu: boolean; demo: boolean; usergame: boolean; map: number; health: number; bullets: number;
+web/worker.ts	B	1	let stdoutSeen = 0, last: { t: number; frames: number; units: number; loop: number; host: number; exec: number } | undefined;
+web/worker.ts	B	1	m.stopKind = ["", " ", " ", " ", " "][kind]; m.stopValue = value | 0; m.faultName = kind === 3 ? FAULT_NAMES[value] : "";
+web/worker.ts	V	1	me.register({ name: " ", fn: cpu => { const st = new Int32Array(me.memory.buffer, Number(cpu.x(2)), 10); doomState = { rt: me, gametic: cpu.w(0), gamestate: st[
+web/worker.ts	B	1	s.guest_clock = reasons ? " " + [" ", " ", " "].filter((_, i) => reasons >> i & 1).join(" ") + " " : " ";

@@ -106,12 +106,13 @@ function hashSample(p: usize, n: usize): u64 {
 }
 
 // H_TEX_DATA: +8 u64 serial, +16 u32 level, +20 u32 z (layer or first slice), +24 u32 y, +28 u32 width, +32 u32 height (texels, whole blocks),
-// +36 u32 slices, +40 u32 address of the rows, +44 u32 bytes per row, +48 u32 x, +52 u32 what the rows are: 0 texels of the
+// +36 u32 slices, +40 u64 address of the rows (the scratch area, or the guest's pool memory itself: anywhere in a 64-bit
+// memory), +48 u32 bytes per row, +52 u32 x, +56 u32 what the rows are: 0 texels of the
 // host texture's format, 1 depth as f32, 2 stencil as u8 (WebGPU takes depth only through a draw, stencil as its own aspect)
 function emitData(serial: u64, level: u32, z: u32, x: u32, y: u32, w: u32, h: u32, slices: u32, ptr: usize, pitch: usize, what: u32 = 0): void {
-  const r = H.hostRec(H.H_TEX_DATA, 56);
+  const r = H.hostRec(H.H_TEX_DATA, 64);
   store<u64>(r, serial, 8); store<u32>(r, level, 16); store<u32>(r, z, 20); store<u32>(r, y, 24); store<u32>(r, w, 28); store<u32>(r, h, 32); store<u32>(r, slices, 36);
-  store<u32>(r, <u32>ptr, 40); store<u32>(r, <u32>pitch, 44); store<u32>(r, x, 48); store<u32>(r, what, 52);
+  store<u64>(r, ptr, 40); store<u32>(r, <u32>pitch, 48); store<u32>(r, x, 52); store<u32>(r, what, 56); store<u32>(r, 0, 60);
   nUploadBytes += <u64>pitch * (h / fBh) * slices;
 }
 // Bytes of OUT one row of nbx blocks takes once converted (0: the format goes as it is stored)
@@ -177,7 +178,7 @@ function send(serial: u64, f: u32, level: u32, z: u32, x: u32, y: u32, nbx: u32,
 let redFmt = false, redRange = false;
 // Everything in the storage to the replayer. False when there is nothing to upload from
 function upload(e: usize): bool {
-  const d = e + TE_desc, mem = <usize>load<u32>(e, TE_mem), serial = load<u64>(e), flags = load<i32>(d, O.TD_flags), target = load<i32>(d, O.TD_target);
+  const d = e + TE_desc, mem = <usize>load<u64>(e, TE_mem), serial = load<u64>(e), flags = load<i32>(d, O.TD_flags), target = load<i32>(d, O.TD_target);
   if (!mem) return false;
   if (!fmtOf(load<i32>(d, O.TD_format))) { if (!redFmt) { redFmt = true; L.red("texture format 0x"); L.hex(<u32>load<i32>(d, O.TD_format)); L.str(" is unknown: its content is not uploaded"); L.end(); } return false; }
   if (<u64>mem + load<u64>(e, TE_size) > <u64>memory.size() << 16) { if (!redRange) { redRange = true; L.redLine("texture storage reaches outside guest memory: not uploaded"); } return false; }
@@ -216,14 +217,14 @@ export function contentInit(serial: u64, tex: usize): void {
   const e = texEntry(serial);
   if (!e) return;
   inst(e).init(GFX_TEXTURE, <u32>(serial & 0xffff));
-  store<u32>(e, <u32>load<u64>(tex, O.TEX_mem), TE_mem); store<u64>(e, load<u64>(tex, O.TEX_L + O.TL_size), TE_size);
+  store<u64>(e, load<u64>(tex, O.TEX_mem), TE_mem); store<u64>(e, load<u64>(tex, O.TEX_L + O.TL_size), TE_size);
   memory.copy(e + TE_desc, tex + O.TEX_d, O.TD_SIZE);
 }
 // A submission is about to read the texture (sample it, copy from it, present it)
 export function contentNeed(serial: u64): void {
   const e = texEntry(serial);
   if (!e) return;
-  const m = inst(e), mem = <usize>load<u32>(e, TE_mem), size = <usize>load<u64>(e, TE_size);
+  const m = inst(e), mem = <usize>load<u64>(e, TE_mem), size = <usize>load<u64>(e, TE_size);
   if (m.state == GfxTextureS.GpuOwned || (load<u32>(e, TE_checked) == submitNo && m.state != GfxTextureS.Staged)) return;
   store<u32>(e, submitNo, TE_checked);
   if (m.state == GfxTextureS.Uploaded) {
@@ -276,7 +277,7 @@ export function contentState(serial: u64): i32 { const e = texEntry(serial); ret
 export function regionCopy(tex: usize, level: u32, layer0: u32, region: usize, lin: usize, row: usize, img: usize, toStorage: bool): bool {
   const e = texEntry(load<u64>(tex, O.TEX_serial));
   if (!e) return false;
-  const d = e + TE_desc, mem = <usize>load<u32>(e, TE_mem), flags = load<i32>(d, O.TD_flags), is3d = load<i32>(d, O.TD_target) == 2;
+  const d = e + TE_desc, mem = <usize>load<u64>(e, TE_mem), flags = load<i32>(d, O.TD_flags), is3d = load<i32>(d, O.TD_target) == 2;
   if (!mem || inst(e).state == GfxTextureS.GpuOwned || !fmtOf(load<i32>(d, O.TD_format))) return false;
   const x = load<u32>(region), y = load<u32>(region, 4), z = load<u32>(region, 8), w = load<u32>(region, 12), h = load<u32>(region, 16), dep = max<u32>(load<u32>(region, 20), 1);
   const bx0 = x / fBw, by0 = y / fBh, nbx = (w + fBw - 1) / fBw, nby = (h + fBh - 1) / fBh, bpb = fBpb, wb: usize = nbx * bpb;
@@ -324,7 +325,7 @@ export function writeTexels(tex: usize, level: u32, layer0: u32, region: usize, 
 // The per-use check alone, n times over one texture's storage (the tests time it)
 export function benchSample(tex: usize, n: u32): u64 {
   const e = texEntry(load<u64>(tex, O.TEX_serial)); let h: u64 = 0;
-  if (e) for (let i: u32 = 0; i < n; i++) h ^= hashSample(<usize>load<u32>(e, TE_mem), <usize>load<u64>(e, TE_size));
+  if (e) for (let i: u32 = 0; i < n; i++) h ^= hashSample(<usize>load<u64>(e, TE_mem), <usize>load<u64>(e, TE_size));
   nSampled -= n;
   return h;
 }

@@ -133,7 +133,7 @@ export class Env {
     const e = new Env();
     e.wasm = wasm;
     let host!: GfxHost;
-    e.g = await Guest.create(wasm, { gfx_exec: (p, n) => host.exec(p >>> 0, n >>> 0) });
+    e.g = await Guest.create(wasm, { gfx_exec: (p, n) => host.exec(p, n) });
     host = e.host = new GfxHost(device, e.g.memory, { ...opts.host, canvas: opts.canvas, log: l => e.g.logs.push(l) });
     host.attach(e.g.x);
     e.G = new Game(e.g).init({ cmdBytes: opts.cmdBytes, glConventions: opts.glConventions });
