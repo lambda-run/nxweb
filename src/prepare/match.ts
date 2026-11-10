@@ -207,6 +207,7 @@ export function imageInit(image: usize, len: u32, textEnd: u32): i32 {
 export function imageError(): i32 { return imageErr; }
 export function imageErrorAt(): u32 { return imageErrAt; }
 export function fnCount(): u32 { return NFN; }
+export function fnPtr(): usize { return FN; }   // fnCount() u64: start << 32 | end, sorted by start
 export function fnStart(i: u32): u32 { return i < NFN ? <u32>(load<u64>(FN + (<usize>i << 3)) >> 32) : 0; }
 export function fnEndAt(i: u32): u32 { return i < NFN ? <u32>load<u64>(FN + (<usize>i << 3)) : 0; }
 // The end of the function that starts at `start`, or 0

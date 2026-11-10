@@ -15,8 +15,9 @@ instantiates modules, owns the function table and the pc map and provides the im
 | `int.ts` | integer data processing, branches, system instructions, integer loads/stores, exclusives |
 | `fp.ts` | scalar floating point, SIMD&FP register loads/stores, AdvSIMD structure loads/stores |
 | `simd.ts` | Advanced SIMD data processing (vector and scalar-in-SIMD forms) |
-| `unit.ts` | function discovery, per-function assembly, register write-back/reload analysis, unit module builder, core module builder, `probe` |
-| `index.ts` | exports: `init, setOpt, setOptAddr, addRange, removeRange, setEntry, entryBuf, translate, outPtr, metaBuf, sideBuf, buildCore, probe, staticBase, staticEnd, addrBits` |
+| `unit.ts` | function discovery, per-function assembly, register write-back/reload analysis, unit module builder, core module builder, `decode` (the one decoder), `probe` |
+| `scan.ts` | the static scan: `probe` over a module's text, a memo of distinct words, names for what is rejected (`classify`) |
+| `index.ts` | exports: `init, setOpt, setOptAddr, addRange, removeRange, setEntry, entryBuf, translate, outPtr, metaBuf, sideBuf, buildCore, probe, staticBase, staticEnd, addrBits`, and the scan's `scan*` |
 | `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding; `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `rarith{s,d}`: directed-rounding scalar arithmetic) |
 
 **Core module** (`buildCore()`, bytes produced by the same encoder). Imports `env.memory`,
@@ -250,6 +251,51 @@ DC ZVA, other DC/IC ops as no-ops, SVC (import `svc`), BRK (import `brk(pc, imm)
 undecodable compiles to `unimpl(pc, insn)`; after `unimpl`/`brk` return, the function sets
 `budget = -1` and returns with `pc` at the offending instruction.
 
+## The static scan: what of a module the translator does not have
+
+`src/a64/scan.ts` (in the translator binary) and `src/glue/a64_scan.ts` (`A64Scanner`) classify every 32-bit word of
+a module's text as translated or not, before anything runs, and give a histogram of what is not.
+
+*The decoder is the translator's.* `unit.ts` has one function, `decode(pc, insn)`, that emits an instruction's
+translation or answers false; `translateInsn` calls it for every instruction it translates, and `probe(word)` calls it
+on a scratch function and throws the output away. The scan asks `probe` for every distinct word (a hash table keeps
+the answers: a 100 MB module has a few million distinct words), so "implemented" in a scan is by construction what the
+translator will do with that word, and the scanner is the same `translator.wasm` the game is translated with, on a
+small memory of its own (its tables are allocated at the first scan: the runtime's instance never pays for them).
+
+*Names.* A rejected word gets a kind from `classify` in `scan.ts`, a table of the A64 encoding space that only
+labels: "SVE (any)", "SME (any)", "MRS S3_0_C1_C0_0 (SCTLR_EL1)" (every system register is a kind of its own),
+"SHA-512 (...)", "FCMLA / FCADD", "CPY* / SET*", "LDTR / STTR", "HVC", ... A word that is no A64 instruction the
+table knows is "UDF" or "not an instruction" and is listed apart: it does not count as a kind of unsupported
+instruction.
+
+*Code and noise.* Text holds literal pools, jump tables and padding beside instructions.
+- When the module has an unwind table (`.eh_frame_hdr`; the function list the prepare step already reads for its
+  function-matched cuts), the words inside its functions are the code: the headline counts kinds found there. The
+  words between and outside the functions (assembly without unwind information, padding, pools) are scanned too and
+  reported under "outside the function table: may be data".
+- Literal pools inside functions: a first pass over the functions marks the words their PC-relative loads read
+  (`LDR Xt/Wt/St/Dt/Qt, =value`, `LDRSW`); the second pass leaves those words out and counts them.
+- Without a table the whole text is one region, nothing is left out, and the result says so: a data word that
+  decodes as an unsupported instruction is then counted as one.
+
+*Where it shows.* The page's prepare step scans every code module in its Code stage (`src/prepare`, `CodeOut.scan`):
+the stage's row says "12 kinds of instruction in this game are not supported yet", the verdict card gets that
+sentence and, under its technical details, the table (kind, count, first offsets, per module); the hand-off carries
+the scan to the runtime's Worker, whose "Copy report" text includes the table. It holds opcode classes, counts and
+module offsets only. From the command line:
+
+```
+npm run a64:scan -- <NSO file | exefs folder | flat image>... [--raw] [--json] [--max N]
+python3 test/a64/coverage.py     # the same answer for the words of the guest corpus images, named by Capstone
+```
+
+Tests: `test/a64/scan_run.ts` (in `a64:extra`: synthetic text with known words in and outside functions, literal
+pools, piece boundaries, and the code of every image in `test/a64/guests/out`, which must scan clean),
+`prepare:test` "the instruction scan of the Code stage" (94 modules of the test sources compiled with unwind tables
+scan clean function by function; planted words are found, recorded, logged, handed off; the stage runs again when the
+translator binary changes) and `prepare:browser` "the instruction scan in the page".
+
 ## Running the gates
 
 ```
@@ -278,6 +324,7 @@ npm run a64:big              # larger-code check: generated 400k-instruction gue
     python3 test/a64/fuzz.py --strictnan     # compare NaNs bitwise too
 npm run a64:speed            # per-guest guest-instructions/second and translation time
 python3 test/a64/coverage.py # corpus instruction words the translator rejects, by mnemonic
+npm run a64:scan -- <path>   # the static scan of an NSO module, an exefs folder or a flat image (see above)
 ```
 
 Gate 1 (`test/a64/fuzz*.py`, `fuzz_run.ts`): per instruction class a generator produces random valid
@@ -374,7 +421,8 @@ state still coming from Unicorn.
   *Shared memory*: wasm atomic instructions: `atomic.rmw.add/and/or/xor/xchg` (LDCLR is `and` with the complement),
   `atomic.rmw.cmpxchg` for CAS, a load + `cmpxchg` loop for the four min / max forms (wasm has no such instruction),
   one 64-bit `cmpxchg` for a CASP of two W registers, and for a CASP of two X registers (16 bytes, more than a wasm
-  atomic instruction takes) a spin lock word in the translator's part of the memory around atomic loads and stores:
+  atomic instruction takes) a spin lock word at a fixed place of the layout (the last 16 bytes of the "a64 helpers"
+  range; translator option 18) around atomic loads and stores:
   such CASPs never interleave, so a pair is never half exchanged (the loads are done once before the lock is taken,
   so an address that traps does so without holding it). LDAPR/LDAPUR/STLUR are atomic loads / stores like LDAR/STLR.
   As for the exclusives, an atomic access on a shared memory traps when its address is not aligned to its size.

@@ -9,7 +9,7 @@ import {
   EV_R, EV_W, EV_WB, EV_RELOAD, evBuf, nEv, insPos, insKind, insMI, insMV, nIns, fbBase, overflow,
   rollback, blkPc, succ0, succ1, nBlk, setNBlk, setCurBlk, term, setTerm, gotoPc, emitTrap,
   fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, balloc, ballocEnd, mk, beginFunction, FB_CAP, optChunk, fnLimit,
-  M64, optMaxPages, initPairLock,
+  M64, optMaxPages,
 } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
@@ -42,7 +42,6 @@ export function init(): void {
   metaPtr = balloc(16 + 4096 * 9);
   sidePtr = balloc(<usize>SIDE_CAP * 8);
   recPtr = balloc(<usize>REC_CAP * 8);
-  initPairLock();
 }
 export function sideBuf(): usize { return sidePtr; }
 // end of everything this module keeps in the shared memory (static data + buffers)

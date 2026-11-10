@@ -14,6 +14,10 @@ export function buildPreparePage(): void {
   buildSync({ entryPoints: ["web/prepare.ts"], bundle: true, format: "iife", outfile: "build/web/prepare.js", logLevel: "warning", absWorkingDir: ROOT });
   copyFileSync(join(ROOT, "web", "prepare.html"), join(WEB, "prepare.html"));
   copyFileSync(WASM, join(WEB, "wasm", "prepare.wasm"));
+  // the Code stage's instruction scan decodes with the translator binary itself: the one the runtime's build made
+  // (rt:build; the main page ships the same file). Without it the page prepares as before and scans nothing.
+  const tr = join(ROOT, "build", "runtime", "translator.wasm");
+  if (existsSync(tr)) copyFileSync(tr, join(WEB, "wasm", "translator.wasm"));
   const src = join(ROOT, "src", "prepare", "profiles");
   for (const f of readdirSync(src)) if (f.endsWith(".json")) copyFileSync(join(src, f), join(WEB, "profiles", f));
 }

@@ -21,6 +21,7 @@ import { OUT_S } from "../src/glue/audio_host.ts";
 import { handoffOptions, type HandoffOptions } from "../src/glue/rt_handoff.ts";
 import { layoutFor, nsoImageBytes, CODE_SPARE, SPACE } from "../src/glue/rt_process.ts";
 import { storageFromMessage, type HandOffMessage } from "../src/prepare/host/prepare.ts";
+import { scanLines } from "../src/glue/a64_scan.ts";
 import { PrepWasm } from "../src/prepare/host/wasm.ts";
 import { moduleRows, takeovers, machineRows, refusedTotal, reportText, type KitPart, type ModuleRow, type TakeoverSummary } from "../src/glue/rt_report.ts";
 
@@ -88,6 +89,7 @@ const CANVAS: [number, number] = [480, 270];
 async function load(files: { name: string; bytes: Uint8Array }[], shaders: [string, any][], r: number | undefined, o: LoadOptions = {}) {
   await ready;
   if (!mods) return;
+  scanReport = nextScan; nextScan = undefined;
   // the process before this one ends here: its threads, its translated code and its graphics objects are released
   if (rt) { await endProcess(rt); await runDone; }
   ratio = r; stdoutSeen = 0; last = undefined;
@@ -249,9 +251,11 @@ function report(userAgent: string): string {
   const live = liveStates();
   return reportText({ title: title || "nxweb report (no program loaded)", when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
     state: rt ? STATES[rt.r.rt_state()] : "Empty", stop: live.process?.match(/\((.*)\)$/)?.[1] ?? "", fault, modules: modRows, takeovers: tk,
-    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), log: lines.slice(-200), redTotal });
+    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), log: lines.slice(-200), redTotal, scan: scanReport });
 }
 let lastMachines: ReturnType<typeof machineRows> = [], lastOptionsKey = "";
+let scanReport: string[] | undefined;   // the instruction scan of the program that is loaded, when the prepare step handed it off (its Code stage)
+let nextScan: string[] | undefined;
 // what the report says of a process after it was disposed of: its machines as they were at the end
 function remember(p: Runtime): void { if (p === rt && !p.disposed) { lastMachines = machineRows(p.memory, kitParts(), liveStates()); lastOptionsKey = p.a64.optionsKey(); } }
 
@@ -307,6 +311,7 @@ self.onmessage = async (ev: MessageEvent) => {
       // the prepare step's hand-off: code modules as Blobs (cuts applied), the RomFS and add-on contents as devices
       // over the folder's files, saves in OPFS under the hand-off's name
       const msg = m.msg as HandOffMessage, files: { name: string; bytes: Uint8Array }[] = [];
+      nextScan = (msg.scan ?? []).flatMap(s => scanLines(s.module, s.scan));   // for the report: what of this game's code the translator does not have
       for (const mod of msg.modules) files.push({ name: mod.name, bytes: new Uint8Array(await mod.file.arrayBuffer()) });
       let saves: FsStorage;
       // a container's files are checked against their SHA-256 as they are first read: the prepare module's hash

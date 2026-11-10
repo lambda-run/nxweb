@@ -13,7 +13,8 @@ import { readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
-import { ROOT } from "../../src/prepare/host/build.mts";
+import { ROOT, WASM } from "../../src/prepare/host/build.mts";
+import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { buildPreparePage, servePrepare } from "../../web/prepare_build.mts";
 import * as rth from "../runtime/harness.mts";
 import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, type Files } from "./synth.mts";
@@ -22,9 +23,9 @@ import { writeFileSync, mkdirSync } from "node:fs";
 
 process.chdir(ROOT);
 try {
-  buildPreparePage();
   let fresh = true; try { (await import("../../src/runtime/host/build.mts")).checkBuilt(); } catch { fresh = false; }
   if (!fresh) rth.build();
+  buildPreparePage();   // after the runtime's build: the page's instruction scan uses its translator.wasm
   if (!existsSync(join(rth.GUESTS, "fsg.nso")) || !existsSync(join(rth.GUESTS, "fsg_zbic.nso"))) rth.buildModules();
   buildSync({ entryPoints: ["test/prepare/web/worker.ts"], bundle: true, format: "iife", outfile: "build/prepare/web/worker.js", logLevel: "warning", absWorkingDir: ROOT });
 } catch (e) { console.error(e instanceof Error ? e.message : e); console.error("[RED] prepare:browser: the build failed"); process.exit(1); }
@@ -480,6 +481,43 @@ try {
       return { ms: performance.now() - t0, bytes };
     });
     return `${N} files written to OPFS in ${(r.made / 1000).toFixed(1)} s; listed (entries() and getFile() of every file) and refused by Detect in ${t.toDetectEnd.toFixed(0)} ms: ${(t.toDetectEnd / N * 1000).toFixed(0)} us a file; 500 whole-file reads (Blob.slice().arrayBuffer(), main thread): ${(rd.ms / 500 * 1000).toFixed(0)} us a file`;
+  });
+
+  await run("the instruction scan in the page: a game whose main holds an instruction the translator does not have gets a line in the Code stage's row, a sentence on the verdict card, the table under its technical details and the scan in the hand-off; the other games' rows say nothing", async () => {
+    // the runtime's hello guest with an SVE word where it sets its exit code (the cut module the prepare module writes: an NSO again)
+    const pw = new PrepWasm(new WebAssembly.Module(readFileSync(WASM)));
+    const hello = guest("hello"), plain = pw.cut(hello, []); if (!("bytes" in plain)) throw new Error("hello cannot be rewritten");
+    const dv = new DataView(plain.bytes.buffer), fo = dv.getUint32(0x10, true), mo = dv.getUint32(0x14, true), sz = dv.getUint32(0x18, true);
+    let at = -1; for (let i = 0; i + 4 <= sz; i += 4) if (dv.getUint32(fo + i, true) === 0x52800540) { at = mo + i; break; }   // mov w0, #42
+    if (at < 0) throw new Error("no mov w0,#42 in hello");
+    const planted = pw.cut(hello, [{ off: at, orig: "40058052", new: "00306004" }]); if (!("bytes" in planted)) throw new Error("the word could not be planted");
+    const root = `Scan-${tag}`;
+    await putGame(root, { "exefs/main": planted.bytes, "exefs/main.npdm": npdm({ programId: APP + 0x7000n }), "romfs/a.txt": "a" });
+    await open(); await fakePicker(root);
+    await page.click("#pick");
+    await until("Ready", "Failed");
+    eq(await state(), "Ready", "state: " + await page.textContent("#error"));
+    const line = "1 kind of instruction in this game is not supported yet";
+    eq(await page.textContent("#scanline"), line, "the line in the Code stage's row");
+    const rows = await page.evaluate(() => [...document.querySelectorAll("#stages .stage .info")].map(td => td.textContent));
+    eq(rows[3], "main; 0 cuts applied" + line, "code row");
+    const gaps = await page.evaluate(() => [...document.querySelectorAll("#gaps li")].map(li => li.textContent));
+    eq(gaps.filter(g => g!.includes("not supported yet")), [line + ": the game stops if it reaches one."], "the verdict card's sentence");
+    const table = (await page.textContent("#scantable pre"))!;
+    if (!new RegExp(`^\\s+1  SVE \\(any\\)  \\(first at 0x${at.toString(16)}\\)$`, "m").test(table)) throw new Error("the table under the details: " + table);
+    if (!/main: 1 kind of instruction not supported, 1 words in all:/.test(table)) throw new Error("the table's summary: " + table);
+    const m = await manifest("nxweb-prepare-" + root), sc = m.stages.code.output.scan;
+    eq([sc.length, sc[0].module, sc[0].scan.unsupported, sc[0].scan.kinds.filter((k: any) => k.instruction).map((k: any) => [k.name, k.count, k.first])], [1, "main", 1, [["SVE (any)", 1, [at]]]], "the scan in the manifest");
+    const msg = await page.evaluate(async () => {
+      const got = new Promise<any>(res => window.addEventListener("nxweb:handoff", ev => res((ev as CustomEvent).detail), { once: true }));
+      document.getElementById("play")!.click();
+      const d = await got; return d.scan.map((s: any) => [s.module, s.scan.unsupported]);
+    });
+    eq(msg, [["main", 1]], "the scan in the hand-off message");
+    // a game without such words: its row is as it was, its manifest holds a scan that found nothing
+    const clean = await manifest(storeDir);
+    eq([clean.stages.code.output.scan.length >= 1, clean.stages.code.output.scan.every((s: any) => s.scan.unsupported === 0)], [true, true], "the first game's scan");
+    return table.split("\n").filter(l => l).join(" | ");
   });
 
   if (errors.length) { failed++; console.log(`[RED] page errors: ${errors.join(" | ")}`); }

@@ -23,6 +23,7 @@ interface X {
   match_status_ptr(): number; match_status_len(): number; match_cuts_ptr(): number; match_cuts_len(): number; match_cut_count(): number; match_src_ptr(): number;
   match_overlap_at(): number; match_image_error(): number; match_image_error_at(): number; match_fn_count(): number; match_fn_start(i: number): number; match_fn_end(i: number): number;
   match_fingerprint(start: number, out: number): number; match_writes(word: number): number;
+  match_fn_ptr(): number; scan_image(file: number, len: number): number; nso_text_off(): number;
   rom_build(list: number, listLen: number): number; rom_tables_ptr(): number; rom_tables_len(): number; rom_offsets_ptr(): number; rom_dirs(): number; rom_files(): number;
   rom_data_offset(): number; rom_data_size(): number;
   bnsh_scan(ptr: number, len: number, max: number): number; bnsh_rec_ptr(): number; bnsh_containers(): number; bnsh_dropped(): number;
@@ -142,6 +143,24 @@ export class PrepWasm {
       this.x.prep_error_clear();
       if (this.x.nso_check(this.filePtr(file), file.length)) return { error: this.lastError() };
       return { buildId: hex(this.u8(this.x.nso_build_id_ptr(), 16)), imageSize: this.x.nso_image_size() >>> 0, textSize: this.x.nso_text_size() >>> 0, bss: this.x.nso_bss() >>> 0, flags: this.x.nso_flags() >>> 0 };
+    } finally { this.done(); }
+  }
+  // For the instruction scan (src/glue/a64_scan.ts): the module's text and the functions of its unwind table as
+  // [start, end) module offsets sorted by start (null: no table). `text` is a view of this module's memory: it is
+  // good until the next call that allocates here, so scan it before anything else is asked of this object.
+  scanInput(file: Uint8Array): { text: Uint8Array; textOff: number; functions: Uint32Array | null } | null {
+    try {
+      this.x.prep_error_clear();
+      const image = this.x.scan_image(this.filePtr(file), file.length) >>> 0;
+      if (!image) return null;
+      const n = this.x.match_fn_count() >>> 0, textOff = this.x.nso_text_off() >>> 0, textSize = this.x.nso_text_size() >>> 0;
+      let functions: Uint32Array | null = null;
+      if (n) {
+        const raw = new Uint32Array(this.x.memory.buffer, this.x.match_fn_ptr() >>> 0, 2 * n);
+        functions = new Uint32Array(2 * n);
+        for (let i = 0; i < n; i++) { functions[2 * i] = raw[2 * i + 1]; functions[2 * i + 1] = raw[2 * i]; }   // u64 start << 32 | end, little endian
+      }
+      return { text: this.u8(image + textOff, textSize), textOff, functions };
     } finally { this.done(); }
   }
   // Registered cuts on a module file: the cut module (an NSO again), or the red line and the cut that stopped it

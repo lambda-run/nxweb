@@ -94,6 +94,7 @@ export interface ReportInput {
   counters: Record<string, string | number>;
   log: string[];                           // log lines WITHOUT the guest's own output (that is guest memory)
   redTotal: number;
+  scan?: string[];                         // the prepare step's instruction scan (a64_scan.ts scanLines): opcode classes, counts, module offsets
 }
 export function reportText(r: ReportInput): string {
   const out: string[] = [];
@@ -111,6 +112,8 @@ export function reportText(r: ReportInput): string {
   for (const m of r.machines) if (m.live || m.steps || m.taken) out.push(`  ${m.name}: ${m.live || "-"} | ${m.taken}/${m.transitions} | ${m.last || "-"}${m.modules ? " [" + m.modules + "]" : ""}`);
   out.push(`  (${r.machines.filter(m => !(m.live || m.steps || m.taken)).length} machines of ${r.machines.length} not stepped: ${r.machines.filter(m => !(m.live || m.steps || m.taken)).map(m => m.name).join(", ") || "none"})`, "");
   out.push("counters:", ...Object.entries(r.counters).map(([k, v]) => `  ${k}: ${v}`), "");
+  if (r.scan) out.push("instructions the translator does not have (static scan of the code modules with its own decoder; opcode classes and offsets, no game data):",
+    ...(r.scan.length ? r.scan.map(l => "  " + l) : ["  (no scan: the game was not opened through the prepare step, or its translator binary has no scanner)"]), "");
   out.push(`log: the last ${r.log.length} lines (guest output left out), ${r.redTotal} red in all:`, ...r.log.map(l => "  " + l));
   return out.join("\n") + "\n";
 }

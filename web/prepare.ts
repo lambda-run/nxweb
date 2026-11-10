@@ -10,6 +10,7 @@ import { OpfsStore } from "../src/prepare/host/store.ts";
 import { fetchProfiles } from "../src/prepare/host/profiles.ts";
 import { Prepare, STAGES, type StageName, type Snapshot, type DetectOut, type ProfileOut, type CodeOut, type IndexOut, type HandOffMessage, type PrepResult } from "../src/prepare/host/prepare.ts";
 import { verdictFor, failureSentence, explainFile, type Verdict } from "../src/prepare/host/verdict.ts";
+import { A64Scanner, scanHeadline, scanLines } from "../src/glue/a64_scan.ts";
 
 const $ = (id: string) => document.getElementById(id)!;
 const params = new URLSearchParams(location.search);
@@ -32,6 +33,19 @@ let hasher: PrepWasm | undefined;
 let prep: Prepare | null = null, storeDir = "", lastRun: { skipped: StageName[]; ran: StageName[] } = { skipped: [], ran: [] };
 const profiles = fetchProfiles("profiles/");
 const compiled = () => wasmModule ??= WebAssembly.compileStreaming(fetch("wasm/prepare.wasm"));
+// The instruction scan of the Code stage: the translator's own binary (the one the game will be translated with) on
+// a memory of its own. Its hash is part of the stage's key. Without it (not built, an old binary) the stage runs
+// as before and says nothing about instructions.
+let scannerP: Promise<{ scan: A64Scanner; key: string } | undefined> | undefined;
+const scanner = () => scannerP ??= (async () => {
+  try {
+    const r = await fetch("wasm/translator.wasm");
+    if (!r.ok) throw new Error(`wasm/translator.wasm: HTTP ${r.status}`);
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    const key = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)).subarray(0, 12), b => b.toString(16).padStart(2, "0")).join("");
+    return { scan: new A64Scanner(bytes), key };
+  } catch (e) { log(`the instruction scan is not available: ${(e as Error).message}`); return undefined; }
+})();
 
 // ---- the last game's handle (a file or a folder), kept so that a reload can go on without picking again (File System Access only) ----
 const idb = (): Promise<IDBDatabase> => new Promise((res, rej) => { const r = indexedDB.open("nxweb-prepare", 1); r.onupgradeneeded = () => r.result.createObjectStore("handles"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
@@ -70,7 +84,10 @@ function stageLine(s: StageName, snap: Snapshot): string {
   if (s === "detect") { const d = o as DetectOut; return `${d.layout} layout; ${d.modules.length} code modules; versions ${d.versions.join(", ")}; ${d.dlc.length} add-on contents`; }
   if (s === "index") { const i = o as IndexOut; return `${i.rom.files} files, ${i.rom.dirs} directories, ${fmtBytes(i.rom.bytes)}, read in place${i.aoc.length ? `; ${i.aoc.length} add-on contents` : ""}`; }
   if (s === "profile") { const p = o as ProfileOut; return p.found ? `${esc(p.name)} (${p.id}${p.by === "build" ? ", found by main's build ID" : ""})${p.registered ? "" : "; not a registered build"}` : "no profile: provisional"; }
-  if (s === "code") { const k = o as CodeOut; return `${k.modules.map(m => m.name).join(", ")}; ${k.cuts} cuts applied`; }
+  if (s === "code") {
+    const k = o as CodeOut, head = k.scan ? scanHeadline(k.scan) : "";
+    return `${k.modules.map(m => m.name).join(", ")}; ${k.cuts} cuts applied` + (head ? `<br><b id="scanline" class="warn">${esc(head)}</b>` : "");
+  }
   return "translated on demand in the page and cached; nothing to do ahead";
 }
 // how far a running stage is, 0..1, or -1 when it has no measure
@@ -103,8 +120,13 @@ function drawVerdict(snap: Snapshot): void {
   box.dataset.level = v?.level ?? "pending";
   $("verdicthead").textContent = v ? v.headline + (v.level === "maybe" ? ":" : ".") : "Looking at this game…";
   $("verdictreason").textContent = v ? (v.level === "maybe" ? "no profile for this game, running with defaults." : v.reason) : "";
-  $("gaps").innerHTML = (v?.gaps ?? []).map(g => `<li>${esc(g)}</li>`).join("");
-  $("vdetails").innerHTML = (v?.details ?? []).map(d => `<li>${esc(d)}</li>`).join("");
+  // the instruction scan of the Code stage, once it is done: a gap in plain words, the table under the details
+  const codeRec = snap.manifest.stages.code, scans = codeRec.state === "done" ? (codeRec.output as CodeOut | null)?.scan ?? [] : [];
+  const scanHead = scanHeadline(scans);
+  const gaps = [...(v?.gaps ?? []), ...(scanHead ? [`${scanHead}: the game stops if it reaches one.`] : [])];
+  $("gaps").innerHTML = gaps.map(g => `<li>${esc(g)}</li>`).join("");
+  $("vdetails").innerHTML = (v?.details ?? []).map(d => `<li>${esc(d)}</li>`).join("") +
+    (scans.length ? `<li id="scantable">instructions the translator does not have yet (a scan of each module's code with the translator's own decoder; opcode classes and offsets only):<pre>${esc(scans.flatMap(s => scanLines(s.module, s.scan)).join("\n"))}</pre></li>` : "");
   const play = $("play") as HTMLButtonElement;
   play.disabled = snap.state !== "Ready";
   play.textContent = v?.level === "no" ? "Try anyway" : "Play";
@@ -164,7 +186,7 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
   storeDir = "nxweb-prepare-" + tree.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
   if (!prep || prep.o.tree !== tree || (o.version !== undefined && prep.o.version !== o.version)) {
     prep = new Prepare({ wasm: new PrepWasm(await compiled(), log), tree, store: new OpfsStore(storeDir), profiles, onChange: draw, version: o.version,
-      unpackStep, at: p => p === hold ? new Promise<void>(() => {}) : undefined });
+      unpackStep, at: p => p === hold ? new Promise<void>(() => {}) : undefined, scanner: await scanner() });
   }
   (window as any).nxwebPrepare = prep;
   (window as any).nxwebLastRun = null;

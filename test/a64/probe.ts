@@ -1,7 +1,7 @@
 // stdin: JSON array of instruction words -> stdout: JSON array of the words the translator rejects
+// (the decoder's own answer, through the scanner: src/glue/a64_scan.ts; test/a64/coverage.py names them with Capstone)
 import { readFileSync } from "node:fs";
-const tr: any = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(new URL("../../build/a64/translator.wasm", import.meta.url))),
-  { env: { abort: () => { throw new Error("abort"); } } }).exports;
-tr.init(); tr.codeBuf(4096); tr.setCode(0x8000000n, 4096);
+import { A64Scanner } from "../../src/glue/a64_scan.ts";
+const scanner = new A64Scanner(readFileSync(new URL("../../build/a64/translator.wasm", import.meta.url)));
 const words: number[] = JSON.parse(readFileSync(0, "utf8"));
-console.log(JSON.stringify(words.filter(w => !tr.probe(w))));
+console.log(JSON.stringify(words.filter(w => !scanner.implemented(w))));

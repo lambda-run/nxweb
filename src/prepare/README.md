@@ -85,6 +85,21 @@ of ten things it looks like (empty, packages, the exefs folder itself, one folde
 **Game identity**: title ID from `main.npdm`; the build ID of every NSO in the version's exefs (the first 16 bytes
 in hex, as nxnative's profiles write it).
 
+### The instruction scan (Code stage)
+
+When the embedder gives a scanner (`PrepareOptions.scanner`: `{ scan: new A64Scanner(translator.wasm), key }`; the
+page does, with the binary's SHA-256 as the key), the Code stage puts the text of every code module, as the game
+ships it (before cuts), to the translator's own decoder (`src/glue/a64_scan.ts`, `src/a64/README.md` "The static
+scan") and records in `CodeOut.scan` which kinds of instruction the translator has no translation for, with counts
+and the first module offsets. The module's functions come from the unwind table `match.ts` already reads
+(`scan_image`, `match_fn_ptr`); a module without one is scanned whole. The scan runs in pieces of 1 MB between which
+the page draws and takes a Cancel (`code:scan`), and moves the stage's bar from 90 % of the module to its end. It
+predicts and never fails the prepare: its lines in the log are plain, not red. The stage's input hash holds the
+scanner's key, so a new translator binary runs the Code stage (and only it) again. The page shows the result as a
+line in the stage's row ("3 kinds of instruction in this game are not supported yet"), a sentence on the verdict
+card and the table under its technical details; `HandOff.scan` / `HandOffMessage.scan` carry it to the runtime, for
+the report text. Without a scanner nothing changes: no `scan`, the same stage hash as before.
+
 ### The manifest
 
 `manifest.json` in the store (OPFS directory `nxweb-prepare-<folder name>`; a directory under Node):

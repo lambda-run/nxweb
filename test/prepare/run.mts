@@ -31,6 +31,7 @@ import { RtFs } from "../../src/glue/rt_fs.ts";
 import { loadDefs } from "../../src/kit/host/defs.mts";
 import * as rth from "../runtime/harness.mts";
 import { nupTests } from "./nup_tests.mts";
+import { A64Scanner, scanHeadline, scanLines } from "../../src/glue/a64_scan.ts";
 import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, synthTree, lsRows, python, bnsh, unwindModules, matchImage, withImport, A64, MATCH_TEXT_END, type Files } from "./synth.mts";
 
 process.chdir(ROOT);
@@ -55,9 +56,9 @@ class Kill extends Error {}
 
 // One prepare over a real directory and a store that outlives it
 interface Run { prep: Prepare; lines: string[]; tree: NodeTree; store: NodeStore }
-function prepare(dir: string, o: { profiles?: ProfileSource; version?: number; at?: (p: string) => void | Promise<void>; store?: string } = {}): Run {
+function prepare(dir: string, o: { profiles?: ProfileSource; version?: number; at?: (p: string) => void | Promise<void>; store?: string; scanner?: { scan: A64Scanner; key: string } } = {}): Run {
   const lines: string[] = [], tree = new NodeTree(dir), store = new NodeStore(o.store ?? dir + ".store");
-  return { prep: new Prepare({ wasm: newWasm(lines), tree, store, profiles: o.profiles ?? noProfiles, version: o.version, at: o.at }), lines, tree, store };
+  return { prep: new Prepare({ wasm: newWasm(lines), tree, store, profiles: o.profiles ?? noProfiles, version: o.version, at: o.at, scanner: o.scanner }), lines, tree, store };
 }
 const freshStore = (dir: string) => rmSync(dir + ".store", { recursive: true, force: true });
 function game(name: string, files: Files, dirs: string[] = []): string { const d = writeTree(dirOf(name), files, dirs); freshStore(d); return d; }
@@ -991,6 +992,60 @@ test("function-matched cuts in the pipeline: a build no registered cut names get
   assert.ok(wideRules.length >= 13 && c5.matched.filter(m => m.from === "every game").every(m => !m.matched));
   assert.deepEqual(c5.matched.filter(m => m.from === "every game").map(m => m.module).filter((m, i, a) => a.indexOf(m) === i).sort(), Object.keys(sdkReal.match_cuts ?? {}).filter(k => k === "main" || k === "sdk").sort());
   info.push(`nxnative's ${wideRules.length} rules for every game (modules ${Object.keys(sdkReal.match_cuts ?? {}).join(", ")}) tried on the test module: ${c5.matched.filter(m => m.from === "every game").length} patches, none matches, the prepare ends Ready`);
+  return info;
+});
+
+// =================================================================================================== the instruction scan
+test("the instruction scan of the Code stage: every test source compiled with unwind tables scans clean by its functions; planted words are found with their kind, count and offset, recorded in the Code stage's output, logged and handed off; the stage runs again when the translator binary changes; without a scanner nothing changes", async () => {
+  const w = newWasm(), info: string[] = [];
+  const scan = new A64Scanner(readFileSync(join(rth.OUT, "translator.wasm")));
+  // real compiler output, function by function
+  const mods = unwindModules();
+  assert.ok(mods.length >= 4, `${mods.length} modules with unwind tables`);
+  let words = 0, fns = 0, outside = 0;
+  for (const m of mods) {
+    const b = new Uint8Array(readFileSync(m.path)), opened = await w.open(b);
+    try {
+      assert.ok(!("error" in opened), m.name);
+      const si = w.scanInput(b); assert.ok(si && si.functions && si.functions.length >= 2, `${m.name}: a function table`);
+      const s = await scan.scan(si.text, si.textOff, si.functions);
+      assert.deepEqual(s.kinds.filter(k => k.instruction && k.count > 0).map(k => `${m.name}: ${k.count} x ${k.name} at ${k.first.map(o => "0x" + o.toString(16))}`), [], "an instruction of our own test programs is not supported");
+      assert.equal(s.words + s.wordsOutside + s.literals, s.textWords); assert.equal(s.functions, si.functions.length / 2);
+      words += s.words; fns += s.functions!; outside += s.wordsOutside;
+    } finally { w.close(); }
+  }
+  info.push(`${mods.length} modules of the test sources with unwind tables: ${fns} functions, ${words} words of code, every one translated (${outside} words of text outside the functions)`);
+  // planted: an SVE word where hello sets its exit code, a system register read where a function returns
+  const hello = new Uint8Array(readFileSync(mods.find(m => m.name === "rt_hello.O2")!.path));
+  const mov = imageOffsets(w, hello, Uint8Array.of(0x40, 0x05, 0x80, 0x52)); assert.equal(mov.length, 1);
+  const si0 = (await w.open(hello), w.scanInput(hello)!), f0 = Array.from(si0.functions!); w.close();
+  const inFn = (o: number) => { for (let i = 0; i < f0.length; i += 2) if (o >= f0[i] && o < f0[i + 1]) return true; return false; };
+  const ret = imageOffsets(w, hello, Uint8Array.of(0xC0, 0x03, 0x5F, 0xD6)).find(o => inFn(o) && o !== mov[0]); assert.ok(ret !== undefined && inFn(mov[0]));
+  const cutR = w.cut(hello, [{ off: mov[0], orig: "40058052", new: "00306004" }, { off: ret!, orig: "c0035fd6", new: "001038d5" }].sort((a, b) => a.off - b.off)); assert.ok("bytes" in cutR);
+  const planted = cutR.bytes, other = "0100CCCC0000E000";
+  const files = () => ({ "base/exefs/main": planted, "base/exefs/main.npdm": npdm({ programId: BigInt("0x" + other) }), "base/romfs/a.txt": "a" });
+  const r = prepare(game("scan-planted", files()), { scanner: { scan, key: "k1" } });
+  const res = await r.prep.run(); assert.equal(res.state, "Ready", res.error);
+  const c = r.prep.out<CodeOut>("code");
+  assert.equal(c.scan?.length, 1);
+  const s = c.scan![0];
+  assert.deepEqual([s.module, s.buildId, s.scan.functions, s.scan.unsupported, s.scan.unsupportedWords], ["main", c.modules[0].buildId, f0.length / 2, 2, 2]);
+  assert.deepEqual(s.scan.kinds.filter(k => k.instruction).map(k => [k.name, k.count, k.first]).sort(), [["MRS S3_0_C1_C0_0 (SCTLR_EL1)", 1, [ret]], ["SVE (any)", 1, [mov[0]]]]);
+  assert.equal(scanHeadline(c.scan!), "2 kinds of instruction in this game are not supported yet");
+  assert.ok(r.lines.includes("prepare: scan: main: 2 kinds of instruction not supported, 2 words in all:"), r.lines.join("\n"));
+  assert.ok(r.lines.some(l => l.startsWith("prepare: scan:") && l.includes("SVE (any)") && l.includes("0x" + mov[0].toString(16))));
+  assert.ok(!r.lines.some(l => l.startsWith("[RED]")), "the scan predicts, it does not fail the prepare: no red line");
+  const h = await r.prep.handoff();
+  assert.deepEqual(h.scan, c.scan);
+  r.tree.close();
+  // the same folder and scanner: nothing runs; another translator binary: the Code stage, and only it, runs again
+  const again = prepare(dirOf("scan-planted"), { scanner: { scan, key: "k1" } }); assert.deepEqual((await again.prep.run()).skipped, [...STAGES]); again.tree.close();
+  const newer = prepare(dirOf("scan-planted"), { scanner: { scan, key: "k2" } }); const res2 = await newer.prep.run(); newer.tree.close();
+  assert.deepEqual([res2.state, res2.ran], ["Ready", ["code"]]);
+  // without a scanner: no scan in the output, an empty list in the hand-off
+  const plain = prepare(game("scan-none", files())); assert.equal((await plain.prep.run()).state, "Ready");
+  assert.equal(plain.prep.out<CodeOut>("code").scan, undefined); assert.deepEqual((await plain.prep.handoff()).scan, []); plain.tree.close();
+  info.push(...scanLines("main (planted)", s.scan));
   return info;
 });
 
