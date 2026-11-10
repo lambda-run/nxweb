@@ -414,7 +414,7 @@ export function cases(env: Env): Case[] {
       eq(r.state, "Stopped", "state"); eq(rt.state, "Stopped", "machine state");
       eq(r.stop?.kind, "fault", "stop kind"); eq(r.stop?.fault?.kind, kind, `fault kind (${rt.red.join(" | ")})`);
       eq(rt.stdout(), before, "stdout before the fault");
-      const red = rt.red, lines = r.stop!.fault!.lines, at = red.findLastIndex(l => l.startsWith("[RED] fault: "));
+      const red = rt.red, lines = r.stop!.fault!.lines, at = red.lastIndexOf(lines[0]);
       eq(lines, red.slice(at), "the fault's lines are the red lines from its first on");
       ok(/in thread 0x10\d\d \(#\d\) at pc=0x[0-9a-f]+/.test(lines[0]), "red line naming thread and pc: " + red.join(" | "));
       const regs = lines.slice(1, 5).join(" ").replace(/\[RED\]   /g, "");

@@ -706,7 +706,7 @@ return", and the pc it returns to:
 | `load` | the loader or the kernel refused a file | none |
 | `host` | an exception in glue or in a host function | last written back |
 
-## Verified (`npm run rt:test`: 55 tests under Node; `npm run rt:browser`: 66 in Chromium)
+## Verified (`npm run rt:test`: 58 tests under Node; `npm run rt:browser`: 66 in Chromium)
 
 Large module files (`more_cases.ts`, `large_nso.ts`, `src/large.c`; Node and Chromium): a synthetic NSO of 41.6 MB
 made in the test (text and 24 MB of data LZ4 compressed, 40 MB of read-only data stored, three hashes checked,
