@@ -37,6 +37,7 @@ export let optChunk: u32 = 65536;   // region mode: a unit also takes the untran
 export let optRmArith: bool = true; // scalar FADD/FSUB/FMUL/FDIV/FSQRT honour FPCR.RMode (one FPCR test per operation)
 export let optDepth: i32 = 160;     // nested guest calls before a call unwinds through the run loop (0 = off)
 export let optShared: bool = false; // modules import a shared memory; exclusives and LDAR/STLR are atomic
+export let optFence: bool = true;   // SPIKE (SPIKE.md): on a shared memory DMB / DSB are `atomic.fence` (off: nothing, as on an unshared memory)
 export let optCntYield: bool = false; // `mrs cntpct_el0` is a yield point (write back, pc = the instruction, pc check after the import)
 export let optGuard: u32 = 0;       // guest data accesses below this address trap (0 = off): the host area of the shared memory
 export let optPrecise: i32 = 0;     // 1: pc is written before every memory instruction; 2: dirty registers too
@@ -59,6 +60,7 @@ export function setOpt(id: i32, v: u32): void {
     case 13: optCntYield = v != 0; break;
     case 14: optPrecise = <i32>v; break;
     case 15: optGuard = v; break;
+    case 16: optFence = v != 0; break;
   }
 }
 

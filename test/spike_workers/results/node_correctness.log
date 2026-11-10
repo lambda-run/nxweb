@@ -1,0 +1,56 @@
+mtify kernel: 53 mutable globals moved to 0x11ff000; primary 31946 B, secondary 23486 B
+mtify translator: 81 mutable globals moved to 0x62ff000; primary 119981 B, secondary 117672 B
+machine: 4 logical CPUs (Intel(R) Xeon(R) Processor @ 2.10GHz), Node v22.23.4; other jobs may be running
+ok   threads  green, unshared (today)  20/20 exact; run wall min/median/max 44/51/67 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 3 s
+ok   threads  green, shared build      20/20 exact; run wall min/median/max 45/53/75 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 3 s
+ok   threads  1 Worker                 20/20 exact; run wall min/median/max 56/60/81 ms; in-place resumes 1060, unwinds 24480, pause acks 0 (- ms each), table traps 0, units compiled 680 (0.15 ms each), made again from bytes 0 (0.00 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 3 s
+ok   threads  3 Workers                17/20 exact, 3 more differ only in the three timing-dependent lines; run wall min/median/max 73/106/135 ms; in-place resumes 12641, unwinds 12368, pause acks 0 (- ms each), table traps 11, units compiled 633 (0.16 ms each), made again from bytes 320 (0.07 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 4 s
+       1x timing only: line 7 "4 sleep ... order 1 0 2 "
+       1x timing only: line 7 "4 sleep ... order 2 0 1 "
+       1x timing only: line 7 "4 sleep ... order 2 1 0 "
+ok   threads  2 Workers                194/200 exact, 6 more differ only in the three timing-dependent lines; run wall min/median/max 70/85/116 ms; in-place resumes 12381, unwinds 244053, pause acks 0 (- ms each), table traps 25, units compiled 6428 (0.16 ms each), made again from bytes 2823 (0.06 ms each), unit waits 0 (0.00 ms each), buffer refreshes 200; 33 s
+       1x timing only: line 7 "4 sleep ... order 2 1 0 "
+       4x timing only: line 7 "4 sleep ... order 1 0 2 "
+       1x timing only: line 8 "5 join ... rc=0xea01"
+ok   threads  4 Workers                159/200 exact, 41 more differ only in the three timing-dependent lines; run wall min/median/max 64/95/169 ms; in-place resumes 173794, unwinds 2797, pause acks 0 (- ms each), table traps 175, units compiled 3944 (0.22 ms each), made again from bytes 4400 (0.08 ms each), unit waits 0 (0.00 ms each), buffer refreshes 200; 47 s
+       15x timing only: line 8 "5 join ... rc=0xea01"
+       11x timing only: line 7 "4 sleep ... order 1 0 2 "
+       1x timing only: line 2 "1 mutex ... used: no", line 7 "4 sleep ... order 1 0 2 "
+       5x timing only: line 2 "1 mutex ... used: no"
+       1x timing only: line 7 "4 sleep ... order 1 0 2 ", line 8 "5 join ... rc=0xea01"
+       3x timing only: line 7 "4 sleep ... order 2 1 0 "
+       2x timing only: line 7 "4 sleep ... order 2 0 1 "
+       1x timing only: line 2 "1 mutex ... used: no", line 7 "4 sleep ... order 2 0 1 "
+       1x timing only: line 7 "4 sleep ... order 2 0 1 ", line 8 "5 join ... rc=0xea01"
+       1x timing only: line 7 "4 sleep ... order 0 1 2 "
+ok   stress   green, unshared (today)  20/20 exact; run wall min/median/max 64/81/119 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 3 s
+ok   stress   green, shared build      20/20 exact; run wall min/median/max 73/83/104 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 3 s
+ok   stress   1 Worker                 20/20 exact; run wall min/median/max 76/90/131 ms; in-place resumes 0, unwinds 1500, pause acks 0 (- ms each), table traps 0, units compiled 480 (0.16 ms each), made again from bytes 0 (0.00 ms each), unit waits 0 (0.00 ms each), buffer refreshes 40; 3 s
+ok   stress   3 Workers                20/20 exact; run wall min/median/max 270/585/723 ms; in-place resumes 17281, unwinds 326185, pause acks 400 (0.22 ms each), table traps 10, units compiled 474 (0.17 ms each), made again from bytes 394 (0.07 ms each), unit waits 0 (0.00 ms each), buffer refreshes 120; 14 s
+ok   stress   2 Workers                200/200 exact; run wall min/median/max 103/347/525 ms; in-place resumes 18527, unwinds 2608480, pause acks 3988 (0.23 ms each), table traps 17, units compiled 4687 (0.15 ms each), made again from bytes 1916 (0.07 ms each), unit waits 0 (0.00 ms each), buffer refreshes 800; 80 s
+ok   stress   4 Workers                200/200 exact; run wall min/median/max 176/680/867 ms; in-place resumes 223206, unwinds 3290838, pause acks 3997 (0.23 ms each), table traps 149, units compiled 4503 (0.21 ms each), made again from bytes 5459 (0.10 ms each), unit waits 0 (0.00 ms each), buffer refreshes 1587; 159 s
+ok   threads  4 Workers (always unwind) 15/20 exact, 5 more differ only in the three timing-dependent lines; run wall min/median/max 118/150/195 ms; in-place resumes 0, unwinds 20481, pause acks 0 (- ms each), table traps 20, units compiled 733 (0.20 ms each), made again from bytes 844 (0.06 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 6 s
+       1x timing only: line 7 "4 sleep ... order 2 0 1 "
+       1x timing only: line 7 "4 sleep ... order 1 0 2 "
+       1x timing only: line 7 "4 sleep ... order 0 1 2 ", line 8 "5 join ... rc=0xea01"
+       1x timing only: line 7 "4 sleep ... order 2 1 0 "
+       1x timing only: line 7 "4 sleep ... order 0 1 2 "
+ok   stress   4 Workers (always unwind) 20/20 exact; run wall min/median/max 134/792/997 ms; in-place resumes 0, unwinds 323300, pause acks 399 (0.24 ms each), table traps 28, units compiled 587 (0.20 ms each), made again from bytes 539 (0.10 ms each), unit waits 0 (0.00 ms each), buffer refreshes 159; 18 s
+ok   stress   4 Workers (budget 2000)  20/20 exact; run wall min/median/max 646/796/969 ms; in-place resumes 8439, unwinds 384754, pause acks 399 (0.13 ms each), table traps 11, units compiled 779 (0.19 ms each), made again from bytes 954 (0.08 ms each), unit waits 0 (0.00 ms each), buffer refreshes 158; 19 s
+ok   threads  4 Workers (units by message) 10/20 exact, 10 more differ only in the three timing-dependent lines; run wall min/median/max 65/99/146 ms; in-place resumes 13882, unwinds 280, pause acks 0 (- ms each), table traps 13, units compiled 389 (0.06 ms each), made again from bytes 0 (0.00 ms each), unit waits 386 (0.57 ms each), buffer refreshes 20; 5 s
+       5x timing only: line 7 "4 sleep ... order 1 0 2 "
+       1x timing only: line 7 "4 sleep ... order 0 2 1 "
+       2x timing only: line 2 "1 mutex ... used: no"
+       1x timing only: line 7 "4 sleep ... order 1 0 2 ", line 8 "5 join ... rc=0xea01"
+       1x timing only: line 7 "4 sleep ... order 2 1 0 "
+ok   stress   4 Workers (units by message) 20/20 exact; run wall min/median/max 104/543/792 ms; in-place resumes 26819, unwinds 152001, pause acks 399 (0.22 ms each), table traps 12, units compiled 420 (0.09 ms each), made again from bytes 0 (0.00 ms each), unit waits 375 (0.81 ms each), buffer refreshes 159; 12 s
+ok   dekker   4 Workers                20/20 exact; run wall min/median/max 168/204/587 ms; in-place resumes 24, unwinds 40, pause acks 0 (- ms each), table traps 4, units compiled 180 (0.17 ms each), made again from bytes 80 (0.08 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 8 s
+ok   dekker   3 Workers                20/20 exact; run wall min/median/max 190/288/400 ms; in-place resumes 28, unwinds 40, pause acks 0 (- ms each), table traps 8, units compiled 178 (0.26 ms each), made again from bytes 80 (0.10 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 8 s
+
+demonstrations (differences are the point):
+race on green threads: 1 distinct output in 20 runs: "order BBBBBBBBBBBBBBBBBBBBBBBBCCCCCCCCCCCCCCCCCCCCCCCCDDDDDDDDDDDDDDDDDDDDDDDDAAAAAAAAAAAAAAAAAAAAAAAA"
+race on 4 Workers: 9 distinct outputs in 20 runs, e.g. "order AAAAAAAAAAAAAAAAAAAAAAAACCCCCCCCCCCCCCCCCCCCCCCCDDDDDDDDDDDDDDDDDDDDDDDDBBBBBBBBBBBBBBBBBBBBBBBB" and "order AAAAAAAAAAAAAAAAAAAAAAAADDDDDDDDDDDDDDDDDDDDDDDDCCCCCCCCCCCCCCCCCCCCCCCCBBBBBBBBBBBBBBBBBBBBBBBB"
+stress on 4 Workers with ONE helpers scratch area (helpers.shared.wasm as built today): 20 of 20 runs computed FRECPE wrongly, e.g. "3 helpers: 2 of 8 threads got the single-thread result"
+dekker on 4 Workers with DMB compiled to nothing (as on an unshared memory): both cores read 0 in 91, 65, 14, 55, 123, 50, 33, 38, 90, 104, 54, 96, 23, 71, 47, 27, 28, 27, 193, 123 of 200000 rounds (20 runs; 0 is the only correct count)
+
+spike_workers: every series passed

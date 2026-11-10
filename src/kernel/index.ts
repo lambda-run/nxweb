@@ -2,7 +2,7 @@
 // Every entry point takes the kernel lock (base.ts); the kernel never blocks and never reads a clock.
 export * from "../kit/exports";
 import { KthreadS, KthreadE } from "../kit/gen/tables";
-import { kLock, kUnlock, ACT_CONTINUE, ACT_SWITCH, ACT_STOP, FOREVER, WAITERS_BIT, guestOk, ld32, lineStart, lineEnd, puts, putx } from "./base";
+import { kLock, kUnlock, mtWorkers, mtSetWorkers, kickWord, ACT_ACK, ACT_CONTINUE, ACT_SWITCH, ACT_STOP, FOREVER, WAITERS_BIT, guestOk, ld32, lineStart, lineEnd, puts, putx } from "./base";
 import { handlesInit, handlesUsed, handlesCountEvents, eventsLive, evRefs, O_THREAD, O_EVENT_R, O_EVENT_W, MAX_EVENTS, hPeek, hNew } from "./handle";
 import { KThread, thr, MAX_THREADS, NCORES, threadsInit, threadNew, threadOfCtx, threadsAlive, threadObjects, WK_LOCK, WK_SYNC } from "./thread";
 import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent } from "./sched";
@@ -10,7 +10,7 @@ import { syncInit, expire, nextDeadline, wakeClockWaiters } from "./sync";
 import { clockInit, clockSetNow, clockFreeze, clockReasons, guestNs, guestTicks, hostTimeOf, entropySeed, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
 import { svc, procInit, setMainThread, isMainThread, threadExit, stopProcess, stopReason, exitCode, STOP_NONE, STOP_EXIT, STOP_KILL,
-  hostEventNew, hostDupReadable, hostEventSignal, hostEventClear, closeHandle, clockWait } from "./svc";
+  hostEventNew, hostDupReadable, hostEventSignal, hostEventClear, closeHandle, clockWait, pendApply } from "./svc";
 
 export const KERNEL_ACT_CONTINUE: i32 = ACT_CONTINUE;
 export const KERNEL_ACT_SWITCH: i32 = ACT_SWITCH;
@@ -64,6 +64,20 @@ export function kernel_create_main_thread(entry: u64, stackTop: u64): u32 {
 // KERNEL_ACT_STOP: the process ended.
 export function kernel_svc(n: i32, ctx: usize): i32 {
   kLock();
+  const act = svcLocked(n, ctx);
+  kUnlock();
+  return act;
+}
+// The same with kernel_tick(now) first, under one taking of the lock (SPIKE: an SVC then costs one lock, not two)
+export function kernel_svc_at(n: i32, ctx: usize, now: u64): i32 {
+  kLock();
+  clockSetNow(now);
+  if (stopReason == STOP_NONE) expire();
+  const act = svcLocked(n, ctx);
+  kUnlock();
+  return act;
+}
+function svcLocked(n: i32, ctx: usize): i32 {
   let act = ACT_STOP;
   if (stopReason == STOP_NONE) {
     const t = threadOfCtx(ctx);
@@ -72,10 +86,10 @@ export function kernel_svc(n: i32, ctx: usize): i32 {
       act = ACT_SWITCH;
     } else {
       svc(t, n);
-      act = stopReason != STOP_NONE ? ACT_STOP : schedMustSwitch(t) ? ACT_SWITCH : ACT_CONTINUE;
+      if (mtWorkers()) { pendApply(t); if (t.state != KthreadS.Running) t.ackFor = 0; }
+      act = stopReason != STOP_NONE ? ACT_STOP : t.ackFor ? ACT_ACK : schedMustSwitch(t) ? ACT_SWITCH : ACT_CONTINUE;
     }
   }
-  kUnlock();
   return act;
 }
 // The context block of the thread to run next, 0 when every thread waits (kernel_next_timeout says until when) or
@@ -98,7 +112,7 @@ export function kernel_schedule_core(core: i32): usize {
 export function kernel_preempt(ctx: usize): void {
   kLock();
   const t = threadOfCtx(ctx);
-  if (t != null) schedSliceEnded(t);
+  if (t != null) { if (mtWorkers()) pendApply(t); schedSliceEnded(t); }
   kUnlock();
 }
 // The thread returned from its entry function (pc = 0xFFFF_FFF0). The main thread: the process ends with exit code
@@ -117,6 +131,44 @@ export function kernel_thread_returned(ctx: usize): i32 {
   kUnlock();
   return act;
 }
+// ---- SPIKE: guest cores on Workers (src/spike_workers, SPIKE.md). Only in a build with the threads feature. ----
+// workers > 0: every Worker has its own instance of this module on the one shared memory; Worker w runs the virtual
+// cores c with c % workers == w. 0: green threads (the default). Call once, before any Worker enters the kernel.
+const MTCUR: usize = memory.data(16);   // per Worker: which of its cores has the next turn
+export function kernel_mt_config(workers: i32, lockSpin: i32): void { mtSetWorkers(workers < 0 || workers > NCORES ? 0 : workers, lockSpin); memory.fill(MTCUR, 0, 16); }
+// The word Worker w waits on while none of its cores has a thread (memory.atomic.wait with the value read under the
+// lock by kernel_mt_schedule; any change of a core's ready set bumps and notifies it)
+export function kernel_mt_kick_word(worker: i32): usize { return kickWord(worker); }
+// Worker w's scheduling point: the context block of the thread to run on one of its cores (they take turns), 0 = all
+// of them are idle. The kick word's value as of this decision is stored at genOut (u32).
+export function kernel_mt_schedule(worker: i32, genOut: usize): usize {
+  kLock();
+  let t: KThread | null = null;
+  const n = mtWorkers();
+  if (stopReason == STOP_NONE && n > 0) {
+    const turns = (NCORES - worker + n - 1) / n, p = MTCUR + (<usize>(worker & 3) << 2);
+    for (let i = 0; i < turns && t == null; i++) {
+      const k = (load<i32>(p) + i) % turns;
+      t = scheduleCore(worker + k * n);
+      if (t != null) store<i32>(p, (k + 1) % turns);
+    }
+  }
+  store<u32>(genOut, load<u32>(kickWord(worker)));
+  kUnlock();
+  return t != null ? t.ctx : 0;
+}
+// After kernel_svc returned KERNEL_ACT_ACK: the address of the word (u32) that is 1 until the pause this SVC asked for
+// has taken effect on the target's Worker. Wait for 0 (memory.atomic.wait), then go on as after KERNEL_ACT_CONTINUE.
+export function kernel_mt_ack_word(ctx: usize): usize {
+  kLock();
+  const t = threadOfCtx(ctx);
+  let p: usize = 0;
+  if (t != null && t.ackFor) { p = changetype<usize>(thr(t.ackFor - 1)) + offsetof<KThread>("pendw"); t.ackFor = 0; }
+  kUnlock();
+  return p;
+}
+export const KERNEL_ACT_ACK: i32 = ACT_ACK;
+
 // The host's monotonic time in ns. Waits whose deadline has come on the guest clock end here.
 export function kernel_tick(now: u64): void {
   kLock();

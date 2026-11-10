@@ -6,6 +6,7 @@
 // is Running is its core's current thread; it stays Running while other cores have their turn.
 import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { KThread, thr, MAX_THREADS, NCORES, runCoreOf, WK_LOCK } from "./thread";
+import { kick, mtWorkers } from "./base";
 
 const CUR: usize = memory.data(16);      // per core: the index of its current thread, -1 none
 const RESCHED: usize = memory.data(4);   // per core: its ready set or a priority changed since it last chose
@@ -19,7 +20,7 @@ let inherit: bool = true;
 // @ts-ignore: decorator
 @inline function setCur(c: i32, i: i32): void { store<i32>(CUR + (<usize>c << 2), i); }
 // @ts-ignore: decorator
-@inline function flag(c: i32): void { store<u8>(RESCHED + <usize>c, 1); }
+@inline function flag(c: i32): void { store<u8>(RESCHED + <usize>c, 1); kick(c); }
 
 export function schedInit(priorityInheritance: bool): void {
   for (let c = 0; c < NCORES; c++) { setCur(c, -1); store<u8>(RESCHED + <usize>c, 0); }
@@ -32,6 +33,8 @@ export function schedChanged(): void { effDirty = true; for (let c = 0; c < NCOR
 export function schedReady(t: KThread): void {
   t.rqSeq = ++seq; t.runCore = runCoreOf(t); t.yieldAny = false;
   effDirty = true; flag(t.runCore);
+  // SPIKE, Workers: an idle core of another Worker may take it (steal), so those Workers look too
+  if (mtWorkers()) for (let c = 0; c < NCORES; c++) if (c != t.runCore && ((t.mask >> c) & 1)) kick(c);
 }
 // t yielded: behind the threads of its priority. any = YieldToAnyThread: lower-priority threads of the core get a turn
 export function schedYield(t: KThread, any: bool): void {

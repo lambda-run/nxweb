@@ -1,0 +1,42 @@
+mtify kernel: 53 mutable globals moved to 0x11ff000; primary 31946 B, secondary 23486 B
+mtify translator: 81 mutable globals moved to 0x62ff000; primary 119981 B, secondary 117672 B
+browser: Chromium 153.0.8010.12 (channel chromium, headless), crossOriginIsolated=true, navigator.hardwareConcurrency=4
+machine: 4 logical CPUs (Intel(R) Xeon(R) Processor @ 2.10GHz); load average 4.38 4.50 4.09; other jobs may be running
+ok   threads  green, unshared (today)  20/20 exact; run wall min/median/max 42/52/98 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 2 s
+ok   threads  green, shared build      20/20 exact; run wall min/median/max 40/46/86 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 1 s
+ok   threads  1 Worker                 20/20 exact; run wall min/median/max 48/54/78 ms; in-place resumes 1060, unwinds 24480, pause acks 0 (- ms each), table traps 0, units compiled 680 (0.20 ms each), made again from bytes 0 (0.00 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 1 s
+ok   threads  3 Workers                14/20 exact, 6 more differ only in the three timing-dependent lines; run wall min/median/max 90/107/145 ms; in-place resumes 12727, unwinds 12364, pause acks 0 (- ms each), table traps 5, units compiled 634 (0.25 ms each), made again from bytes 320 (0.27 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 3 s
+       1x timing only: line 7 "4 sleep ... order 0 1 2 "
+       3x timing only: line 7 "4 sleep ... order 2 1 0 "
+       2x timing only: line 7 "4 sleep ... order 1 0 2 "
+ok   threads  2 Workers                17/20 exact, 3 more differ only in the three timing-dependent lines; run wall min/median/max 78/94/143 ms; in-place resumes 1264, unwinds 24168, pause acks 0 (- ms each), table traps 1, units compiled 650 (0.24 ms each), made again from bytes 284 (0.19 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 2 s
+       1x timing only: line 8 "5 join ... rc=0xea01"
+       2x timing only: line 7 "4 sleep ... order 2 1 0 "
+ok   threads  4 Workers                18/20 exact, 2 more differ only in the three timing-dependent lines; run wall min/median/max 96/112/147 ms; in-place resumes 21829, unwinds 280, pause acks 0 (- ms each), table traps 10, units compiled 397 (0.34 ms each), made again from bytes 440 (0.38 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 3 s
+       1x timing only: line 7 "4 sleep ... order 1 0 2 "
+       1x timing only: line 7 "4 sleep ... order 0 2 1 "
+ok   threads  4 Workers (units by message) 17/20 exact, 3 more differ only in the three timing-dependent lines; run wall min/median/max 60/87/112 ms; in-place resumes 21262, unwinds 279, pause acks 0 (- ms each), table traps 13, units compiled 392 (0.22 ms each), made again from bytes 0 (0.00 ms each), unit waits 383 (0.33 ms each), buffer refreshes 20; 3 s
+       1x timing only: line 2 "1 mutex ... used: no"
+       1x timing only: line 7 "4 sleep ... order 1 0 2 "
+       1x timing only: line 8 "5 join ... rc=0xea01"
+ok   stress   green, unshared (today)  20/20 exact; run wall min/median/max 61/66/87 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 2 s
+ok   stress   green, shared build      20/20 exact; run wall min/median/max 73/79/111 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 2 s
+ok   stress   1 Worker                 20/20 exact; run wall min/median/max 76/96/135 ms; in-place resumes 0, unwinds 1500, pause acks 0 (- ms each), table traps 0, units compiled 480 (0.26 ms each), made again from bytes 0 (0.00 ms each), unit waits 0 (0.00 ms each), buffer refreshes 40; 2 s
+ok   stress   3 Workers                20/20 exact; run wall min/median/max 299/430/522 ms; in-place resumes 13106, unwinds 320214, pause acks 400 (0.23 ms each), table traps 4, units compiled 476 (0.26 ms each), made again from bytes 390 (0.38 ms each), unit waits 0 (0.00 ms each), buffer refreshes 120; 9 s
+ok   stress   2 Workers                20/20 exact; run wall min/median/max 129/378/453 ms; in-place resumes 2287, unwinds 325878, pause acks 400 (0.28 ms each), table traps 0, units compiled 465 (0.24 ms each), made again from bytes 196 (0.23 ms each), unit waits 0 (0.00 ms each), buffer refreshes 79; 8 s
+ok   stress   4 Workers                20/20 exact; run wall min/median/max 420/486/544 ms; in-place resumes 26815, unwinds 341913, pause acks 399 (0.24 ms each), table traps 6, units compiled 496 (0.24 ms each), made again from bytes 571 (0.27 ms each), unit waits 0 (0.00 ms each), buffer refreshes 159; 10 s
+ok   stress   4 Workers (units by message) 20/20 exact; run wall min/median/max 77/429/616 ms; in-place resumes 25341, unwinds 230332, pause acks 400 (0.16 ms each), table traps 10, units compiled 453 (0.25 ms each), made again from bytes 0 (0.00 ms each), unit waits 412 (0.43 ms each), buffer refreshes 159; 8 s
+ok   dekker   4 Workers                20/20 exact; run wall min/median/max 166/244/737 ms; in-place resumes 29, unwinds 40, pause acks 0 (- ms each), table traps 5, units compiled 178 (0.54 ms each), made again from bytes 80 (0.44 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 7 s
+
+demonstrations (differences are the point):
+race on green threads: 1 distinct output in 20 runs: "order BBBBBBBBBBBBBBBBBBBBBBBBCCCCCCCCCCCCCCCCCCCCCCCCDDDDDDDDDDDDDDDDDDDDDDDDAAAAAAAAAAAAAAAAAAAAAAAA"
+race on 4 Workers: 7 distinct outputs in 20 runs, e.g. "order AAAAAAAAAAAAAAAAAAAAAAAADDDDDDDDDDDDDDDDDDDDDDDDCCCCCCCCCCCCCCCCCCCCCCCCBBBBBBBBBBBBBBBBBBBBBBBB" and "order AAAAAAAAAAAAAAAAAAAAAAAADDDDDDDDDDDDDDDDDDDDDDDDBBBBBBBBBBBBBBBBBBBBBBBBCCCCCCCCCCCCCCCCCCCCCCCC"
+stress on 4 Workers with ONE helpers scratch area (helpers.shared.wasm as built today): 20 of 20 runs computed FRECPE wrongly, e.g. "3 helpers: 3 of 8 threads got the single-thread result"
+dekker on 4 Workers with DMB compiled to nothing (as on an unshared memory): both cores read 0 in 358, 173, 151, 187, 211, 141, 22, 167, 93, 78, 88, 150, 117, 29, 47, 22, 65, 50, 101, 14 of 200000 rounds (20 runs; 0 is the only correct count)
+instantiating a 44-byte module that imports a function table, ms per instance by table length: 1024: 0.004, 65536: 0.006, 524288: 0.004
+
+the same page without COOP/COEP: crossOriginIsolated: false; SharedArrayBuffer: undefined; sharedMemory: created, buffer is a [object SharedArrayBuffer]; postToWorker: FAILS: DataCloneError: Failed to execute 'postMessage' on 'Worker': SharedArrayBuffer transfer requires self.crossOriginIsolated.
+Chromium with --no-wasm-lazy-compilation: new WebAssembly.Module of rt/gfx.wasm (192655 B): first 9.79 ms, the same bytes again 0.57 ms; other bytes 5.30 ms, again 1.21 ms
+Chromium with --no-wasm-lazy-compilation: new WebAssembly.Module of rt/hle.wasm (303138 B): first 11.73 ms, the same bytes again 1.87 ms; other bytes 9.75 ms, again 1.00 ms
+
+spike_workers browser: every series passed

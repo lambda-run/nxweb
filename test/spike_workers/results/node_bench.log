@@ -1,0 +1,63 @@
+machine: 4 logical CPUs (Intel(R) Xeon(R) Processor @ 2.10GHz), Node v22.23.4; load average 1.90 4.09 4.19; other jobs may be running
+5 interleaved repetitions; wall time of the run phase (after boot, includes translation), ms: min / median
+
+### bench_sha: 4 threads x SHA-256 over 64 KB x 400
+bench work 1: 0x492f269348b6f95a 0xcdef3f057a1b0328 0x7b5b9039546db900 0x42c49f1eead0f54a
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 1460 | 1593 | 1.00x | 1.00x | SVCs 21, slices 1840, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 3 ms, instantiate 2 ms |
+| green shared | 1478 | 1560 | 0.99x | 1.02x | SVCs 21, slices 1840, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 3 ms, instantiate 4 ms |
+| 1 Worker | 1447 | 1610 | 1.01x | 0.99x | SVCs 21, slices 1840, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 3 ms, instantiate 2 ms |
+| 2 Workers | 728 | 782 | 2.01x | 2.04x | SVCs 21, slices 1840, unwinds 5, in-place resumes 0, idle waits 2 (spin hits 0), translate+compile 3 ms, instantiate 3 ms |
+| 3 Workers | 742 | 771 | 1.97x | 2.07x | SVCs 21, slices 1840, unwinds 5, in-place resumes 0, idle waits 17 (spin hits 0), translate+compile 3 ms, instantiate 12 ms |
+| 4 Workers | 379 | 403 | 3.85x | 3.96x | SVCs 21, slices 1840, unwinds 5, in-place resumes 1, idle waits 7 (spin hits 0), translate+compile 3 ms, instantiate 4 ms |
+
+### bench_lz: 4 threads x LZ77 of 64 KB x 500
+bench work 2: 0x9158c643e56ca740 0xfaac9f2ab5885a0d 0x58e0aa3a5e762254 0x3da4083b2f479128
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 1648 | 1773 | 1.00x | 1.00x | SVCs 21, slices 1574, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 6 ms, instantiate 3 ms |
+| green shared | 1589 | 1647 | 1.04x | 1.08x | SVCs 21, slices 1574, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 5 ms, instantiate 3 ms |
+| 1 Worker | 1584 | 1627 | 1.04x | 1.09x | SVCs 21, slices 1574, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 5 ms, instantiate 3 ms |
+| 2 Workers | 865 | 919 | 1.90x | 1.93x | SVCs 21, slices 1574, unwinds 5, in-place resumes 0, idle waits 2 (spin hits 0), translate+compile 6 ms, instantiate 7 ms |
+| 3 Workers | 827 | 872 | 1.99x | 2.03x | SVCs 21, slices 1574, unwinds 5, in-place resumes 0, idle waits 19 (spin hits 0), translate+compile 5 ms, instantiate 10 ms |
+| 4 Workers | 467 | 500 | 3.53x | 3.55x | SVCs 21, slices 1574, unwinds 5, in-place resumes 0, idle waits 9 (spin hits 0), translate+compile 5 ms, instantiate 16 ms |
+
+### bench_contend: 4 threads x 40000 x (private work, shared atomic, one mutex)
+bench work 3: 0x375d1dff6fe761c9 0xf4e7d8bae2cfec7e 0x9d3a7527035f288b 0x2f373c0bcb797dc2 shared table sum=211200000 atomic=160000
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 640 | 676 | 1.00x | 1.00x | SVCs 21, slices 654, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 2 ms, instantiate 1 ms |
+| green shared | 642 | 682 | 1.00x | 0.99x | SVCs 21, slices 654, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 2 ms, instantiate 1 ms |
+| 1 Worker | 648 | 686 | 0.99x | 0.98x | SVCs 21, slices 654, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 2 ms, instantiate 1 ms |
+| 2 Workers | 2869 | 3083 | 0.22x | 0.22x | SVCs 385663, slices 158818, unwinds 158813, in-place resumes 64, idle waits 59414 (spin hits 50269), translate+compile 6 ms, instantiate 2 ms |
+| 3 Workers | 4678 | 4802 | 0.14x | 0.14x | SVCs 351388, slices 79912, unwinds 79583, in-place resumes 74666, idle waits 103595 (spin hits 34583), translate+compile 4 ms, instantiate 3 ms |
+| 4 Workers | 1675 | 1781 | 0.38x | 0.38x | SVCs 103489, slices 658, unwinds 5, in-place resumes 44622, idle waits 42439 (spin hits 7792), translate+compile 3 ms, instantiate 3 ms |
+
+### bench_svc: 4 threads x 60000 x (signal, wait, reset own event)
+bench work 4: 0xea60 0xea60 0xea60 0xea60
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 217 | 233 | 1.00x | 1.00x | SVCs 720033, slices 14, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 2 ms, instantiate 6 ms |
+| green shared | 226 | 249 | 0.96x | 0.94x | SVCs 720033, slices 14, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 2 ms, instantiate 1 ms |
+| 1 Worker | 305 | 329 | 0.71x | 0.71x | SVCs 720033, slices 14, unwinds 5, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 2 ms, instantiate 2 ms |
+| 2 Workers | 307 | 423 | 0.71x | 0.55x | SVCs 720033, slices 14, unwinds 5, in-place resumes 0, idle waits 2 (spin hits 0), translate+compile 2 ms, instantiate 2 ms |
+| 3 Workers | 330 | 359 | 0.66x | 0.65x | SVCs 720033, slices 14, unwinds 5, in-place resumes 0, idle waits 7 (spin hits 0), translate+compile 2 ms, instantiate 3 ms |
+| 4 Workers | 321 | 372 | 0.68x | 0.63x | SVCs 720033, slices 14, unwinds 5, in-place resumes 0, idle waits 6 (spin hits 0), translate+compile 5 ms, instantiate 8 ms |
+
+### bench_sha_1t: 1 thread x SHA-256 over 64 KB x 1600
+bench work 1: 0x77b0538ced07aefa
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 1540 | 1588 | 1.00x | 1.00x | SVCs 6, slices 1838, unwinds 2, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 3 ms, instantiate 4 ms |
+| green shared | 1510 | 1659 | 1.02x | 0.96x | SVCs 6, slices 1838, unwinds 2, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 3 ms, instantiate 2 ms |
+| 1 Worker | 1487 | 1522 | 1.04x | 1.04x | SVCs 6, slices 1838, unwinds 2, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 3 ms, instantiate 2 ms |
+
+### bench_lz_1t: 1 thread x LZ77 of 64 KB x 2000
+bench work 2: 0x5f725ae31185af7c
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 1711 | 1752 | 1.00x | 1.00x | SVCs 6, slices 1574, unwinds 2, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 5 ms, instantiate 2 ms |
+| green shared | 1762 | 1824 | 0.97x | 0.96x | SVCs 6, slices 1574, unwinds 2, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 6 ms, instantiate 3 ms |
+| 1 Worker | 1720 | 1806 | 0.99x | 0.97x | SVCs 6, slices 1574, unwinds 2, in-place resumes 0, idle waits 0 (spin hits 0), translate+compile 5 ms, instantiate 5 ms |
+

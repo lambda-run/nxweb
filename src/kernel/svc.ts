@@ -2,7 +2,7 @@
 // from it and results written to it. Result codes and register conventions are nxnative's (hle_thread.c, hle_svc.c).
 import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { R_OK, R_OUT_OF_RES, R_BAD_MEMORY, R_BAD_HANDLE, R_TIMEOUT, R_CANCELLED, R_OUT_OF_RANGE, R_BAD_STATE, WAITERS_BIT,
-  guestOk, ld32, ld64, st32, st64, lineStart, lineEnd, puts, putx, putu, putc, debugString } from "./base";
+  guestOk, ld32, ld64, st32, st64, mtWorkers, kick, lineStart, lineEnd, puts, putx, putu, putc, debugString } from "./base";
 import { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION, hNew, hType, hObj, hPeek, hFree, evNew, evRelease, evSignaled, evSet, evRetain } from "./handle";
 import { KThread, thr, MAX_THREADS, threadNew, threadFree, threadOfHandle, threadsAlive, C_SP, C_PC, C_NZCV, C_FPCR, C_FPSR, C_TPIDR, C_V,
   WK_LOCK, WK_CONDVAR, WK_ADDRESS, WK_SYNC, WK_SLEEP, WK_CLOCK } from "./thread";
@@ -56,22 +56,52 @@ export function stopProcess(reason: i32, code: i32): void {
     if (t.waitKind == WK_SYNC) { const n = t.wn; t.wn = 0; for (let k = 0; k < n; k++) syncClose(t.wobj(k)); }
     t.m.step(KthreadE.Terminate);
     schedLeft(t);
+    if (t.pendw) pendClear(t);
   }
   for (let i = 0; i < MAX_THREADS; i++) { const t = thr(i); if (t.used && t.exited && t.closed && !t.syncRefs) threadFree(t); }
   stopReason = reason; exitCode = code;
+  if (mtWorkers()) for (let c = 0; c < 4; c++) kick(c);   // SPIKE, Workers: idle Workers see the stop
 }
 
 // SetThreadActivity. A pause is a state, never a signal. It takes effect at the target's scheduling point, and under
 // green threads every thread but the caller is at one (only the caller executes), so a running thread of another core
 // stops at once with its whole context saved. With cores on Workers the machine needs a pending state between the
 // request and the target's own scheduling point, and the caller has to wait for it (README, gaps).
-function pause(t: KThread): void {
+function pause(t: KThread, caller: KThread): void {
   const s = t.state;
   if (!t.m.can(KthreadE.PauseRequest)) return;   // paused already, or exited: nothing to do, as nxnative
+  // SPIKE, Workers: a thread that is Running on another Worker stops at its own next scheduling point (its next SVC or
+  // the end of its slice: pendApply). Until then the pause is pending and the caller's SVC does not return (ACT_ACK).
+  // The real implementation makes this a kthread state (PausePending); here it is a field beside the machine.
+  // (A Running thread of another core of the caller's own Worker is not executing: it is at a scheduling point, as
+  // under green threads.)
+  if (mtWorkers() && s == KthreadS.Running && t.runCore % mtWorkers() != caller.runCore % mtWorkers()) {
+    if (ASC_FEATURE_THREADS) atomic.store<u32>(changetype<usize>(t) + offsetof<KThread>("pendw"), 1);
+    caller.ackFor = t.index + 1;
+    kick(t.runCore);
+    return;
+  }
   t.m.step(KthreadE.PauseRequest, t.m.data);
   if (s == KthreadS.Running || s == KthreadS.Runnable) schedLeft(t);
 }
+function pendClear(t: KThread): void {
+  if (ASC_FEATURE_THREADS) {
+    const p = changetype<usize>(t) + offsetof<KThread>("pendw");
+    if (atomic.xchg<u32>(p, 0)) atomic.notify(p, -1);
+  }
+}
+// The scheduling point of t on its own Worker: a pending pause takes effect, whatever t's SVC just made of it
+export function pendApply(t: KThread): void {
+  if (!t.pendw) return;
+  const s = t.state;
+  if (t.used && t.m.can(KthreadE.PauseRequest)) {
+    t.m.step(KthreadE.PauseRequest, t.m.data);
+    if (s == KthreadS.Running || s == KthreadS.Runnable) schedLeft(t);
+  }
+  pendClear(t);
+}
 function resume(t: KThread): void {
+  if (t.pendw) { pendClear(t); return; }   // the pause had not taken effect yet: it is withdrawn
   if (!t.m.can(KthreadE.Resume)) return;
   t.m.step(KthreadE.Resume, t.m.data);
   if (t.state == KthreadS.Runnable) schedReady(t);
@@ -259,7 +289,7 @@ export function svc(t: KThread, n: i32): void {
       const s = threadOfHandle(<u32>x0, t);
       if (s == null) r = R_BAD_HANDLE;
       else if (s == t) r = R_BAD_STATE;
-      else if (<i32>x1 == 1) pause(s);
+      else if (<i32>x1 == 1) pause(s, t);
       else resume(s);
       break;
     }

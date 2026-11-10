@@ -3,7 +3,7 @@ import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, mem, ar, cm, cst, fc,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, tw, ifVoid, ifT, els, end,
   flagsAddSub, addCarry, flagsNZ, setNZCVconst, emitCond, killCmp,
-  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield, optGuard, aw, moff,
+  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optFence, optCntYield, optGuard, aw, moff,
   R_N, R_Z, R_C, R_V, G_FPCR, G_FPSR, G_TPIDR, G_TPIDRRO, G_EXADDR, G_EXVAL, G_EXVAL2,
   F_BRK, F_CNTPCT, F_CRC, T_I32, T_I64,
 } from "./emit";
@@ -463,6 +463,9 @@ export function trBranchSys(pc: u64, insn: u32): bool {
   if ((insn & 0xFFFFF01F) == 0xD503301F) {              // barriers / CLREX
     let op2 = (insn >> 5) & 7;
     if (op2 == 2) { i64c(-1); gset(G_EXADDR); return true; }
+    // DSB (4), DMB (5): with guest cores on several host threads the barrier is real. Other host threads only exist on
+    // a shared memory, so the unshared output is what it was.
+    if ((op2 == 4 || op2 == 5) && optShared && optFence) { b(0xFE); b(0x03); b(0x00); return true; }
     return op2 == 4 || op2 == 5 || op2 == 6 || op2 == 7 || op2 == 1;
   }
   if ((insn & 0xFFF80000) == 0xD5080000) { // SYS

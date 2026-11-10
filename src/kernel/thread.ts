@@ -50,6 +50,8 @@ export class KThread {
   handle: u32;        // the handle CreateThread returned (for logs)
   index: i32;
   used: bool; cancel: bool; closed: bool; yieldAny: bool;
+  pendw: u32;         // SPIKE, Workers: 1 while a pause was asked of this thread as it ran on another Worker and has not taken effect (the asker waits on this word)
+  ackFor: i32;        // SPIKE, Workers: thread index + 1 whose pendw this thread's SVC waits for, 0 none
   quiet: bool;        // the clock wait in progress was made by the embedder for a counter read: its wake leaves x0 / x1 alone
 
   // @ts-ignore: decorator

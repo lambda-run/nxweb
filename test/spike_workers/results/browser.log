@@ -1,0 +1,95 @@
+mtify kernel: 53 mutable globals moved to 0x11ff000; primary 31946 B, secondary 23486 B
+mtify translator: 80 mutable globals moved to 0x62ff000; primary 119841 B, secondary 117540 B
+browser: Chromium 153.0.8010.12 (channel chromium, headless), crossOriginIsolated=true, navigator.hardwareConcurrency=4
+machine: 4 logical CPUs (Intel(R) Xeon(R) Processor @ 2.10GHz); load average 2.08 2.95 3.62; other jobs may be running
+ok   threads  green, unshared (today)  20/20 exact; run wall min/median/max 41/48/79 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 1 s
+ok   threads  green, shared build      20/20 exact; run wall min/median/max 43/59/76 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 2 s
+ok   threads  1 Worker                 20/20 exact; run wall min/median/max 50/53/76 ms; in-place resumes 1060, unwinds 24480, pause acks 0 (- ms each), table traps 0, units compiled 680 (0.19 ms each), made again from bytes 0 (0.00 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 2 s
+ok   threads  3 Workers                20/20 exact; run wall min/median/max 78/100/135 ms; in-place resumes 12906, unwinds 12334, pause acks 0 (- ms each), table traps 2, units compiled 628 (0.21 ms each), made again from bytes 320 (0.20 ms each), unit waits 0 (0.00 ms each), buffer refreshes 20; 3 s
+ok   threads  2 Workers                197/200 exact, 3 more differ only in the three timing-dependent lines; run wall min/median/max 65/80/149 ms; in-place resumes 12547, unwinds 243367, pause acks 0 (- ms each), table traps 5, units compiled 6439 (0.21 ms each), made again from bytes 2814 (0.16 ms each), unit waits 0 (0.00 ms each), buffer refreshes 200; 22 s
+       2x timing only: line 7 "4 sleep ... order 2 1 0 "
+       1x timing only: line 8 "5 join ... rc=0xea01"
+ok   threads  4 Workers                195/200 exact, 5 more differ only in the three timing-dependent lines; run wall min/median/max 68/89/136 ms; in-place resumes 238835, unwinds 2799, pause acks 0 (- ms each), table traps 50, units compiled 3991 (0.23 ms each), made again from bytes 4400 (0.20 ms each), unit waits 0 (0.00 ms each), buffer refreshes 200; 24 s
+       5x timing only: line 8 "5 join ... rc=0xea01"
+ok   threads  4 Workers (units by message) 20/20 exact; run wall min/median/max 57/78/91 ms; in-place resumes 21777, unwinds 280, pause acks 0 (- ms each), table traps 5, units compiled 391 (0.19 ms each), made again from bytes 0 (0.00 ms each), unit waits 380 (0.25 ms each), buffer refreshes 20; 2 s
+ok   stress   green, unshared (today)  20/20 exact; run wall min/median/max 62/66/88 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 2 s
+ok   stress   green, shared build      20/20 exact; run wall min/median/max 76/82/99 ms; 1 distinct (guest ns, slices, SVCs) over the runs; 2 s
+ok   stress   1 Worker                 20/20 exact; run wall min/median/max 78/83/106 ms; in-place resumes 0, unwinds 1500, pause acks 0 (- ms each), table traps 0, units compiled 480 (0.18 ms each), made again from bytes 0 (0.00 ms each), unit waits 0 (0.00 ms each), buffer refreshes 40; 2 s
+ok   stress   3 Workers                20/20 exact; run wall min/median/max 402/453/501 ms; in-place resumes 3560, unwinds 354047, pause acks 400 (0.26 ms each), table traps 1, units compiled 490 (0.25 ms each), made again from bytes 400 (0.28 ms each), unit waits 0 (0.00 ms each), buffer refreshes 120; 10 s
+ok   stress   2 Workers                200/200 exact; run wall min/median/max 111/387/554 ms; in-place resumes 12345, unwinds 3361539, pause acks 3998 (0.26 ms each), table traps 1, units compiled 4680 (0.25 ms each), made again from bytes 1970 (0.22 ms each), unit waits 0 (0.00 ms each), buffer refreshes 796; 82 s
+ok   stress   4 Workers                200/200 exact; run wall min/median/max 117/511/758 ms; in-place resumes 201804, unwinds 2877856, pause acks 3995 (0.26 ms each), table traps 106, units compiled 4460 (0.30 ms each), made again from bytes 5333 (0.54 ms each), unit waits 0 (0.00 ms each), buffer refreshes 1582; 104 s
+ok   stress   4 Workers (units by message) 20/20 exact; run wall min/median/max 97/489/643 ms; in-place resumes 19695, unwinds 216967, pause acks 400 (0.18 ms each), table traps 10, units compiled 422 (0.30 ms each), made again from bytes 0 (0.00 ms each), unit waits 398 (0.55 ms each), buffer refreshes 160; 9 s
+
+demonstrations (differences are the point):
+race on green threads: 1 distinct output in 20 runs: "order BBBBBBBBBBBBBBBBBBBBBBBBCCCCCCCCCCCCCCCCCCCCCCCCDDDDDDDDDDDDDDDDDDDDDDDDAAAAAAAAAAAAAAAAAAAAAAAA"
+race on 4 Workers: 6 distinct outputs in 20 runs, e.g. "order AAAAAAAAAAAAAAAAAAAAAAAADDDDDDDDDDDDDDDDDDDDDDDDCCCCCCCCCCCCCCCCCCCCCCCCBBBBBBBBBBBBBBBBBBBBBBBB" and "order AAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBBDDDDDDDDDDDDDDDDDDDDDDDDCCCCCCCCCCCCCCCCCCCCCCCC"
+stress on 4 Workers with ONE helpers scratch area (helpers.shared.wasm as built today): 18 of 20 runs computed FRECPE wrongly, e.g. "3 helpers: 1 of 8 threads got the single-thread result"
+instantiating a 44-byte module that imports a function table, ms per instance by table length: 1024: 0.012, 65536: 0.024, 524288: 0.007
+
+speed: 5 interleaved repetitions; wall time of the run phase, ms
+### bench_sha
+bench work 1: 0x492f269348b6f95a 0xcdef3f057a1b0328 0x7b5b9039546db900 0x42c49f1eead0f54a
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 1803 | 1895 | 1.00x | 1.00x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 4 ms, instantiate 1 ms |
+| green shared | 1788 | 1892 | 1.01x | 1.00x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 5 ms, instantiate 1 ms |
+| 1 Worker | 1858 | 1962 | 0.97x | 0.97x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 4 ms, instantiate 1 ms |
+| 2 Workers | 956 | 991 | 1.89x | 1.91x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 5 ms, instantiate 1 ms |
+| 3 Workers | 906 | 954 | 1.99x | 1.99x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 6 ms, instantiate 2 ms |
+| 4 Workers | 505 | 629 | 3.57x | 3.01x | SVCs 21, unwinds 5, in-place resumes 1, translate+compile 5 ms, instantiate 6 ms |
+
+### bench_lz
+bench work 2: 0x9158c643e56ca740 0xfaac9f2ab5885a0d 0x58e0aa3a5e762254 0x3da4083b2f479128
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 1826 | 1847 | 1.00x | 1.00x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 6 ms, instantiate 1 ms |
+| green shared | 1804 | 1885 | 1.01x | 0.98x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 7 ms, instantiate 1 ms |
+| 1 Worker | 1804 | 1931 | 1.01x | 0.96x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 5 ms, instantiate 1 ms |
+| 2 Workers | 948 | 1099 | 1.93x | 1.68x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 12 ms, instantiate 2 ms |
+| 3 Workers | 945 | 997 | 1.93x | 1.85x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 7 ms, instantiate 3 ms |
+| 4 Workers | 544 | 586 | 3.36x | 3.15x | SVCs 21, unwinds 5, in-place resumes 2, translate+compile 22 ms, instantiate 18 ms |
+
+### bench_contend
+bench work 3: 0x375d1dff6fe761c9 0xf4e7d8bae2cfec7e 0x9d3a7527035f288b 0x2f373c0bcb797dc2 shared table sum=211200000 atomic=160000
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 863 | 891 | 1.00x | 1.00x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 2 ms, instantiate 0 ms |
+| green shared | 865 | 924 | 1.00x | 0.96x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 6 ms, instantiate 0 ms |
+| 1 Worker | 878 | 915 | 0.98x | 0.97x | SVCs 21, unwinds 5, in-place resumes 0, translate+compile 2 ms, instantiate 0 ms |
+| 2 Workers | 1427 | 1777 | 0.60x | 0.50x | SVCs 333543, unwinds 159731, in-place resumes 44, translate+compile 3 ms, instantiate 1 ms |
+| 3 Workers | 2860 | 3111 | 0.30x | 0.29x | SVCs 309196, unwinds 79755, in-place resumes 63889, translate+compile 5 ms, instantiate 1 ms |
+| 4 Workers | 2124 | 2782 | 0.41x | 0.32x | SVCs 179928, unwinds 5, in-place resumes 84069, translate+compile 3 ms, instantiate 2 ms |
+
+### bench_svc
+bench work 4: 0xea60 0xea60 0xea60 0xea60
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 172 | 177 | 1.00x | 1.00x | SVCs 720033, unwinds 5, in-place resumes 0, translate+compile 2 ms, instantiate 0 ms |
+| green shared | 180 | 184 | 0.95x | 0.96x | SVCs 720033, unwinds 5, in-place resumes 0, translate+compile 2 ms, instantiate 1 ms |
+| 1 Worker | 452 | 522 | 0.38x | 0.34x | SVCs 720033, unwinds 5, in-place resumes 0, translate+compile 2 ms, instantiate 0 ms |
+| 2 Workers | 293 | 338 | 0.59x | 0.52x | SVCs 720033, unwinds 5, in-place resumes 0, translate+compile 2 ms, instantiate 1 ms |
+| 3 Workers | 330 | 340 | 0.52x | 0.52x | SVCs 720033, unwinds 5, in-place resumes 0, translate+compile 6 ms, instantiate 1 ms |
+| 4 Workers | 318 | 337 | 0.54x | 0.52x | SVCs 720033, unwinds 5, in-place resumes 2, translate+compile 2 ms, instantiate 2 ms |
+
+### bench_sha_1t
+bench work 1: 0x77b0538ced07aefa
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 1679 | 1840 | 1.00x | 1.00x | SVCs 6, unwinds 2, in-place resumes 0, translate+compile 2 ms, instantiate 1 ms |
+| green shared | 1763 | 1899 | 0.95x | 0.97x | SVCs 6, unwinds 2, in-place resumes 0, translate+compile 3 ms, instantiate 1 ms |
+| 1 Worker | 1794 | 1976 | 0.94x | 0.93x | SVCs 6, unwinds 2, in-place resumes 0, translate+compile 3 ms, instantiate 1 ms |
+
+### bench_lz_1t
+bench work 2: 0x5f725ae31185af7c
+| configuration | min ms | median ms | speedup vs today (min) | (median) | last run |
+|---|---|---|---|---|---|
+| green unshared (today) | 1696 | 1945 | 1.00x | 1.00x | SVCs 6, unwinds 2, in-place resumes 0, translate+compile 5 ms, instantiate 1 ms |
+| green shared | 1761 | 1915 | 0.96x | 1.02x | SVCs 6, unwinds 2, in-place resumes 0, translate+compile 5 ms, instantiate 1 ms |
+| 1 Worker | 1757 | 1948 | 0.97x | 1.00x | SVCs 6, unwinds 2, in-place resumes 0, translate+compile 5 ms, instantiate 2 ms |
+
+
+the same page without COOP/COEP: crossOriginIsolated: false; SharedArrayBuffer: undefined; sharedMemory: created, buffer is a [object SharedArrayBuffer]; postToWorker: FAILS: DataCloneError: Failed to execute 'postMessage' on 'Worker': SharedArrayBuffer transfer requires self.crossOriginIsolated.
+Chromium with --no-wasm-lazy-compilation: new WebAssembly.Module of rt/gfx.wasm (192655 B): first 9.77 ms, the same bytes again 0.77 ms; other bytes 8.31 ms, again 0.74 ms
+Chromium with --no-wasm-lazy-compilation: new WebAssembly.Module of rt/hle.wasm (303138 B): first 11.37 ms, the same bytes again 0.95 ms; other bytes 8.79 ms, again 0.79 ms
+
+spike_workers browser: every series passed

@@ -1,0 +1,19 @@
+machine: 4 logical CPUs; load average 3.66 4.57 4.07; 3 interleaved repetitions
+bench_ping unshared                         193 /    195 ms   SVCs 120014, idle waits 0, spin hits 0, unwinds 40002
+bench_ping shared-green                     195 /    222 ms   SVCs 120014, idle waits 0, spin hits 0, unwinds 40002
+bench_ping 2 spin=0                         905 /   1060 ms   SVCs 120014, idle waits 39184, spin hits 0, unwinds 3
+bench_ping 2                                694 /    806 ms   SVCs 120014, idle waits 21771, spin hits 18604, unwinds 3
+bench_ping 2 spin=20000                     667 /   1025 ms   SVCs 120014, idle waits 21688, spin hits 19014, unwinds 3
+bench_ping 2 spin=200000                    626 /    697 ms   SVCs 120014, idle waits 20300, spin hits 20293, unwinds 3
+bench_ping 2 inplace=false                  654 /    701 ms   SVCs 120014, idle waits 19747, spin hits 19332, unwinds 21242
+bench_svc unshared                          232 /    272 ms   SVCs 720033, idle waits 0, spin hits 0, unwinds 5
+bench_svc 1                                 299 /    344 ms   SVCs 720033, idle waits 0, spin hits 0, unwinds 5
+bench_svc 4 oneLock=false                   444 /    482 ms   SVCs 720033, idle waits 7, spin hits 0, unwinds 5
+bench_svc 4                                 368 /    423 ms   SVCs 720033, idle waits 7, spin hits 0, unwinds 5
+bench_svc 4 lockSpin=2000                   410 /    416 ms   SVCs 720033, idle waits 6, spin hits 1, unwinds 5
+bench_svc 4 lockSpin=20000                  438 /    442 ms   SVCs 720033, idle waits 6, spin hits 0, unwinds 5
+bench_contend unshared                      679 /    683 ms   SVCs 21, idle waits 0, spin hits 0, unwinds 5
+bench_contend 4 spin=0                     2476 /   3220 ms   SVCs 174813, idle waits 80210, spin hits 0, unwinds 5
+bench_contend 4                            1917 /   3613 ms   SVCs 98930, idle waits 45741, spin hits 8213, unwinds 5
+bench_contend 4 spin=20000                 3359 /   4612 ms   SVCs 71994, idle waits 31955, spin hits 8552, unwinds 5
+bench_contend 4 inplace=false              1656 /   2428 ms   SVCs 78332, idle waits 30860, spin hits 5440, unwinds 34830

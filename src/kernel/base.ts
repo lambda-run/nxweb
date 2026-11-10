@@ -31,18 +31,48 @@ export const FOREVER: u64 = u64.MAX_VALUE;
 // What kernel_svc tells the embedder to do next
 export const ACT_CONTINUE: i32 = 0;   // load the context back and go on in the same thread
 export const ACT_SWITCH: i32 = 1;     // the thread is no longer the one to run: unwind, then kernel_schedule()
+export const ACT_ACK: i32 = 3;      // SPIKE, Workers only: go on in the same thread once the word kernel_mt_ack_word(ctx) names is 0 (a pause it asked for took effect)
 export const ACT_STOP: i32 = 2;       // the process ended (ExitProcess, a fatal Break): kernel_stop_reason(), kernel_exit_code()
 
 // ---- the kernel lock ----
 // Every exported entry point takes it. With green threads on one host thread it only catches re-entry; when guest
 // cores become Workers on a shared memory, this pair is the one place that turns into a real lock (an atomic
 // compare-exchange loop on `held`). Nothing else in the kernel relies on "nothing runs during an SVC".
-let held: u32 = 0;
-export function kLock(): void {
-  if (held) { lineStart("[RED] kernel: entry point called while the kernel lock is held"); lineEnd(); unreachable(); }
-  held = 1;
+// SPIKE (src/spike_workers, SPIKE.md): in a build with the threads feature (`asc --sharedMemory --enable threads`) the
+// lock is real once kernel_mt_config(workers > 0) was called: 0 free, 1 held, 2 held with waiters; a short spin, then
+// memory.atomic.wait. Without the feature, or with workers = 0 (green threads), it is the re-entry check it always was.
+const LOCKW: usize = memory.data(4);
+const MTW: usize = memory.data(4);     // number of Workers that run guest cores; 0 = green threads on one host thread
+const SPINW: usize = memory.data(4);   // compare-exchange attempts before a contended kLock sleeps
+const KICK: usize = memory.data(16);   // per Worker: a generation counter, bumped and notified when one of its cores must reschedule
+// @ts-ignore: decorator
+@inline export function mtWorkers(): i32 { return ASC_FEATURE_THREADS ? load<i32>(MTW) : 0; }
+export function mtSetWorkers(n: i32, spin: i32): void { store<i32>(MTW, n); store<i32>(SPINW, spin > 0 ? spin : 100); }
+export function kickWord(worker: i32): usize { return KICK + (<usize>(worker & 3) << 2); }
+// Core c's Worker has something to look at (its ready set changed, a pause was asked for, the process stopped)
+export function kick(c: i32): void {
+  if (ASC_FEATURE_THREADS) {
+    const w = load<i32>(MTW);
+    if (w) { const p = KICK + (<usize>(c % w) << 2); atomic.add<u32>(p, 1); atomic.notify(p, 1); }
+  }
 }
-export function kUnlock(): void { held = 0; }
+export function kLock(): void {
+  if (ASC_FEATURE_THREADS) {
+    if (load<i32>(MTW)) {
+      for (let i = 0, n = load<i32>(SPINW); i < n; i++) if (atomic.cmpxchg<u32>(LOCKW, 0, 1) == 0) return;
+      while (atomic.xchg<u32>(LOCKW, 2) != 0) atomic.wait<i32>(LOCKW, 2, -1);
+      return;
+    }
+  }
+  if (load<u32>(LOCKW)) { lineStart("[RED] kernel: entry point called while the kernel lock is held"); lineEnd(); unreachable(); }
+  store<u32>(LOCKW, 1);
+}
+export function kUnlock(): void {
+  if (ASC_FEATURE_THREADS) {
+    if (load<i32>(MTW)) { if (atomic.xchg<u32>(LOCKW, 0) == 2) atomic.notify(LOCKW, 1); return; }
+  }
+  store<u32>(LOCKW, 0);
+}
 
 // ---- log lines ----
 const LINE: usize = memory.data(512);

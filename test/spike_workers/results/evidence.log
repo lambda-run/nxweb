@@ -1,0 +1,13 @@
+1. memory growth: another thread grew the shared memory from 1 to 2 pages and wrote 42 at 65546. In this thread a Uint8Array made before: length 65536, [65546] = undefined; the old buffer object: byteLength 65536; memory.buffer read again: a new SharedArrayBuffer, byteLength 131072, [65546] = 42
+2. mutable wasm globals per module (state that every instance would have for itself), and mtify:
+   kernel.wasm        28049 B   53 mutable globals,  97 data segments, start function: yes  mtify ok (53 moved; primary 31329 B, secondary 22869 B)
+   rt.wasm            10467 B   11 mutable globals,  83 data segments, start function: yes  mtify ok (11 moved; primary 10977 B, secondary 3925 B)
+   loader.wasm        46675 B   31 mutable globals, 266 data segments, start function: yes  mtify ok (31 moved; primary 52312 B, secondary 37324 B)
+   hle.wasm          303138 B  186 mutable globals, 1495 data segments, start function: yes  mtify ok (186 moved; primary 312187 B, secondary 94460 B)
+   fs.wasm            50583 B   26 mutable globals, 413 data segments, start function: yes  mtify ok (26 moved; primary 52246 B, secondary 27540 B)
+   gfx.wasm          192655 B  142 mutable globals, 174 data segments, start function: yes  mtify ok (142 moved; primary 199601 B, secondary 56546 B)
+   translator.wasm    74842 B   80 mutable globals,  94 data segments, start function: yes  mtify ok (80 moved; primary 119838 B, secondary 117537 B)
+   helpers.wasm       11624 B    2 mutable globals,   0 data segments, start function: no   mtify ok (2 moved; primary 11702 B, secondary 11672 B)
+build/runtime/gfx.wasm (192655 B), eager compilation: main thread first 3.8 ms; in a Worker: the same bytes 0.2 ms, other bytes 6.5 ms, those again 0.2 ms
+build/runtime/hle.wasm (303138 B), eager compilation: main thread first 8.5 ms; in a Worker: the same bytes 0.4 ms, other bytes 9.2 ms, those again 0.3 ms
+Node v22.23.4: instantiating a 44-byte module that imports a function table, ms per instance by table length: 1024: 0.025, 65536: 1.269, 524288: 9.281
