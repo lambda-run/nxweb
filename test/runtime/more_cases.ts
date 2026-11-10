@@ -1,6 +1,9 @@
 // More end-to-end cases of the runtime that need to wait for something (a store, the GPU): the translation cache,
 // stopping and restarting processes. Shared by run.mts (Node) and web/worker.ts (browser); no Node APIs.
-import { Runtime } from "../../src/glue/rt_runtime.ts";
+import { Runtime, type RuntimeOptions } from "../../src/glue/rt_runtime.ts";
+import { range } from "../../src/glue/rt_layout.ts";
+import { layoutFor, SPACE } from "../../src/glue/rt_process.ts";
+import { makeLargeNso, type LargeNso } from "./large_nso.ts";
 import type { A64CacheStore } from "../../src/glue/a64_host.ts";
 import type { Env, CaseResult, CorpusGuest } from "./cases.ts";
 import { bootGfx, W, H, type Gpu, type GfxProcess, type GfxBoot } from "./gfx_cases.ts";
@@ -20,6 +23,7 @@ export interface MoreEnv extends Env {
   shaderLibrary?: Uint8Array;                         // build/shaders/maxwell.nxsl (the hand-assembled Maxwell programs, translated offline), when built
   shaderWhy?: string;                                 // why it is not there
   shaderTranslator?: () => ShaderTranslator;          // the in-page translator in its Worker, when its artifacts are served (browser)
+  huge?: { stored: () => Uint8Array; ro: number; data: number; bss: number; heap: number };   // RT_HUGE=1: large.c at the target size (MB), stored
   shaderStore?: (name: string) => Promise<ShaderStore>;   // a new, empty store of translations         // memory in use, when the host can tell (after a collection if it can force one)
 }
 function fail(msg: string): never { throw new Error(msg); }
@@ -34,6 +38,101 @@ export interface MoreCase { name: string; fn: () => Promise<string[]> }
 export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
   const list: MoreCase[] = [];
   const test = (name: string, fn: () => Promise<string[] | void>) => list.push({ name, fn: async () => (await fn()) ?? [] });
+
+  // ---- module files larger than the fixed file staging range ----
+  const MBY = 1 << 20, mb = (n: number) => (n / MBY).toFixed(1) + " MB";
+  const largeOut = (l: LargeNso) => `ro: 0x${l.roSum.toString(16)}\ndata: 0x${l.dataSum.toString(16)}\nbss words not zero: 0\ndata and bss are written: 1\nSetHeapSize: rc=0x0\nheap words not zero: 0\n`;
+  const zero = (rt: Runtime, lo: number, hi: number) => !new Uint32Array(rt.memory.buffer, lo, (hi - lo) >>> 2).some(v => v !== 0);
+  let largeMade: Promise<LargeNso> | undefined;
+  const large = () => largeMade ??= makeLargeNso(env.nso("large"));
+  test("large module: a 40 MB NSO (text and data LZ4 compressed, read-only data stored, hashes checked) is staged in the guest's own regions, loaded, and runs to completion; the heap reads zero afterwards; a small program is staged as before", async () => {
+    const l = await large(), fixed = range("file staging");
+    ok(l.nso.length > 2 * (fixed.hi - fixed.lo) && l.stored[2] < l.dataBytes / 2 && l.stored[1] > l.roBytes, `the file: ${l.nso.length} bytes, segments stored in ${l.stored}`);
+    const t0 = performance.now(), rt = new Runtime(env.mods), before = rt.memory.buffer.byteLength;
+    ok(rt.loadNso([{ name: "large", bytes: l.nso }]), "load failed: " + rt.red.join(" | "));
+    const t1 = performance.now(), m = rt.modules[0];
+    eq([m.imageSize, rt.ld.state(m.handle), rt.ld.get(m.handle, 36 /* Info.FilePtr */)], [l.imageBytes, "Pinned", 0], "image size, loader state and file pointer after the load");
+    ok(rt.logs.some(x => x.includes("staged from the heap region's base 0x18000000")), "the log says where the files were staged: " + rt.logs.join(" | "));
+    ok(zero(rt, SPACE.lo, SPACE.lo + l.nso.length + 0x1000), "the heap region reads zero again before the guest runs");
+    ok(zero(rt, fixed.lo, fixed.hi), "nothing of it was put in the fixed range");
+    const r = rt.run();
+    ok(r.stop?.kind === "exit" && r.stop.code === 9, "exit: " + JSON.stringify(r.stop) + " " + rt.red.join(" | "));
+    eq(rt.stdout(), largeOut(l), "stdout");
+    eq(rt.red, [], "red lines");
+    // the same file, staged where the layout of a game puts its heap region, with a code region made for the image
+    const layout = layoutFor({ code: 300 * MBY, heap: 512 * MBY }), plain = layoutFor(), same0 = layoutFor({ code: 100 * MBY }), big512 = layoutFor({ code: 512 * MBY });
+    eq([same0.codeSize, same0.heapBase, same0.aliasSize], [plain.codeSize, plain.heapBase, plain.aliasSize], "images that fit the default code region leave the layout as it is");
+    ok(big512.codeSize >= 576 * MBY && big512.fit === "profile" && big512.tlsBase === big512.codeBase + big512.codeSize && big512.heapBase === big512.tlsBase + big512.tlsSize && big512.aliasBase + big512.aliasSize <= SPACE.hi,
+      "512 MB of images: the code region holds them, the other regions follow: " + JSON.stringify(big512, (_, v) => typeof v === "bigint" ? v.toString() : v));
+    const rt2 = new Runtime(env.mods, { layout });
+    ok(layout.heapBase > SPACE.lo && rt2.loadNso([{ name: "large", bytes: l.nso }]), "load on a per-game layout failed: " + rt2.red.join(" | "));
+    ok(rt2.logs.some(x => x.includes("staged from the heap region's base 0x" + layout.heapBase.toString(16))), "staged at the layout's heap region");
+    const r2 = rt2.run();
+    ok(r2.stop?.kind === "exit" && r2.stop.code === 9 && rt2.stdout() === largeOut(l), "on the per-game layout: " + rt2.stdout() + rt2.red.join(" | "));
+    // a small program: in the fixed range, no memory grown for staging, and the range is free again after the load
+    const small = new Runtime(env.mods), had = small.memory.buffer.byteLength;
+    ok(small.loadNso([{ name: "hello", bytes: env.nso("hello") }]), "hello: load failed");
+    ok(!small.logs.some(x => x.includes("staged from the heap region")) && had === before, "hello is staged in the fixed range");
+    const s = small.run();
+    ok(s.stop?.kind === "exit" && s.stop.code === 42, "hello: exit");
+    return [`file ${mb(l.nso.length)} (text ${l.stored[0]} bytes LZ4, ro ${mb(l.stored[1])} stored, data ${mb(l.dataBytes)} as ${mb(l.stored[2])} LZ4), image ${mb(l.imageBytes)}: loaded in ${(t1 - t0).toFixed(0)} ms, ran in ${rt.stats.runMs.toFixed(0)} ms; memory ${mb(rt.memory.buffer.byteLength)} of address space`,
+      `per-game layout: code region ${mb(layout.codeSize)}, heap region at 0x${layout.heapBase.toString(16)}`];
+  });
+  test("large module: files that fit no staging space, an image that does not fit the code region and a truncated large file are load faults with their reason, not a crash or a cut file", async () => {
+    const l = await large(), lines: string[] = [];
+    const refused = (what: string, o: RuntimeOptions, files: { name: string; bytes: Uint8Array }[], want: RegExp) => {
+      const rt = new Runtime(env.mods, o);
+      let got: boolean;
+      try { got = rt.loadNso(files); } catch (e) { fail(`${what}: loadNso threw: ${e}`); }
+      const line = rt.red.find(x => want.test(x));
+      ok(got === false && rt.state === "Stopped" && rt.r.rt_stop_kind() === 3 && line, `${what}: loaded=${got}, state ${rt.state}, red: ${rt.red.join(" | ")}`);
+      const lo = o.layout?.heapBase ?? SPACE.lo, hi = Math.min(rt.memory.buffer.byteLength, lo + 2 * l.nso.length + 0x2000);
+      ok(hi <= lo || zero(rt, lo, hi), `${what}: nothing is left in the heap region`);
+      lines.push(`${what}: ${line}`);
+    };
+    // a layout made by hand with a gap after its heap region: 32 MB (then 64 MB) is all there is to stage in
+    const gap = (heap: number) => { const y = layoutFor({ heap }); return { ...y, stackBase: y.stackBase + 2 * MBY, stackSize: y.stackSize - 2 * MBY }; };
+    refused("a heap region smaller than the file, with a gap after it", { layout: gap(32 * MBY) }, [{ name: "large", bytes: l.nso }], /do not fit the file staging: \d+ bytes in 1 files \(the largest: large, \d+ bytes\)/);
+    // two files that fit one by one but not together
+    refused("two files that only fit one at a time", { layout: gap(64 * MBY) }, [{ name: "large", bytes: l.nso }, { name: "large2", bytes: l.nso }], /do not fit the file staging: \d+ bytes in 2 files/);
+    // a game whose profile reserves a small heap region (it allocates in the alias region): the files reach past it
+    const aliasy = new Runtime(env.mods, { layout: layoutFor({ heap: 32 * MBY, alias: 2048 * MBY }) });
+    ok(aliasy.loadNso([{ name: "large", bytes: l.nso }]), "a 32 MB heap region followed by the stack and alias regions: " + aliasy.red.join(" | "));
+    const ra = aliasy.run();
+    ok(ra.stop?.kind === "exit" && ra.stop.code === 9 && /^ro: .*\ndata: .*\nbss words not zero: 0\n/.test(aliasy.stdout()), "the module runs there (its SetHeapSize of 96 MB is refused): " + aliasy.stdout());
+    lines.push("a 32 MB heap region followed by the stack and alias regions: the 40 MB file is staged across them, and the module runs");
+    // modules mapped from 0x16000000: 28 MB of code region are left for a 72 MB image
+    refused("an image larger than the code region that is left", { codeBase: 0x1600_0000 }, [{ name: "large", bytes: l.nso }], /module large: its image of \d+ bytes does not fit the code region/);
+    // the large file cut short: the loader refuses it by its header
+    refused("the file cut at 20 MB", {}, [{ name: "large", bytes: l.nso.subarray(0, 20 * MBY) }], /past the end of the file/);
+    // one byte of the stored 40 MB changed: the hash check sees it
+    const dam = l.nso.slice(); dam[30 * MBY] ^= 1;
+    refused("one bit of the read-only data flipped", {}, [{ name: "large", bytes: dam }], /does not match its SHA-256/);
+    // a module file loaded at run time that does not fit the fixed range goes to host-allocated pages of the code
+    // region (here 20 MB that are no module: the loader refuses them by their header, after they were staged), and
+    // one that fits neither is refused with both figures
+    for (const [codeBase, want] of [[undefined, /not an NSO|NRO|header|magic/i], [0x17B0_0000, /fit neither the file staging range \(\d+ bytes free\) nor the code region \(\d+ bytes free\)/]] as [number | undefined, RegExp][]) {
+      const rt = new Runtime(env.mods, { codeBase });
+      ok(rt.loadNso([{ name: "hello", bytes: env.nso("hello") }]), "hello: load failed");
+      let msg = "";
+      try { rt.loadModule("junk", new Uint8Array(20 * MBY)); } catch (e) { msg = e instanceof Error ? e.message : String(e); }
+      ok(want.test(msg), `a 20 MB file loaded at run time${codeBase ? " with 1 MB of code region left" : ""}: ${msg || "accepted"}`);
+      const r = rt.run();
+      ok(r.stop?.kind === "exit" && r.stop.code === 42, "hello still runs");
+      lines.push(`a 20 MB file at run time${codeBase ? ", 1 MB of code region left" : ""}: ${msg}`);
+    }
+    return lines;
+  });
+  if (env.huge) test("large module at the target size (RT_HUGE=1): a 256 MB file with a 512 MB image loads on a layout made for it and runs to completion", async () => {
+    const hg = env.huge!, l = await makeLargeNso(hg.stored(), hg.ro * MBY, hg.data * MBY);
+    const layout = layoutFor({ code: l.imageBytes });
+    const t0 = performance.now(), rt = new Runtime(env.mods, { layout });
+    ok(rt.loadNso([{ name: "huge", bytes: l.nso }]), "load failed: " + rt.red.join(" | "));
+    const t1 = performance.now(), r = rt.run();
+    ok(r.stop?.kind === "exit" && r.stop.code === 9, "exit: " + JSON.stringify(r.stop) + " " + rt.red.join(" | "));
+    eq(rt.stdout(), largeOut(l), "stdout");
+    return [`file ${mb(l.nso.length)}, image ${mb(l.imageBytes)}: code region ${mb(layout.codeSize)}, heap region ${mb(layout.heapSize)} at 0x${layout.heapBase.toString(16)} (${layout.fit}); loaded in ${(t1 - t0).toFixed(0)} ms, ran in ${(performance.now() - t1).toFixed(0)} ms`];
+  });
 
   // ---- translation cache ----
   if (env.cacheStore) test("cache: translated units are stored by build id + load address + translator options and a second start translates nothing (NSO modules; cold and warm start of the large guest)", async () => {

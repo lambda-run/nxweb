@@ -4,8 +4,8 @@
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
 import { A64Host, type A64CacheStore } from "./a64_host.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
-import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, range } from "./rt_layout.ts";
-import { writeKernelCfg, type ProcessLayout } from "./rt_process.ts";
+import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, STAGING, range } from "./rt_layout.ts";
+import { SPACE, writeKernelCfg, type ProcessLayout } from "./rt_process.ts";
 
 export interface RuntimeModules {
   rt: WebAssembly.Module; kernel: WebAssembly.Module; loader: WebAssembly.Module;
@@ -194,6 +194,9 @@ export class Runtime {
   private entry = 0;
   private mainStackTop = 0;
   private nextFile = range("file staging").lo;
+  private codeEnd = SPACE.codeBase + SPACE.codeSize;                       // the end of the code region (the layout's)
+  private dataSpace = { lo: SPACE.lo, hi: SPACE.hi };                      // heap, stack and alias regions: where a large start set's files are staged (rt_layout.ts STAGING)
+  private borrowed: { lo: number; hi: number } | null = null;              // ... while they are there
   private nextBase = GUEST.codeBase;
   private stackRegion = GUEST.stackRegion;
   private lateStubs = new Map<string, number>();
@@ -236,6 +239,10 @@ export class Runtime {
       writeKernelCfg(this, p, opts.layout);
       if (this.k.kernel_init(p) !== 0) throw new Error("runtime: kernel_init refused the process layout: " + this.red.join("; "));
       this.stackRegion = opts.layout.stackBase;
+      this.codeEnd = opts.layout.codeBase + opts.layout.codeSize;
+      // the heap region and what follows it without a gap (layoutFor: the stack region, then the alias region)
+      const l = opts.layout, d = this.dataSpace = { lo: l.heapBase, hi: l.heapBase + l.heapSize };
+      if (l.stackBase === d.hi) { d.hi += l.stackSize; if (l.aliasBase === d.hi) d.hi += l.aliasSize; }
       if (opts.layout.fit === "short") this.log("[RED] runtime: " + opts.layout.note);
       else if (opts.layout.note) this.log("runtime: " + opts.layout.note);
     } else if (this.k.kernel_init(0) !== 0) throw new Error("runtime: kernel_init refused the default layout");
@@ -278,7 +285,10 @@ export class Runtime {
   // the linear memory reaches `end`
   ensure(end: number): void {
     const have = this.memory.buffer.byteLength;
-    if (end > have) { this.memory.grow(Math.ceil((end - have) / 65536)); this.stats.grows++; }
+    if (end <= have) return;
+    try { this.memory.grow(Math.ceil((end - have) / 65536)); }
+    catch { throw new Error(`the linear memory cannot grow from ${have} to ${end} bytes (the host has no memory for it)`); }
+    this.stats.grows++;
   }
   private checkLayout(lx: LoaderExports): void {
     const p = this.r.rt_scratch_ptr() >>> 0, dv = this.dv();
@@ -332,12 +342,13 @@ export class Runtime {
   loadNso(files: { name: string; bytes: Uint8Array }[], o: { verifyHash?: boolean } = {}): boolean {
     if (!this.r.rt_load_begin()) throw new Error("runtime: a process was loaded already");
     try {
-      const staged = files.map(f => this.stage(f.name, f.bytes));
+      const staged = this.stageSet(files);
       for (const d of this.registry.values()) this.ld.hostAdd(d.name, !!d.forced);
       const startId = this.ld.hostAdd(START_NAME, false);
       this.registry.set(START_NAME, { name: START_NAME, fn: cpu => this.startStep(cpu) });
-      const set = this.ld.loadSet(staged, (size: number) => {
+      const set = this.ld.loadSet(staged, (size: number, name: string) => {
         const base = this.nextBase;
+        if (base + size > this.codeEnd) throw new Error(`module ${name}: its image of ${size} bytes does not fit the code region (${hex(base)} .. ${hex(this.codeEnd)} is free): the process needs a layout made for its modules (layoutFor({ code }))`);
         this.nextBase = base + size + 0x1000;
         this.ensure(base + size);
         return base;
@@ -348,6 +359,9 @@ export class Runtime {
           throw new Error(`module ${m.name}: the kernel refused the image at ${hex(m.base)}+${hex(m.imageSize)}`);
         this.addModuleCode(m);
       }
+      // The start set stays for good: pinned now, so the loader lets go of the files before any guest code runs
+      for (const m of set.modules) this.ld.pin(m.handle);
+      this.unstage();
       // start contract: dependencies' init functions first (load order), the main module's last, then the entry
       for (const m of [...set.modules.slice(1), set.modules[0]]) { if (m.init) this.initQueue.push(m.init); this.initQueue.push(...m.initArray); }
       this.entry = set.entry;
@@ -357,6 +371,7 @@ export class Runtime {
       this.mainThread = this.k.kernel_create_main_thread(BigInt(this.ld.stubAddr(startId)), BigInt(this.mainStackTop));
       if (!this.mainThread) throw new Error("the kernel could not create the main thread");
     } catch (e) {
+      this.unstage();
       this.faultNow(FAULT.load, (e instanceof Error ? e.message : String(e)).replace(/^\[RED\] /, ""));
       return false;
     }
@@ -375,12 +390,46 @@ export class Runtime {
     this.codeIds.push({ key: `${toHex(m.buildId)}${cuts ? "+cuts" + cuts : ""}@${m.base.toString(16)}`, lo: m.base, size: m.imageSize });
     this.stats.entries += entries.length;
   }
-  private stage(name: string, bytes: Uint8Array): { name: string; ptr: number; len: number } {
-    const stage = range("file staging"), ptr = this.nextFile;
-    if (ptr + bytes.length > stage.hi) throw new Error(`file ${name}: ${bytes.length} bytes do not fit the file staging range`);
+  // The files of the start set, in linear memory until its modules are pinned (rt_layout.ts STAGING): in the fixed
+  // range when they fit it, else from the base of the heap region on, where nothing is mapped before the load ends.
+  private stageSet(files: { name: string; bytes: Uint8Array }[]): { name: string; ptr: number; len: number }[] {
+    const fixed = range(STAGING.fixed), pg = (n: number) => Math.ceil(n / STAGING.pageAlign) * STAGING.pageAlign;
+    const total = files.reduce((a, f) => a + pg(f.bytes.length), 0), h = this.dataSpace;
+    let at = this.nextFile;
+    if (at + total > fixed.hi) {
+      if (total > h.hi - h.lo) {
+        const big = files.reduce((a, f) => f.bytes.length > a.bytes.length ? f : a);
+        throw new Error(`the module files do not fit the file staging: ${total} bytes in ${files.length} files (the largest: ${big.name}, ${big.bytes.length} bytes), ` +
+          `${fixed.hi - this.nextFile} bytes free in the fixed range and ${h.hi - h.lo} bytes of the guest's heap, stack and alias regions (from ${hex(h.lo)}) to stage them in while loading`);
+      }
+      this.ensure(h.lo + total);
+      this.borrowed = { lo: h.lo, hi: h.lo + total };
+      at = h.lo;
+      this.log(`runtime: ${total} bytes of module files are staged from the heap region's base ${hex(h.lo)} on while the process is loaded`);
+    }
+    const u8 = this.u8();
+    const out = files.map(f => { const ptr = at; u8.set(f.bytes, ptr); at += pg(f.bytes.length); return { name: f.name, ptr, len: f.bytes.length }; });
+    if (!this.borrowed) this.nextFile = at;
+    return out;
+  }
+  // The start set's modules are pinned (or the load failed): the fixed range is free again, and what was staged in
+  // the guest's regions read zero again, as the kernel expects of memory nothing was mapped in
+  private unstage(): void {
+    this.nextFile = range(STAGING.fixed).lo;
+    if (this.borrowed) { this.u8().fill(0, this.borrowed.lo, this.borrowed.hi); this.borrowed = null; }
+  }
+  // The file of a module loaded at run time, which stays for the life of the process (a reload maps it again): in the
+  // fixed range, or in host-allocated pages of the code region when it does not fit there. undo() gives it back.
+  private stage(name: string, bytes: Uint8Array): { name: string; ptr: number; len: number; undo(): void } {
+    const fixed = range(STAGING.fixed), was = this.nextFile, base = this.nextBase;
+    let ptr = was, undo = () => { this.nextFile = was; };
+    if (ptr + bytes.length > fixed.hi) {
+      ptr = this.hostAlloc(bytes.length);
+      if (!ptr) throw new Error(`file ${name}: ${bytes.length} bytes fit neither the file staging range (${fixed.hi - was} bytes free) nor the code region (${Math.max(0, this.codeEnd - base)} bytes free)`);
+      undo = () => { if (this.nextBase === ptr + ((bytes.length + 0xFFF) & ~0xFFF) + 0x1000) this.nextBase = base; this.u8().fill(0, ptr, ptr + bytes.length); };
+    } else this.nextFile = (ptr + bytes.length + 0xFFF) & ~0xFFF;
     this.u8().set(bytes, ptr);
-    this.nextFile = (ptr + bytes.length + 0xFFF) & ~0xFFF;
-    return { name, ptr, len: bytes.length };
+    return { name, ptr, len: bytes.length, undo };
   }
   // SHA-256 of the concatenation of byte ranges (the loader's implementation; the bytes are copied to free staging memory)
   sha256Of(parts: Uint8Array[]): Uint8Array {
@@ -424,7 +473,7 @@ export class Runtime {
     const staged = this.stage(name, bytes), id = this.sha256(staged.ptr, staged.len);
     let d = this.dyn.get(id);
     if (d) {
-      this.nextFile = staged.ptr;   // the same content: the copy staged at its first load is the pristine one
+      staged.undo();   // the same content: the copy staged at its first load is the pristine one
       const st = this.ld.state(d.handle);
       if (st !== "Unloaded") throw new Error(`module ${name} is loaded already (${st})`);
     } else {
@@ -501,7 +550,6 @@ export class Runtime {
     const start = cpu.rt.core.pc.value as bigint;
     const next = this.initQueue.shift();
     if (next !== undefined) { cpu.setX(30, start); return cpu.jump(next); }
-    for (const m of this.modules) { this.ld.activate(m.handle); this.ld.pin(m.handle); }
     for (let i = 0; i < 30; i++) cpu.setX(i, 0);
     cpu.setX(1, this.mainThread); cpu.setX(30, PC_EXIT);
     this.core.sp.value = BigInt(this.mainStackTop);
@@ -763,7 +811,7 @@ export class Runtime {
   // code region above the modules. 0 when the region is full.
   hostAlloc(size: number): number {
     const n = (size + 0xFFF) & ~0xFFF, base = this.nextBase;
-    if (base + n > 0x17C0_0000) return 0;
+    if (base + n > this.codeEnd) return 0;
     this.nextBase = base + n + 0x1000;
     this.ensure(base + n);
     return base;

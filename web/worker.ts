@@ -18,6 +18,7 @@ import { attachHle } from "../src/glue/hle_rt.ts";
 import type { HleHost } from "../src/glue/hle_host.ts";
 import { OUT_S } from "../src/glue/audio_host.ts";
 import { handoffOptions, type HandoffOptions } from "../src/glue/rt_handoff.ts";
+import { layoutFor, nsoImageBytes, CODE_SPARE, SPACE } from "../src/glue/rt_process.ts";
 import { storageFromMessage, type HandOffMessage } from "../src/prepare/host/prepare.ts";
 import { moduleRows, takeovers, machineRows, refusedTotal, reportText, type KitPart, type ModuleRow, type TakeoverSummary } from "../src/glue/rt_report.ts";
 
@@ -86,9 +87,12 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   ratio = r; stdoutSeen = 0; last = undefined;
   const storage = o.storage ?? await storageFor(files[0].bytes, o.rom);
   const guard = guardNow = guardWanted, game = o.game;
+  // files given to the page directly: the default layout, unless their images need a larger code region than it has
+  const code = files.reduce((a, f) => a + nsoImageBytes(f.bytes) + 0x1000, 0);
+  const layout = game?.layout ?? (code + CODE_SPARE > SPACE.codeSize ? layoutFor({ code }) : undefined);
   // a prepared game: its address space, kernel settings and stack from its profile and NPDM (rt_handoff.ts)
   const me = rt = new Runtime(mods, { clock: "wall", guard, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
-    layout: game?.layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
+    layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
   optionsNote = `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
     (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");
   for (const n of game?.notes ?? []) log("page: " + n);
@@ -270,7 +274,7 @@ self.onmessage = async (ev: MessageEvent) => {
       let saves: FsStorage;
       try { const st = new OpfsStorage(msg.saveId); await st.preopen(FS_KIND.SAVE); await st.preopen(FS_KIND.DEVICE_SAVE); saves = st; fsNote = `saves in OPFS under ${msg.saveId}, RomFS of ${msg.rom?.files.length ?? 0} files from the folder, ${msg.aoc.length} add-on contents`; }
       catch (e: any) { saves = new MemStorage(); fsNote = `no OPFS here (${e?.message ?? e}): saves are kept in memory`; }
-      await load(files, [], undefined, { name: `${msg.name} (${msg.titleId}, ${msg.displayVersion ?? "v" + msg.version})`, game: handoffOptions(msg), storage: storageFromMessage(msg, saves),
+      await load(files, [], undefined, { name: `${msg.name} (${msg.titleId}, ${msg.displayVersion ?? "v" + msg.version})`, game: handoffOptions(msg, { codeBytes: files.reduce((a, f) => a + nsoImageBytes(f.bytes) + 0x1000, 0) }), storage: storageFromMessage(msg, saves),
         hooks: me => me.register({ name: "demo_frames", fn: () => 0 }) });
     }
     else if (m.type === "pause") rt?.requestPause();

@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
-import { ROOT, OUT, GUESTS, MODULES, GFX_MODULES, NRO_MODULES, BIG_DIR, SHADER_OUT, shaderArtifacts, buildBig, haveNvn, build, buildModules, corpusList } from "./harness.mts";
+import { ROOT, OUT, GUESTS, MODULES, STORED_MODULES, GFX_MODULES, NRO_MODULES, BIG_DIR, SHADER_OUT, shaderArtifacts, buildBig, haveNvn, build, buildModules, corpusList } from "./harness.mts";
 import { writeFileSync } from "node:fs";
 import { png } from "./png.mts";
 import { formatResult, type CaseResult } from "./cases.ts";
@@ -33,7 +33,7 @@ const server = createServer((req, res) => {
     if (url === "/") return send(page, "text/html");
     if (url === "/worker.js") return send(readFileSync(join(OUT, "web", "worker.js")), "text/javascript");
     if (url === "/main.js") return send(readFileSync(join(OUT, "web", "main.js")), "text/javascript");
-    if (url === "/list") return send(JSON.stringify({ nso: [...Object.keys(MODULES), ...(haveNvn() ? Object.keys(GFX_MODULES) : [])], files: [...Object.keys(NRO_MODULES).map(n => n + ".nro"), "romfs.img", "romfs_blob.bin"], corpus: corpusList(), gfx: haveNvn(), big: haveBig ? "a64_big.O1" : null, shaders, guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : null }), "application/json");
+    if (url === "/list") return send(JSON.stringify({ nso: [...Object.keys(MODULES), ...Object.keys(STORED_MODULES).filter(n => n !== "huge"), ...(haveNvn() ? Object.keys(GFX_MODULES) : [])], files: [...Object.keys(NRO_MODULES).map(n => n + ".nro"), "romfs.img", "romfs_blob.bin"], corpus: corpusList(), gfx: haveNvn(), big: haveBig ? "a64_big.O1" : null, shaders, guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : null }), "application/json");
     if (url === "/shader_worker.js") return send(readFileSync(join(OUT, "web", "shader_worker.js")), "text/javascript");
     if ((m = /^\/shaders\/([\w./-]+)$/.exec(url)) && !m[1].includes("..")) return send(readFileSync(join(SHADER_OUT, m[1])), TYPES[m[1].slice(m[1].lastIndexOf("."))] ?? "application/octet-stream");
     if ((m = /^\/guest\/([\w.]+)$/.exec(url))) return send(readFileSync(join(GUESTS, m[1])), "application/octet-stream");

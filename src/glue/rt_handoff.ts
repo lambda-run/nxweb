@@ -13,12 +13,13 @@ export interface HandoffLike {
 }
 export interface HandoffOptions extends ProcessSettings { programId: bigint; cutsKey: Record<string, string>; notes: string[] }
 const fnv = (s: string) => { let h = 0xcbf29ce484222325n; for (let i = 0; i < s.length; i++) h = BigInt.asUintN(64, (h ^ BigInt(s.charCodeAt(i))) * 0x100000001b3n); return h.toString(16).padStart(16, "0"); };
-export function handoffOptions(m: HandoffLike): HandoffOptions {
+// codeBytes: the images of the code modules together (rt_process.ts nsoImageBytes of each file), when they are known
+export function handoffOptions(m: HandoffLike, o: { codeBytes?: number } = {}): HandoffOptions {
   // the profile's reserved address space: "heap 0x... alias 0x..." (and stack) in its address_space need
   const need = m.profile.needs.find(n => n.key === "address_space")?.value ?? "";
   const part = (k: string) => { const x = new RegExp(k + " (0x[0-9a-fA-F]+|\\d+)").exec(need); return x ? Number(x[1]) : undefined; };
   const space = need ? { heap_region: part("heap"), alias_region: part("alias"), stack_region: part("stack") } : undefined;
-  const s = settingsFor(m.profile.apply, { space, stackSize: m.npdm?.stackSize, displayVersion: m.displayVersion, programId: m.programId });
+  const s = settingsFor(m.profile.apply, { space, stackSize: m.npdm?.stackSize, displayVersion: m.displayVersion, programId: m.programId, code: o.codeBytes });
   const cutsKey: Record<string, string> = {};
   for (const mod of m.modules) {
     const mine = m.cuts.filter(c => c.module === mod.name);

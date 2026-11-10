@@ -16,7 +16,7 @@ const SIZES: [name: string, size: number, module: Range["module"] | undefined, w
   ["kernel static",  0x0100_0000, "kernel",  "src/kernel static data: thread records and contexts, handle table, alias page states (14 MB for an alias region of up to 3.5 GB)"],
   ["gfx static",     0x0010_0000, "gfx",     "src/gfx static data (its --memoryBase in build/runtime/gfx.wasm)"],
   ["gfx arena",      0x0200_0000, undefined, "gfx_init(arena, gfx_arena_bytes()): 24 MB today, 32 MB kept"],
-  ["file staging",   0x0100_0000, undefined, "NSO/NRO file bytes while the loader needs them (16 MB)"],
+  ["file staging",   0x0100_0000, undefined, "module file bytes while the loader needs them, when they are small (16 MB): the start set of a small program, modules loaded at run time; its free tail is scratch. A larger start set is staged outside this table: STAGING below"],
   ["fs static",      0x0010_0000, "fs",      "src/fs static data (its --memoryBase in build/runtime/fs.wasm; about 400 KB)"],
   ["fs arena",       0x0070_0000, undefined, "fs_init(arena): RomFS tables of the mounted images, save trees, directory snapshots (7 MB)"],
   ["a64 translator", 0x0100_0000, undefined, "src/a64 translator static data and buffers (its --memoryBase, root a64:build script)"],
@@ -43,6 +43,25 @@ export function range(name: string): Range {
   if (!r) throw new Error(`rt_layout: no range "${name}"`);
   return r;
 }
+
+// File staging beyond the fixed range. The loader needs each module's file in linear memory until the module is pinned,
+// and a game's main module is 20 to 150 MB or more. Rather than a fixed range sized for the largest game (address space
+// and memory every small program would pay for), the files of a start set that does not fit "file staging" are staged
+// in the process's own data regions, from the base of the heap region on (heap, stack and alias regions follow each
+// other without a gap in a layout made by layoutFor), sized from the files themselves. Nothing is mapped there while
+// the process is loaded, and the game commits that memory anyway: no address space is reserved, and the pages are
+// used again by the game's heap. The modules of a start set are pinned as soon as they are relocated (they are never
+// unloaded), and the staged bytes are zeroed again before the main thread's stack is mapped and long before the first
+// guest instruction: the guest never sees them, and the kernel finds the zeroes it expects of memory it has not
+// handed out. What remains as limits: the files together must fit those regions (3.6 GB in the default layout) and
+// the host must let the memory grow that far; each image must fit the code region (rt_process.ts layoutFor({ code })
+// sizes it per game); a module loaded at run time that does not fit "file staging" is staged in host-allocated pages
+// of the code region, for the life of the process.
+export const STAGING = {
+  fixed: "file staging",                       // the range of the table that is tried first
+  borrowed: "heap, stack and alias regions",   // ProcessLayout.heapBase .. the end of the alias region (the kernel's default: 0x1800_0000 .. 0xFFFF_0000)
+  pageAlign: 0x1000,                           // every file starts on a page
+};
 
 // Guest side (the kernel's default layout): where the runtime puts what it places itself
 export const GUEST = {

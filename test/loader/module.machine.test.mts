@@ -78,5 +78,14 @@ test("module: Map is accepted in Parsed and Unloaded only, and no state after Pi
   for (const f of M.final) assert.equal(M.transitions.filter(([from]) => from === f).length, 0, `${f} is final`);
   const into = (s: string) => M.transitions.filter(([, , to]) => to === s).map(([f, e]) => `${f}/${e}`).sort();
   assert.deepEqual(into("Unloaded"), ["Active/Unload", "Mapped/Unload", "Relocated/Unload"]);
-  assert.deepEqual(into("Pinned"), ["Active/Pin"]);
+  assert.deepEqual(into("Pinned"), ["Active/Pin", "Relocated/Pin"]);
+});
+
+test("module: a module of the start set is pinned as soon as it is relocated; Pin is refused before the relocation", () => {
+  const k = fresh(), m = module_(k, 0);
+  m.no("Pin");
+  m.go("ParseOk", "Parsed"); m.no("Pin");
+  m.go("Map", "Mapped"); m.no("Pin");
+  m.go("Relocate", "Relocated"); m.go("Pin", "Pinned");
+  for (const e of M.events) m.no(e, 1);
 });
