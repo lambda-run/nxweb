@@ -128,7 +128,7 @@ function faultName(kind: u32): string {
 // The process stops with a fault. ctx: the faulting thread's context block (contract layout; the glue saved the CPU
 // state into it), 0 when no thread is involved. pcExact = 0: the pc is where the registers were last written back
 // (function entry or the last call), as after a wasm trap. The detail text is at rt_scratch_ptr(), detailLen bytes.
-// Two red lines: what, where, in which thread; then a short register dump.
+// Red lines: what, where, in which thread; then x0..x30, sp, pc and nzcv on four lines ("[RED]   x0=" starts the first).
 export function rt_fault(kind: u32, threadHandle: u32, threadIndex: i32, ctx: usize, pcExact: i32, aux: u64, detailLen: i32): i32 {
   const pc: u64 = ctx ? load<u64>(ctx, 0x100) : 0;
   store<u32>(FAULT, kind, 0); store<u32>(FAULT, threadHandle, 4); store<u64>(FAULT, pc, 8); store<u64>(FAULT, aux, 16); store<i32>(FAULT, threadIndex, 24);
@@ -140,10 +140,13 @@ export function rt_fault(kind: u32, threadHandle: u32, threadIndex: i32, ctx: us
   if (detailLen > 0) { puts(": "); putBytes(SCRATCH, detailLen < 900 ? detailLen : 900); }
   lineEnd();
   if (ctx) {
-    lineStart("[RED]   ");
-    for (let i = 0; i < 4; i++) { putc(120); putu(i); putc(61); putx(load<u64>(ctx + (<usize>i << 3))); putc(32); }
-    puts("x29="); putx(load<u64>(ctx, 29 * 8)); puts(" x30="); putx(load<u64>(ctx, 30 * 8)); puts(" sp="); putx(load<u64>(ctx, 0xF8));
-    puts(" nzcv="); putx(load<u32>(ctx, 0x108));
+    // every register, eight to a line; the last line ends with sp, pc and nzcv
+    for (let i = 0; i < 31; i++) {
+      if (!(i & 7)) lineStart("[RED]   "); else putc(32);
+      putc(120); putu(i); putc(61); putx(load<u64>(ctx + (<usize>i << 3)));
+      if ((i & 7) == 7) lineEnd();
+    }
+    puts(" sp="); putx(load<u64>(ctx, 0xF8)); puts(" pc="); putx(pc); puts(" nzcv="); putx(load<u32>(ctx, 0x108));
     lineEnd();
   }
   return proc().step(ProcessE.Fault, (<u64>STOP_FAULT << 32) | <u64>kind) ? 1 : 0;

@@ -14,7 +14,7 @@ Waiting and the SVC returns "switch"; time comes in through `kernel_tick`.
 | `sched.ts` | The scheduler (the only file that knows cores) |
 | `thread.ts`, `handle.ts`, `clock.ts`, `mem.ts`, `base.ts` | Thread records and contexts, handle table and events, guest clock, memory bookkeeping, results / log / lock |
 
-`npm run kernel:build`, `npm run kernel:test` (63 tests), `npm run kit:test` (the machines' tables).
+`npm run kernel:build`, `npm run kernel:test` (69 tests), `npm run kit:test` (the machines' tables).
 
 ## API for the embedder
 
@@ -49,7 +49,9 @@ freeze holds: the thread waits for the clock as GetSystemTick does, but its wake
 runs the read again), `kernel_handle_close(h)` (CloseHandle for handles the embedder made), `kernel_kill()` (the
 embedder ends the process: every thread leaves as at ExitProcess, stop reason 3), `kernel_event_new` /
 `_dup_readable` / `_signal` / `_clear` (events a service hands its client), `kernel_seed_entropy`, and for tests and
-dumps `kernel_thread_info`, `kernel_thread_ctx`, `kernel_count`, `kernel_check`. Every entry takes the kernel lock
+dumps `kernel_thread_info`, `kernel_thread_ctx`, `kernel_count`, `kernel_check`; for a fault report
+`kernel_svc_ring(index, out, cap)` / `kernel_svc_total(index)`: each thread record's last 16 SVCs (`ring.ts`, 80 bytes
+each: number, x0..x5 as it entered, x0 and x1 as it returned or as its wait's wake wrote them, the return pc). Every entry takes the kernel lock
 (`base.ts kLock`): today it only catches re-entry; it is the one function that becomes a real lock with Workers.
 
 ## Scheduler and threads
@@ -89,7 +91,7 @@ top of the code region, sized by the layout at 1/256 of the region beyond 3.5 GB
 give fails with ResultOutOfResource and a red line. Regions may lie anywhere below 0x3_FFFF_0000 there (0xFFFF_0000
 in a 32-bit memory). The kernel grows the memory (`memory.grow`) when a heap, map or thread-local slot needs it.
 
-## Verified (`npm run kernel:test`: 63 tests, 86/86 transitions taken by the kernel itself)
+## Verified (`npm run kernel:test`: 69 tests, 86/86 transitions taken by the kernel itself)
 
 Every SVC below with its success paths, each result code and timeouts: 0x01–0x07, 0x08–0x12, 0x16–0x1F, 0x21, 0x24–0x27,
 0x29, 0x2C, 0x2D, 0x32–0x35, 0x45. Ported nxnative scenarios: `t_condvar`, all seven groups of `t_sync_wait`,

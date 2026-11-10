@@ -11,6 +11,7 @@ import { MemStorage } from "../../src/glue/fs_host.ts";
 import { layoutFor, settingsFor, SPACE } from "../../src/glue/rt_process.ts";
 import { handoffOptions } from "../../src/glue/rt_handoff.ts";
 import type { HleHost } from "../../src/glue/hle_host.ts";
+import { reportText } from "../../src/glue/rt_report.ts";
 
 export interface CorpusGuest { name: string; side: any; image: Uint8Array; expected: Uint8Array }
 export interface Env {
@@ -413,12 +414,17 @@ export function cases(env: Env): Case[] {
       eq(r.state, "Stopped", "state"); eq(rt.state, "Stopped", "machine state");
       eq(r.stop?.kind, "fault", "stop kind"); eq(r.stop?.fault?.kind, kind, `fault kind (${rt.red.join(" | ")})`);
       eq(rt.stdout(), before, "stdout before the fault");
-      const red = rt.red;
-      ok(red.length >= 2 && red.at(-2)!.startsWith("[RED] fault: ") && /in thread 0x10\d\d \(#\d\) at pc=0x[0-9a-f]+/.test(red.at(-2)!), "red line naming thread and pc: " + red.join(" | "));
-      ok(/^\[RED\]   x0=0x[0-9a-f]+ x1=.* x29=0x[0-9a-f]+ x30=0x[0-9a-f]+ sp=0x[0-9a-f]+ nzcv=/.test(red.at(-1)!), "register dump: " + red.at(-1));
+      const red = rt.red, lines = r.stop!.fault!.lines, at = red.findLastIndex(l => l.startsWith("[RED] fault: "));
+      eq(lines, red.slice(at), "the fault's lines are the red lines from its first on");
+      ok(/in thread 0x10\d\d \(#\d\) at pc=0x[0-9a-f]+/.test(lines[0]), "red line naming thread and pc: " + red.join(" | "));
+      const regs = lines.slice(1, 5).join(" ").replace(/\[RED\]   /g, "");
+      ok(new RegExp("^" + Array.from({ length: 31 }, (_, i) => `x${i}=0x[0-9a-f]+`).join(" ") + " sp=0x[0-9a-f]+ pc=0x[0-9a-f]+ nzcv=0x[0-9a-f]+$").test(regs), "register dump, x0..x30 sp pc nzcv: " + regs);
+      ok(regs.includes(` pc=${hex(r.stop!.fault!.pc)} `), "the dump's pc is the fault's");
+      ok(lines.some(l => /^\[RED\]   pc=0x[0-9a-f]+ is .*; x30=0x[0-9a-f]+ is /.test(l)), "pc and x30 placed: " + lines.join(" | "));
+      ok(lines.some(l => /^\[RED\]   the last \d+ of the \d+ SVCs of thread 0x10\d\d, oldest first:$/.test(l)), "the SVC ring's heading: " + lines.join(" | "));
       check(rt, r);
       eq(rt.run().state, "Stopped", "run() again stays Stopped");
-      return red.slice(-2);
+      return lines;
     });
   faultCase("fault_jump", "a jump to an unmapped address", "jump", "jumping to 0x60000000, which is not mapped\n", (rt, r) => {
     eq(r.stop!.fault!.pc, 0x60000000n, "pc"); eq(r.stop!.fault!.thread, 0x1001, "thread");
@@ -434,6 +440,11 @@ export function cases(env: Env): Case[] {
     eq(r.stop!.fault!.thread, 0x1002, "the faulting thread is the worker");
     ok(r.stop!.fault!.detail.includes("out of bounds"), r.stop!.fault!.detail);
     ok(rt.memory.buffer.byteLength <= (hi ? 0x3_F000_0000 : 0xF0000000), "the memory did not reach the address");
+    // the ring is the faulting thread's: the worker's one say(), not the main thread's CreateThread / StartThread / wait
+    const svcs = r.stop!.fault!.lines.filter(l => l.startsWith("[RED]     #"));
+    eq(svcs.length, 1, "the worker made one SVC: " + svcs.join(" | "));
+    ok(/^\[RED\]     #1 svc 0x27 OutputDebugString\(/.test(svcs[0]), svcs[0]);
+    ok(r.stop!.fault!.lines.includes("[RED]   the last 1 of the 1 SVCs of thread 0x1002, oldest first:"), r.stop!.fault!.lines.join(" | "));
   });
   faultCase("fault_stack", "guest stack overflow by runaway recursion", "stack", "recursing without end\n", (rt, r) => {
     ok(Number(r.stop!.fault!.aux) < D.stackBase, "sp below the stack: " + hex(r.stop!.fault!.aux));
@@ -441,13 +452,29 @@ export function cases(env: Env): Case[] {
   // the guard on the host area (the default): a guest access below GUARD_BASE traps, and the trap's pc is the instruction itself
   const isMemInsn = (rt: Runtime, pc: bigint) => ((rt.dv().getUint32(Number(pc), true) >>> 25) & 5) === 4;
   faultCase("fault_null", "by default (the host-area guard), a read through a null pointer", "trap", "reading through a null pointer\n", (rt, r) => {
-    const line = rt.red.at(-2)!, pc = r.stop!.fault!.pc, t = rt.modules[0].text;
+    const line = r.stop!.fault!.lines[0], pc = r.stop!.fault!.pc, t = rt.modules[0].text;
     ok(Number(pc) >= t.addr && Number(pc) < t.addr + t.size && isMemInsn(rt, pc), "the pc is a load instruction in the module's text: " + hex(pc));
     ok(!line.includes("last synced pc"), "the pc is exact: " + line);
     ok(line.includes("a null or host-area pointer") && line.includes("below " + hex(GUARD_BASE)), line);
+    // issue #3: pc and x30 by symbol (read_word and read_through are in the module's dynamic symbol table) and the last SVCs
+    const lines = r.stop!.fault!.lines, m = rt.modules[0], ctxPc = Number(pc);
+    const sym = rt.ld.symbolAt(m.handle, ctxPc)!;
+    eq(sym?.name, "read_word", "the symbol of the pc");
+    const place = lines.find(l => l.startsWith("[RED]   pc="))!;
+    ok(place.includes(`is fault_null+${hex(ctxPc - m.base)} (read_word+${hex(ctxPc - sym.value)})`), place);
+    ok(/; x30=0x[0-9a-f]+ is fault_null\+0x[0-9a-f]+ \(read_through\+0x[0-9a-f]+\)$/.test(place), place);
+    ok(lines.some(l => l.includes("the registers are as last written back")), "a trap without preciseFaults 2 says its registers are not exact");
+    const svcs = lines.filter(l => l.startsWith("[RED]     #"));
+    ok(svcs.length >= 1 && /^\[RED\]     #\d+ svc 0x27 OutputDebugString\(x0=0x[0-9a-f]+ x1=0x1f\) -> 0x0, returns to 0x8[0-9a-f]+$/.test(svcs.at(-1)!.replace(/0x18[0-9a-f]{7}$/, "0x8000000")), "the say() before the read: " + svcs.join(" | "));
+    eq(rt.ld.symbolAt(m.handle, m.base), undefined, "no function symbol at the image's first byte (crt0 is hidden)");
+    eq(rt.ld.symbolAt(m.handle, m.base + m.imageSize + 4096), undefined, "none outside the module");
+    // the report's fault block is these lines
+    const text = reportText({ title: "t", when: "-", userAgent: "-", adapter: "-", optionsKey: "-", options: "-", state: "Stopped", stop: "fault", fault: lines,
+      modules: [], takeovers: null, machines: [], counters: {}, log: [], redTotal: lines.length });
+    for (const l of lines) ok(text.includes("\n  " + l + "\n"), "in the report: " + l);
   });
   faultCase("fault_host", "by default (the host-area guard), a write into the kernel's static data", "trap", "writing into the host area (0x1000100, the kernel's static data)\n", (rt, r) => {
-    ok(isMemInsn(rt, r.stop!.fault!.pc) && !rt.red.at(-2)!.includes("last synced pc"), rt.red.at(-2)!);
+    ok(isMemInsn(rt, r.stop!.fault!.pc) && !r.stop!.fault!.lines[0].includes("last synced pc"), r.stop!.fault!.lines[0]);
     ok(rt.dv().getUint32(0x1000100, true) !== 0x55, "the word was not written");
   });
   test("f without the guard (`guard: false`, for measurements): the same null read returns zero and the same write lands in the kernel's memory", () => {
@@ -599,7 +626,7 @@ export function cases(env: Env): Case[] {
         const r = rt.run();
         let why = "";
         const got = rt.stdoutBytes();
-        if (r.stop?.kind !== "exit") why = `stopped with ${r.stop?.kind} ${r.stop?.fault?.kind ?? ""}: ${rt.red.at(-2) ?? ""}`;
+        if (r.stop?.kind !== "exit") why = `stopped with ${r.stop?.kind} ${r.stop?.fault?.kind ?? ""}: ${r.stop?.fault?.lines[0] ?? ""}`;
         else if (got.length !== g.expected.length || got.some((b, i) => b !== g.expected[i])) why = "stdout differs";
         else if (g.side.exit_code !== undefined && r.stop.code !== g.side.exit_code) why = `exit code ${r.stop.code}, expected ${g.side.exit_code}`;
         const isKnown = CORPUS_KNOWN_FAILING.includes(g.name.split(".")[0]);
@@ -626,7 +653,7 @@ export function cases(env: Env): Case[] {
         const rt = new Runtime(env.mods, { guard });
         ok(rt.loadFlat(g.image, g.side), `${g.name}: load failed`);
         const r = rt.run();
-        ok(r.stop?.kind === "exit", `${g.name} with guard ${guard}: ${rt.red.at(-2) ?? r.stop?.kind}`);
+        ok(r.stop?.kind === "exit", `${g.name} with guard ${guard}: ${r.stop?.fault?.lines[0] ?? r.stop?.kind}`);
         ms += rt.stats.runMs - rt.a64.translateNs / 1e6; insns += g.side.insn_count ?? 0;
       }
       return ms;
