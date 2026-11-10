@@ -7,7 +7,10 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "kit:diagrams": "node src/kit/host/gen.mts",
     "kit:check": "node src/kit/host/gen.mts --check",
-    "kit:test": "node test/kit/run.mts"
+    "kit:test": "node test/kit/run.mts",
+    "guests:build": "python3 tools/build_guests.py",
+    "guests:check": "python3 tools/build_guests.py --check",
+    "guests:run": "python3 tools/ref_run.py"
   },
   "keywords": [],
   "author": "",
