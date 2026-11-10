@@ -397,7 +397,7 @@ function hop(k: i32, sub: u32, mode: u32, a: u64, b: u32, c: u32, fbits: i32, bi
         case HK_DIV: r = x / y; break;
         default: r = x * y;
       }
-      if (r != r) return DNH;
+      if (r != r) return k == HK_NMUL ? DNH ^ 0x8000 : DNH;   // FNMUL negates the default NaN too
       let rh = toH(r, mode);
       return k == HK_NMUL ? rh ^ 0x8000 : k == HK_ABD ? rh & 0x7FFF : rh;
     }
