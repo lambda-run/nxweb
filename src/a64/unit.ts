@@ -440,8 +440,8 @@ export function translate(nEntries: i32): u32 {
   b(0x60); b(3); b(0x7D); b(0x7D); b(0x7D); b(1); b(0x7D);
   b(0x60); b(3); b(0x7C); b(0x7C); b(0x7C); b(1); b(0x7C);
   b(0x60); b(2); b(T_I32); b(T_I64); b(1); b(T_I64);
-  b(0x60); b(3); b(T_I32); b(0x7D); b(0x7D); b(1); b(0x7D);
-  b(0x60); b(3); b(T_I32); b(0x7C); b(0x7C); b(1); b(0x7C);
+  b(0x60); b(4); b(T_I32); b(0x7D); b(0x7D); b(0x7D); b(1); b(0x7D);
+  b(0x60); b(4); b(T_I32); b(0x7C); b(0x7C); b(0x7C); b(1); b(0x7C);
   secEnd(s);
   s = secBegin(2);
   leb(2 + NGLOB + NIMPF);
@@ -464,8 +464,8 @@ export function translate(nEntries: i32): u32 {
   name("hlp"); name("nan3s"); b(0); b(10);
   name("hlp"); name("nan3d"); b(0); b(11);
   name("hlp"); name("rnd"); b(0); b(12);
-  name("hlp"); name("rariths"); b(0); b(13);
-  name("hlp"); name("rarithd"); b(0); b(14);
+  name("hlp"); name("sfs"); b(0); b(13);
+  name("hlp"); name("sfd"); b(0); b(14);
   secEnd(s);
   s = secBegin(3);
   leb(nFn); for (let f = 0; f < nFn; f++) b(0);
