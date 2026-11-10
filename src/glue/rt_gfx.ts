@@ -5,6 +5,7 @@
 // With no device (Node) the recorder runs against a null replayer: every NVN call and the lowering happen, nothing is
 // drawn, fences complete at once. See src/runtime/README.md, "Graphics".
 import { Runtime, nvn2Items, type HostCpu, type HostResult } from "./rt_runtime.ts";
+import { ctlLens, isNvn2, keyControl, NVN2_CTL_READ, NVN2_KEY_CTL } from "../shaders/job.ts";
 import { GfxHost, type ShaderInfo, type Capture } from "./gfx_host.ts";
 import { range } from "./rt_layout.ts";
 import { instantiate } from "./wasm_abi.ts";
@@ -166,16 +167,18 @@ export class RtGfx implements HleGfx {
     this.shownAt[n & 255] = BigInt(Math.round(performance.now() * 1e6));
   }
 
-  // The key of a stage as the recorder computes it (src/gfx/shader.ts shaderKey; an NVN2 control section: none here)
-  // and the bytes it is made of: NVNshaderData { u64 data; u64 control } at sd
+  // The key of a stage as the recorder computes it (src/gfx/shader.ts shaderKey; src/shaders/job.ts keyControl, NVN and NVN2)
+  // and the bytes it is made of: NVNshaderData { u64 data; u64 control } at sd. The translator's job reads the control
+  // section's first 0x880 bytes (NVN2: NVN2_CTL_READ)
   private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
-    const rt = this.rt, dv = rt.dv(), data = Number(dv.getBigUint64(sd, true)), c = Number(dv.getBigUint64(sd + 8, true));
-    if (!c || c + 0x880 > rt.u8().length) return null;
-    if (dv.getUint32(c, true) === 0x98761234 && dv.getUint32(c + 4, true) === 0xc9) return null;
-    const own = dv.getUint32(c + 0x20, true), nctl = own >= 0x760 && own < 0x880 ? own : 0x880, ncode = dv.getUint32(c + 0x704, true);
-    const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= rt.u8().length;
-    const control = () => rt.u8().slice(c, c + 0x880), code = () => hasCode ? rt.u8().slice(data, data + ncode) : new Uint8Array(0);
-    const key = Array.from(rt.sha256Of([rt.u8().subarray(c, c + nctl), hasCode ? rt.u8().subarray(data, data + ncode) : new Uint8Array(0)]).subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
+    const rt = this.rt, mem = rt.u8(), dv = rt.dv(), data = Number(dv.getBigUint64(sd, true)), c = Number(dv.getBigUint64(sd + 8, true));
+    if (!c || c + NVN2_KEY_CTL > mem.length) return null;
+    const nctl = isNvn2(mem.subarray(c, c + NVN2_KEY_CTL)) ? NVN2_CTL_READ : 0x880;
+    if (c + nctl > mem.length) return null;
+    const { ncode } = ctlLens(mem.subarray(c, c + nctl));
+    const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= mem.length;
+    const control = () => rt.u8().slice(c, c + nctl), code = () => hasCode ? rt.u8().slice(data, data + ncode) : new Uint8Array(0);
+    const key = Array.from(rt.sha256Of([keyControl(mem.subarray(c, c + nctl)), hasCode ? mem.subarray(data, data + ncode) : new Uint8Array(0)]).subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
     return { key, blob: () => ({ key, control: control(), code: code() }) };
   }
   private workDone(): Promise<unknown> | null {

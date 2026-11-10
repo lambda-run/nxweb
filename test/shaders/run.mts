@@ -15,6 +15,7 @@ import { parse, serialize, fixForWgsl } from "../../src/shaders/spv.ts";
 import { ShaderLibrary, writeLibrary, type Reflection } from "../../src/shaders/library.ts";
 import { build, glslToSpv } from "../../tools/shaders/build_lib.mts";
 import { load } from "../../tools/shaders/naga_node.mts";
+import { jobFor, keyControl, ctlLens } from "../../src/shaders/job.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../.."), OUT = join(ROOT, "build/shaders");
 mkdirSync(OUT, { recursive: true });
@@ -222,13 +223,120 @@ await test("SPIR-V pass: bindless texture names (handle types 0, 1, 3) are place
 });
 
 // ---- the browser half ----
+// NVN2 (Switch 2): synthetic control sections and code areas, the same bytes through src/shaders/job.ts, tools/shaders/xlate.py and nxnative's own C and Python
+// (cut out of $NXNATIVE as its own tests do). No game's shader is here: these show the layouts agree, not that a game's Ampere code translates
+const AM = join(OUT, "ampere"), hexOf = (b: Uint8Array) => Buffer.from(b).toString("hex");
+const nxnativeSrc = existsSync(join(NXNATIVE, "dm/gfx/nvn/hle_nvn.c")) && existsSync(join(NXNATIVE, "dm/gfx/tools/dmsh_ampere.py"));
+function rng(seed: number) { return () => { seed = (seed * 1103515245 + 12345) >>> 0; return (seed >>> 8) & 0xff; }; }
+function nvn2Case(r: () => number, size: number, ncode: number, opts: { stage?: number; sph?: number } = {}) {
+  const c = new Uint8Array(size).map(() => r()), dv = new DataView(c.buffer);
+  dv.setUint32(0, 0x98761234, true); dv.setUint32(4, 0xc9, true);
+  let code: Uint8Array;
+  do code = new Uint8Array(ncode).map(() => r()); while (hexOf(code).includes("34127698"));
+  const inst = r() & 1 ? Math.min(ncode, 0x80 + (r() << 2)) : r() << 4, c1 = r() % 3 ? (inst + 0xff) & ~0xff : r() << 8;   // in range mostly; past the code area sometimes
+  dv.setUint32(0x38, inst, true); dv.setUint32(0x40, c1, true); dv.setUint32(0x44, ncode, true);
+  if (size > 0x56) c[0x56] = opts.stage ?? (r() & 7);
+  if (opts.sph !== undefined && ncode >= 4) new DataView(code.buffer).setUint32(0, opts.sph, true);
+  if (size >= 0x64 && c[0x56] === 5) for (const o of [0x58, 0x5c, 0x60]) dv.setUint32(o, o === 0x58 ? 1 + (r() & 63) : 1 + (r() & 1), true);   // compute's thread group
+  else if (size > 0x5b) c[0x5b] = r() & 1 ? 1 + (r() % 255) : 0;   // a pixel shader's early fragment tests byte
+  if (ncode >= 0x50 && r() & 1) code[19 * 4] &= ~2;
+  return { control: c, code };
+}
+function nvnCase(r: () => number, own: number) {
+  const c = new Uint8Array(0x880).map(() => r()), code = new Uint8Array(0x40 + r()).map(() => r()), dv = new DataView(c.buffer);
+  dv.setUint32(0, 0x98761234, true); dv.setUint32(4, 1, true); dv.setUint32(0x20, own, true); dv.setUint32(0x704, code.length, true);
+  return { control: c, code };
+}
+const tsKey = (c: Uint8Array, code: Uint8Array) => createHash("sha256").update(keyControl(c)).update(code.subarray(0, ctlLens(c).ncode)).digest("hex").slice(0, 16);
+
+await test("NVN2: shader keys of src/shaders/job.ts are nxnative's keys_hash (hle_nvn.c, built here) and shader_split.py skey on the same bytes", () => {
+  if (!nxnativeSrc) return `SKIPPED: no nxnative checkout at ${NXNATIVE} (NXNATIVE)`;
+  if (!have("cc")) return "SKIPPED: no C compiler";
+  const r = rng(0x5eed), cases: { control: Uint8Array; code: Uint8Array }[] = [];
+  for (let i = 0; i < 120; i++) { const n = 0x80 + (r() << 2); const k = nvn2Case(r, 0x48 + (r() % 0x98), n); new DataView(k.control.buffer).setUint32(0x30, [0, 0xd8, 0xd0, 0x930, r() << 4][i % 5], true); cases.push(k); }
+  for (const own of [0, 0x760, 0x850, 0x87f, 0x880, 0x900]) cases.push(nvnCase(r, own));
+  // the masked bytes: two sections differing only in +0x30..+0x33 have one key; one differing at +0x43 another (+0x44..+0x47 is the code's length); past +0x48 (NVN2) nothing counts
+  const base = nvn2Case(r, 0xd8, 0x100), at = (o: number, v: number) => { const c = base.control.slice(); c[o] = v; return { control: c, code: base.code }; };
+  const same = [at(0x30, base.control[0x30] ^ 0x5a), at(0x33, base.control[0x33] ^ 1), at(0x48, base.control[0x48] ^ 1), at(0xd7, base.control[0xd7] ^ 1)], other = at(0x43, base.control[0x43] ^ 1);
+  cases.push(base, ...same, other);
+  const src = readFileSync(join(NXNATIVE, "dm/gfx/nvn/hle_nvn.c"), "utf8"), a = src.indexOf("#define NVN2_KEY_CTL"), b = src.indexOf("int prog_key(", a);
+  if (a < 0 || b < 0) throw new Error("hle_nvn.c: NVN2_KEY_CTL .. prog_key not found (nxnative changed)");
+  mkdirSync(AM, { recursive: true }); writeFileSync(join(AM, "keys_hash.inc.c"), src.slice(a, b));
+  execFileSync("cc", ["-O1", "-Wno-deprecated-declarations", `-DKEYS_HASH="${join(AM, "keys_hash.inc.c")}"`, join(ROOT, "test/shaders/nvn2_ref.c"), "-o", join(AM, "keys_ref"), "-lcrypto"], { stdio: "inherit" });
+  const c = execFileSync(join(AM, "keys_ref"), { input: cases.map(k => `${hexOf(k.control)} ${hexOf(k.code)}\n`).join(""), maxBuffer: 1 << 26 }).toString().trim().split("\n");
+  writeFileSync(join(AM, "key_cases.json"), JSON.stringify(cases.map((k, i) => ({ key: i.toString(16).padStart(16, "0"), stage: "vs", control: hexOf(k.control), code: hexOf(k.code) }))));
+  const py = JSON.parse(execFileSync("python3", [join(ROOT, "test/shaders/nvn2_ref.py"), join(AM, "key_cases.json"), join(AM, "ref")], { env: { ...process.env, NXNATIVE }, maxBuffer: 1 << 28 }).toString());
+  cases.forEach((k, i) => { const t = tsKey(k.control, k.code); eq(t, c[i], `case ${i}: job.ts against hle_nvn.c keys_hash`); eq(t, py[i].skey, `case ${i}: job.ts against shader_split.py skey`); });
+  const n = cases.length - 6, k0 = c[n];
+  eq(same.map((_, j) => c[n + 1 + j]), same.map(() => k0), "+0x30..+0x33 and the bytes past +0x48 are not in an NVN2 key");
+  if (c[n + 5] === k0) throw new Error("+0x43 is in an NVN2 key");
+  return `${cases.length} control sections (${cases.length - 6 - 6} NVN2 of 0x48..0xdf bytes, 6 NVN with +0x20 0..0x900, 6 masking cases)`;
+});
+
+await test("NVN2: translator jobs of src/shaders/job.ts are nxnative's dmsh_build.py job_for and xlate.py job_for on the same bytes (arch sm86, code cut at +0x38, c1 +0x40..+0x44, nvn2_cs, early fragment tests, thread group)", () => {
+  if (!nxnativeSrc) return `SKIPPED: no nxnative checkout at ${NXNATIVE} (NXNATIVE)`;
+  const r = rng(0xa86), cases: { key: string; control: Uint8Array; code: Uint8Array }[] = [];
+  const sph = (type: number) => 2 | 4 << 5 | type << 10;
+  for (let i = 0; i < 90; i++) {
+    const kind = i % 6, size = [0xc0, 0xd0, 0xd8][i % 3];
+    const opts = kind === 0 ? { stage: 5 } : kind === 1 ? { stage: 0, sph: 0x481 } : kind === 2 ? { stage: 0, sph: sph(5) } : kind === 3 ? { stage: 0, sph: 0x061 } : kind === 4 ? { stage: 6 + ((i / 6) & 1) } : { stage: 0, sph: sph(2 + ((i / 6 | 0) % 3)) };
+    cases.push({ key: (0xa000 + i).toString(16).padStart(16, "0"), ...nvn2Case(r, size, 0x100 + (r() << 2), opts) });
+  }
+  writeFileSync(join(AM, "job_cases.json"), JSON.stringify(cases.map(k => ({ key: k.key, stage: "", control: hexOf(k.control), code: hexOf(k.code) }))));
+  const py = JSON.parse(execFileSync("python3", [join(ROOT, "test/shaders/nvn2_ref.py"), join(AM, "job_cases.json"), join(AM, "ref")], { env: { ...process.env, NXNATIVE }, maxBuffer: 1 << 28 }).toString());
+  const canon = (j: any) => JSON.stringify(Object.fromEntries(Object.entries(j).sort(([a], [b]) => a < b ? -1 : 1)));
+  const seen: Record<string, number> = {};
+  cases.forEach((k, i) => {
+    const p = py[i], what = `case ${i} (${p.stage})`;
+    let ts: any; try { const { job, body } = jobFor(k.key, k.control, k.code, ""); ts = { ...job, code: hexOf(body) }; } catch (e: any) { ts = { error: e.message }; }
+    seen[p.stage + (ts.error ? " refused" : "")] = (seen[p.stage + (ts.error ? " refused" : "")] ?? 0) + 1;
+    if (["vs", "ps", "cs"].includes(p.stage)) {
+      if (p.nxnative.error) throw new Error(`${what}: nxnative refused it: ${p.nxnative.error}`);
+      eq(canon(ts), canon(p.nxnative), `${what}: job.ts against nxnative's job_for`); eq(canon(p.nxweb), canon(p.nxnative), `${what}: xlate.py against nxnative's job_for`);
+      eq(ts.arch, "sm86", `${what}: arch`);
+    } else {
+      // task / mesh (nxnative wraps them in a Metal mesh stage) and tessellation / geometry: refused by name on both nxweb sides
+      if (!ts.error || !p.nxweb?.error) throw new Error(`${what}: not refused: ${JSON.stringify(ts).slice(0, 200)}`);
+      if (!/mesh pipeline|tessellation or geometry/.test(ts.error) || !/mesh pipeline|tessellation or geometry/.test(p.nxweb.error)) throw new Error(`${what}: ${ts.error} / ${p.nxweb.error}`);
+    }
+  });
+  if (!seen.cs || !seen.vs || !seen.ps || !seen["ts refused"] || !seen["ms refused"]) throw new Error(`stages: ${JSON.stringify(seen)}`);
+  if (!cases.some((k, i) => py[i].stage === "ps" && py[i].nxnative.early_fragment_tests) || !cases.some((k, i) => py[i].stage === "ps" && !py[i].nxnative.early_fragment_tests)) throw new Error("early fragment tests: both answers not covered");
+  // NVN (Maxwell) is the job the page made before: the hand-assembled programs, through job.ts and xlate.py (c1 aside: xlate.py takes code[c1o:c1t] as nxnative does)
+  for (const row of JSON.parse(readFileSync(join(MX, "corpus.json"), "utf8"))) {
+    const { job, body } = jobFor(row.key, readFileSync(join(MX, row.control)), readFileSync(join(MX, row.code)), "");
+    eq([job.stage, job.arch, body.length], [row.stage, undefined, readFileSync(join(MX, row.code)).length - 0x30], `Maxwell ${row.name}`);
+  }
+  return Object.entries(seen).map(([s, n]) => `${n} ${s}`).join(", ");
+});
+
+const ampereXlate = xlate && nxnativeSrc;
+let ampere: Awaited<ReturnType<typeof build>> | null = null;
+await test("Ampere -> SPIR-V -> WGSL: nxnative's translator takes arch sm86 for the hand-built NVN2 stages (EXIT alone), the pass and naga convert them", async () => {
+  if (!ampereXlate) return "SKIPPED: dotnet, the translator or the nxnative checkout is not there";
+  execFileSync("python3", [join(ROOT, "tools/shaders/ampere_asm.py"), AM], { stdio: "ignore" });
+  const rows = JSON.parse(readFileSync(join(AM, "corpus.json"), "utf8"));
+  for (const row of rows) eq(row.key, tsKey(readFileSync(join(AM, row.control)), readFileSync(join(AM, row.code))), `${row.name}: ampere_asm.py's key is job.ts's`);
+  const x = spawnSync("python3", [join(ROOT, "tools/shaders/xlate.py"), join(AM, "corpus.json"), join(AM, "spv")], { encoding: "utf8", env: { ...process.env, NXNATIVE } });
+  if (x.status) throw new Error(x.stdout + x.stderr);
+  if (have("spirv-val")) for (const e of JSON.parse(readFileSync(join(AM, "spv/xlate.json"), "utf8"))) { const v = spawnSync("spirv-val", [join(AM, "spv", e.spv)], { encoding: "utf8" }); if (v.status) throw new Error(`${e.name}: ${v.stderr}`); }
+  ampere = await build({ spv: join(AM, "spv") });
+  writeFileSync(join(OUT, "ampere.nxsl"), ampere.library);
+  const bad = ampere.report.filter(r => !r.ok);
+  if (bad.length) throw new Error(bad.map(b => `${b.name}: ${b.error}`).join("\n"));
+  eq(ampere.report.map(r => r.name).sort(), rows.map((r: any) => r.name).sort(), "every stage in the library");
+  if (!/@compute @workgroup_size\(32, 1, 1\)/.test(byName(ampere, "cs_exit").entry!.wgsl)) throw new Error(`cs_exit: not a 32 x 1 x 1 compute entry:\n${byName(ampere, "cs_exit").entry!.wgsl}`);
+  if (!/@fragment/.test(byName(ampere, "ps_exit").entry!.wgsl) || !/@vertex/.test(byName(ampere, "vs_exit").entry!.wgsl)) throw new Error("the graphics stages' entry points");
+  return `${rows.length} stages, ${ampere.library.length} bytes`;
+});
+
 if (!process.argv.includes("--no-browser")) {
   const req = createRequire(import.meta.url);
   let pw: any; for (const p of ["playwright", "/opt/node-tools/node_modules/playwright"]) { try { pw = req(p); break; } catch { /* next */ } }
   if (!pw) { failed++; console.error("[RED] playwright is not installed: the browser half did not run"); }
   else {
     execFileSync(join(ROOT, "node_modules/esbuild/bin/esbuild"), ["test/shaders/page.mts", "--bundle", "--format=esm", "--outfile=build/shaders/page.js", "--log-level=warning"], { cwd: ROOT, stdio: "inherit" });
-    const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".nxsl": "application/octet-stream", ".spv": "application/octet-stream", ".code": "application/octet-stream", ".json": "application/json" };
+    const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".nxsl": "application/octet-stream", ".spv": "application/octet-stream", ".code": "application/octet-stream", ".ctl": "application/octet-stream", ".json": "application/json" };
     const server = createServer((q, res) => {
       const file = join(ROOT, normalize(decodeURIComponent((q.url ?? "/").split("?")[0])));
       if (!file.startsWith(ROOT) || !existsSync(file) || !MIME[extname(file)]) { res.writeHead(404); res.end(); return; }
@@ -304,6 +412,14 @@ if (!process.argv.includes("--no-browser")) {
         eq(r.rc, 0, "the translator's exit status");
         for (const e of maxwell!.entries) { eq(r.out[e.key]?.wgsl, e.wgsl, `WGSL of ${e.key}`); eq(r.out[e.key].reflection, e.reflection, `reflection of ${e.key}`); }
         return `.NET runtime up in ${r.startMs.toFixed(0)} ms; ${rows.length} stages translated in ${r.firstMs.toFixed(0)} ms the first time, ${r.warmMs.toFixed(0)} ms the second; pass + naga for the ${rows.length}: ${r.convertMs.toFixed(0)} ms`;
+      });
+      if (ampere) await test("browser: NVN2 through the page's chain (job.ts jobs, the translator as WebAssembly with arch sm86, the pass, naga) gives the offline library's WGSL", async () => {
+        if (!existsSync(join(OUT, "xlate_wasm/_framework/dotnet.js"))) return "SKIPPED: build/shaders/xlate_wasm is not built (tools/shaders/build_xlate_wasm.sh)";
+        const rows = JSON.parse(readFileSync(join(AM, "corpus.json"), "utf8"));
+        const r: any = await page.evaluate(([f, n, b, c]: any) => (globalThis as any).translateJobsInPage(f, n, b, c), [`${url}/build/shaders/xlate_wasm/_framework`, `${url}/build/shaders/nx_naga.wasm`, `${url}/build/shaders/ampere`, rows]);
+        eq(r.rc, 0, "the translator's exit status"); eq(r.jobs.map((j: any) => j.arch), rows.map(() => "sm86"), "arch");
+        for (const e of ampere!.entries) { eq(r.out[e.key]?.wgsl, e.wgsl, `WGSL of ${e.key}`); eq(r.out[e.key].reflection, e.reflection, `reflection of ${e.key}`); }
+        return `${rows.length} stages`;
       });
       if (errors.length) { failed++; console.error(`[RED] page errors:\n${errors.join("\n")}`); }
     } finally { await browser.close(); server.close(); }
