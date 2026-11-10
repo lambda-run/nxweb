@@ -7,13 +7,13 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { KIT_DIR } from "../../src/kit/host/defs.mts";
 import { readMachines, type WasmMachine } from "../../src/kit/host/reader.mts";
-import { AudioHost, RING, DEV, OUT_S, BUF_S, RET, OPUS_PENDING, type AudioEmbedder, type OpusBackend, type CallResult } from "../../src/glue/audio_host.ts";
+import { AudioHost, RING, DEV, OUT_S, BUF_S, RET, REQ, REN_S, REN_THREAD_S, OPUS_PENDING, type AudioEmbedder, type OpusBackend, type CallResult } from "../../src/glue/audio_host.ts";
 
-export { RING, DEV, OUT_S, BUF_S, RET, OPUS_PENDING };
+export { RING, DEV, OUT_S, BUF_S, RET, REQ, REN_S, REN_THREAD_S, OPUS_PENDING };
 export const ROOT = join(KIT_DIR, "..", "..");
 export const WASM = join(ROOT, "build", "audio", "audio.wasm");
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
-export const MACHINES = ["audio_buf", "audio_out", "opus_req"];
+export const MACHINES = ["audio_buf", "audio_out", "opus_req", "audio_ren", "audio_ren_thread", "audio_render", "audio_ren_update"];
 
 export function build(): void {
   mkdirSync(dirname(WASM), { recursive: true });
@@ -30,7 +30,7 @@ export const R = { OK: 0n, FAIL: 0x2A2n, BUSY: 0x3a6fn, TWICE: 0x499n };
 export const MS = 1_000_000n;
 
 export interface Event { token: number; ptr: number; autoClear: boolean; signals: number; flag: boolean; released: boolean }
-export interface AuOptions { cover?: boolean; guest?: number; arena?: number; sdk?: Record<string, (x: BigUint64Array, au: Au) => bigint | number>; opus?: OpusBackend }
+export interface AuOptions { cover?: boolean; guest?: number; arena?: number; threadEntry?: bigint; sdk?: Record<string, (x: BigUint64Array, au: Au) => bigint | number>; opus?: OpusBackend }
 
 let module: WebAssembly.Module | undefined;
 const live: Au[] = [];
@@ -65,6 +65,8 @@ export class Au {
         if (!this.sdkAddr.has(name)) { const a = 0x7100_0000n + BigInt(this.sdkAddr.size) * 0x100n; this.sdkAddr.set(name, a); this.sdkName.set(a, name); }
         return this.sdkAddr.get(name)!;
       };
+      embedder.threadEntry = () => o.threadEntry ?? 0x7200_0000n;
+      embedder.handleDup = h => h ? h + 0x1000 : 0;
       embedder.guestCall = (fn, x) => { const name = this.sdkName.get(fn); if (!name) throw new Error(`guest call of ${fn.toString(16)}`); this.sdkCalls.push(name); return BigInt.asUintN(64, BigInt(sdk[name](x, this))); };
     }
     this.host = new AudioHost(module, embedder);
@@ -79,6 +81,10 @@ export class Au {
     this.x.audio_tick(this.g, this.h);
   }
   get red(): string[] { return this.logs.filter(l => l.startsWith("[RED] ")); }
+  // The fake SDK's functions: a function's name by its address, and a function put at an address of guest memory
+  // (where the test wrote its first instructions: the module reads the SDK's code)
+  sdkNameOf(addr: bigint): string | undefined { return this.sdkName.get(addr); }
+  sdkPlace(name: string, addr: number): void { const old = this.sdkAddr.get(name); if (old !== undefined) this.sdkName.delete(old); this.sdkAddr.set(name, BigInt(addr)); this.sdkName.set(BigInt(addr), name); }
   get dv(): DataView { return new DataView(this.x.memory.buffer); }
   get u8(): Uint8Array { return new Uint8Array(this.x.memory.buffer); }
 

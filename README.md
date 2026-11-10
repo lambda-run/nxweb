@@ -22,7 +22,7 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 | Shaders (`tools/shaders`, `src/shaders`) | Chain works on hand-assembled Maxwell programs, offline and in the page (translated in a Worker, cached); no game shader has been through it |
 | File system (`src/fs`) | Working and attached: RomFS images, crash-safe saves on OPFS; 66 tests, 7 in the browser |
 | SDK take-overs (`src/hle`) | The names nxnative answers on the host (1,113 in scope: 985 implemented, 128 cut stubs for movies; `hle:test` 97 tests), attached to the runtime with one answer per name: controllers (several players, vibration), display layer, run-time modules; guests call a spread of them |
-| Audio (`src/audio`) | Working and attached: 118 names (6 red stubs: the audio renderer); a guest plays a tone on a sample-exact silent sink and through an AudioWorklet; `audio:test` 55 tests, 10 in the browser |
+| Audio (`src/audio`) | Working and attached: 118 names, the audio renderer as nxnative has it (the SDK's own renderer driven by the host; tested with stand-in SDKs); a guest plays a tone on a sample-exact silent sink and through an AudioWorklet, another two voices through the renderer; `audio:test` 97 tests, 11 in the browser |
 | Prepare (`src/prepare`) | A folder of extracted game files becomes a hand-off the page starts: 153 profiles converted from nxnative, code cuts applied; `prepare:test` 19 tests, 9 in the browser. No package is opened |
 
 How the pieces fit: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What of nxnative is ported, cut or open:

@@ -9,6 +9,8 @@ import * as mix from "./mix";
 import * as calls from "./calls";
 import * as rsink from "./rsink";
 import * as opus from "./opus";
+import * as ren from "./ren";
+import * as cmdlist from "./cmdlist";
 
 // Give the module its arena: [base, base + len) of linear memory, for OutputStream blocks, Opus managers and
 // software decoder states. Call once, before anything else.
@@ -25,8 +27,9 @@ export function audio_lookup(namePtr: usize): u32 { return calls.lookup(namePtr)
 //   +128  x8 (where a function that returns a struct in memory writes it)
 //   +136  x30, the call site, for the log (0: unknown)
 // The result says where the function's result is: 0 none (void), 1 x0 (written to +0), 3 x0 and x1 (+0, +8),
-// 4 a float in v0 (its bits at +64, the upper 32 bits zero). Nothing in here blocks: a call returns at once, and a
-// guest thread that waits for a buffer waits on its event in the kernel.
+// 4 a float in v0 (its bits at +64, the upper 32 bits zero), 16 the call goes on (an audio renderer take-over that
+// runs SDK code: see audio_co_req below; the embedder names the calling thread with audio_co_thread first). Nothing
+// in here blocks: a call returns at once, and a guest thread that waits for a buffer waits on its event in the kernel.
 // Time: audio_tick with the current clocks must come first whenever time has moved.
 export function audio_call(fnId: u32, argsPtr: usize): i32 { const r = calls.call(fnId, argsPtr); out.flushSignals(); return r; }
 
@@ -84,6 +87,34 @@ export function audio_rs_update_begin(i: i32, waited: i32): i32 { return rsink.u
 export function audio_rs_update_end(i: i32): void { rsink.updateEnd(i); }
 export function audio_rs_stat(i: i32, which: i32): u64 { return rsink.stat(i, which); }
 export function audio_rs_out(i: i32): i32 { return rsink.outIndex(i); }
+
+// ---- the audio renderer: take-overs that run SDK code on the calling guest thread (see ren.ts and README.md) ----
+// The guest thread the next audio_call / audio_co_resume / audio_co_enter is made on (any number that names it)
+export function audio_co_thread(thread: u32): void { ren.setThread(thread); }
+// audio_call answered 16: the call goes on. The request block (96 bytes): +0 u32 kind (2 CALL, 3 WAIT on an event
+// token); CALL: +8 the SDK function, +24 x0..x7: run it on the calling thread as ordinary
+// guest code and come back with its x0 and x1; WAIT: +8 the token, +16 the timeout in ns:
+// come back with x0 = 0 when it was signalled, 1 otherwise.
+export function audio_co_req(): usize { return ren.reqPtr(); }
+// The thread came back. 16: another request. 0 / 1: the take-over is over (1: with a result, at +8 of the request
+// block) and returns to the address at +88.
+export function audio_co_resume(x0: u64, x1: u64): i32 { const r = ren.resume(x0, x1); out.flushSignals(); return r; }
+// A render thread has called the embedder's stub (env.audio_thread_entry) with x0 = arg and x30 = lr. 16: a
+// request; 0: the stub returns to its caller (the thread is not wanted, or it ran before: then +88 is 0).
+export function audio_co_enter(arg: u32, lr: u64): i32 { const r = ren.threadEnter(<i32>arg, lr); out.flushSignals(); return r; }
+// which: 0 the audio_ren state of renderer i (0..3), 1 its audio_ren_thread state, 2 its render sink (-1: none),
+// 3 the renderer object, 4 its AudioRenderSystem, 5 its thread's ThreadType
+export function audio_ren_stat(i: i32, which: i32): u64 { return ren.stat(i, which); }
+export function audio_ren_frames(): i32 { return ren.frames(); }
+// The DeviceSink of a command list by itself (tests): as the render does after CommandListProcessor::Process
+export function audio_ren_capture(sink: i32, dest: i32, cl: usize, len: usize): u32 { return cmdlist.capture(sink, dest, cl, len); }
+// bit 0 the header layout is decided, 1 SDK 6 headers, 2 SDK 21 headers, 3 SDK 4 / 5 sink, 4 SDK 5 sink; bits 8.. the sink's ID
+export function audio_ren_layout(): u32 { return cmdlist.layout(); }
+export function audio_ren_sink_id(id: i32): void { cmdlist.setSinkId(id); }
+export function audio_ren_probe_lock(guess: u64): u64 { return ren.probeLock(guess); }
+// The stereo PCM16 block the sink last gave its output (tests, a recorder): its address and frames
+export function audio_rs_played_ptr(i: i32): usize { return rsink.playedPtr(i); }
+export function audio_rs_played_frames(i: i32): u32 { return rsink.playedFrames(i); }
 
 // ---- Opus: the embedder's decoder ----
 // 0 automatic (the SDK's software decoder when the SDK has one, else the embedder's), 1 the SDK's, 2 the embedder's

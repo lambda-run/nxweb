@@ -15,7 +15,7 @@ stateDiagram-v2
     Failed --> Building: Reset
 ```
 
-Machine id 15. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 19. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

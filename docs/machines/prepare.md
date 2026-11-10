@@ -34,7 +34,7 @@ stateDiagram-v2
     note right of Failed: carries reason (layout, npdm, arch, version, dlc, module, romfs, profile, cut, read, storage, internal)
 ```
 
-Machine id 38. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 42. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

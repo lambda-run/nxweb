@@ -131,6 +131,101 @@ export function intCases(env: IntEnv, gpu: Gpu | undefined): IntCase[] {
     lines.push(`wall clock: 60 buffers in ${ms.toFixed(0)} ms (300 ms of audio) with ${w.signals.length} signals, run loop busy ${w.rt.stats.runMs.toFixed(0)} ms`);
     return lines;
   });
+  // ---- the audio renderer: the guest's stand-in SDK driven by the host's take-overs (src/audio/ren.ts) ----
+  const renBoot = (o: RuntimeOptions, rounds: number, tail: number, extra: (rt: Runtime) => Partial<ConstructorParameters<typeof RtAudio>[2] & object> = () => ({})) => {
+    const rt = new Runtime(env.mods, o), hle = attachHle(rt, env.mods.hle!, { config: { opmode: 1 } });
+    const blocks: { sink: number; ns: bigint; pcm: Int16Array }[] = [];
+    const audio = new RtAudio(rt, env.mods.audio!, { hle, onRenderBlock: (sink, pcm, ns) => blocks.push({ sink, ns, pcm: pcm.slice() }), ...extra(rt) });
+    rt.register({ name: "audren_frames", fn: () => tail });
+    rt.register({ name: "audren_rounds", fn: () => rounds });
+    ok(rt.loadNso([{ name: "audren", bytes: env.nso("audren") }]), "load failed: " + rt.red.join(" | "));
+    return { rt, hle, audio, blocks };
+  };
+  // what the guest's two voices must sound like at the sink, frame for frame (test/runtime/src/audren.c, ren_sdk.h)
+  const renExpected = (): Int16Array => {
+    const resonate = (n: number, k: number, first: number) => { const p = new Int16Array(n); let s2 = 0, s1 = first; for (let i = 1; i < n; i++) { p[i] = s1; const s = ((k * s1) >> 14) - s2; s2 = s1; s1 = s; } return p; };
+    const voices = [{ data: resonate(2160, 32714, 471), pitch: 0x10000, vol: [0x8000, 0x4000], pos: 0, frac: 0 }, { data: resonate(2400, 32671, 499), pitch: 0x18000, vol: [0x2000, 0x6000], pos: 0, frac: 0 }];
+    const out = new Int16Array(2160 * 2);
+    for (let i = 0; i < 2160; i++) {
+      let l = 0, r = 0;
+      for (const v of voices) {
+        if (v.pos >= v.data.length) continue;
+        const x = v.data[v.pos];
+        v.frac += v.pitch; v.pos += v.frac >>> 16; v.frac &= 0xffff;
+        l += (x * v.vol[0]) >> 15; r += (x * v.vol[1]) >> 15;
+      }
+      out[2 * i] = l; out[2 * i + 1] = r;
+    }
+    return out;
+  };
+  // the blocks a sink played against the expected signal: the silent blocks before it, and what differs
+  const renCompare = (blocks: { pcm: Int16Array }[]): { lead: number; sounding: number; tail: number; wrong: number } => {
+    const want = renExpected(), all = new Int16Array(blocks.length * 480);
+    blocks.forEach((b, i) => { ok(b.pcm.length === 480, `block ${i} has ${b.pcm.length / 2} frames`); all.set(b.pcm, i * 480); });
+    let first = 0; while (first < blocks.length && blocks[first].pcm.every(v => v === 0)) first++;
+    let wrong = 0;
+    for (let i = 0; i < want.length; i++) if (all[first * 480 + i] !== want[i]) wrong++;
+    let tail = 0; for (let i = first * 480 + want.length; i < all.length; i++) if (all[i] !== 0) wrong++; else tail++;
+    return { lead: first, sounding: want.length / 480, tail: tail / 480, wrong };
+  };
+  if (env.mods.hle && env.mods.audio) test("audio renderer (no device): a guest opens a renderer for the DSP with an event; the host opens the guest SDK's renderer for CPU / manual rendering, runs it from a render thread the SDK starts for it, and takes the DeviceSink; two voices with queued wave buffers, pitch and volume come out as the expected signal, sample for sample, one 5 ms block per 5 ms of guest time; every wave buffer is reported consumed; close joins the thread", async () => {
+    const run = async (budget: number, rounds = 1) => {
+      const t = renBoot({ budget }, rounds, 6);
+      const r = await t.rt.runAsync();
+      eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], `how it ended (budget ${budget}): ` + t.rt.red.join(" | ") + t.rt.stdout());
+      eq(t.rt.red.filter(notForce), [], "red lines");
+      eq([t.audio.host.outs().length, Number(t.audio.x.audio_red_total()), t.audio.x.audio_ren_frames(), t.audio.x.kit_refused_total()], [0, 0, 0, 0], "outputs left open, red lines of the module, renderer calls in progress, refused transitions");
+      return t;
+    };
+    const a = await run(100000), out = a.rt.stdout().split("\n");
+    ok(/^GetAudioRendererWorkBufferSize 0x[0-9a-f]+000 \(the SDK's own for its CPU renderer: 0x[0-9a-f]+000\)$/.test(out[0]), out[0]);
+    eq(out[1], "OpenAudioRenderer rc 0x0; the SDK was opened 1 time with device 1 mode 1; the SDK keeps an event of the host's, the game's has a read end attached; render thread priority 9", "the open");
+    ok(/^audren: 5 wave buffers of 2 voices came back consumed, in order yes; at renderer events( \d+){5}; \d+ events in \d+ us of guest time$/.test(out[2]), out[2]);
+    ok(/^CloseAudioRenderer: the SDK's close ran 1 time after \d+ renders and \d+ updates; render threads created 1 destroyed 1, stacks 1 freed 1$/.test(out[3]), out[3]);
+    ok(/^audren: 1 rounds; events created 2 destroyed 3; threads 1 \/ 1; update lock taken \d+ times, \d+ through the kernel$/.test(out[4]), out[4]);
+    // the wave buffers come back in the order they were queued, each voice's at the event after the frame that played its last sample
+    const when = /events((?: \d+){5});/.exec(out[2])![1].trim().split(" ").map(Number);
+    ok(when[0] < when[1] && when[1] < when[2] && when[3] < when[4], "release order: " + when.join(" "));
+    eq([when[1] - when[0], when[2] - when[1], when[4] - when[3]], [3, 4, 3], "frames between two releases (720 and 960 frames at pitch 1; 1200 frames at pitch 1.5 are 800 output frames: 3.33 frames)");
+    for (const want of ["audren: OpenAudioRenderer rate 48000 samples per frame 240 mix buffers 3 submixes 0 voices 4 sinks 1 effects 0 splitters 0 (original device 0 mode 0 -> CPU / manual)",
+      "audren: renderer 0 opened from ", "audren: render thread 0 started (4 buffers in flight, paced by the output)", "audren: AudioRenderSystem at +0x60 in AudioRendererImpl",
+      "audren: AudioRenderSystem in the SDK 16 layout (update lock SdkMutexType at +0x1d8)", "audren: first-frame commands 8, by command ID: 1x1 2x2 3x4 19x1", "audren: DeviceSink inputs 2 rate 48000 samples per frame 240 mix buffer "])
+      ok(a.rt.logs.some(l => l.startsWith(want)), `no log line "${want}": ` + a.rt.logs.filter(l => l.startsWith("audren")).join(" | "));
+    const c = renCompare(a.blocks);
+    eq([c.wrong, c.sounding], [0, 9], `samples that differ from the expected signal, blocks of sound (${a.blocks.length} blocks, ${c.lead} silent before, ${c.tail} after)`);
+    ok(c.lead >= 4 && c.tail >= 4, `silent blocks before (${c.lead}) and after (${c.tail})`);
+    // pacing: four blocks at once (they are in flight), then one for each block the silent sink hands back, 5 ms apart
+    const times = a.blocks.map(b => b.ns);
+    ok(times[3] - times[0] < 100_000n && times[4] - times[0] > 4_900_000n && times[4] - times[0] <= 5_000_000n, "the first five blocks, guest ns: " + times.slice(0, 5).join(" "));
+    // (a block is handed over when its render is done: the output's release, exact to the nanosecond, plus the render's own time)
+    const gaps = times.slice(5).map((t, i) => Number(t - times[i + 4]));
+    ok(gaps.every(g => Math.abs(g - 5_000_000) < 200_000), "guest ns between two blocks from the fifth on: " + gaps.join(" "));
+    ok(Math.abs(Number(times.at(-1)! - times[4]) - 5_000_000 * gaps.length) < 200_000, "no drift over the run: " + (times.at(-1)! - times[4]));
+    const b = await run(100000);
+    eq([b.rt.stdout(), b.blocks.length, b.rt.units, b.rt.guestNs()], [a.rt.stdout(), a.blocks.length, a.rt.units, a.rt.guestNs()], "a second run: output, blocks, units, guest clock");
+    // forced preemption every 50 units: the render thread and the game's update meet on the SDK's update lock
+    const p = await run(50), pc = renCompare(p.blocks);
+    eq([pc.wrong, pc.sounding], [0, 9], "budget 50: samples that differ, blocks of sound");
+    // the game holds the SDK's update lock for 12 ms: the render thread blocks on it inside the SDK's Lock (a take-over
+    // that waits in guest code), renders when it is free again, and nothing is lost or repeated
+    const h = await run(100000, 0x101), hc = renCompare(h.blocks), hl = h.rt.stdout().split("\n")[4];
+    eq([hc.wrong, hc.sounding], [0, 9], "lock held: samples that differ, blocks of sound");
+    ok(/, [1-9]\d* through the kernel$/.test(hl), "the render thread did not block on the update lock: " + hl);
+    const held = h.blocks.map(b => b.ns), longest = Math.max(...held.slice(1).map((t, i) => Number(t - held[i])));
+    ok(longest > 11_000_000 && longest < 13_000_000, `the longest time between two blocks with the lock held for 12 ms: ${longest} ns`);
+    // open and close twelve times: threads, stacks, events, outputs and the module's memory all come back
+    const m = await run(100000, 12), last = m.rt.stdout().split("\n").at(-2)!;
+    ok(/^audren: 12 rounds; events created 24 destroyed 36; threads 12 \/ 12; /.test(last), last);
+    eq([0, 1, 2, 3].map(i => Number(m.audio.x.audio_ren_stat(i, 0))), [0, 0, 0, 0], "renderer slots at the end (Free)");
+    const sounding = m.blocks.filter(b => b.pcm.some(v => v !== 0)).length;
+    eq(sounding, 12 * 9, "blocks of sound in twelve rounds");
+    const st = a.audio.stats;
+    return [out[0], out[1], out[2], out[3], out[4],
+      `${a.blocks.length} blocks at the sink: ${c.lead} silent, 9 that equal the expected mix of the two voices sample for sample (4320 samples), ${c.tail} silent; the first four within ${times[3] - times[0]} ns, then one per 5 ms of guest time (${Math.min(...gaps)} to ${Math.max(...gaps)} ns apart: a render's own time varies); identical on a second run`,
+      `${st.calls} nn::audio calls, ${st.sdkCalls} SDK functions run for the take-overs on the calling guest thread, ${st.waits} waits, ${st.guestCalls} nested SDK calls; budget 50: ${p.rt.stats.slices} slices, the same samples, ${p.rt.stdout().split("\n")[4].replace(/^.*; update/, "update")}`,
+      `update lock held by the game for 12 ms: ${hl.replace(/^.*; update/, "update")}; the longest time between two blocks ${longest} ns, the same samples`,
+      `12 open / close rounds: ${last}; arena in use at the end ${m.audio.x.audio_arena_used()} bytes`];
+  });
   // ---- audio on the real device (browser) ----
   if (env.audioPage && env.mods.hle && env.mods.audio) test("audio (browser: AudioContext and AudioWorklet): the same guest on the wall clock with the device attached through the page; the tone reaches the device: 440 Hz, no gap, no underrun, as audio:browser checks it", async () => {
     const page = env.audioPage!, N = 600;
@@ -168,6 +263,52 @@ export function intCases(env: IntEnv, gpu: Gpu | undefined): IntCase[] {
       return [`transport ${dev.transport}, context at ${d.sampleRate} Hz (${d.context}); output states ${states.join(" -> ")}`,
         `${sounding.toFixed(2)} s of ${core.freq.toFixed(2)} Hz, amplitude ${core.amp.toFixed(4)}, ${core.snr.toFixed(1)} dB against a fitted sine, ${core.gaps} gaps, device underrun ${d.underrun} frames in ${d.callbacks} callbacks` + (late ? ` [the run loop came back ${worstTick.toFixed(0)} ms late once: gap checks waived]` : ""),
         `${t.signals.length} buffers came back, ${t.audio.stats.ticks} ticks, the longest time between two ${worstTick.toFixed(1)} ms; ${t.rt.stdout().split("\n")[3]}`];
+    } finally { page.onMessage(null); if (!t.rt.disposed) { t.rt.kill(); if (!t.rt.disposed) t.rt.dispose(); } }
+  });
+  if (env.audioPage && env.mods.hle && env.mods.audio) test("audio renderer (browser: AudioContext and AudioWorklet): the renderer guest on the wall clock with the device attached through the page, six open / play / close rounds; what the worklet put out holds the two voices' mix as the expected signal, sample for sample", async () => {
+    const page = env.audioPage!, ROUNDS = 6;
+    const t = renBoot({ clock: "wall" }, ROUNDS, 40, () => ({ send: page.send, openDeviceAtStart: true }));
+    const dev = t.audio.device!;
+    // the longest time between two ticks while a renderer's output is open (between two rounds nothing needs feeding)
+    let worstTick = 0, lastTick = 0;
+    t.rt.onTick(() => { if (!t.audio.host.outs().length) { lastTick = 0; return; } const n = performance.now(); if (lastTick && n - lastTick > worstTick) worstTick = n - lastTick; lastTick = n; });
+    page.onMessage(m => { t.audio.handle(m); t.rt.requestWake(); });
+    try {
+      const t0 = performance.now();
+      while (!dev.rate && !dev.error) { if (performance.now() - t0 > 10000) fail("the page did not open an AudioContext within 10 s"); await new Promise(r => setTimeout(r, 5)); }
+      ok(!dev.error, "no device: " + dev.error);
+      eq(dev.rate, 48000, "the context's rate (the comparison is sample for sample)");
+      await page.record(dev.rate * 4);
+      lastTick = 0;
+      const r = await t.rt.runAsync();
+      eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "how it ended: " + t.rt.red.join(" | ") + t.rt.stdout());
+      await new Promise(r => setTimeout(r, 200));   // what is still in the ring is played
+      const d = await page.dump(), want = renExpected(), N = want.length / 2;
+      // the stretches of sound in the recording: each must be the expected signal (PCM16 / 32768 as the mixer writes it)
+      const quiet = (i: number) => d.pcm[2 * i] === 0 && d.pcm[2 * i + 1] === 0;
+      const bursts: { at: number; frames: number; wrong: number }[] = [];
+      for (let i = 0; i < d.frames; i++) {
+        if (quiet(i)) continue;
+        let end = i, gap = 0;
+        for (let k = i; k < d.frames && gap < 240; k++) { if (quiet(k)) gap++; else { gap = 0; end = k; } }
+        const at = i - 1;   // both voices' first sample is 0
+        let wrong = 0;
+        for (let k = 0; k < N; k++) for (let c = 0; c < 2; c++) if (Math.abs((d.pcm[2 * (at + k) + c] ?? 9) - want[2 * k + c] / 32768) > 1e-6) wrong++;
+        bursts.push({ at, frames: end - at + 1, wrong });
+        i = end + 240;
+      }
+      const exact = bursts.filter(b => b.wrong === 0).length;
+      const sinks = t.rt.logs.filter(l => l.startsWith("audren: render sink")).length;
+      eq(sinks, ROUNDS, "render sinks opened");
+      // a round whose sound began before its output was taken over by the device, or a run loop that came back later
+      // than the ring's lead, loses frames: the machine's, not the port's. Four of six must be whole
+      const late = worstTick > 25;
+      ok(exact >= (late ? 1 : ROUNDS - 2), `${exact} of ${bursts.length} stretches of sound equal the expected signal (${bursts.map(b => `${b.frames} frames, ${b.wrong} samples off`).join("; ")}); device underrun ${d.underrun}; longest time between two ticks ${worstTick.toFixed(1)} ms`);
+      eq(t.rt.red.filter(notForce), [], "red lines");
+      eq([t.audio.host.outs().length, t.audio.x.audio_ren_frames()], [0, 0], "outputs left open, renderer calls in progress");
+      return [`transport ${dev.transport}, context at ${d.sampleRate} Hz (${d.context}); ${ROUNDS} rounds, ${t.blocks.length} blocks from the render sinks`,
+        `${bursts.length} stretches of sound at the worklet, ${exact} equal to the expected mix of the two voices sample for sample (${N} frames each${exact < bursts.length ? "; the others: " + bursts.filter(b => b.wrong).map(b => `stretch ${bursts.indexOf(b) + 1}, ${b.frames} frames, ${b.wrong} samples off`).join(", ") : ""}); device underrun ${d.underrun} frames in ${d.callbacks} callbacks, longest time between two ticks ${worstTick.toFixed(1)} ms` + (late ? " [the run loop came back late: only one whole stretch is asked for]" : ""),
+        t.rt.stdout().split("\n")[2], t.rt.stdout().split("\n").at(-2)!];
     } finally { page.onMessage(null); if (!t.rt.disposed) { t.rt.kill(); if (!t.rt.disposed) t.rt.dispose(); } }
   });
 

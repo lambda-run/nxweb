@@ -1,0 +1,17 @@
+{
+  "id": 0,
+  "name": "audio_ren_thread",
+  "doc": "The host's render thread of one renderer (src/audio/ren.ts; nxnative render_main): a guest thread whose body is host code. Idle: no thread. Ready: the loop looks at its output. Waiting: all four blocks are in flight; it waits for the output to hand one back (the release event, at most 10 ms). Rendering: the SDK's ExecuteAudioRendererRendering runs on the thread (it generates commands, processes them and signals the game's renderer event; the host takes the DeviceSink's samples inside it). PlayQueued: a catch-up frame an update rendered is played in place of a render. Stop: the renderer is no longer Running; the output is closed and the thread ends.",
+  "states": ["Idle", "Ready", "Waiting", "Rendering"],
+  "initial": "Idle",
+  "events": ["Start", "NoBlock", "Wake", "Render", "Rendered", "PlayQueued", "Stop"],
+  "transitions": [
+    ["Idle", "Start", "Ready"],
+    ["Ready", "NoBlock", "Waiting"],
+    ["Waiting", "Wake", "Ready"],
+    ["Ready", "Render", "Rendering"],
+    ["Rendering", "Rendered", "Ready"],
+    ["Ready", "PlayQueued", "Ready"],
+    ["Ready", "Stop", "Idle"]
+  ]
+}

@@ -192,6 +192,33 @@ const autoplay: Case[] = [
       void hid; void lost; void back;
       return `${names}; retry ${(tAgain - tRetry).toFixed(0)} ms after the loss; ${(rt.length / ((t1 - t0) / 1000)).toFixed(1)} buffers/s over ${((t1 - t0) / 1000).toFixed(1)} s, never fewer than ${worst} in 250 ms; ${h.runs.length} runs of clean tone, device underrun ${h.underrun} frames`;
     } },
+  { name: "audio renderer: the renderer take-overs with an SDK in JavaScript: the host opens it for CPU / manual rendering, its render thread is paced by the device (one render per 5 ms block the worklet took), the DeviceSink of each command list reaches the worklet: the tone, no gap; close joins the thread", page: "/iso", cfg: { shared: true },
+    run: async (p) => {
+      const seconds = 3;
+      await nx(p, "record", seconds + 1.5);
+      const o = await ask<{ open: number }>(p, "renderer");
+      check(o && o.open === 0, `OpenAudioRenderer ${JSON.stringify(o)}`);
+      const live = await until(p, "the render sink's output goes Live", s => s.state === "Live");
+      check(live.transport === "direct", `transport ${live.transport}`);
+      await sleep(seconds * 1000);
+      const s = await ask<any>(p, "renclose");   // eslint-disable-line @typescript-eslint/no-explicit-any
+      await sleep(250);
+      const h = await nx<any>(p, "heard", CFG.freq, [], false);   // eslint-disable-line @typescript-eslint/no-explicit-any
+      const w = h.core, sounding = (h.whole.last - h.whole.first) / h.rate, r = s.ren;
+      check(r.closed && r.threadEnded && r.frames === 0 && s.state === "closed", `after the close: SDK closed ${r.closed}, render thread ended ${r.threadEnded}, ${r.frames} renderer calls in progress, the sink's output ${s.state}`);
+      check(sounding >= seconds - 0.1, `${sounding.toFixed(3)} s of sound for ${seconds} s of playing`);
+      near(w.freq, CFG.freq, 0.05, "frequency by zero crossings");
+      near(w.amp, CFG.amp * 32767 / 32768, 0.001, "amplitude");
+      // a Worker timer that came later than the ring's lead leaves a gap: the machine's, not the port's (as in the gesture case)
+      const late = s.lateTicks.filter((t: { gap: number }) => t.gap >= 25).length;
+      check(late > 0 || (w.snr > 60 && w.gaps === 0 && h.underrun === 0 && h.stretches.length === 1), `the tone fits a ${CFG.freq} Hz sine to ${w.snr.toFixed(1)} dB, ${w.gaps} gaps, ${h.stretches.length} stretches, device underrun ${h.underrun}; late ticks ${JSON.stringify(s.lateTicks)}`);
+      check(h.channelsDiffer === 0, "left and right differ");
+      // every render is one ExecuteAudioRendererRendering with its signal; about 200 a second, minus what the game's updates rendered themselves (catch-up frames)
+      check(r.signals + r.catchups === r.renders && r.locks === r.renders, `renders ${r.renders}, renderer event signals ${r.signals}, catch-up renders ${r.catchups}, update lock taken ${r.locks}`);
+      near(r.played, (seconds + 0.25) * 200, 80, "blocks played");
+      check(s.refused === 0 && s.red.length === 0, `refused ${s.refused}, red: ${s.red.join(" | ")}`);
+      return `${sounding.toFixed(2)} s of ${w.freq.toFixed(2)} Hz, ${w.snr.toFixed(1)} dB, ${w.gaps} gaps; ${r.renders} renders (${r.catchups} of them catch-up frames of ${r.updates} updates), ${r.played} blocks played, device underrun ${h.underrun}` + (late ? ` [${late} ticks 25 ms or more late: gap checks waived]` : "");
+    } },
   { name: "Opus: a tone encoded by the browser's encoder goes through the hardware decoder manager on WebCodecs' AudioDecoder (asynchronous) and comes back as the tone", page: "/iso", cfg: {},
     run: async (p) => {
       const r = await ask<any>(p, "opus");   // eslint-disable-line @typescript-eslint/no-explicit-any

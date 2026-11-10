@@ -23,6 +23,11 @@ export interface AudioExports extends KitExports {
   audio_rs_count_render(i: number): void; audio_rs_rendered(i: number): void;
   audio_rs_update_begin(i: number, waited: number): number; audio_rs_update_end(i: number): void;
   audio_rs_stat(i: number, which: number): bigint; audio_rs_out(i: number): number;
+  audio_co_thread(thread: number): void; audio_co_req(): number;
+  audio_co_resume(x0: bigint, x1: bigint): number; audio_co_enter(arg: number, lr: bigint): number;
+  audio_ren_stat(i: number, which: number): bigint; audio_ren_frames(): number;
+  audio_ren_capture(sink: number, dest: number, cl: number, len: number): number; audio_ren_layout(): number; audio_ren_sink_id(id: number): void; audio_ren_probe_lock(guess: bigint): bigint;
+  audio_rs_played_ptr(i: number): number; audio_rs_played_frames(i: number): number;
   audio_opus_backend(b: number): void;
   audio_opus_out(req: number): number;
   audio_opus_complete(req: number, samples: number): void;
@@ -60,11 +65,20 @@ export interface AudioEmbedder {
   // taken over), and a call of it with x0..x7 that returns x0. Without them every SDK-backed call fails with a red line.
   guestFn?(name: string): bigint;
   guestCall?(fn: bigint, x: BigUint64Array): bigint;
+  // The address of the stub the SDK's CreateThread is given as an audio renderer's render thread function; the host
+  // function behind it calls audio_co_enter and serves the module's requests (see src/audio/ren.ts). 0n: none.
+  threadEntry?(): bigint;
+  // A second read end of the kernel event behind a readable handle (nxnative hle_dup_readable_handle)
+  handleDup?(readable: number): number;
   device?: AudioDeviceLike;
   opus?: OpusBackend;
 }
 
-export const RET = { VOID: 0, X0: 1, X0X1: 3, V0: 4 };
+export const RET = { VOID: 0, X0: 1, X0X1: 3, V0: 4, CO: 16 };
+// A request of a renderer take-over that goes on (audio_co_req)
+export const REQ = { CALL: 2, WAIT: 3 };
+export const REN_S = ["Free", "Opening", "StackAlloc", "ThreadCreate", "ThreadStart", "Running", "Stopping", "ThreadDestroy", "StackFree", "Closing"];
+export const REN_THREAD_S = ["Idle", "Ready", "Waiting", "Rendering"];
 export const DEV = { NONE: 0, STARTING: 1, RUNNING: 2, FAILED: 3, LOST: 4 };
 export const OUT_S = ["Stopped", "SilentStarting", "Live", "SilentRetry", "Suspended"];
 export const BUF_S = ["Reclaimed", "Appended", "Playing", "Released"];
@@ -93,6 +107,8 @@ export class AudioHost {
       audio_dev_stop: () => this.embedder.device?.stop(),
       audio_guest_fn: (p: number, n: number) => embedder.guestFn?.(dec.decode(bytes(p, n).slice())) ?? 0n,
       audio_guest_call: (fn: bigint, a: number) => embedder.guestCall?.(BigInt.asUintN(64, fn), new BigUint64Array(this.x.memory.buffer.slice(a >>> 0, (a >>> 0) + 64))) ?? 0n,
+      audio_thread_entry: () => embedder.threadEntry?.() ?? 0n,
+      audio_handle_dup: (h: number) => embedder.handleDup?.(h >>> 0) ?? 0,
       audio_opus_open: (d: number, rate: number, ch: number) => this.embedder.opus ? this.embedder.opus.open(d, rate, ch) : 0x3a6f,
       audio_opus_decode: (d: number, req: number, p: number, n: number, out: number, cap: number) => this.embedder.opus ? this.embedder.opus.decode(d, req >>> 0, bytes(p, n), out >>> 0, cap) : -2,
       audio_opus_reset: (d: number) => this.embedder.opus?.reset(d),

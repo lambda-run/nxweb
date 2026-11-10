@@ -24,7 +24,7 @@ stateDiagram-v2
     note right of Uploaded: carries sampleHash
 ```
 
-Machine id 18. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 22. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

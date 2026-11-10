@@ -1,0 +1,17 @@
+{
+  "id": 0,
+  "name": "audio_ren_update",
+  "doc": "One AudioRenderSystem::Update (the game's RequestUpdateAudioRenderer) as the host takes it over (src/audio/ren.ts; nxnative h_ars_Update). At least one frame must be rendered between two updates (an effect's initialization lives for one update only). Pass: a frame was rendered since the last update, or this is the first. CatchUp: none was; a catch-up frame is rendered on this thread first, into the queue the render thread plays from. QueueFull / Waiting: the queue of four is full; the update waits for the render thread to play one (at most 50 ms), so that catch-up frames keep real time. Space: there is room now. StillFull: the output stopped; the frame is rendered and discarded. Sdk: the SDK's own Update runs.",
+  "states": ["Idle", "Waiting", "Rendering", "Sdk"],
+  "initial": "Idle",
+  "events": ["Pass", "CatchUp", "QueueFull", "Space", "StillFull", "Rendered", "Done"],
+  "transitions": [
+    ["Idle", "Pass", "Sdk"],
+    ["Idle", "CatchUp", "Rendering"],
+    ["Idle", "QueueFull", "Waiting"],
+    ["Waiting", "Space", "Rendering"],
+    ["Waiting", "StillFull", "Rendering"],
+    ["Rendering", "Rendered", "Sdk"],
+    ["Sdk", "Done", "Idle"]
+  ]
+}

@@ -8,7 +8,7 @@
 //              the worklet reports back what it took
 // Usage: new AudioDevice(host, send); embedder.device = it; it.handle(message) for messages of the page side;
 // it.tick(guestNs, hostNs) wherever the embedder would call host.tick.
-import { AudioHost, RING, type AudioDeviceLike } from "./audio_host.ts";
+import { AudioHost, RING, DEV, type AudioDeviceLike } from "./audio_host.ts";
 
 export type AudioTransport = "direct" | "sab" | "message";
 export interface AudioDeviceOptions {
@@ -68,8 +68,15 @@ export class AudioDevice implements AudioDeviceLike {
     else if (a.ev === "hidden") { this.hidden = !!a.hidden; x.audio_suspend(a.hidden ? 1 : 0); }
     return true;
   }
-  start(): void { this.send({ audio: { cmd: "start" } }); }
-  stop(): void { this.send({ audio: { cmd: "stop" } }); }
+  // What the module asked for is also what the device is from that moment, without waiting for the page to say so:
+  // "none" after a stop, "starting" after the start that follows one, told to the module at the next tick (these two are called from
+  // inside the module). Otherwise an output closed and another started at once (a renderer closed and opened again)
+  // still saw the old "running" with callbacks arriving, went Live, and took the page's late answer to the stop for
+  // the browser taking the device away.
+  // A start while the device is wanted already (a second output) changes nothing: the first output is playing.
+  private asked: number[] = []; private stopped = false;
+  start(): void { if (this.stopped) { this.stopped = false; this.asked.push(DEV.STARTING); } this.send({ audio: { cmd: "start" } }); }
+  stop(): void { this.stopped = true; this.asked.push(DEV.NONE); this.send({ audio: { cmd: "stop" } }); }
   // The process that used the device is gone: the page side closes its AudioContext (the next process opens its own)
   close(): void { if (this.closed) return; this.closed = true; this.port?.close(); this.port = null; this.send({ audio: { cmd: "close" } }); }
   private closed = false;
@@ -100,5 +107,8 @@ export class AudioDevice implements AudioDeviceLike {
     }
     this.sent = wr; this.live = live;
   }
-  tick(guestNs: bigint, hostNs: bigint): void { this.before(); this.host.tick(guestNs, hostNs); this.after(); }
+  tick(guestNs: bigint, hostNs: bigint): void {
+    if (this.asked.length) { for (const st of this.asked) this.host.x.audio_device_state(st); this.asked.length = 0; }
+    this.before(); this.host.tick(guestNs, hostNs); this.after();
+  }
 }

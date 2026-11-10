@@ -31,15 +31,14 @@ Ported = written here and tested. Cut = left out on purpose, with the reason. Op
 | `hle_fs.c` (73 names), `romfs_image.h`, `romfs_identity.h`, `save_sync.*` | `src/fs` | Ported: 73 of 73 names (72 implemented, `MountSystemData` a stub), standard RomFS, transactional saves on OPFS. Cut: host folders, overlays, save sync. Open: nxnative's `DMROMFS1` image format |
 | `hle_account.c`, `hle_friends.c`, `hle_mii.c`, `hle_misc.c`, `hle_net.c`, `hle_nvdrv.c`, `hle_oe.c`, `hle_offline.c`, `hle_sdk16.c`, `hle_sdkinit.c`, `hle_sf.c`, `hle_swkbd.c`, `hle_table.c`, `hle_time.c`, `hle_web.c`, `hle_lifecycle.c`, `hle_count.c` | `src/hle` | Ported (with the rows below: 1,113 table entries in scope, 1,049 forced and 64 weak; 388 written by hand, 597 compiled from the C bodies, 128 cut stubs). Open on the page side: the input box, the web view, shared fonts, native images (the table answers as nxnative does without a window) |
 | `hle_hid.c` (169 names), `hle_touch.c`, `hle_haptics.*`, `pad_*.h`, `motion_*.h`, `dm_input.h`, `ctrl_prompt.h`, `switch2_proto.h` | `src/hle` (`hid.ts`, `touch.ts`, `motion.ts`, `haptics.ts`, `padslots.ts`), `src/glue/rt_input.ts` | Ported: 169 of 169 names; players by source id, the controller applet as a wait (a page dialog), vibration to the Gamepad API. A guest reads four npads. Open: a motion source and touch from the page. Cut: Apple controller back ends, DM_KEYS / DM_CTL / DM_REC (scripted steps in frames replace them) |
-| `hle_audio.c`, `hle_audren.c`, `hle_codec.c` (118 names) | `src/audio`, `src/glue/rt_audio.ts` | Ported and attached: 118 names resolve, 112 implemented: AudioOut / AudioIn / OutputStream, the renderer's sink and pacing, the Opus decoder manager; a guest plays a tone on the silent sink (exact release times) and through an AudioWorklet. Open: the six names that drive the SDK's audio renderer (a game that needs the renderer has no sound) |
+| `hle_audio.c`, `hle_audren.c`, `hle_codec.c` (118 names) | `src/audio`, `src/glue/rt_audio.ts` | Ported and attached: 118 names resolve, all implemented: AudioOut / AudioIn / OutputStream, the Opus decoder manager, and the audio renderer as nxnative has it: no mixer of the host's; the game's SDK renderer is opened for CPU rendering with manual execution, driven from a render thread the SDK starts for the host, its command list walked for the DeviceSink (header layouts of SDK 4 to 21), with the catch-up rule of `AudioRenderSystem::Update`. A take-over that runs SDK code is a sequence of steps the calling guest thread runs as guest code, so it can block on the SDK's update lock. A guest plays a tone on the silent sink (exact release times) and through an AudioWorklet; another, with a stand-in SDK renderer of its own, plays two voices through the renderer take-overs: the expected samples at the sink and at the worklet, the wave buffers reported consumed. Open: no real SDK's renderer has run (there is none in the tree); the render time statistics |
 | `hle_codec_video.c`, `hle_movie*.c/h` (128 names and the decoders) | `src/hle` (`movie.ts`, `codec_video.ts`) | Cut: every name resolves to a stub that fails as nxnative does without a decoder |
 | `hle_jit.c` (7), `hle_glslc.c` (1) | `src/hle/jit.ts` | jit: ported against a fake plugin, with code memory and re-translation in the runtime; never run with a real plugin. glslc: open |
 | `hle_cheats.c`, `hle_fpslock.c`, `hle_uecvar.c`, `hle_uemalloc.c`, `hle_oodle.c`, `hle_bigstack.c`, `hle_fdstat.c`, `memstat.m`, `probe.c`, `crash.c` | | Open: per-game aids and diagnostics, none ported. Faults are reported by the runtime (`src/runtime`) |
 | `front.h`, `front_mac.m`, `home_quit*.h`, `web_apple.m`, `pad_switch2_apple.m`, `haptics_apple.m` | `web/` | Replaced: the page (canvas, keyboard, Gamepad API, file pickers). `home_quit.h`'s machine is the kit's reference example (`test/kit`) |
 
 Of the 1,274 `HLE` / `HLE_FORCE` entries in `dm/host`: **1,273 resolve here** (1,082 in `src/hle`, 73 in `src/fs`, 118
-in `src/audio`), of which 128 are cut stubs (movies, video codecs) and 6 are red stubs (the audio renderer's
-SDK-driving half); **1 open** (glslc). nn::vi (31 entries in `dm/gfx/hle_vi.c`): 31 in `src/hle`. Every name has
+in `src/audio`), of which 128 are cut stubs (movies, video codecs); **1 open** (glslc). nn::vi (31 entries in `dm/gfx/hle_vi.c`): 31 in `src/hle`. Every name has
 one answer: the runtime refuses a second registration.
 
 ## Graphics (`dm/gfx`)
@@ -67,7 +66,7 @@ one answer: the runtime refuses a second registration.
 | nn::hid | 169 | 169 |
 | nn::vi | 31 | 31 |
 | nn::jit | 7 | 7 (against a fake plugin) |
-| nn::audio, codecs | 118 | 112, attached (6 red stubs: the audio renderer) |
+| nn::audio, codecs | 118 | 118, attached; the audio renderer is the SDK's own, driven by the host (tested with a stand-in SDK) |
 | movies, video codecs | 128 | 128 cut stubs |
 
 ## Frame-step stubs (`FRAME_STEP`, `MATCH_FRAME_STEP`): not converted, and what is missing
@@ -121,8 +120,11 @@ Nothing was emitted or half-applied: a profile with these patches runs the game'
 
 ## State machines
 
-40 machines in the kit today (kit 2, loader 1, kernel 3, runtime 1, gfx 8, fs 6, hle 15, audio 3, prepare 1), each
-with a generated diagram in `docs/machines`; `kit:test` takes all 397 transitions.
+44 machines in the kit today (kit 2, loader 1, kernel 3, runtime 1, gfx 8, fs 6, hle 15, audio 7, prepare 1), each
+with a generated diagram in `docs/machines`; `kit:test` takes all 434 transitions. The audio renderer's four
+(`audio_ren`, `audio_ren_thread`, `audio_render`, `audio_ren_update`) are the host's side of the SDK's renderer: the
+renderer's life from open to close with its render thread, the thread's loop, one render, one update. A voice's state
+(stopped / playing / paused, its wave buffer queue) is the SDK's, in the game, as in nxnative: the host has no voice.
 
 ## What "open" means for running a game
 
@@ -137,4 +139,5 @@ the code region.
 In the order a real game would hit them: containers (NSP / XCI / NCA: the prepare step takes extracted folders
 only); a real SDK in the guest (rtld's part is played by the loader, but nn::os objects, TLS and SystemEvents have
 only been exercised with self-made modules); the address space (14 of 153 profiles need more than 32 bits; the
-other 139 fit by arithmetic, unproven); real shader libraries through the chain; the audio renderer; movies.
+other 139 fit by arithmetic, unproven); real shader libraries through the chain; a real SDK's audio renderer under
+the host's take-overs (they have only driven stand-ins); movies.

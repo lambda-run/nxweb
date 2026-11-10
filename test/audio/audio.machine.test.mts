@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test, fresh, def, S, E, type Kit } from "../kit/harness.mts";
 import type { MachineDef } from "../../src/kit/host/defs.mts";
 
-const NAMES = ["audio_out", "audio_buf", "opus_req"];
+const NAMES = ["audio_out", "audio_buf", "opus_req", "audio_ren", "audio_ren_thread", "audio_render", "audio_ren_update"];
 
 // The events that lead from the initial state to `state` (breadth first over the table)
 function route(M: MachineDef, state: string): string[] {
@@ -85,4 +85,49 @@ test("opus_req: a request the decoder still holds is abandoned, not freed; its l
   assert.equal(k.x.m_step(0, E(M, "Dequeue"), 0), 0); assert.equal(k.x.m_step(0, E(M, "Enqueue"), 0), 0);
   assert.equal(k.x.m_step(0, E(M, "Complete"), 0), 1);
   assert.equal(k.x.m_state(0), S(M, "Free"));
+});
+
+test("audio_ren: the render thread is made after the SDK's open and gone before the SDK's close; a renderer without a thread closes without the join", () => {
+  const k = fresh(), M = def("audio_ren");
+  const go = (slot: number, ...es: string[]) => { for (const e of es) assert.equal(k.x.m_step(slot, E(M, e), 0), 1, e); };
+  k.x.m_init(0, M.id, 0);
+  for (const e of ["Opened", "Close", "Started", "Closed"]) assert.equal(k.x.m_step(0, E(M, e), 0), 0, e);   // nothing but Open leaves Free
+  go(0, "Open");
+  assert.equal(k.x.m_step(0, E(M, "Close"), 0), 0);       // not while the SDK's open runs
+  go(0, "Opened", "Allocated", "Created");
+  assert.equal(k.x.m_step(0, E(M, "NoThread"), 0), 0);    // a created thread is started
+  go(0, "Started");
+  assert.equal(k.x.m_state(0), S(M, "Running"));
+  go(0, "Close");
+  for (const e of ["Closed", "Freed", "Destroyed", "Open"]) assert.equal(k.x.m_step(0, E(M, e), 0), 0, e);   // the join comes first
+  go(0, "ThreadEnded", "Destroyed", "Freed", "Closed");
+  assert.equal(k.x.m_state(0), S(M, "Free"));
+  k.x.m_init(1, M.id, 1);
+  go(1, "Open", "NoThread", "CloseNoThread", "Closed");
+  assert.equal(k.x.m_state(1), S(M, "Free"));
+});
+
+test("audio_render: generation is inside the update lock and processing outside it; a render that finds another in progress waits its turn", () => {
+  const k = fresh(), M = def("audio_render");
+  assert.deepEqual(M.states, ["Idle", "Queued", "Locking", "Generating", "Unlocking", "Processing"]);
+  k.x.m_init(0, M.id, 0);
+  for (const e of ["Busy", "StillBusy", "StillBusy", "Turn", "Locked"]) assert.equal(k.x.m_step(0, E(M, e), 0), 1, e);
+  for (const e of ["Processed", "Unlocked", "Locked", "Begin"]) assert.equal(k.x.m_step(0, E(M, e), 0), 0, e);   // Generating: only Generated
+  for (const e of ["Generated", "Unlocked", "Processed"]) assert.equal(k.x.m_step(0, E(M, e), 0), 1, e);
+  assert.equal(k.x.m_state(0), S(M, "Idle"));
+});
+
+test("audio_ren_update and audio_ren_thread: the SDK's Update runs last, after at most one catch-up render; the render thread renders or plays a queued frame only when a block is free", () => {
+  const k = fresh(), U = def("audio_ren_update"), T = def("audio_ren_thread");
+  k.x.m_init(0, U.id, 0);
+  for (const e of ["QueueFull", "StillFull"]) assert.equal(k.x.m_step(0, E(U, e), 0), 1, e);
+  for (const e of ["CatchUp", "Pass", "Done", "Space"]) assert.equal(k.x.m_step(0, E(U, e), 0), 0, e);   // Rendering: only Rendered
+  for (const e of ["Rendered", "Done"]) assert.equal(k.x.m_step(0, E(U, e), 0), 1, e);
+  k.x.m_init(1, T.id, 1);
+  for (const e of ["Start", "NoBlock"]) assert.equal(k.x.m_step(1, E(T, e), 0), 1, e);
+  for (const e of ["Render", "PlayQueued", "Stop", "Rendered"]) assert.equal(k.x.m_step(1, E(T, e), 0), 0, e);   // Waiting: only Wake
+  for (const e of ["Wake", "Render"]) assert.equal(k.x.m_step(1, E(T, e), 0), 1, e);
+  assert.equal(k.x.m_step(1, E(T, "Stop"), 0), 0);   // not inside the SDK's render
+  for (const e of ["Rendered", "PlayQueued", "Stop"]) assert.equal(k.x.m_step(1, E(T, e), 0), 1, e);
+  assert.equal(k.x.m_state(1), S(T, "Idle"));
 });

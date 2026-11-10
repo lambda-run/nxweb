@@ -12,7 +12,7 @@ stateDiagram-v2
     Queued --> Idle: Pop
 ```
 
-Machine id 25. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 29. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

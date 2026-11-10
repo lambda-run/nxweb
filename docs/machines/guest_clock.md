@@ -65,7 +65,7 @@ stateDiagram-v2
     note right of HoldBackgroundKeyboard: carries frozenAt
 ```
 
-Machine id 35. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 39. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

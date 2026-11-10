@@ -1,0 +1,25 @@
+{
+  "id": 0,
+  "name": "audio_ren",
+  "doc": "One audio renderer the host opened (src/audio/ren.ts; nxnative dm/host/hle_audren.c ar_t: handle[0], open, render_tt). The renderer itself is the SDK's own, opened for CPU rendering with manual execution; this is the host's part of its life, each state one call into the SDK that the calling guest thread is running. Opening: the SDK's OpenAudioRenderer (a nested OpenAudioRenderer of that thread goes straight to the SDK). StackAlloc, ThreadCreate, ThreadStart: the render thread is made as nxnative's dm_guest_thread_spawn makes it, with the SDK's malloc, nn::os::CreateThread and StartThread, so it is a thread of the SDK's like any other. NoThread: the SDK lacks one of them or refused; the renderer is open and only the game's updates render. Running: the render thread drives ExecuteAudioRendererRendering, one frame per block its output hands back. Stopping: CloseAudioRenderer waits for the render thread to end (nn::os::WaitThread), because the thread may be inside the renderer the SDK is about to free; ThreadDestroy and StackFree give the thread back. Closing: the SDK's CloseAudioRenderer; then the work buffer the host supplied and the renderer's own event are released.",
+  "states": ["Free", "Opening", "StackAlloc", "ThreadCreate", "ThreadStart", "Running", "Stopping", "ThreadDestroy", "StackFree", "Closing"],
+  "initial": "Free",
+  "events": ["Open", "Opened", "OpenFailed", "Allocated", "Created", "Started", "NoThread", "Close", "CloseNoThread", "ThreadEnded", "Destroyed", "Freed", "Closed"],
+  "transitions": [
+    ["Free", "Open", "Opening"],
+    ["Opening", "Opened", "StackAlloc"],
+    ["Opening", "OpenFailed", "Free"],
+    ["Opening", "NoThread", "Running"],
+    ["StackAlloc", "Allocated", "ThreadCreate"],
+    ["StackAlloc", "NoThread", "Running"],
+    ["ThreadCreate", "Created", "ThreadStart"],
+    ["ThreadCreate", "NoThread", "Running"],
+    ["ThreadStart", "Started", "Running"],
+    ["Running", "Close", "Stopping"],
+    ["Running", "CloseNoThread", "Closing"],
+    ["Stopping", "ThreadEnded", "ThreadDestroy"],
+    ["ThreadDestroy", "Destroyed", "StackFree"],
+    ["StackFree", "Freed", "Closing"],
+    ["Closing", "Closed", "Free"]
+  ]
+}

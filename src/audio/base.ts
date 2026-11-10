@@ -34,6 +34,18 @@ declare function envGuestFn(namePtr: usize, nameLen: i32): u64;
 @external("env", "audio_guest_call")
 declare function envGuestCall(fn: u64, argsPtr: usize): u64;
 
+// The address of the embedder's render-thread stub: the function the SDK's nn::os::CreateThread is given for an
+// audio renderer's render thread. The embedder's host function behind it calls audio_co_enter(x0, x30) on that
+// thread and serves the module's requests. 0: the embedder has none (no render thread: red).
+// @ts-ignore: decorator
+@external("env", "audio_thread_entry")
+export declare function threadEntry(): u64;
+// A second read end of the kernel event behind a readable handle, as a service's handle copied to its client
+// (nxnative hle_dup_readable_handle); 0 if the handle is no read end
+// @ts-ignore: decorator
+@external("env", "audio_handle_dup")
+export declare function handleDup(readable: u32): u32;
+
 export const RES_OK: u32 = 0;
 export const RES_FAIL: u32 = 0x2A2;      // nxnative's generic failure
 export const RATE: u32 = 48000;
