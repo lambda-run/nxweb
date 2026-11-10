@@ -12,13 +12,13 @@ import { fileURLToPath } from "node:url";
 // Output goes out with blocking writes. When stdout is a pipe (CI), process.stdout.write hands the pipe 64 KiB and
 // queues the rest for the event loop, which the spawnSync of the next step blocks; process.exit then drops it:
 // everything after the first 64 KiB of a long step's output, the summary and the reason for the exit code.
-function out(s: string): void {
+function emit(s: string): void {
   const b = Buffer.from(s);
   for (let o = 0; o < b.length;) {
     try { o += writeSync(1, b, o); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EAGAIN") throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
   }
 }
-const say = (...a: unknown[]) => out(a.join(" ") + "\n");
+const say = (...a: unknown[]) => emit(a.join(" ") + "\n");
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // The three programs the translator's README lists as failing (NaN payloads, FPCR rounding modes, reciprocal estimates)
 export const A64_EXPECTED_FAILURES = ["fp_nan_bits", "fpcr_modes", "neon_estimate"];
@@ -28,7 +28,7 @@ const steps: Step[] = [];
 function npm(script: string): { code: number; out: string } {
   const r = spawnSync("npm", ["run", "-s", script], { cwd: ROOT, encoding: "utf8", maxBuffer: 256 << 20 });
   const out = (r.stdout ?? "") + (r.stderr ?? "");
-  out(out.split("\n").filter(l => !/MODULE_TYPELESS_PACKAGE_JSON|Reparsing as ES module|To eliminate this warning|--trace-warnings/.test(l)).join("\n"));
+  emit(out.split("\n").filter(l => !/MODULE_TYPELESS_PACKAGE_JSON|Reparsing as ES module|To eliminate this warning|--trace-warnings/.test(l)).join("\n"));
   return { code: r.status ?? 1, out };
 }
 function step(name: string, fn: () => { ok: boolean; note: string }): void {
