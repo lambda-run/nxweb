@@ -1,0 +1,16 @@
+{
+  "name": "gfx_cmdbuf",
+  "doc": "Recording state of one NVN command buffer (src/gfx/cmd.ts; nxnative cmd_t.recording 0 / 2 / 1). Begun is a recording with no record yet: its first record becomes the command handle. AddCommandMemory is not an event: memory may be added in any state. Restart is BeginRecording while a recording is open, which nxnative reports red and restarts.",
+  "states": ["Idle", "Begun", "Recording"],
+  "initial": "Idle",
+  "events": ["Begin", "Record", "End", "Restart"],
+  "transitions": [
+    ["Idle", "Begin", "Begun"],
+    ["Begun", "Record", "Recording"],
+    ["Recording", "Record", "Recording"],
+    ["Begun", "End", "Idle"],
+    ["Recording", "End", "Idle"],
+    ["Begun", "Restart", "Begun"],
+    ["Recording", "Restart", "Begun"]
+  ]
+}

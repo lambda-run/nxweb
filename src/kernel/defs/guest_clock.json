@@ -1,0 +1,300 @@
+{
+ "id": 0,
+ "name": "guest_clock",
+ "doc": "The guest clock and why it stands still (nxnative hle_os.c guest_clock_freeze_for). The state IS the reason set: its number is the bit mask (bit 0 Hold: a test or loading-screen hold, bit 1 Background: the app is not in focus, bit 2 Keyboard: the system keyboard is up), so one read of the state is one consistent snapshot. The clock runs only in Running, which carries the lag (host ns minus guest ns); every other state carries the guest ns it is frozen at. Freezing a reason that already holds and thawing one that does not are transitions to the same state.",
+ "states": [
+  "Running",
+  "Hold",
+  "Background",
+  "HoldBackground",
+  "Keyboard",
+  "HoldKeyboard",
+  "BackgroundKeyboard",
+  "HoldBackgroundKeyboard"
+ ],
+ "initial": "Running",
+ "data": {
+  "Running": {
+   "name": "lag",
+   "type": "host ns minus guest ns while the clock runs"
+  },
+  "Hold": {
+   "name": "frozenAt",
+   "type": "the guest ns the clock stands at"
+  },
+  "Background": {
+   "name": "frozenAt",
+   "type": "the guest ns the clock stands at"
+  },
+  "HoldBackground": {
+   "name": "frozenAt",
+   "type": "the guest ns the clock stands at"
+  },
+  "Keyboard": {
+   "name": "frozenAt",
+   "type": "the guest ns the clock stands at"
+  },
+  "HoldKeyboard": {
+   "name": "frozenAt",
+   "type": "the guest ns the clock stands at"
+  },
+  "BackgroundKeyboard": {
+   "name": "frozenAt",
+   "type": "the guest ns the clock stands at"
+  },
+  "HoldBackgroundKeyboard": {
+   "name": "frozenAt",
+   "type": "the guest ns the clock stands at"
+  }
+ },
+ "events": [
+  "FreezeHold",
+  "ThawHold",
+  "FreezeBackground",
+  "ThawBackground",
+  "FreezeKeyboard",
+  "ThawKeyboard"
+ ],
+ "transitions": [
+  [
+   "Running",
+   "FreezeHold",
+   "Hold"
+  ],
+  [
+   "Running",
+   "ThawHold",
+   "Running"
+  ],
+  [
+   "Running",
+   "FreezeBackground",
+   "Background"
+  ],
+  [
+   "Running",
+   "ThawBackground",
+   "Running"
+  ],
+  [
+   "Running",
+   "FreezeKeyboard",
+   "Keyboard"
+  ],
+  [
+   "Running",
+   "ThawKeyboard",
+   "Running"
+  ],
+  [
+   "Hold",
+   "FreezeHold",
+   "Hold"
+  ],
+  [
+   "Hold",
+   "ThawHold",
+   "Running"
+  ],
+  [
+   "Hold",
+   "FreezeBackground",
+   "HoldBackground"
+  ],
+  [
+   "Hold",
+   "ThawBackground",
+   "Hold"
+  ],
+  [
+   "Hold",
+   "FreezeKeyboard",
+   "HoldKeyboard"
+  ],
+  [
+   "Hold",
+   "ThawKeyboard",
+   "Hold"
+  ],
+  [
+   "Background",
+   "FreezeHold",
+   "HoldBackground"
+  ],
+  [
+   "Background",
+   "ThawHold",
+   "Background"
+  ],
+  [
+   "Background",
+   "FreezeBackground",
+   "Background"
+  ],
+  [
+   "Background",
+   "ThawBackground",
+   "Running"
+  ],
+  [
+   "Background",
+   "FreezeKeyboard",
+   "BackgroundKeyboard"
+  ],
+  [
+   "Background",
+   "ThawKeyboard",
+   "Background"
+  ],
+  [
+   "HoldBackground",
+   "FreezeHold",
+   "HoldBackground"
+  ],
+  [
+   "HoldBackground",
+   "ThawHold",
+   "Background"
+  ],
+  [
+   "HoldBackground",
+   "FreezeBackground",
+   "HoldBackground"
+  ],
+  [
+   "HoldBackground",
+   "ThawBackground",
+   "Hold"
+  ],
+  [
+   "HoldBackground",
+   "FreezeKeyboard",
+   "HoldBackgroundKeyboard"
+  ],
+  [
+   "HoldBackground",
+   "ThawKeyboard",
+   "HoldBackground"
+  ],
+  [
+   "Keyboard",
+   "FreezeHold",
+   "HoldKeyboard"
+  ],
+  [
+   "Keyboard",
+   "ThawHold",
+   "Keyboard"
+  ],
+  [
+   "Keyboard",
+   "FreezeBackground",
+   "BackgroundKeyboard"
+  ],
+  [
+   "Keyboard",
+   "ThawBackground",
+   "Keyboard"
+  ],
+  [
+   "Keyboard",
+   "FreezeKeyboard",
+   "Keyboard"
+  ],
+  [
+   "Keyboard",
+   "ThawKeyboard",
+   "Running"
+  ],
+  [
+   "HoldKeyboard",
+   "FreezeHold",
+   "HoldKeyboard"
+  ],
+  [
+   "HoldKeyboard",
+   "ThawHold",
+   "Keyboard"
+  ],
+  [
+   "HoldKeyboard",
+   "FreezeBackground",
+   "HoldBackgroundKeyboard"
+  ],
+  [
+   "HoldKeyboard",
+   "ThawBackground",
+   "HoldKeyboard"
+  ],
+  [
+   "HoldKeyboard",
+   "FreezeKeyboard",
+   "HoldKeyboard"
+  ],
+  [
+   "HoldKeyboard",
+   "ThawKeyboard",
+   "Hold"
+  ],
+  [
+   "BackgroundKeyboard",
+   "FreezeHold",
+   "HoldBackgroundKeyboard"
+  ],
+  [
+   "BackgroundKeyboard",
+   "ThawHold",
+   "BackgroundKeyboard"
+  ],
+  [
+   "BackgroundKeyboard",
+   "FreezeBackground",
+   "BackgroundKeyboard"
+  ],
+  [
+   "BackgroundKeyboard",
+   "ThawBackground",
+   "Keyboard"
+  ],
+  [
+   "BackgroundKeyboard",
+   "FreezeKeyboard",
+   "BackgroundKeyboard"
+  ],
+  [
+   "BackgroundKeyboard",
+   "ThawKeyboard",
+   "Background"
+  ],
+  [
+   "HoldBackgroundKeyboard",
+   "FreezeHold",
+   "HoldBackgroundKeyboard"
+  ],
+  [
+   "HoldBackgroundKeyboard",
+   "ThawHold",
+   "BackgroundKeyboard"
+  ],
+  [
+   "HoldBackgroundKeyboard",
+   "FreezeBackground",
+   "HoldBackgroundKeyboard"
+  ],
+  [
+   "HoldBackgroundKeyboard",
+   "ThawBackground",
+   "HoldKeyboard"
+  ],
+  [
+   "HoldBackgroundKeyboard",
+   "FreezeKeyboard",
+   "HoldBackgroundKeyboard"
+  ],
+  [
+   "HoldBackgroundKeyboard",
+   "ThawKeyboard",
+   "HoldBackground"
+  ]
+ ]
+}

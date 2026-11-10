@@ -12,7 +12,7 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 | State machine kit (`src/kit`) | Working, tests pass |
 | ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs |
 | ARM64 to WebAssembly translator (`src/a64`) | In progress |
-| Module loader (`src/loader`) | In progress |
+| Module loader (`src/loader`) | Working, tests pass (no real game file tried) |
 | Kernel core (`src/kernel`) | In progress |
 | NVN on WebGPU (`src/gfx`) | In progress |
 

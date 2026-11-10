@@ -450,7 +450,13 @@ export function trBranchSys(pc: u64, insn: u32): bool {
   }
   if ((insn & 0xFFE0001F) == 0xD4000001) { emitSvc((insn >> 5) & 0xFFFF, pc + 4); return true; }
   if ((insn & 0xFFE0001F) == 0xD4200000) { emitTrap(F_BRK, pc, (insn >> 5) & 0xFFFF); return true; }
-  if ((insn & 0xFFFFFC1F) == 0xD61F0000) { getX(<i32>((insn >> 5) & 31), true); exitDyn(); return true; }
+  if ((insn & 0xFFFFFC1F) == 0xD61F0000) {
+    // BR. `br x30` is a return in disguise (longjmp, hand-written epilogues): unwind like RET so that
+    // abandoned wasm frames are released; every other BR is a tail transfer.
+    let r = <i32>((insn >> 5) & 31);
+    getX(r, true); if (r == 30) exitRet(); else exitDyn();
+    return true;
+  }
   if ((insn & 0xFFFFFC1F) == 0xD63F0000) { getX(<i32>((insn >> 5) & 31), true); callDyn(pc + 4); return true; }
   if ((insn & 0xFFFFFC1F) == 0xD65F0000) { getX(<i32>((insn >> 5) & 31), true); exitRet(); return true; }
   if ((insn & 0xFFFFF01F) == 0xD503201F) return true;   // hints (NOP, YIELD, PAC/BTI hints...)

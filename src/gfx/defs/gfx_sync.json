@@ -1,0 +1,20 @@
+{
+  "name": "gfx_sync",
+  "doc": "An NVN sync object, kept inside the guest's NVNsync (src/gfx/sync.ts; nxnative sync_t.fenced and fence). The pending states carry the fence number they wait for: PendingFence from nvnQueueFenceSync, PendingAcquire from nvnWindowAcquireTexture. Complete is nvnSyncWait finding the fence done (gfx_fence_done). A fenced sync is fenced again through Reset.",
+  "states": ["Unfenced", "PendingFence", "PendingAcquire", "Signaled"],
+  "initial": "Unfenced",
+  "data": {
+    "PendingFence": { "name": "fence", "type": "fence number" },
+    "PendingAcquire": { "name": "fence", "type": "fence number" }
+  },
+  "events": ["Fence", "Acquire", "Complete", "Reset"],
+  "transitions": [
+    ["Unfenced", "Fence", "PendingFence"],
+    ["Unfenced", "Acquire", "PendingAcquire"],
+    ["PendingFence", "Complete", "Signaled"],
+    ["PendingAcquire", "Complete", "Signaled"],
+    ["PendingFence", "Reset", "Unfenced"],
+    ["PendingAcquire", "Reset", "Unfenced"],
+    ["Signaled", "Reset", "Unfenced"]
+  ]
+}

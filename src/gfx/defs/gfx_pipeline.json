@@ -1,0 +1,13 @@
+{
+  "name": "gfx_pipeline",
+  "doc": "One entry of the render pipeline cache (src/gfx/pipeline.ts). The key is program + vertex layout + blend, depth-stencil and raster state + target formats. Request is the first draw that needs the key: the replayer starts createRenderPipelineAsync and reports Built or Error (gfx_pipeline_done). A draw in Building is still issued: the replayer creates the pipeline synchronously for it. A draw in Failed is skipped.",
+  "states": ["Missing", "Building", "Ready", "Failed"],
+  "initial": "Missing",
+  "final": ["Ready", "Failed"],
+  "events": ["Request", "Built", "Error"],
+  "transitions": [
+    ["Missing", "Request", "Building"],
+    ["Building", "Built", "Ready"],
+    ["Building", "Error", "Failed"]
+  ]
+}

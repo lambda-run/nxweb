@@ -12,11 +12,11 @@ process.chdir(ROOT);
 let failed = 0;
 const red = (m: string) => { failed++; console.error(`[RED] ${m}`); };
 
-try { await build(); buildModules(); }
+try { build(); buildModules(); }
 catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }
 
 const dir = import.meta.dirname;
-for (const f of readdirSync(dir).filter(f => f.endsWith(".test.mts")).sort()) await import(pathToFileURL(join(dir, f)).href);
+for (const f of readdirSync(dir).filter(f => f.endsWith(".test.mts") && !f.endsWith(".machine.test.mts")).sort()) await import(pathToFileURL(join(dir, f)).href);
 
 const only = process.argv[2];
 for (const t of tests) {

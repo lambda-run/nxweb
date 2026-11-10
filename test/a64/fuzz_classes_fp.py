@@ -161,3 +161,20 @@ E("simd_ldst_multi_post", "0 Q:1 0011001 L:1 0 Rm:5 opcode:4 size:2 Rn:5 Rt:5", 
   small=("Rm",), filt=lambda f: f["Rn"] != 31 or True)
 E("simd_ldst_single", "0 Q:1 0011010 L:1 R:1 00000 opcode:3 S:1 size:2 Rn:5 Rt:5", base="Rn")
 E("simd_ldst_single_post", "0 Q:1 0011011 L:1 R:1 Rm:5 opcode:3 S:1 size:2 Rn:5 Rt:5", base="Rn", small=("Rm",))
+
+# ------------------------------------------------------------------------------ T4
+E("simd_srshl_urshl", "0 Q:1 U:1 01110 size:2 1 Rm:5 01010 1 Rn:5 Rd:5")
+E("simd_sqdmulh", "0 Q:1 U:1 01110 size:2 1 Rm:5 10110 1 Rn:5 Rd:5", fix={"size": [1, 2]})
+E("simd_sqdmulh_scalar", "01 U:1 11110 size:2 1 Rm:5 10110 1 Rn:5 Rd:5", fix={"size": [1, 2]})
+E("simd_sqdmulh_indexed", "0 Q:1 0 01111 size:2 L:1 M:1 Rm:4 110 r:1 H:1 0 Rn:5 Rd:5", fix={"size": [1, 2]})
+E("simd_sqabs_sqneg", "0 Q:1 U:1 01110 size:2 10000 00111 10 Rn:5 Rd:5")
+E("simd_sqabs_sqneg_scalar", "01 U:1 11110 size:2 10000 00111 10 Rn:5 Rd:5")
+E("simd_qshl_imm", "0 Q:1 U:1 011110 immh:4 immb:3 011 k:1 0 1 Rn:5 Rd:5", filt=lambda f: f["immh"] != 0 and (f["k"] or f["U"]))
+E("simd_qshl_imm_scalar", "01 U:1 111110 immh:4 immb:3 011 k:1 0 1 Rn:5 Rd:5", filt=lambda f: f["immh"] != 0 and (f["k"] or f["U"]))
+for ty, fp, n in TY:
+    E("simd_fmaxnm_fminnm_%s" % n, "0 Q:1 U:1 01110 a:1 sz:1 1 Rm:5 11000 1 Rn:5 Rd:5",
+      fix={"sz": ty, "Q": (lambda r, f, pc, ty=ty: 1 if ty else f["Q"])}, fp=fp)
+E("simd_fmaxv_fminv", "0 1 1 01110 a:1 0 11000 011 k:2 10 Rn:5 Rd:5", fix={"k": [0, 3]}, fp=32)
+for ty, fp, n in TY:
+    E("simd_fixed_conv_scalar_%s" % n, "01 U:1 111110 immh:4 immb:3 111 k:1 k2:1 1 Rn:5 Rd:5",
+      fix={"immh": (lambda r, f, pc, ty=ty: (8 | r.getrandbits(3)) if ty else (4 | r.getrandbits(2))), "k2": (lambda r, f, pc: f["k"])}, fp=fp)

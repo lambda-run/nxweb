@@ -54,7 +54,7 @@ test("nro: plugin.nro maps to its own bytes, bss zero", () => {
   eq(i.kind, KIND_NRO, "kind");
   eq(i.imageSize, elf.imageSize, "image size");
   ok(i.bssSize > 0, "the NRO has bss left");
-  eq(bytes.length + i.bssSize, elf.imageSize, "file + bss = image");
+  eq((bytes.length + i.bssSize + 0xFFF) & ~0xFFF, elf.imageSize, "file + bss, in whole pages = image");
   same(b.mem(i.base, i.imageSize), pristineImage({ elf, base: i.base, pristine: bytes }), "image");
   same(b.mem(i.text.addr + 0x80, elf.segs[0].bytes.length - 0x80), elf.segs[0].bytes.subarray(0x80), "text after the header is the ELF's");
   same(i.buildId.subarray(0, elf.buildId.length), elf.buildId, "build id");

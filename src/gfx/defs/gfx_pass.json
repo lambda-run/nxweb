@@ -1,0 +1,33 @@
+{
+  "name": "gfx_pass",
+  "doc": "Render pass of one NVN queue as WebGPU needs it (src/gfx/lower.ts). WebGPU fixes attachments and load actions when a pass begins, has no clear inside a pass, and refuses to sample a texture attached to the open pass. TargetsSet: targets known, no pass. ClearPending: full clears wait to become the load actions of the next pass. Open: a pass is open. Draw and PartialClear (drawn as a triangle) open or continue the pass; FullClear in Open ends it and waits again; Feedback is a draw that samples one of its own targets: the pass ends, the texture is copied, and the Draw that follows reopens with load. Break is anything that cannot be inside a pass (copy, memory write, compute dispatch, fence, present); Submit is the end of a submission. Both land pending clears with a pass of their own.",
+  "states": ["Unset", "TargetsSet", "ClearPending", "Open"],
+  "initial": "Unset",
+  "events": ["SetTargets", "FullClear", "PartialClear", "Draw", "Feedback", "Break", "Submit"],
+  "transitions": [
+    ["Unset", "SetTargets", "TargetsSet"],
+    ["TargetsSet", "SetTargets", "TargetsSet"],
+    ["ClearPending", "SetTargets", "TargetsSet"],
+    ["Open", "SetTargets", "TargetsSet"],
+    ["TargetsSet", "FullClear", "ClearPending"],
+    ["ClearPending", "FullClear", "ClearPending"],
+    ["Open", "FullClear", "ClearPending"],
+    ["TargetsSet", "PartialClear", "Open"],
+    ["ClearPending", "PartialClear", "Open"],
+    ["Open", "PartialClear", "Open"],
+    ["TargetsSet", "Draw", "Open"],
+    ["ClearPending", "Draw", "Open"],
+    ["Open", "Draw", "Open"],
+    ["TargetsSet", "Feedback", "TargetsSet"],
+    ["ClearPending", "Feedback", "TargetsSet"],
+    ["Open", "Feedback", "TargetsSet"],
+    ["Unset", "Break", "Unset"],
+    ["TargetsSet", "Break", "TargetsSet"],
+    ["ClearPending", "Break", "TargetsSet"],
+    ["Open", "Break", "TargetsSet"],
+    ["Unset", "Submit", "Unset"],
+    ["TargetsSet", "Submit", "TargetsSet"],
+    ["ClearPending", "Submit", "TargetsSet"],
+    ["Open", "Submit", "TargetsSet"]
+  ]
+}

@@ -198,10 +198,96 @@ function threeSameFp(insn: u32, scalar: bool): bool {
       pairSh(e, Q, 1); vget(rn); vget(rm); shuffle();
       vfo(d, a ? 8 : 9); break;
     }
+    case 0x18: case 0x38: { // FMAXNM / FMINNM
+      vget(rn); vget(rm); vMinMaxNum(d, a == 0);
+      break;
+    }
+    case 0x58: case 0x78: { // FMAXNMP / FMINNMP
+      if (scalar) return false;
+      let e = d ? 8 : 4;
+      pairSh(e, Q, 0); vget(rn); vget(rm); shuffle();
+      pairSh(e, Q, 1); vget(rn); vget(rm); shuffle();
+      vMinMaxNum(d, a == 0);
+      break;
+    }
     default: return false;
   }
   finish(rd, fm);
   return true;
+}
+
+// stack: a b -> FMAXNM/FMINNM per lane
+function vMinMaxNum(d: bool, isMax: bool): void {
+  let A = tv(0), B = tv(1), R = tv(2);
+  let q: u64 = d ? 0x0008000000000000 : 0x0040000000400000;
+  lset(B); lset(A);
+  lget(A); lget(B); vfo(d, isMax ? 9 : 8); lset(R);
+  lget(B); lget(R);
+  lget(A); lget(A); vfcmp(d, 1); lget(B); lget(B); vfcmp(d, 0); simd(0x4E);
+  lget(A); v128c(q, q); simd(0x4E); v128c(q, q); simd(d ? 0xD6 : 0x37); simd(0x4E);
+  simd(0x52); lset(R);
+  lget(A); lget(R);
+  lget(B); lget(B); vfcmp(d, 1); lget(A); lget(A); vfcmp(d, 0); simd(0x4E);
+  lget(B); v128c(q, q); simd(0x4E); v128c(q, q); simd(d ? 0xD6 : 0x37); simd(0x4E);
+  simd(0x52);
+}
+
+// stack: a b -> SQDMULH / SQRDMULH per lane (sz 1 or 2)
+function vqdmulh(sz: u32, round: bool): void {
+  if (sz == 1) {
+    if (round) { simd(0x82); return; }
+    let A = tv(0), B = tv(1);
+    lset(B); lset(A);
+    lget(A); lget(B); simd(0xBC); i32c(15); simd(0xAC);
+    lget(A); lget(B); simd(0xBD); i32c(15); simd(0xAC);
+    simd(0x85);
+    return;
+  }
+  let A = tv(0), B = tv(1);
+  lset(B); lset(A);
+  lget(A); lget(B); simd(0xDC); if (round) { v128c(1 << 30, 1 << 30); simd(0xCE); } i32c(31); simd(0xCC);
+  lget(A); lget(B); simd(0xDD); if (round) { v128c(1 << 30, 1 << 30); simd(0xCE); } i32c(31); simd(0xCC);
+  for (let j = 0; j < 4; j++) { SH[j] = <u8>j; SH[4 + j] = <u8>(8 + j); SH[8 + j] = <u8>(16 + j); SH[12 + j] = <u8>(24 + j); }
+  shuffle();
+  lget(A); laneConst(2, 0x80000000); simd(0x37); lget(B); laneConst(2, 0x80000000); simd(0x37); simd(0x4E);
+  simd(0x51);
+}
+
+// saturating shift left by immediate, lane by lane. stack: v -> v'
+function satShl(sz: u32, srcS: bool, dstS: bool, sh: u32): void {
+  let n: i32 = 16 >> sz, esize: u32 = 8 << sz;
+  let ex: u32 = sz == 0 ? (srcS ? 0x15 : 0x16) : sz == 1 ? (srcS ? 0x18 : 0x19) : sz == 2 ? 0x1B : 0x1D;
+  let rep: u32 = sz == 0 ? 0x17 : sz == 1 ? 0x1A : sz == 2 ? 0x1C : 0x1E;
+  let V = tv(5), R = tv(6), x = t64(0), r = t64(1);
+  lset(V); v128c(0, 0); lset(R);
+  for (let l = 0; l < n; l++) {
+    lget(R);
+    lget(V); simd(ex); b(l); if (sz != 3) b(srcS ? 0xAC : 0xAD); lset(x);
+    if (sz != 3) {
+      let lo: i64 = dstS ? -(<i64>1 << (esize - 1)) : 0;
+      let hi: i64 = dstS ? (<i64>1 << (esize - 1)) - 1 : (<i64>1 << esize) - 1;
+      lget(x); i64c(sh); b(0x86); lset(r);
+      lget(r); i64c(lo); lget(r); i64c(lo); b(0x55); b(0x1B); lset(r);
+      lget(r); i64c(hi); lget(r); i64c(hi); b(0x53); b(0x1B);
+      b(0xA7);
+    } else {
+      lget(x); i64c(sh); b(0x86); lset(r);
+      if (srcS && dstS) {
+        // overflow if (r >> sh) != x
+        lget(r);
+        i64c(0x7FFFFFFFFFFFFFFF); lget(x); i64c(63); b(0x87); b(0x85);
+        lget(r); i64c(sh); b(0x87); lget(x); b(0x51); b(0x1B);
+      } else if (!srcS) {
+        lget(r); i64c(-1); lget(r); i64c(sh); b(0x88); lget(x); b(0x51); b(0x1B);
+      } else {
+        // signed -> unsigned: negative -> 0, else unsigned saturation
+        lget(r); i64c(-1); lget(r); i64c(sh); b(0x88); lget(x); b(0x51); b(0x1B);
+        i64c(0); lget(x); i64c(0); b(0x59); b(0x1B);
+      }
+    }
+    simd(rep); b(l); lset(R);
+  }
+  lget(R);
 }
 
 function threeSame(insn: u32, scalar: bool): bool {
@@ -210,7 +296,7 @@ function threeSame(insn: u32, scalar: bool): bool {
   let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31), rm = <i32>((insn >> 16) & 31);
   if (opcode >= 0x18) return threeSameFp(insn, scalar);
   let fm: i32 = scalar ? scalarFm(sz) : (Q ? 0 : 1);
-  if (scalar && sz != 3 && opcode != 1 && opcode != 5) return false;
+  if (scalar && sz != 3 && opcode != 1 && opcode != 5 && opcode != 0x16) return false;
   if (!scalar && sz == 3 && !Q && opcode != 3) return false;
   switch (opcode) {
     case 1: case 5: { // SQADD/UQADD, SQSUB/UQSUB
@@ -297,10 +383,9 @@ function threeSame(insn: u32, scalar: bool): bool {
       laneConst(sz, 1); simd(0x4E); vi(sz, sub ? 0x11 : 0xE);
       break;
     }
-    case 8: { // SSHL / USHL: shift by signed per-lane amount (low byte of each lane of rm)
-      if (!sshl(rn, rm, sz, U)) return false;
-      break;
-    }
+    case 8: sshl(rn, rm, sz, U, false); break;   // SSHL / USHL
+    case 10: sshl(rn, rm, sz, U, true); break;   // SRSHL / URSHL
+    case 0x16: if (sz == 0 || sz == 3) return false; vget(rn); vget(rm); vqdmulh(sz, U); break;
     default: return false;
   }
   finish(rd, fm);
@@ -308,7 +393,7 @@ function threeSame(insn: u32, scalar: bool): bool {
 }
 
 // variable shift, lane by lane through scalar code
-function sshl(rn: i32, rm: i32, sz: u32, U: bool): bool {
+function sshl(rn: i32, rm: i32, sz: u32, U: bool, round: bool): void {
   let n: i32 = 16 >> sz;
   let esize: i32 = 8 << sz;
   let ex: u32 = sz == 0 ? (U ? 0x16 : 0x15) : sz == 1 ? (U ? 0x19 : 0x18) : sz == 2 ? 0x1B : 0x1D;
@@ -326,7 +411,14 @@ function sshl(rn: i32, rm: i32, sz: u32, U: bool): bool {
     b(0x04); b(0x7E);
     lget(x); lget(s); b(0x86); i64c(0); lget(s); i64c(esize); b(0x53); b(0x1B);
     b(0x05);
-    if (U) {
+    if (round) {
+      let nn = t64(2);
+      i64c(0); lget(s); b(0x7D); lset(nn);
+      if (U) { lget(x); lget(nn); b(0x88); i64c(0); lget(nn); i64c(64); b(0x53); b(0x1B); }
+      else { lget(x); lget(nn); i64c(63); lget(nn); i64c(63); b(0x53); b(0x1B); b(0x87); }
+      lget(x); lget(nn); i64c(1); b(0x7D); b(0x88); i64c(1); b(0x83); b(0x7C);
+      i64c(0); lget(nn); i64c(esize); b(0x57); b(0x1B);
+    } else if (U) {
       lget(x); if (sz < 3) { i64c(sz == 0 ? 0xFF : sz == 1 ? 0xFFFF : 0xFFFFFFFF); b(0x83); }
       i64c(0); lget(s); b(0x7D); b(0x88); i64c(0); lget(s); i64c(-esize); b(0x55); b(0x1B);
     } else {
@@ -338,7 +430,6 @@ function sshl(rn: i32, rm: i32, sz: u32, U: bool): bool {
     simd(rep); b(l); lset(R);
   }
   lget(R);
-  return true;
 }
 
 function twoReg(insn: u32, scalar: bool): bool {
@@ -349,7 +440,7 @@ function twoReg(insn: u32, scalar: bool): bool {
   let fm: i32 = scalar ? scalarFm(sz) : (Q ? 0 : 1);
   let ffm: i32 = scalar ? (d ? 1 : 2) : (Q ? 0 : 1);
   if (opcode < 0x0C || opcode == 0x12 || opcode == 0x13 || opcode == 0x14) {
-    if (scalar && (sz != 3 || opcode < 8 || opcode > 11)) return false;
+    if (scalar && opcode != 7 && (sz != 3 || opcode < 8 || opcode > 11)) return false;
     if (!scalar && sz == 3 && !Q && opcode >= 8 && opcode <= 11) return false;
     switch (opcode) {
       case 0: case 1: {
@@ -383,6 +474,12 @@ function twoReg(insn: u32, scalar: bool): bool {
           simd(0x50);
         } else return false;
         break;
+      case 7: { // SQABS / SQNEG
+        if (!scalar && sz == 3 && !Q) return false;
+        let T = tv(4);
+        vget(rn); vi(sz, U ? 1 : 0); ltee(T); lget(T); laneConst(sz, <u64>1 << ((8 << sz) - 1)); vcmp(sz, 0); vi(sz, 0xE);
+        break;
+      }
       case 8: vget(rn); v128c(0, 0); vcmp(sz, U ? 8 : 4); break;
       case 9: vget(rn); v128c(0, 0); vcmp(sz, U ? 6 : 0); break;
       case 10: if (U) return false; vget(rn); v128c(0, 0); vcmp(sz, 2); break;
@@ -463,6 +560,19 @@ function across(insn: u32): bool {
   let opcode = (insn >> 12) & 31;
   let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31);
   let S = tv(0);
+  if (U && (opcode == 0x0F || opcode == 0x0C)) { // FMAXV / FMINV / FMAXNMV / FMINNMV (4S)
+    if (!Q || (sz & 1)) return false;
+    let isMin = (sz & 2) != 0;
+    for (let l = 0; l < 4; l++) {
+      vget(rn); simd(0x1F); b(l);
+      if (l & 1) { if (opcode == 0x0F) b(isMin ? 0x96 : 0x97); else minMaxNum(false, !isMin); }
+      if (l == 1) lset(tf32(5));
+    }
+    lset(tf32(6)); lget(tf32(5)); lget(tf32(6));
+    if (opcode == 0x0F) b(isMin ? 0x96 : 0x97); else minMaxNum(false, !isMin);
+    setF(rd, false);
+    return true;
+  }
   if (sz == 3 || (sz == 2 && !Q)) return false;
   if (opcode == 0x1B || opcode == 0x03) {
     let long = opcode == 3;
@@ -608,7 +718,7 @@ function shiftImm(insn: u32, scalar: bool): bool {
   let rsh: u32 = 2 * esize - immhb, lsh: u32 = immhb - esize;
   let fm: i32 = scalar ? scalarFm(sz) : (Q ? 0 : 1);
   if (opcode < 0x10) {
-    if (scalar && sz != 3) return false;
+    if (scalar && sz != 3 && opcode != 0x0C && opcode != 0x0E) return false;
     if (!scalar && sz == 3 && !Q) return false;
   }
   switch (opcode) {
@@ -629,6 +739,8 @@ function shiftImm(insn: u32, scalar: bool): bool {
       vget(rn); i32c(lsh); vi(sz, 0xB); vget(rd); laneConst(sz, m); simd(0x4E); simd(0x50);
       break;
     }
+    case 0x0C: if (!U) return false; vget(rn); satShl(sz, true, false, lsh); break;   // SQSHLU
+    case 0x0E: vget(rn); satShl(sz, !U, !U, lsh); break;                               // SQSHL / UQSHL
     case 0x10: case 0x11: { // SHRN / RSHRN, SQSHRUN / SQRSHRUN
       if (scalar || sz == 3) return false;
       vget(rn);
@@ -737,6 +849,7 @@ function indexed(insn: u32, scalar: bool): bool {
   let w = sz + 1;
   if (!U && opcode == 8) { vget(rn); lget(E); vi(sz, 0x15); finish(rd, Q ? 0 : 1); return true; }
   if (U && (opcode == 0 || opcode == 4)) { vget(rd); vget(rn); lget(E); vi(sz, 0x15); vi(sz, opcode == 4 ? 0x11 : 0xE); finish(rd, Q ? 0 : 1); return true; }
+  if (!U && (opcode == 12 || opcode == 13)) { vget(rn); lget(E); vqdmulh(sz, opcode == 13); finish(rd, Q ? 0 : 1); return true; }
   if (opcode == 10) { vget(rn); lget(E); vextmul(w, Q, U); vset(rd); return true; }
   if (opcode == 2 || opcode == 6) { vget(rd); vget(rn); lget(E); vextmul(w, Q, U); vi(w, opcode == 6 ? 0x11 : 0xE); vset(rd); return true; }
   return false;

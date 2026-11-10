@@ -1,0 +1,16 @@
+{
+  "name": "gfx_image",
+  "doc": "One texture of an NVN window's swap chain (src/gfx/window.ts). Acquire hands it to the game, Present (nvnQueuePresentTexture) puts the blit to the canvas in the host stream, HostQueued is the replayer having submitted that blit, Shown its completion on the GPU; Retire frees the image that was on screen before. Nothing blocks in a browser turn, so Acquire also takes an image that is still Queued or OnScreen when the game comes round to it (the kernel will pace acquires on the sync later).",
+  "states": ["Free", "Acquired", "Submitted", "Queued", "OnScreen"],
+  "initial": "Free",
+  "events": ["Acquire", "Present", "HostQueued", "Shown", "Retire"],
+  "transitions": [
+    ["Free", "Acquire", "Acquired"],
+    ["Queued", "Acquire", "Acquired"],
+    ["OnScreen", "Acquire", "Acquired"],
+    ["Acquired", "Present", "Submitted"],
+    ["Submitted", "HostQueued", "Queued"],
+    ["Queued", "Shown", "OnScreen"],
+    ["OnScreen", "Retire", "Free"]
+  ]
+}
