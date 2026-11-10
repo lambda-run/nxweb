@@ -463,6 +463,9 @@ Behavioural differences:
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
 - Gate 1: 169 classes x 2000 cases = 338000 cases, 0 failures; again with `--strictnan --shared --seed 5`, 0 failures.
+- Crypto extensions and FJCVTZS (#17): Gate 1 189 classes x 2000 = 378000 cases, 0 failures in memory32, memory64
+  and above 4 GB; the 7 new classes x 30000 cases, 0 failures in each of the three; `--strictnan --shared --seed 5`
+  x 5000, 0 failures.
 - Gate 2 (Node): 75 guest images, 75 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
   `--precise 2`, `--cntyield` and warm from the translation cache. Feature tests: 9 of 9.
 - Gate 2 (Chromium, Worker): 75 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
