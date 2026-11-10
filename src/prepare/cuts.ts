@@ -8,7 +8,7 @@
 // checked by the loader, everything else of the header as it was (the build ID too: it still names the build the
 // game's other per-build facts are keyed by). The loader then maps it like any other module, so the translator
 // only ever sees the code after the cuts.
-import { Layout, parseHeader, loadSegments, KIND_NSO, OPT_VERIFY_HASH } from "../loader/nso";
+import { Layout, parseHeader, loadSegments, loadBegin, loadStep, loadWorkTotal, loadWorkDone, LOAD_MORE, KIND_NSO, OPT_VERIFY_HASH } from "../loader/nso";
 import { sha256 } from "../loader/sha256";
 import { errorPtr as loaderErrorPtr, errorLen as loaderErrorLen, errorClear as loaderErrorClear } from "../loader/util";
 import { red, info, puts, putu, putx, puthex, emit, alloc, errorSet } from "./base";
@@ -55,10 +55,53 @@ export function nsoPeek(head: usize, len: u32): i32 {
 export function nsoCheck(file: usize, len: u32): i32 {
   const r = nsoParse(file, len);
   if (r) return r;
+  if (openReady && file == openFile && len == openLen) return 0;
   const image = alloc(L.imageSize);
   if (!image) { red(); puts("no memory for a module image of "); putx(L.imageSize); puts(" bytes"); emit(); return 1; }
   const s = loadSegments(L, image);
   return s ? refused(s) : 0;
+}
+// A module opened in steps: nsoOpenBegin, then nsoOpenStep until it does not return NSO_OPEN_MORE. Unpacking a main
+// module of 100 MB (LZ4, or ZBIC from system 22.0.0 on) and hashing it takes long enough that the page must draw
+// and take a Cancel in between. The file and its verified image then stay in the arena: nsoCheck, matchRun and
+// cutApply on the same file use that image instead of unpacking again, until the arena is reset (nsoOpenClear) or a
+// cut has changed the image. One module at a time; nothing else of this file may be called between the steps.
+export const NSO_OPEN_MORE: i32 = -1;
+let openFile: usize = 0, openLen: u32 = 0, openImage: usize = 0, openReady: bool = false;
+export function nsoOpenClear(): void { openReady = false; openFile = 0; openImage = 0; }
+export function nsoOpenBegin(file: usize, len: u32): i32 {
+  nsoOpenClear();
+  const r = nsoParse(file, len);
+  if (r) return r;
+  const image = alloc(L.imageSize);
+  if (!image) { red(); puts("no memory for a module image of "); putx(L.imageSize); puts(" bytes"); emit(); return 1; }
+  loadBegin(L, image);
+  openFile = file; openLen = len; openImage = image;
+  return 0;
+}
+// About `budget` more bytes unpacked or hashed: NSO_OPEN_MORE, 0 when the module is whole and verified, or the
+// loader's refusal reason after its red line
+export function nsoOpenStep(budget: u32): i32 {
+  if (!openImage || openReady) return openReady ? 0 : 1;
+  const r = loadStep(L, budget);
+  if (r == LOAD_MORE) return NSO_OPEN_MORE;
+  if (r) { nsoOpenClear(); return refused(<u64>r); }
+  openReady = true;
+  return 0;
+}
+export function nsoOpenWorkTotal(): f64 { return <f64>loadWorkTotal(L); }
+export function nsoOpenWorkDone(): f64 { return <f64>loadWorkDone(); }
+// The unpacked, verified image of the module file (its header is in L afterwards): the opened module's, or unpacked
+// now. 0 after a red line (`code` says which error a caller returns for no memory).
+let imageNoMem: bool = false;
+function imageOf(file: usize, len: u32): usize {
+  imageNoMem = false;
+  if (nsoParse(file, len)) return 0;
+  if (openReady && file == openFile && len == openLen) return openImage;
+  const image = alloc(L.imageSize);
+  if (!image) { imageNoMem = true; red(); puts("no memory for a module image of "); putx(L.imageSize); puts(" bytes"); emit(); return 0; }
+  if (loadSegments(L, image)) { refused(1); return 0; }
+  return image;
 }
 export function nsoBuildIdPtr(): usize { return L.buildIdPtr(); }
 export function nsoImageSize(): u32 { return L.imageSize; }
@@ -79,10 +122,8 @@ export function nsoInitEnd(): u32 { return L.initEnd; }
 // cutFailedIndex() is the cut that stopped it. Nothing is written anywhere on an error.
 export function cutApply(file: usize, len: u32, list: usize, listLen: u32): i32 {
   failedIndex = -1; applied = 0; outPtr = 0; outLen = 0;
-  if (nsoParse(file, len)) return CUT_BAD_MODULE;
-  const image = alloc(L.imageSize);
-  if (!image) { red(); puts("no memory for a module image of "); putx(L.imageSize); puts(" bytes"); emit(); return CUT_NOMEM; }
-  if (loadSegments(L, image)) { refused(1); return CUT_BAD_MODULE; }
+  const image = imageOf(file, len);
+  if (!image) return imageNoMem ? CUT_NOMEM : CUT_BAD_MODULE;
   if (listLen < 4) { red(); puts("the cut list is "); putu(listLen); puts(" bytes"); emit(); return CUT_BAD_LIST; }
   const n = load<u32>(list), end: u64 = <u64>list + listLen;
   let p: u64 = <u64>list + 4;
@@ -102,6 +143,7 @@ export function cutApply(file: usize, len: u32, list: usize, listLen: u32): i32 
       puts(" (cut "); putu(i); puts("): this is not the build the cut was made for; nothing was changed"); emit();
       failedIndex = i; return CUT_MISMATCH;
     }
+    if (image == openImage) openReady = false;     // the opened module's image is no longer the file's
     memory.copy(image + off, nb, cl);
     applied++;
     p += 8 + 2 * <u64>cl;
@@ -113,7 +155,7 @@ export function cutApply(file: usize, len: u32, list: usize, listLen: u32): i32 
   const out = alloc(<usize>total);
   if (!out) { red(); puts("no memory for a cut module of "); putx(total); puts(" bytes"); emit(); return CUT_NOMEM; }
   memory.copy(out, file, 0x100);
-  store<u32>(out, (L.flags & ~<u32>0x3F) | 0x38, 0x0C);       // nothing compressed, every segment's hash checked
+  store<u32>(out, (L.flags & ~<u32>0xBF) | 0x38, 0x0C);       // nothing compressed (so not ZBIC either), every segment's hash checked
   store<u32>(out, 0x100, 0x1C); store<u32>(out, ns, 0x2C);
   if (ns) memory.copy(out + 0x100, file + load<u32>(file, 0x1C), ns);
   let fo: u32 = 0x100 + ns;
@@ -138,10 +180,8 @@ export function cutApplied(): u32 { return applied; }
 // from the unwind table, and the rule list is resolved against them. MATCH_OK (the results are behind the match_*
 // exports: the cuts found are a list cutApply takes) or CUT_BAD_MODULE / a MATCH_* error. Nothing is changed here.
 export function matchRun(file: usize, len: u32, list: usize, listLen: u32): i32 {
-  if (nsoParse(file, len)) return CUT_BAD_MODULE;
-  const image = alloc(L.imageSize);
-  if (!image) { red(); puts("no memory for a module image of "); putx(L.imageSize); puts(" bytes"); emit(); return CUT_NOMEM; }
-  if (loadSegments(L, image)) { refused(1); return CUT_BAD_MODULE; }
+  const image = imageOf(file, len);
+  if (!image) return imageNoMem ? CUT_NOMEM : CUT_BAD_MODULE;
   imageInit(image, L.initEnd, L.mo0 + L.sz0);
   return matchResolve(list, listLen);
 }

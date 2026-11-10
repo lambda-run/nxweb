@@ -25,7 +25,7 @@ try {
   buildPreparePage();
   let fresh = true; try { (await import("../../src/runtime/host/build.mts")).checkBuilt(); } catch { fresh = false; }
   if (!fresh) rth.build();
-  if (!existsSync(join(rth.GUESTS, "fsg.nso"))) rth.buildModules();
+  if (!existsSync(join(rth.GUESTS, "fsg.nso")) || !existsSync(join(rth.GUESTS, "fsg_zbic.nso"))) rth.buildModules();
   buildSync({ entryPoints: ["test/prepare/web/worker.ts"], bundle: true, format: "iife", outfile: "build/prepare/web/worker.js", logLevel: "warning", absWorkingDir: ROOT });
 } catch (e) { console.error(e instanceof Error ? e.message : e); console.error("[RED] prepare:browser: the build failed"); process.exit(1); }
 
@@ -379,6 +379,67 @@ try {
   });
 
   const N = Number(process.env.PREPARE_BROWSER_FILES ?? 5000);
+  await run("ZBIC modules in the page (NSO flag bit 7, the segment compression of system 22.0.0 on): a folder whose main and sdk are ZBIC compressed is prepared and plays in the Worker, the modules handed over as the files they are; so does the same game as a .nup; a module is unpacked in steps between which the page draws (the Code bar moves inside the module) and takes a Cancel", async () => {
+    const zgame = version({ programId: APP, blob: b0, main: "fsg_zbic", extra: { "exefs/sdk": guest("two_lib_zbic") } });
+    const sizes = [guest("fsg_zbic").length, guest("two_lib_zbic").length];
+    for (const g of ["fsg_zbic", "two_lib_zbic"]) eq(new DataView(guest(g).buffer).getUint32(0x0C, true) & 0x87, 0x87, `${g}.nso: three ZBIC segments`);
+    const want = "lib: DT_INIT\nlib: init_array[0]\nlib: init_array[1]\n" + fsgOut(b0) + "lib: fini_array[0]\nlib: DT_FINI\n";
+    const play = async () => {
+      const r = await page.evaluate(async () => {
+        const got = new Promise<any>(res => window.addEventListener("nxweb:handoff", ev => res((ev as CustomEvent).detail), { once: true }));
+        document.getElementById("play")!.click();
+        const msg = await got;
+        const w = new Worker("/test-worker.js");
+        const out = await new Promise<any>((res, rej) => { w.onmessage = ev => res(ev.data); w.onerror = e => rej(new Error(e.message)); w.postMessage({ handoff: msg }); });
+        w.terminate();
+        return { out, modules: msg.modules.map((m: any) => [m.name, m.file.size, m.cuts]) };
+      });
+      if (!r.out.ok) throw new Error(r.out.error);
+      eq(r.modules, [["main", sizes[0], 0], ["sdk", sizes[1], 0]], "the modules of the message: the ZBIC files, not copies");
+      eq([r.out.kind, r.out.code, r.out.red], ["exit", 0, []], "run");
+      eq(r.out.stdout, want, "stdout");
+    };
+    // a folder
+    const fz = folder + "-z";
+    await putGame(fz, prefixed("base/", zgame));
+    await open(); await fakePicker(fz); await page.click("#pick"); await until("Ready", "Failed");
+    eq(await state(), "Ready", "folder: " + await page.textContent("#error"));
+    eq((await page.evaluate(() => [...document.querySelectorAll("#stages .stage .info")].map(td => td.textContent)))[3], "main, sdk; 0 cuts applied", "code row");
+    await play();
+    // a container
+    const zfile = join(nupDir, `Zbic-${tag}.nup`);
+    writeFileSync(zfile, writeNup([pkg(KIND.base, zgame)]).bytes);
+    await open(); await page.setInputFiles("#fileinput", zfile); await until("Ready", "Failed");
+    eq(await state(), "Ready", "container: " + await page.textContent("#error"));
+    await play();
+    // steps of 256 bytes: the bar of the Code stage takes several values while the one module is unpacked and hashed
+    const one = prefixed("base/", version({ programId: APP, blob: b0, main: "fsg_zbic" }));
+    const watch = (cancelAt: number | null) => page.evaluate((cancelAt: number | null) => {
+      const seen = (window as any).codeBar = [] as string[];
+      new MutationObserver(() => {
+        const v = document.querySelector('#stages [data-stage="code"] .bar')?.getAttribute("aria-valuenow");
+        if (v == null || seen.includes(v)) return;
+        seen.push(v);
+        if (cancelAt !== null && seen.filter(x => x !== "0").length === cancelAt) (document.getElementById("cancel") as HTMLButtonElement).click();
+      }).observe(document.getElementById("stages")!, { childList: true, subtree: true, attributes: true });
+    }, cancelAt);
+    await putGame(fz + "s", one);
+    await open("?unpack=256"); await fakePicker(fz + "s"); await watch(null); await page.click("#pick"); await until("Ready", "Failed");
+    eq(await state(), "Ready", "in small steps: " + await page.textContent("#error"));
+    const bar = await page.evaluate(() => (window as any).codeBar as string[]);
+    if (bar.length < 8 || bar.some((v, i) => i > 0 && Number(v) < Number(bar[i - 1]))) throw new Error("the Code bar while one module is unpacked in steps of 256 bytes: " + bar.join(" "));
+    // and a Cancel clicked when the bar has moved three times is taken before the module is done
+    await putGame(fz + "c", one);
+    await open("?unpack=256"); await fakePicker(fz + "c"); await watch(3); await page.click("#pick"); await until("Ready", "Failed", "Cancelled");
+    eq(await state(), "Cancelled", "state after a Cancel between two steps");
+    const m = await manifest("nxweb-prepare-" + fz + "c");
+    eq([m.machine, m.stages.code.state, m.stages.profile.state], ["Cancelled", "cancelled", "done"], "manifest");
+    const at = await page.evaluate(() => (window as any).codeBar as string[]);
+    await open(); await page.click("#resume"); await until("Ready", "Failed");
+    eq(await lastRun(), { state: "Ready", ran: ["code", "shaders"], skipped: ["detect", "index", "profile"] }, "after the cancel");
+    return `fsg_zbic.nso ${sizes[0]} bytes, two_lib_zbic.nso ${sizes[1]} bytes (${rth.haveZbic() ? "the reference codec's" : "elf2nso.py's own: the zbic package is not installed"}); in steps of 256 bytes the bar showed ${bar.join(", ")} %; cancelled at ${at.at(-1)} %`;
+  });
+
   await run(`listing latency of the directory device's source in the browser: a folder of ${N} files (PREPARE_BROWSER_FILES) in OPFS listed through FileSystemDirectoryHandle (entries() and getFile() for every file), then read`, async () => {
     await open();
     const r = await page.evaluate(async ({ N, root }: { N: number; root: string }) => {

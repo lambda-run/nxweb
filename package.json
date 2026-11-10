@@ -20,6 +20,7 @@
     "a64:speed": "npm run -s a64:build && node test/a64/guests_run.ts --speed",
     "loader:build": "node src/loader/host/build.mts",
     "loader:test": "node test/loader/run.mts",
+    "loader:zbic-bench": "node test/loader/zbic_bench.mts",
     "kernel:build": "asc src/kernel/index.ts -o build/kernel/kernel.wasm -O2 --runtime stub --initialMemory 1536",
     "kernel:test": "node test/kernel/run.mts",
     "a64:browser": "npm run -s a64:build && python3 test/a64/guests/build_hi.py && esbuild test/a64/browser/worker.ts --bundle --format=iife --outfile=build/a64/browser/worker.js --log-level=warning && node test/a64/browser/run.ts",

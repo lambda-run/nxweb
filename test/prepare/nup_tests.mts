@@ -224,6 +224,32 @@ export function nupTests(c: Ctx): void {
       `reader: ${JSON.stringify(st)}`, `second run: 5 stages kept, ${decided} bytes of the container read to decide`];
   });
 
+  test("a NUP whose main is ZBIC compressed (NSO flag bit 7, system 22.0.0 on): the container's file is unpacked for the build ID and the checks, handed to the loader as it is, and the game runs; with a registered cut the cut module is stored", async () => {
+    const b = blob(50_000, 3), z = guest("fsg_zbic");
+    assert.equal(new DataView(z.buffer, z.byteOffset).getUint32(0x0C, true) & 0x87, 0x87);
+    const n = writeNup([pkgOf(KIND.base, version({ programId: APP, blob: b, main: "fsg_zbic" }), { meta: META })]);
+    const r = await prepareNup("zbic", n);
+    const res = await r.prep.run();
+    assert.deepEqual([res.state, res.ran], ["Ready", [...STAGES]], res.error);
+    const code = r.prep.out<CodeOut>("code");
+    assert.deepEqual(code.modules.map(m => [m.name, m.from, m.cuts, m.size]), [["main", "folder", 0, z.length]]);
+    const h = await r.prep.handoff();
+    assert.equal(Buffer.compare(await h.modules[0].bytes(), z), 0, "the module handed over is the container's ZBIC file");
+    const p = await c.play(r);
+    assert.deepEqual([p.kind, p.code, p.red], ["exit", 0, []]);
+    assert.equal(p.stdout, c.fsgFirst(b));
+    r.close();
+    const at = c.imageOffsets(newWasm(), z, ascii("MountRom: "));
+    const profiles = memProfiles([c.profileFor(z, APP_HEX, [{ off: at[0], orig: hexOf(ascii("MountRom")), new: hexOf(ascii("MountROM")), why: "test" }])]);
+    const r2 = await prepareNup("zbic", n, { profiles });
+    assert.equal((await r2.prep.run()).state, "Ready");
+    assert.deepEqual(r2.prep.out<CodeOut>("code").modules.map(m => [m.name, m.from, m.cuts]), [["main", "store", 1]]);
+    const p2 = await c.play(r2);
+    assert.deepEqual([p2.kind, p2.code, p2.red, p2.stdout], ["exit", 0, [], c.fsgFirst(b, "MountROM: ")]);
+    r2.close();
+    return [`main: ${z.length} bytes in the container, an image of ${code.modules[0].imageSize}`];
+  });
+
   test("NUP variants: an update without romfs/ runs with the base game's; a standalone update without a base (no base record, or a base record with no files) is the whole game and says so, its name and icon come from the application record; an update that is not whole is refused; packages of other kinds are named and not used; no profile: provisional with the NACP's name", async () => {
     const b0 = blob(40_000, 1), info: string[] = [];
     // an update of code only
