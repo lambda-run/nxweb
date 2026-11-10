@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nxweb: prepare a game</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1b1b1f; --bg: #fafafa; --mute: #666a73; --line: #d7d9de; --ok: #1a7f37; --run: #0969da; --bad: #cf222e; --skip: #6e7781; --card: #fff; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e6e6ea; --bg: #131417; --mute: #9a9ea8; --line: #2c2f36; --ok: #3fb950; --run: #58a6ff; --bad: #ff7b72; --skip: #8b949e; --card: #1b1d22; } }
+  body { font: 15px/1.45 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 22px 0 8px; }
+  p.lead { color: var(--mute); margin: 0 0 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  #drop { border: 2px dashed var(--line); text-align: center; padding: 22px 14px; }
+  #drop.over { border-color: var(--run); }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--run); border-color: var(--run); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; margin-top: 10px; }
+  table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; } tr:first-child td { border-top: 0; }
+  td.st { width: 92px; font-weight: 600; } td.act { width: 60px; text-align: right; }
+  [data-state=done] .st { color: var(--ok); } [data-state=running] .st { color: var(--run); } [data-state=failed] .st, [data-state=cancelled] .st { color: var(--bad); } [data-state=pending] .st { color: var(--mute); }
+  [data-skipped="1"] .st { color: var(--skip); }
+  .mute { color: var(--mute); } .bad { color: var(--bad); } code, pre { font: 12.5px/1.4 ui-monospace, monospace; }
+  pre#log { max-height: 180px; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  ul { margin: 6px 0; padding-left: 20px; } dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 0; } dt { color: var(--mute); } dd { margin: 0; overflow-wrap: anywhere; }
+  [hidden] { display: none !important; }
+</style>
+<main>
+  <h1>Prepare a game</h1>
+  <p class="lead">Pick the folder of a game you own, already extracted to files. Everything happens in this page, on your files: nothing is uploaded.
+    This step does not open game packages: no NSP, XCI or NCA decryption, and no keys. Extract the game with your own tools first.</p>
+
+  <div id="drop" class="card">
+    <div>Drop the game's folder here, or</div>
+    <div class="row">
+      <button id="pick" class="primary">Choose game folder</button>
+      <button id="resume" hidden>Resume</button>
+      <label class="mute" id="dirlabel">or <input id="dirinput" type="file" webkitdirectory></label>
+    </div>
+    <p class="mute" style="margin:12px 0 0">Expected: <code>base/exefs/</code> (main, main.npdm, sdk, subsdk*) and <code>base/romfs/</code>; optionally <code>updates/&lt;version&gt;/exefs</code> and <code>romfs</code> (the newest is used),
+      <code>dlc/&lt;title id&gt;/&lt;n&gt;/romfs</code>. <code>exefs/</code> and <code>romfs/</code> directly in the folder work too.</p>
+  </div>
+
+  <h2>Stages <span id="machine" class="mute" data-state="Idle">Idle</span></h2>
+  <div class="card">
+    <table id="stages"></table>
+    <div class="row" style="justify-content:flex-start">
+      <button id="cancel" disabled>Cancel</button>
+      <button id="forget" disabled title="Delete what this page stored for this folder">Forget this folder</button>
+      <span id="error" class="bad"></span>
+    </div>
+  </div>
+
+  <h2>Game</h2>
+  <div class="card" id="game"><span class="mute">No folder yet.</span></div>
+
+  <div id="needsbox" hidden>
+    <h2>What will not work for this game</h2>
+    <div class="card"><ul id="needs"></ul><div id="unconverted" class="mute"></div></div>
+  </div>
+
+  <div class="row" style="justify-content:flex-start; margin-top:18px">
+    <button id="play" class="primary" disabled>Play</button>
+    <span id="handoff" class="mute"></span>
+  </div>
+
+  <h2>Log</h2>
+  <div class="card"><pre id="log"></pre></div>
+</main>
+<script src="prepare.js"></script>
+</html>

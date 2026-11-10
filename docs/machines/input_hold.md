@@ -11,7 +11,7 @@ stateDiagram-v2
     Holding --> Released: Release
 ```
 
-Machine id 20. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 21. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

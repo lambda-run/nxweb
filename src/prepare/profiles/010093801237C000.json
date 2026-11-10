@@ -1,0 +1,47 @@
+{
+ "source": "nxnative dm/games/010093801237C000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010093801237C000",
+ "name": "Metroid Dread",
+ "builds": [
+  {
+   "version": 327680,
+   "tag": "v327680",
+   "display": "2.1.0",
+   "modules": {
+    "main": "646761f643afebb379edd5e6a5151af2",
+    "subsdk0": "507f19d1240d09d00992248e8a0fd77e",
+    "sdk": "2d369d9999e3e10e665106f840ffff9b"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010093801237C000",
+  "program_id": "010093801237C000",
+  "name": "Metroid Dread",
+  "package": "v327680",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "system/shd",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 1610612736,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": true
+ }
+}

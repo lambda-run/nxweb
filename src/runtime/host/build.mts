@@ -14,7 +14,7 @@ import { writeStamp, checkStamp } from "../../kit/host/stamp.mts";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const OUT = join(ROOT, "build", "runtime");
-export const KIT_MODULES = ["rt", "kernel", "loader", "gfx", "fs", "hle"];
+export const KIT_MODULES = ["rt", "kernel", "loader", "gfx", "fs", "hle", "audio"];
 // Refuses modules of build/runtime that were built from other kit tables than the current ones (for whoever loads
 // them without having just built them)
 export function checkBuilt(): void { for (const n of KIT_MODULES) checkStamp(join(OUT, n + ".wasm")); }
@@ -44,6 +44,8 @@ export function build(o: { a64?: boolean } = {}): void {
   }
   // the file system with its static data in the runtime's range (src/fs/README.md, "Shared memory")
   shared("src/fs/index.ts", "fs.wasm", range("fs static").lo, "-O2");
+  // nn::audio and nn::codec (src/audio/README.md, "Attaching to the runtime")
+  shared("src/audio/index.ts", "audio.wasm", range("audio static").lo, "-O2");
   // the SDK take-over table (src/hle/host/build.mts)
   hleBuildShared(join(OUT, "hle.wasm"), range("hle static").lo);
   // every module above compiles the kit's tables in: the stamps say from which (src/kit/host/stamp.mts)
@@ -54,6 +56,6 @@ export function build(o: { a64?: boolean } = {}): void {
 }
 
 if (process.argv[1] && import.meta.filename === process.argv[1]) {
-  try { build(); console.log("rt:build: wrote build/runtime/{rt,kernel,loader,gfx,fs,hle,translator,helpers}.wasm"); }
+  try { build(); console.log("rt:build: wrote build/runtime/{rt,kernel,loader,gfx,fs,hle,audio,translator,helpers}.wasm"); }
   catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }
 }

@@ -1,0 +1,136 @@
+{
+ "source": "nxnative dm/games/01006A800016E000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01006A800016E000",
+ "name": "Super Smash Bros. Ultimate",
+ "builds": [
+  {
+   "version": 2031616,
+   "tag": "v2031616",
+   "display": "13.0.5",
+   "modules": {
+    "main": "21450c647b8c5940ed5b68218ea128fd",
+    "subsdk0": "60c6edbbfcebd4176cc301d5d9cb5a6f",
+    "sdk": "5fd4f531c1195e9e5510c9e73f22cd39"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01006A800016E000",
+  "program_id": "01006A800016E000",
+  "name": "Super Smash Bros. Ultimate",
+  "package": "v2031616",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "data.arc",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x1000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "21450c647b8c5940ed5b68218ea128fd": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 58497628,
+     "orig": "e11361b2",
+     "new": "2100c0d2",
+     "why": "AllocateAddressRegion size mov x1,#0xf80000000 → mov x1,#0x100000000 (62 GB → 4 GB)"
+    },
+    {
+     "off": 58497644,
+     "orig": "e97f7cb2",
+     "new": "09fe9fd2",
+     "why": "node pool top check, low part mov x9,#0xffffffff0 → mov x9,#0xfff0"
+    },
+    {
+     "off": 58497648,
+     "orig": "0be4afd2",
+     "new": "0be4bfd2",
+     "why": "node pool start mov x11,#0x7f200000 → mov x11,#0xff200000"
+    },
+    {
+     "off": 58497652,
+     "orig": "09e4aff2",
+     "new": "09e4bff2",
+     "why": "node pool top check movk x9,#0x7f20,lsl #16 → movk x9,#0xff20,lsl #16 (0xff20fff0)"
+    },
+    {
+     "off": 58497656,
+     "orig": "eb01c0f2",
+     "new": "0b00c0f2",
+     "why": "node pool start movk x11,#0xf,lsl #32 → movk x11,#0,lsl #32 (0xff200000 = 4 GB − 14 MB)"
+    },
+    {
+     "off": 58497692,
+     "orig": "e91361b2",
+     "new": "2900c0d2",
+     "why": "node pool bound: region end mov x9,#0xf80000000 → mov x9,#0x100000000"
+    },
+    {
+     "off": 58497944,
+     "orig": "01e48f52",
+     "new": "01e49f52",
+     "why": "first free range in 64 KB units mov w1,#0x7f20 → mov w1,#0xff20"
+    },
+    {
+     "off": 58497948,
+     "orig": "e101a072",
+     "new": "0100a072",
+     "why": "first free range movk w1,#0xf,lsl #16 → movk w1,#0,lsl #16 (0xff20 units = 4 GB − 14 MB)"
+    },
+    {
+     "off": 58498128,
+     "orig": "e91361b2",
+     "new": "2900c0d2",
+     "why": "node pool bound: region end mov x9,#0xf80000000 → mov x9,#0x100000000"
+    },
+    {
+     "off": 58500044,
+     "orig": "e81361b2",
+     "new": "2800c0d2",
+     "why": "node pool bound: region end mov x8,#0xf80000000 → mov x8,#0x100000000"
+    },
+    {
+     "off": 58503016,
+     "orig": "e91361b2",
+     "new": "2900c0d2",
+     "why": "node pool bound: region end mov x9,#0xf80000000 → mov x9,#0x100000000"
+    }
+   ]
+  }
+ },
+ "unconverted": [
+  {
+   "kind": "MATCH_CUTS",
+   "module": "main",
+   "rules": 1,
+   "names": [
+    "engine region 62 GB → 4 GB (11 instructions in four functions)"
+   ]
+  }
+ ],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

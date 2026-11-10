@@ -1,0 +1,88 @@
+{
+ "source": "nxnative dm/games/0100ECD018EBE000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100ECD018EBE000",
+ "name": "Paper Mario: The Thousand-Year Door",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.0.1",
+   "modules": {
+    "main": "0effe4af1dec3a7966b934d4a7c3d2bf",
+    "subsdk0": "368f01d5cb42f06cd125dc739d036719",
+    "sdk": "8618895246b420329b77746b960a66ab"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100ECD018EBE000",
+  "program_id": "0100ECD018EBE000",
+  "name": "Paper Mario: The Thousand-Year Door",
+  "package": "v65536",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "sound/sound.bfsar",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x800000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "fps_hold",
+   "value": "off",
+   "what": "Frame holding under a frame-rate cap is not implemented."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "0effe4af1dec3a7966b934d4a7c3d2bf": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 3045284,
+     "orig": "49008052",
+     "new": "29008052",
+     "why": "frame step floor in 60 Hz vsyncs: mov w9,#2 → mov w9,#1 (the game steps by the vsyncs that passed, down to one)"
+    }
+   ]
+  }
+ },
+ "unconverted": [
+  {
+   "kind": "FRAME_STEP",
+   "build": "0effe4af1dec3a7966b934d4a7c3d2bf",
+   "sites": 1,
+   "writes": 1,
+   "stub_words": 12,
+   "capabilities": [],
+   "render_scale": false,
+   "note": "recorded"
+  }
+ ],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

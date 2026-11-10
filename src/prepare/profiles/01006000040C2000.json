@@ -1,0 +1,64 @@
+{
+ "source": "nxnative dm/games/01006000040C2000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01006000040C2000",
+ "name": "Yoshi's Crafted World",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.0.1",
+   "modules": {
+    "main": "44ae9fd12897c7028bdc393bb0d833d3",
+    "sdk": "af7348498c7759b0f3f0396a8a36014c"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01006000040C2000",
+  "program_id": "01006000040C2000",
+  "name": "Yoshi's Crafted World",
+  "package": "v65536",
+  "modules": "main sdk",
+  "romfs_marker": "PJ033/Content/Paks/PJ033-Switch.pak",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x70e4000"
+ },
+ "needs": [
+  {
+   "key": "tex_flush_upload",
+   "value": "on",
+   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
+  },
+  {
+   "key": "tex_dirty_upload",
+   "value": "on",
+   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

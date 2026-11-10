@@ -22,7 +22,7 @@ const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: ROOT
 // name -> source file and extra compiler flags
 export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
   hello: ["hello.c"], two_main: ["two_main.c"], two_lib: ["two_lib.c"], threads: ["threads.c"], race: ["race.c"], heap: ["heap.c"],
-  host_main: ["host_main.c"], host_lib: ["host_lib.c"],
+  host_main: ["host_main.c"], host_lib: ["host_lib.c"], argsg: ["argsg.c"], pads: ["pads.c"], tone: ["tone.c"],
   fsg: ["fsg.c"], hleg: ["hleg.c"], ro_main: ["ro_main.c"], fini: ["fini.c"], clock: ["clock.c"], fault_null: ["fault.c", "-DMODE=6"], fault_host: ["fault.c", "-DMODE=7"],
   fault_jump: ["fault.c", "-DMODE=1"], fault_undef: ["fault.c", "-DMODE=2"], fault_load: ["fault.c", "-DMODE=3"], fault_stack: ["fault.c", "-DMODE=4"], break: ["fault.c", "-DMODE=5"],
 };
@@ -31,7 +31,7 @@ export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
 // (NXNATIVE_NVN_INCLUDE overrides the directory). Without it they are not built and their tests are skipped.
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 export const NVN_INCLUDE = process.env.NXNATIVE_NVN_INCLUDE ?? join(NXNATIVE, "dm", "gfx", "nvn", "include");
-export const GFX_MODULES: Record<string, [src: string, ...flags: string[]]> = { cube: ["cube.c"], cube2: ["cube2.c"], mx: ["mx.c"], mx_bad: ["mx.c", "-DBAD"] };
+export const GFX_MODULES: Record<string, [src: string, ...flags: string[]]> = { cube: ["cube.c"], cube2: ["cube2.c"], mx: ["mx.c"], mx_bad: ["mx.c", "-DBAD"], syncg: ["syncg.c"] };
 // The hand-assembled Maxwell programs of tools/shaders (python only), as C arrays for the mx guests, and their keys
 export const MAXWELL = join(OUT, "maxwell");
 export function maxwellBlobs(): void {
@@ -122,10 +122,11 @@ export function loadEnv(): MoreEnv {
     return { name, side, image: new Uint8Array(readFileSync(join(dir, side.image))), expected: new Uint8Array(readFileSync(join(dir, side.expected_stdout))) };
   });
   return {
-    mods: { rt: mod("rt"), kernel: mod("kernel"), loader: mod("loader"), translator: mod("translator"), helpers: mod("helpers"), gfx: mod("gfx"), fs: mod("fs"), hle: mod("hle") },
+    mods: { rt: mod("rt"), kernel: mod("kernel"), loader: mod("loader"), translator: mod("translator"), helpers: mod("helpers"), gfx: mod("gfx"), fs: mod("fs"), hle: mod("hle"), audio: mod("audio") },
     nso: name => new Uint8Array(readFileSync(join(GUESTS, name + ".nso"))),
     file: name => new Uint8Array(readFileSync(join(GUESTS, name))),
     haveGfxGuests: haveNvn(),
+    guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : undefined,
     corpus,
     rssMb: () => process.memoryUsage().rss / 1e6,
     big: buildBig() ? (() => { const side = JSON.parse(readFileSync(join(BIG_DIR, "a64_big.O1.json"), "utf8")); return { name: "a64_big.O1", side, image: new Uint8Array(readFileSync(join(BIG_DIR, side.image))), expected: new Uint8Array(readFileSync(join(BIG_DIR, side.expected_stdout))) }; })() : undefined,

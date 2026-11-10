@@ -7,7 +7,8 @@
 //      the translator itself (the Ryujinx translator as WebAssembly, the SPIR-V pass and naga, in a Worker of their
 //      own: rt_shader_worker.ts). The game goes on meanwhile; the recorder skips the draws that use the stage until
 //      the record is registered, which is all it takes for the pipeline to be built at the next draw.
-// The gfx side is reached through GfxHost.registerShader only.
+// The gfx side is reached through GfxHost.registerShader and GfxHost.shaderPending (the key's state in the recorder,
+// machine gfx_shader: a key that is on its way or failed is not reported missing by the recorder).
 import type { RtGfx } from "./rt_gfx.ts";
 import { ShaderLibrary, type Reflection } from "../shaders/library.ts";
 
@@ -52,7 +53,8 @@ export class RtShaders {
     }
     const tr = this.o.translator;
     if (!tr) { this.state.set(key, "unknown"); this.stats.unknown++; return; }   // the recorder reports the key red at the first draw
-    this.state.set(key, "pending");
+    // the recorder is told: draws that need the key are skipped without its "not in the shader map" line
+    this.state.set(key, "pending"); this.gfx.host.shaderPending(key, "pending");
     let bytes: ShaderBlob;
     try { bytes = blob(); } catch (e) { this.fail(key, `its bytes cannot be read from guest memory (${e instanceof Error ? e.message : e})`); return; }
     this.log(`shader ${key} is not in ${this.library ? "the shader library" : "any shader library"}: it is translated in the page; draws that use it are skipped until it is there`);
@@ -84,16 +86,9 @@ export class RtShaders {
   // one red line a key
   private fail(key: string, why: string): false {
     this.state.set(key, "failed"); this.stats.failed++;
+    this.gfx.host.shaderPending(key, "failed");   // this line is the report: the recorder adds none of its own
     this.log(`[RED] shader ${key}: ${why}; its draws are skipped`);
     return false;
-  }
-  // The recorder's own report of a missing key (`[RED] shader <key> is not in the shader map`, once a key, at the first
-  // draw): not passed on for a key that is on its way (the informational line above said so) or that failed (its red
-  // line names the reason). Until src/gfx can be told that a key is pending, this is where the two meet.
-  dropLine(line: string): boolean {
-    const m = /^\[RED\] shader ([0-9a-f]{16}) is not in the shader map$/.exec(line);
-    const s = m ? this.state.get(m[1]) : undefined;
-    return s === "pending" || s === "failed" || s === "ready";
   }
 }
 

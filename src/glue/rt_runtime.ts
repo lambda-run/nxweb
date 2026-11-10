@@ -4,7 +4,7 @@
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
 import { A64Host, type A64CacheStore } from "./a64_host.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
-import { RANGES, HOST_END, GUEST, STUBS, A64, range } from "./rt_layout.ts";
+import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, range } from "./rt_layout.ts";
 
 export interface RuntimeModules {
   rt: WebAssembly.Module; kernel: WebAssembly.Module; loader: WebAssembly.Module;
@@ -12,6 +12,7 @@ export interface RuntimeModules {
   gfx?: WebAssembly.Module;           // build/runtime/gfx.wasm, for src/glue/rt_gfx.ts
   fs?: WebAssembly.Module;            // build/runtime/fs.wasm, for src/glue/rt_fs.ts
   hle?: WebAssembly.Module;           // build/runtime/hle.wasm, for src/glue/hle_rt.ts
+  audio?: WebAssembly.Module;         // build/runtime/audio.wasm, for src/glue/rt_audio.ts
 }
 export interface RuntimeOptions {
   budget?: number;                    // budget units per time slice (function entries + backward branches); default 100000
@@ -22,13 +23,17 @@ export interface RuntimeOptions {
   reserve4g?: boolean;                // allocate the whole 4 GB at once instead of growing on demand (default false)
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
-  // true: guest loads and stores below 0x0800_0000 (the host area: kernel, loader, translator state, the null page)
-  // trap instead of reading or corrupting it. Default false: it costs about 6 % of run time on the corpus (one
-  // subtraction per access; README "Memory safety"). Turn it on to find a wild pointer.
+  // Guest loads and stores below GUARD_BASE (the host area but the two ranges the guest is handed pointers into:
+  // the null page, the state of the kernel, the loader, graphics, the file system and the translator) trap instead
+  // of reading or corrupting it. Default true (GUARD_DEFAULT): measured alone it costs 1 to 3 % of run time on the
+  // corpus (one subtraction per access; README "Memory safety"), under the 5 % set for a default. false: for a measurement.
   guard?: boolean;
   preciseFaults?: 0 | 1 | 2;          // translator: 2 makes the register dump of a trap exact too (about twice the run time)
   cache?: A64CacheStore;              // translation cache: cacheLoad() before run(), cacheSave() after
 }
+// Whether guest accesses to the host area trap when RuntimeOptions.guard is not given (README "Memory safety": the
+// measured cost against the 5 % rule)
+export const GUARD_DEFAULT = true;
 export const STATES = ["Empty", "Loading", "Ready", "Running", "Paused", "Stopped"] as const;
 export type State = typeof STATES[number];
 export const FAULT = { unimplemented: 1, brk: 2, trap: 3, jump: 4, stack: 5, deadlock: 6, load: 7, host: 8 } as const;
@@ -87,12 +92,18 @@ export interface HostCpu {
   // threads run meanwhile; the run loop goes back to the host's event loop when nothing can run (runAsync).
   // Deterministic clock: the guest clock never passes `at` before the thread is woken, so the wake happens at
   // exactly `at` however long the real thing took. Wall clock: `at` is a plain timer.
-  waitFor(done: Promise<unknown> | null, at: bigint | undefined, resume: (cpu: HostCpu) => HostResult): HostResult;
+  // deadline (host time, omitted: none): on the wall clock the wait also ends when it passes while `done` is still
+  // pending, and resume gets timedOut = true. On the deterministic clock guest time stands still while the outside
+  // thing has not happened, so a deadline is never reached.
+  waitFor(done: Promise<unknown> | null, at: bigint | undefined, resume: (cpu: HostCpu, timedOut: boolean) => HostResult, deadline?: bigint): HostResult;
   now(): bigint;                      // host time (kernel_tick scale, ns) at this point of the slice
   args(): number;                     // address of a block with x0..x7 then d0..d7 (low 64 bits of v0..v7) as the guest passed them
+  argsX(): number;                    // the same block with only x0..x7 filled (a function that takes no floating point argument)
+  stackArg(i: number): bigint;        // the i-th 8-byte argument the caller passed on its stack (the ninth argument is i = 0)
 }
-interface Ext { index: number; r: number; w: number; done: boolean; at: bigint; signaled: boolean }
+interface Ext { index: number; r: number; w: number; done: boolean; at: bigint; signaled: boolean; deadline?: bigint; timedOut?: boolean }
 class GuestCallAbort extends Error { }
+const SKIP = Symbol("rt.skip");
 export interface HostFunctionDef {
   name: string;
   forced?: boolean;                   // true: wins over every module's own definition; false (default): fills an import no module defines
@@ -101,6 +112,7 @@ export interface HostFunctionDef {
 
 const ACT_CONTINUE = 0, ACT_SWITCH = 1;
 const FOREVER = 0xFFFF_FFFF_FFFF_FFFFn;
+export const FOREVER_NS = FOREVER;
 const PC_YIELD = BigInt(GUEST.pcYield), PC_EXIT = BigInt(GUEST.pcExit), PC_SPECIAL = 0xFFFF_FF00n, M32 = 0xFFFF_FFFFn;
 const PC_CALLBACK = 0xFFFF_FFD0n;   // x30 of a guest function a host function calls: its return ends the nested run
 const START_NAME = "<rt.start>";
@@ -108,6 +120,28 @@ const START_NAME = "<rt.start>";
 const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0,
   2, 0x11, 1, 3, 0x65, 0x6E, 0x76, 9, 0x68, 0x6F, 0x73, 0x74, 0x5F, 0x63, 0x61, 0x6C, 0x6C, 0, 0,
   3, 2, 1, 0, 7, 5, 1, 1, 0x66, 0, 1, 0x0A, 6, 1, 4, 0, 0x10, 0, 0x0B]);
+// A helper module on the core's CPU-state globals: what JavaScript cannot do with them cheaply (eight BigInt reads a
+// call) or at all (a v128 global has no value in JavaScript).
+//   args_x(ptr)    x0..x7 to ptr              args_xd(ptr)   and the low 64 bits of v0..v7 to ptr + 64
+//   set_d0(bits)   v0 = { bits, 0 }
+function regsModule(): Uint8Array {
+  const str = (t: string) => [t.length, ...Array.from(t, c => c.charCodeAt(0))];
+  const leb = (v: number) => { const n: number[] = []; do { let b = v & 0x7F; v >>>= 7; if (v) b |= 0x80; n.push(b); } while (v); return n; };
+  const sec = (id: number, body: number[]) => [id, ...leb(body.length), ...body];
+  const types = [2, 0x60, 1, 0x7F, 0, 0x60, 1, 0x7E, 0];                       // (i32)->(), (i64)->()
+  const imports: number[] = [17, ...str("env"), ...str("memory"), 2, 0, 0];
+  for (let i = 0; i < 8; i++) imports.push(...str("core"), ...str("x" + i), 3, 0x7E, 1);
+  for (let i = 0; i < 8; i++) imports.push(...str("core"), ...str("v" + i), 3, 0x7B, 1);
+  const fx: number[] = [], fd: number[] = [];
+  for (let i = 0; i < 8; i++) fx.push(0x20, 0, 0x23, i, 0x37, 3, 8 * i);
+  for (let i = 0; i < 8; i++) fd.push(0x20, 0, 0x23, 8 + i, 0xFD, 0x1D, 0, 0x37, 3, 64 + 8 * i);
+  const body = (code: number[]) => [...leb(code.length + 2), 0, ...code, 0x0B];
+  const setd = [0xFD, 0x0C, ...new Array(16).fill(0), 0x20, 0, 0xFD, 0x1E, 0, 0x24, 8];
+  return new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0,
+    ...sec(1, types), ...sec(2, imports), ...sec(3, [3, 0, 0, 1]),
+    ...sec(7, [3, ...str("args_x"), 0, 0, ...str("args_xd"), 0, 1, ...str("set_d0"), 0, 2]),
+    ...sec(10, [3, ...body(fx), ...body([...fx, ...fd]), ...body(setd)])]);
+}
 const hex = (v: number | bigint) => "0x" + v.toString(16);
 const toHex = (b: Uint8Array) => Array.from(b, v => v.toString(16).padStart(2, "0")).join("");
 const dec = new TextDecoder();
@@ -163,6 +197,9 @@ export class Runtime {
   private exts: Ext[] = [];
   private threadEvent = new Map<number, { r: number; w: number; thread: number }>();
   private wake: (() => void) | null = null;
+  private tickHooks: ((now: bigint) => void)[] = [];
+  private deadlineFns: ((now: bigint) => bigint)[] = [];
+  private hostDepth = 0;             // > 0 while a host function runs (guest calls go to the thread in the core)
   times = { hostMs: 0 };               // time inside host functions (ms), for the per-frame breakdown
 
   constructor(mods: RuntimeModules, opts: RuntimeOptions = {}) {
@@ -190,7 +227,7 @@ export class Runtime {
     this.a64 = new A64Host(mods.translator, mods.helpers, {
       memory: this.memory, layout: A64,
       maxInsns: opts.maxInsns, maxFuncs: opts.maxFuncs, depthLimit: opts.depthLimit, tailCalls: opts.tailCalls, fma: opts.fma, nanFix: opts.nanFix,
-      cntYield: true, preciseFaults: opts.preciseFaults, guardBase: opts.guard ? HOST_END : 0,
+      cntYield: true, preciseFaults: opts.preciseFaults, guardBase: (opts.guard ?? GUARD_DEFAULT) ? GUARD_BASE : 0,
       onTranslate: (pc: bigint) => this.onTranslate(pc),
       imports: {
         svc: (n: number) => this.svc(n),
@@ -207,8 +244,15 @@ export class Runtime {
     this.a64.table.grow(1);
     this.a64.table.set(this.thunk, thunk);
     this.a64.fillPcMap(STUBS.base, STUBS.cap, this.thunk);
+    const g: Record<string, unknown> = {};
+    for (let i = 0; i < 8; i++) { g["x" + i] = this.core["x" + i]; g["v" + i] = this.core["v" + i]; }
+    this.regs = new WebAssembly.Instance(new WebAssembly.Module(regsModule() as BufferSource), { env: { memory: this.memory }, core: g } as WebAssembly.Imports).exports as unknown as Runtime["regs"];
+    this.argsPtr = this.r.rt_nvn_args(this.r.rt_ctx_scratch()) >>> 0;
   }
+  private regs!: { args_x(ptr: number): void; args_xd(ptr: number): void; set_d0(bits: bigint): void };
+  private argsPtr = 0;
 
+  get guarded(): boolean { return this.opts.guard ?? GUARD_DEFAULT; }
   // ---- memory ----
   u8(): Uint8Array { return new Uint8Array(this.memory.buffer); }
   dv(): DataView { return new DataView(this.memory.buffer); }
@@ -242,10 +286,21 @@ export class Runtime {
   guestNs(): bigint { return this.k.kernel_guest_ns(); }
 
   // ---- host function registry ----
+  // One answer per name: a second registration of a name is an error (it used to replace the first silently, which
+  // let two areas answer the same SDK function with different state).
   register(def: HostFunctionDef): void {
     if (this.state !== "Empty") throw new Error("runtime: register host functions before loading");
+    if (this.registry.has(def.name)) throw new Error(`runtime: host function ${def.name} is registered twice: one answer per name (a test that replaces an answer on purpose calls override())`);
     this.registry.set(def.name, def);
   }
+  // Replaces the answer of a name that is registered, on purpose (tests that stand in for one take-over). A name
+  // nobody registered is refused: that is a registration, not an override.
+  override(def: HostFunctionDef): void {
+    if (this.state !== "Empty") throw new Error("runtime: override host functions before loading");
+    if (!this.registry.has(def.name)) throw new Error(`runtime: override of ${def.name}, which is not registered`);
+    this.registry.set(def.name, def);
+  }
+  registered(name: string): boolean { return this.registry.has(name); }
 
   // A host function added after loading (not bound to any import: its address is handed to the guest by another host
   // function, as nvnBootstrapLoader does). Returns the stub's guest address; the same name gives the same stub.
@@ -322,6 +377,20 @@ export class Runtime {
   }
   // wakes runAsync() when something outside the guest changed what the next slice would do
   requestWake(): void { this.wake?.(); }
+  // An attached part that has time of its own (audio): fn(now) runs whenever host time has been told to the kernel
+  // at the end of a slice, when an idle guest's time jumps, and (wall clock) at every turn of the run loop.
+  onTick(fn: (now: bigint) => void): void { this.tickHooks.push(fn); }
+  // ... and the next moment (kernel_tick scale, ns) at which it must be ticked; FOREVER_NS for none. Deterministic
+  // clock: a slice ends there and an idle guest's time stops there, so the tick happens at exactly that time.
+  // Wall clock: an idle run loop wakes then.
+  addDeadline(fn: (now: bigint) => bigint): void { this.deadlineFns.push(fn); }
+  // Host time now, told to the kernel (so that kernel_guest_ns() is current): for a host function that needs both clocks
+  syncTime(): bigint { const now = this.nowNs(); this.k.kernel_tick(now); return now; }
+  // The host time (kernel_tick scale) at which the guest clock reaches a guest time; FOREVER_NS while it stands
+  hostTimeOf(guestNs: bigint): bigint { return BigInt.asUintN(64, this.k.kernel_host_time_of(guestNs)); }
+  get inHostCall(): boolean { return this.hostDepth > 0; }
+  private ticked(now: bigint): void { this.k.kernel_tick(now); for (const fn of this.tickHooks) fn(now); }
+  private nextDeadline(now: bigint): bigint { let d = FOREVER; for (const fn of this.deadlineFns) { const v = fn(now); if (v < d) d = v; } return d; }
   private sha256(ptr: number, len: number): string {
     const out = (this.r.rt_scratch_ptr() >>> 0) + 3400;
     this.ld.x.ld_sha256(ptr, len, out);
@@ -548,11 +617,11 @@ export class Runtime {
     return {
       rt, threadIndex: index,
       get thread() { return index >= 0 ? rt.dv().getUint32(rt.threadInfo(index) + 28, true) : 0; },
-      get lr() { return c.x30.value as bigint; },
-      x: (i: number) => c["x" + i].value as bigint,
+      get lr() { return BigInt.asUintN(64, c.x30.value as bigint); },
+      x: (i: number) => BigInt.asUintN(64, c["x" + i].value as bigint),   // a wasm i64 global reads as a signed BigInt
       w: (i: number) => Number((c["x" + i].value as bigint) & M32),
       setX: (i: number, v: bigint | number) => { c["x" + i].value = BigInt.asUintN(64, BigInt(v)); },
-      sp: () => c.sp.value as bigint,
+      sp: () => BigInt.asUintN(64, c.sp.value as bigint),
       u8: () => rt.u8(), dv: () => rt.dv(),
       read: (addr, len) => rt.u8().slice(Number(addr), Number(addr) + len),
       write: (addr, bytes) => { rt.u8().set(bytes, Number(addr)); },
@@ -561,18 +630,20 @@ export class Runtime {
       jump: (pc) => act({ kind: "jump", pc: BigInt(pc) }),
       never: () => act({ kind: "never" }),
       // JavaScript cannot write a v128 global: the state goes through a context block
-      setD: (i, bits) => { const s = rt.r.rt_ctx_scratch() >>> 0; c.save_ctx(s); const dv = rt.dv(); dv.setBigUint64(s + 0x130 + 16 * i, BigInt.asUintN(64, bits), true); dv.setBigUint64(s + 0x138 + 16 * i, 0n, true); c.load_ctx(s); },
+      setD: (i, bits) => { if (i === 0) { rt.regs.set_d0(BigInt.asIntN(64, bits)); return; } const s = rt.r.rt_ctx_scratch() >>> 0; c.save_ctx(s); const dv = rt.dv(); dv.setBigUint64(s + 0x130 + 16 * i, BigInt.asUintN(64, bits), true); dv.setBigUint64(s + 0x138 + 16 * i, 0n, true); c.load_ctx(s); },
       block: (event, timeout, resume) => act({ kind: "block", event, timeout, resume }),
       call: (fn, ...args) => rt.guestCall(BigInt(fn), args),
       now: () => rt.nowNs(),
-      args: () => { c.save_ctx(rt.r.rt_ctx_scratch()); return rt.r.rt_nvn_args(rt.r.rt_ctx_scratch()) >>> 0; },
-      waitFor: (done, at, resume) => {
+      stackArg: i => rt.dv().getBigUint64(Number((c.sp.value as bigint) & M32) + 8 * i, true),
+      args: () => { rt.regs.args_xd(rt.argsPtr); return rt.argsPtr; },
+      argsX: () => { rt.regs.args_x(rt.argsPtr); return rt.argsPtr; },
+      waitFor: (done, at, resume, deadline) => {
         const ev = rt.eventOf(index), now = rt.nowNs();
-        const e: Ext = { index, r: ev.r, w: ev.w, done: done === null, at: at === undefined || at < now ? now : at, signaled: false };
+        const e: Ext = { index, r: ev.r, w: ev.w, done: done === null, at: at === undefined || at < now ? now : at, signaled: false, deadline: rt.opts.clock === "wall" ? deadline : undefined };
         rt.k.kernel_event_clear(ev.w);
         rt.exts.push(e);
         if (done) done.then(() => { e.done = true; rt.wake?.(); }, () => { e.done = true; rt.wake?.(); });
-        return act({ kind: "block", event: ev.r, timeout: -1n, resume: (_how, cpu) => { rt.exts = rt.exts.filter(x => x !== e); rt.k.kernel_event_clear(ev.w); return resume(cpu); } });
+        return act({ kind: "block", event: ev.r, timeout: -1n, resume: (_how, cpu) => { rt.exts = rt.exts.filter(x => x !== e); rt.k.kernel_event_clear(ev.w); return resume(cpu, !!e.timedOut); } });
       },
     };
   }
@@ -583,6 +654,14 @@ export class Runtime {
     const t0 = performance.now();
     const cpu = this.cpuApi();
     let res: HostResult;
+    this.hostDepth++;
+    try { res = this.hostCallBody(cpu, id, pc); } finally { this.hostDepth--; }
+    if (res !== SKIP) this.finishHostCall(res as HostResult, cpu, pc);
+    this.times.hostMs += performance.now() - t0;
+  }
+  private hostCallBody(cpu: HostCpu, id: number, pc: number): HostResult | typeof SKIP {
+    const c = this.core;
+    let res: HostResult;
     const resume = this.pending.get(this.curIndex);
     if (resume) {
       // the thread comes back from a host-call wait: x0 is WaitSynchronization's result
@@ -592,7 +671,7 @@ export class Runtime {
     } else {
       let h = this.handlers[id];
       if (h === undefined) {
-        if (id >= this.ld.x.ld_host_count()) { this.fault(FAULT.jump, `${hex(pc)} is in the stub region but no host function has stub ${id}`, BigInt(pc)); c.stop(); return; }
+        if (id >= this.ld.x.ld_host_count()) { this.fault(FAULT.jump, `${hex(pc)} is in the stub region but no host function has stub ${id}`, BigInt(pc)); c.stop(); return SKIP; }
         const f = this.ld.hostFunction(id);
         h = f.kind === HOST_UNRESOLVED ? null : this.registry.get(f.name) ?? null;
         this.handlers[id] = h;
@@ -603,8 +682,7 @@ export class Runtime {
         res = 0;
       } else res = h.fn(cpu);
     }
-    this.finishHostCall(res, cpu, pc);
-    this.times.hostMs += performance.now() - t0;
+    return res;
   }
   // A guest function run to completion inside a host call: a nested core.run() that ends when the function returns
   // to PC_CALLBACK. The outer translated frames are still on the wasm stack; they go on when the host call returns.
@@ -626,6 +704,11 @@ export class Runtime {
     for (const e of this.exts) {
       if (e.signaled) continue;
       if (e.done && e.at <= now) { this.k.kernel_event_signal(e.w); e.signaled = true; continue; }
+      if (!e.done && e.deadline !== undefined) {
+        // wall clock: the wait's own timeout
+        if (e.deadline <= now) { e.timedOut = true; this.k.kernel_event_signal(e.w); e.signaled = true; continue; }
+        if (nextDone === 0n || e.deadline < nextDone) nextDone = e.deadline;   // the loop wakes then at the latest
+      }
       if (!e.done && e.at <= now) overdue = true;
       if (next === 0n || e.at < next) next = e.at;
       if (e.done && (nextDone === 0n || e.at < nextDone)) nextDone = e.at;
@@ -668,6 +751,36 @@ export class Runtime {
     this.ensure(base + n);
     return base;
   }
+  // ---- code the guest writes at run time (nn::jit) ----
+  // Two zeroed blocks the guest can address: the game jumps into the first, so it is a code range of the translator
+  // (and text for the jump check); the second is data. Blocks that were freed are handed out again by size.
+  private jitFreeList: { addr: number; size: number }[] = [];
+  private jitBlock(size: number): number {
+    const n = (size + 0xFFF) & ~0xFFF, i = this.jitFreeList.findIndex(b => b.size === n);
+    if (i >= 0) { const b = this.jitFreeList.splice(i, 1)[0]; this.u8().fill(0, b.addr, b.addr + n); return b.addr; }
+    return this.hostAlloc(n);
+  }
+  jitAlloc(rxSize: number, roSize: number): { rx: bigint; ro: bigint } | null {
+    const rx = this.jitBlock(rxSize), ro = roSize ? this.jitBlock(roSize) : 0;
+    if (!rx || (roSize && !ro)) { this.log(`[RED] runtime: no code memory for a JIT environment (${rxSize} + ${roSize} bytes)`); return null; }
+    const n = (rxSize + 0xFFF) & ~0xFFF;
+    this.a64.addCode(rx, n);
+    this.text.push({ lo: rx, hi: rx + n, handle: -2 });
+    return { rx: BigInt(rx), ro: BigInt(ro) };
+  }
+  // The guest wrote code into [rx + offset, rx + offset + size): what was translated from the block is dropped (the
+  // whole block: a unit may span the written range) and translated again when it is next jumped to
+  jitCodeWritten(rx: number, _offset: number, _size: number): void {
+    const t = this.text.find(t => t.handle === -2 && t.lo === rx);
+    if (!t) { this.log(`[RED] runtime: code written at ${hex(rx)}, which is not code memory of a JIT environment`); return; }
+    this.a64.removeCode(t.lo, t.hi - t.lo);
+    this.a64.addCode(t.lo, t.hi - t.lo);
+  }
+  jitFree(rx: number, rxSize: number, ro: number, roSize: number): void {
+    const t = this.text.find(t => t.handle === -2 && t.lo === rx);
+    if (t) { this.a64.removeCode(t.lo, t.hi - t.lo); this.text = this.text.filter(x => x !== t); this.jitFreeList.push({ addr: rx, size: (rxSize + 0xFFF) & ~0xFFF }); }
+    if (ro && roSize) this.jitFreeList.push({ addr: ro, size: (roSize + 0xFFF) & ~0xFFF });
+  }
   // Something to release when the process is disposed of (graphics objects, storage handles)
   onDispose(fn: () => void): void { this.disposers.push(fn); }
   // Releases what a stopped process still holds, so that the embedder can make another Runtime in the same page:
@@ -706,13 +819,20 @@ export class Runtime {
     }
   }
 
+  // args: x0..x7; a ninth and later argument goes on the guest stack below sp (16-byte aligned, AAPCS64) for the
+  // time of the call.
   guestCall(fn: bigint, args: (bigint | number)[]): bigint {
-    const c = this.core, lr: bigint = c.x30.value;
-    args.forEach((a, i) => { c["x" + i].value = BigInt.asUintN(64, BigInt(a)); });
+    const c = this.core, lr: bigint = c.x30.value, sp0: bigint = c.sp.value;
+    for (let i = 0; i < args.length && i < 8; i++) c["x" + i].value = BigInt.asUintN(64, BigInt(args[i]));
+    if (args.length > 8) {
+      const sp = (sp0 - BigInt(8 * (args.length - 8))) & ~15n, dv = this.dv();
+      for (let i = 8; i < args.length; i++) dv.setBigUint64(Number(sp & M32) + 8 * (i - 8), BigInt.asUintN(64, BigInt(args[i])), true);
+      c.sp.value = sp;
+    }
     c.x30.value = PC_CALLBACK; c.pc.value = fn;
     this.nested++;
     try { this.guestLoop(fn); } finally { this.nested--; }
-    c.x30.value = lr;
+    c.x30.value = lr; c.sp.value = sp0;
     return c.x0.value;
   }
   private guestLoop(fn: bigint): void {
@@ -787,6 +907,16 @@ export class Runtime {
       }
       if (limit.yieldMs !== undefined && performance.now() - t0 >= limit.yieldMs) { this.stats.runMs += performance.now() - t0; return { state: this.state, yielded: true }; }
       let budget = this.opts.budget;
+      // wall clock: time has moved since the last turn whatever happened in between (an idle wait, the event loop)
+      if (wall) this.ticked(r.rt_clock_set(this.wallNs()));
+      // what attached parts must be ticked at (the audio sinks' next buffer release)
+      let dl = FOREVER;
+      if (this.deadlineFns.length) {
+        let now: bigint = wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_now(0);
+        dl = this.nextDeadline(now);
+        if (!wall && dl <= now) { this.ticked(now); dl = this.nextDeadline(now); if (dl <= now) dl = now + BigInt(this.opts.nsPerUnit); }
+        if (!wall && dl !== FOREVER) { const room = (dl - now + BigInt(this.opts.nsPerUnit) - 1n) / BigInt(this.opts.nsPerUnit); if (room < BigInt(budget)) budget = Number(room); }
+      }
       const hasExt = this.exts.length > 0;
       let ext = { next: 0n, overdue: false, nextDone: 0n };
       if (hasExt) {
@@ -802,11 +932,12 @@ export class Runtime {
       if (!ctx) {
         if (k.kernel_stop_reason()) { this.finish(); break; }
         // every thread waits: time moves to the next deadline
-        const until = BigInt.asUintN(64, k.kernel_next_timeout());   // wasm hands a u64 over as a signed BigInt
+        let until = BigInt.asUintN(64, k.kernel_next_timeout());   // wasm hands a u64 over as a signed BigInt
+        if (dl < until) until = dl;
         if (ext.next !== 0n) {
           if (!wall && ext.next <= until) {
             // the next thing in guest time is an outside wait: if it has happened, time moves there; else wait for it
-            if (ext.nextDone === ext.next) { k.kernel_tick(r.rt_clock_set(ext.next)); continue; }
+            if (ext.nextDone === ext.next) { this.ticked(r.rt_clock_set(ext.next)); continue; }
             const out = this.outside(limit, t0, undefined); if (out) return out; break;
           }
           if (wall) {
@@ -823,8 +954,8 @@ export class Runtime {
         }
         if (wall) {
           if (limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true, wakeMs: Number(until - this.wallNs()) / 1e6 }; }
-          this.sleepMs(Number(until - this.wallNs()) / 1e6); k.kernel_tick(r.rt_clock_set(this.wallNs()));
-        } else k.kernel_tick(r.rt_clock_set(until));
+          this.sleepMs(Number(until - this.wallNs()) / 1e6); this.ticked(r.rt_clock_set(this.wallNs()));
+        } else this.ticked(r.rt_clock_set(until));
         continue;
       }
       if (ctx !== this.lastCtx) c.excl_addr.value = -1n;   // a context switch clears the exclusive monitor
@@ -835,7 +966,7 @@ export class Runtime {
       slices++; this.stats.slices++;
       let trap: unknown;
       try { c.run(); } catch (e) { trap = e ?? new Error("unknown exception"); }
-      k.kernel_tick(wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value));
+      this.ticked(wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value));
       if (wall) r.rt_clock_slice_end(c.budget.value);
       if (trap instanceof GuestCallAbort && !this.pendFault && this.stopFlag) trap = undefined;   // the process ended inside a callback
       if ((this.state as State) === "Stopped") break;   // killed from inside a host function
@@ -881,9 +1012,9 @@ export class Runtime {
     if (pc === undefined || !/out of bounds/.test(message)) return message;
     const insn = this.dv().getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
     if (!isMem) return message;
-    const guard = !!this.opts.guard;
+    const guard = this.guarded;
     return `${message}: the instruction ${hex(insn)} at ${hex(pc)} loads or stores through ${base === 31 ? "sp" : "x" + base} at an address ` +
-      (guard ? `below ${hex(HOST_END)} (a null or host-area pointer) or beyond the end of the memory` : "beyond the end of the memory");
+      (guard ? `below ${hex(GUARD_BASE)} (a null or host-area pointer) or beyond the end of the memory` : "beyond the end of the memory");
   }
   // The main thread returned from the entry (a clean exit): the fini functions run on it, as guest calls that return
   // to the exit pc: dynamic modules still loaded and then the start set, last loaded first, each fini_array backwards

@@ -1,0 +1,69 @@
+{
+ "source": "nxnative dm/games/0100152000022000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100152000022000",
+ "name": "Mario Kart 8 Deluxe",
+ "builds": [
+  {
+   "version": 1441792,
+   "tag": "v1441792",
+   "display": "4.0.0",
+   "modules": {
+    "main": "2c336a9bcf79c3040ce506cdd391b578",
+    "subsdk0": "d9de423efc1512328c3c05378c7cb031",
+    "sdk": "ba520906609c503227871a314a94fb5f"
+   }
+  },
+  {
+   "version": 1507328,
+   "tag": "v1507328",
+   "display": "4.0.1",
+   "modules": {
+    "main": "158c0c7399aabd7bf83795c2ef3484c7",
+    "subsdk0": "d9de423efc1512328c3c05378c7cb031",
+    "sdk": "ba520906609c503227871a314a94fb5f"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100152000022000",
+  "program_id": "0100152000022000",
+  "name": "Mario Kart 8 Deluxe",
+  "package": "v1507328",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "UI/cmn/movie/StaffCredits.mp4",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "render_cond",
+   "value": "on",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

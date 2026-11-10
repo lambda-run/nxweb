@@ -47,10 +47,22 @@ export class AudioDeviceMain {
     if (a.cmd === "open") void this.open(a);
     else if (a.cmd === "start") this.start();
     else if (a.cmd === "stop") this.stop();
+    else if (a.cmd === "close") this.close();
     return true;
   }
 
+  // The runtime side went away (its process ended): the context and its node are released. Nothing is reported:
+  // there is nobody to report to. A later "open" makes a new context.
+  close(): void {
+    const ctx = this.ctx, node = this.node;
+    this.ctx = null; this.node = null; this.wanted = false; this.ran = false; this.serial++;
+    try { node?.disconnect(); } catch { /* gone */ }
+    if (ctx) { ctx.onstatechange = null; void ctx.close().catch(() => { /* closed already */ }); }
+  }
+  private serial = 0;   // which open the context belongs to: an open that finishes after a close or a newer open is dropped
   private async open(a: Record<string, unknown>): Promise<void> {
+    if (this.ctx) this.close();   // a second process on the same page: one context at a time
+    const serial = ++this.serial;
     try {
       const want = (a.sampleRate as number | undefined) ?? this.o.sampleRate ?? 48000;
       const hint = this.o.latencyHint ?? "interactive";
@@ -59,6 +71,7 @@ export class AudioDeviceMain {
       const ctx = this.ctx;
       const url = URL.createObjectURL(new Blob([workletSource()], { type: "text/javascript" }));
       try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+      if (serial !== this.serial) { void ctx.close().catch(() => { /* closed already */ }); return; }
       this.node = new AudioWorkletNode(ctx, "nx-audio", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
         processorOptions: { sab: a.sab, hdr: a.hdr, data: a.data, cap: a.cap } });
       this.node.port.onmessage = e => { if (e.data.dump) this.dumps.shift()?.(e.data); };
@@ -69,7 +82,7 @@ export class AudioDeviceMain {
       // Where autoplay is allowed a new context runs at once: it only runs while an output wants it
       if (this.wanted) this.start(); else if (ctx.state === "running") void ctx.suspend().catch(() => { /* closed */ });
     } catch (e) {
-      this.send({ audio: { ev: "open", rate: 0, error: String(e) } });
+      if (serial === this.serial) this.send({ audio: { ev: "open", rate: 0, error: String(e) } });
     }
     this.openDone();
   }

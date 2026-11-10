@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/0100300012F2A000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100300012F2A000",
+ "name": "Advance Wars 1+2: Re-Boot Camp",
+ "builds": [
+  {
+   "version": 0,
+   "tag": "v0",
+   "display": "1.0.0",
+   "modules": {
+    "main": "320a17744aefd67fec5738ca0c629795",
+    "subsdk0": "84e50460493a12f26100e5150fbff271",
+    "sdk": "d9add76fc264863d85fbbd1d70076c76"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100300012F2A000",
+  "program_id": "0100300012F2A000",
+  "name": "Advance Wars 1+2: Re-Boot Camp",
+  "package": "v0",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/StreamingAssets/music.bank",
+  "app_pool": "0x80000000",
+  "sys_resource": "0x1000000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

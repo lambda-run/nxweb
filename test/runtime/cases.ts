@@ -2,8 +2,13 @@
 // Each case builds its own Runtime (translator + loader + kernel + runtime core on one linear memory), loads real NSO
 // files built from test/runtime/src and checks what the guest printed and how the process ended.
 import { Runtime, type RuntimeModules, type RuntimeOptions, type RunResult, type HostCpu } from "../../src/glue/rt_runtime.ts";
-import { RANGES, HOST_END, STUBS, GUEST } from "../../src/glue/rt_layout.ts";
-import { registerRo, type RoStats } from "../../src/glue/rt_ro.ts";
+import { RANGES, HOST_END, STUBS, GUEST, GUARD_BASE } from "../../src/glue/rt_layout.ts";
+import { attachHle } from "../../src/glue/hle_rt.ts";
+import { RtGfx } from "../../src/glue/rt_gfx.ts";
+import { RtFs } from "../../src/glue/rt_fs.ts";
+import { RtAudio } from "../../src/glue/rt_audio.ts";
+import { MemStorage } from "../../src/glue/fs_host.ts";
+import type { HleHost } from "../../src/glue/hle_host.ts";
 
 export interface CorpusGuest { name: string; side: any; image: Uint8Array; expected: Uint8Array }
 export interface Env {
@@ -13,6 +18,7 @@ export interface Env {
   corpus: CorpusGuest[];                // test/guests/out
   rssMb?: () => number;                 // resident memory of the process, when the host can tell
   haveGfxGuests?: boolean;              // cube.nso and cube2.nso were built (they need nxnative's nvn.h)
+  guardRounds?: number;                 // rounds of the guard's cost measurement (default 7; RT_GUARD_ROUNDS for a measurement run)
 }
 export interface Case { name: string; fn: () => string[] }   // returns lines to print under the test; throws on failure
 export interface CaseResult { name: string; ok: boolean; why: string; info: string[]; ms: number }
@@ -271,23 +277,23 @@ export function cases(env: Env): Case[] {
   faultCase("fault_stack", "guest stack overflow by runaway recursion", "stack", "recursing without end\n", (rt, r) => {
     ok(Number(r.stop!.fault!.aux) < GUEST.stackRegion, "sp below the stack: " + hex(r.stop!.fault!.aux));
   });
-  // the guard on the host area: any guest access below 0x0800_0000 traps, and the trap's pc is the instruction itself
+  // the guard on the host area (the default): a guest access below GUARD_BASE traps, and the trap's pc is the instruction itself
   const isMemInsn = (rt: Runtime, pc: bigint) => ((rt.dv().getUint32(Number(pc), true) >>> 25) & 5) === 4;
-  faultCase("fault_null", "with `guard: true`, a read through a null pointer", "trap", "reading through a null pointer\n", (rt, r) => {
+  faultCase("fault_null", "by default (the host-area guard), a read through a null pointer", "trap", "reading through a null pointer\n", (rt, r) => {
     const line = rt.red.at(-2)!, pc = r.stop!.fault!.pc, t = rt.modules[0].text;
     ok(Number(pc) >= t.addr && Number(pc) < t.addr + t.size && isMemInsn(rt, pc), "the pc is a load instruction in the module's text: " + hex(pc));
     ok(!line.includes("last synced pc"), "the pc is exact: " + line);
-    ok(line.includes("a null or host-area pointer"), line);
-  }, { guard: true });
-  faultCase("fault_host", "with `guard: true`, a write into the kernel's static data", "trap", "writing into the host area (0x1000100, the kernel's static data)\n", (rt, r) => {
+    ok(line.includes("a null or host-area pointer") && line.includes("below " + hex(GUARD_BASE)), line);
+  });
+  faultCase("fault_host", "by default (the host-area guard), a write into the kernel's static data", "trap", "writing into the host area (0x1000100, the kernel's static data)\n", (rt, r) => {
     ok(isMemInsn(rt, r.stop!.fault!.pc) && !rt.red.at(-2)!.includes("last synced pc"), rt.red.at(-2)!);
     ok(rt.dv().getUint32(0x1000100, true) !== 0x55, "the word was not written");
-  }, { guard: true });
-  test("f without the guard (the default): the same null read returns zero and the same write lands in the kernel's memory", () => {
-    const rt = boot(["fault_null"]);
+  });
+  test("f without the guard (`guard: false`, for measurements): the same null read returns zero and the same write lands in the kernel's memory", () => {
+    const rt = boot(["fault_null"], { guard: false });
     exited(rt.run(), 1, rt);
     eq(rt.stdout(), "reading through a null pointer\nread 0x0\nNOT REACHED\n", "stdout");
-    const rt2 = boot(["fault_host"]);
+    const rt2 = boot(["fault_host"], { guard: false });
     rt2.run();
     eq(rt2.dv().getUint32(0x1000100, true), 0x55, "the word in the kernel's static data");
     return ["a null read gave 0; 0x55 was written at 0x1000100"];
@@ -320,11 +326,56 @@ export function cases(env: Env): Case[] {
     return rt.red;
   });
 
+  // ---- one answer per name ----
+  test("e one answer per name: registering a name twice is an error, override() replaces an answer on purpose, and an override of nothing is refused", () => {
+    let seen = "";
+    const rt = boot(["host_main", "host_lib"], {}, rt => {
+      for (const name of ["weak_fn", "host_log", "host_fill", "host_sum", "host_post", "host_each", "host_wait"]) rt.register({ name, fn: () => 0 });
+      rt.register({ name: "forced_fn", forced: true, fn: () => { seen += "first "; return 1; } });
+      let err = "";
+      try { rt.register({ name: "forced_fn", forced: true, fn: () => 2 }); } catch (e) { err = (e as Error).message; }
+      ok(/forced_fn is registered twice/.test(err), "a second registration must throw: " + err);
+      rt.override({ name: "forced_fn", forced: true, fn: () => { seen += "override "; return 700; } });
+      err = "";
+      try { rt.override({ name: "nobody_has_this", fn: () => 0 }); } catch (e) { err = (e as Error).message; }
+      ok(/override of nobody_has_this, which is not registered/.test(err), "an override of an unregistered name must throw: " + err);
+      ok(rt.registered("forced_fn") && !rt.registered("nobody_has_this"), "registered()");
+    });
+    rt.run({ slices: 400 });
+    ok(seen.startsWith("override ") && !seen.includes("first"), "which answer the guest got: " + seen);
+    // the take-over table and the file system on one process: no name is answered twice (attaching would throw)
+    if (env.mods.hle && env.mods.fs && env.mods.gfx) {
+      const all = new Runtime(env.mods);
+      new RtGfx(all, env.mods.gfx); attachHle(all, env.mods.hle); new RtFs(all, env.mods.fs, new MemStorage());
+      if (env.mods.audio) new RtAudio(all, env.mods.audio, {});
+      let err = "";
+      try { attachHle(all, env.mods.hle); } catch (e) { err = (e as Error).message; }
+      ok(/is registered twice/.test(err), "attaching the table a second time must throw: " + err);
+    }
+    return [`the guest's calls of forced_fn went to the override (${seen.trim().split(" ").length} calls)`, "graphics, the take-over table, the file system and audio attach to one process without a name answered twice"];
+  });
+  test("e arguments beyond the eighth and generated code: a host function reads four stack arguments, the host calls a guest function with thirteen, and code the guest writes is translated again after each change", () => {
+    const rt = boot(["argsg"], {}, rt => {
+      rt.register({ name: "host_twelve", fn: cpu => { let s = 0n; for (let i = 0; i < 8; i++) s += BigInt(i + 1) * cpu.x(i); for (let i = 0; i < 4; i++) s += BigInt(i + 9) * cpu.stackArg(i); return s; } });
+      rt.register({ name: "host_call13", fn: cpu => cpu.call(cpu.x(0), ...Array.from({ length: 13 }, (_, i) => 101 + i)) });
+      rt.register({ name: "host_jit_alloc", fn: cpu => cpu.rt.jitAlloc(Number(cpu.x(0)), 0x2000)?.rx ?? 0n });
+      rt.register({ name: "host_jit_written", fn: cpu => { cpu.rt.jitCodeWritten(Number(cpu.x(0)), Number(cpu.x(1)), Number(cpu.x(2))); } });
+      rt.register({ name: "host_jit_free", fn: cpu => { cpu.rt.jitFree(Number(cpu.x(0)), Number(cpu.x(1)), 0, 0); } });
+    });
+    exited(rt.run(), 0, rt);
+    let w12 = 0, w13 = 0; for (let i = 1; i <= 12; i++) w12 += i * i; for (let i = 1; i <= 13; i++) w13 += i * (100 + i);
+    eq(rt.stdout(), `host_twelve(1..12), weighted by position = ${w12}\nhost_call13: sum13(101..113), weighted = ${w13}\na local of the caller after the call with stack arguments: 0x1122334455667788\n` +
+      "generated code returns 41\ngenerated code returns 42\ngenerated code returns 43\nfreed code memory is handed out again\ncode in the reused block returns 7\n", "stdout");
+    eq(rt.a64.codeRanges().length, 2, "code ranges at the end: the module and the code memory handed out again");
+    noRed(rt);
+    return [rt.stdout().split("\n")[0], rt.stdout().split("\n")[1]];
+  });
+
   // ---- run-time modules, fini functions, the counter while the clock is frozen ----
-  for (const budget of [100000, 50]) test(`h run-time modules (budget ${budget}): an NRO loaded through nn::ro, called, unloaded and loaded again three times`, () => {
-    let ro!: RoStats;
+  if (env.mods.hle) for (const budget of [100000, 50]) test(`h run-time modules (budget ${budget}): an NRO loaded through nn::ro (the take-over table's, over Runtime.loadModule), called, unloaded and loaded again three times`, () => {
+    let hle!: HleHost;
     const rt = boot(["ro_main"], { budget }, rt => {
-      ro = registerRo(rt);
+      hle = attachHle(rt, env.mods.hle!);
       rt.register({ name: "test_nro", fn: cpu => { const b = env.file("plug.nro"); if (b.length > Number(cpu.x(1))) return 0; cpu.write(cpu.x(0), b); return b.length; } });
     });
     const unitsBefore = () => rt.a64.units.length;
@@ -335,7 +386,7 @@ export function cases(env: Env): Case[] {
       `  unloaded: state=0, LookupSymbol rc=0x216, main's import is 0 again\n`;
     eq(rt.stdout(), `GetBufferSize of something that is no NRO: 0x816\nimage: NRO of ${env.file("plug.nro").length} bytes, GetBufferSize rc=0x0\n` +
       `LookupSymbol(plug_calc) before any load: rc=0x216\n` + round(1) + round(2) + round(3) + "ro done\n", "stdout");
-    eq([ro.loads, ro.unloads, ro.initCalls, ro.finiCalls], [3, 3, 3, 3], "loads, unloads, init and fini calls");
+    eq([hle.x.hle_ro_loaded(), hle.x.hle_call_count(hle.lookup("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi")), hle.x.hle_call_count(hle.lookup("_ZN2nn2ro12UnloadModuleEPNS0_6ModuleE"))], [0, 6, 3], "modules the table still holds, LoadModule and UnloadModule calls");
     eq([rt.stats.moduleLoads, rt.stats.moduleUnloads, rt.modules.length, rt.a64.codeRanges().length], [3, 3, 1, 1], "runtime: loads, unloads, modules and code ranges left");
     const main = rt.modules[0];
     ok(rt.a64.units.every(u => u.pcs.every(pc => pc === 0xFFFFFFFF || (pc >= main.base && pc < main.base + main.imageSize))), "no translated unit of the unloaded module is left");
@@ -406,7 +457,7 @@ export function cases(env: Env): Case[] {
   });
 
   test("guard: what the trap on host-area accesses costs on the corpus (run time with `guard` on and off, interleaved)", () => {
-    const rounds = 7, on: number[] = [], off: number[] = [];
+    const rounds = env.guardRounds ?? 7, on: number[] = [], off: number[] = [];
     let insns = 0;
     const once = (guard: boolean) => {
       let ms = 0; insns = 0;
@@ -420,11 +471,14 @@ export function cases(env: Env): Case[] {
       return ms;
     };
     once(true); once(false);   // warm up
-    for (let i = 0; i < rounds; i++) { on.push(once(true)); off.push(once(false)); }
+    // the order within a round alternates, so that neither setting always runs second
+    for (let i = 0; i < rounds; i++) { if (i & 1) { off.push(once(false)); on.push(once(true)); } else { on.push(once(true)); off.push(once(false)); } }
     const stat = (v: number[]) => { const s = [...v].sort((a, b) => a - b); return { min: s[0], med: s[s.length >> 1] }; };
     const a = stat(on), b = stat(off), pct = (x: number, y: number) => ((x / y - 1) * 100).toFixed(1);
+    const d = on.map((v, i) => (v / off[i] - 1) * 100), m = d.reduce((x, y) => x + y, 0) / d.length, se = Math.sqrt(d.reduce((x, v) => x + (v - m) ** 2, 0) / Math.max(1, d.length - 1) / d.length);
+    const sum = (v: number[]) => v.reduce((x, y) => x + y, 0);
     return [`${env.corpus.length} images, ${insns} guest instructions, ${rounds} interleaved rounds: guard on min ${a.min.toFixed(0)} ms / median ${a.med.toFixed(0)} ms; off min ${b.min.toFixed(0)} / median ${b.med.toFixed(0)}`,
-      `cost of the guard: ${pct(a.min, b.min)} % (min), ${pct(a.med, b.med)} % (median)`];
+      `cost of the guard: ${pct(a.min, b.min)} % (min), ${pct(a.med, b.med)} % (median); paired rounds: mean ${m.toFixed(2)} % +- ${se.toFixed(2)} (standard error), total time ${pct(sum(on), sum(off))} %`];
   });
 
   // ---- speed of (c) ----

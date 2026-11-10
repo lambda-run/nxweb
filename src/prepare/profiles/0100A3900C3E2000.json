@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/0100A3900C3E2000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100A3900C3E2000",
+ "name": "Paper Mario: The Origami King",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.0.1",
+   "modules": {
+    "main": "e74395f066fd8ccb51ec17b39b3da2c8",
+    "subsdk0": "a4b620d9c140a4ac6e010251afd5cb11",
+    "sdk": "86a2afd863c99062d666226a9e7aa764"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100A3900C3E2000",
+  "program_id": "0100A3900C3E2000",
+  "name": "Paper Mario: The Origami King",
+  "package": "v65536",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "sound/BK.bfsar",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x800000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

@@ -14,18 +14,13 @@ process.chdir(ROOT);
 try {
   build(); buildModules();
   buildSync({ entryPoints: ["test/runtime/web/worker.ts"], bundle: true, format: "iife", outfile: "build/runtime/web/worker.js", logLevel: "warning", absWorkingDir: ROOT });
+  buildSync({ entryPoints: ["test/runtime/web/main.ts"], bundle: true, format: "iife", outfile: "build/runtime/web/main.js", logLevel: "warning", absWorkingDir: ROOT });
   buildSync({ entryPoints: ["src/glue/rt_shader_worker.ts"], bundle: true, format: "esm", outfile: "build/runtime/web/shader_worker.js", logLevel: "warning", absWorkingDir: ROOT });
 } catch (e) { console.error(e instanceof Error ? e.message : e); console.error("[RED] rt:browser: the build failed"); process.exit(1); }
 
 const { chromium } = createRequire(import.meta.url)("playwright");
 const only = process.argv[2];
-const page = `<!doctype html><meta charset="utf-8"><title>nxweb runtime tests</title><script>
-window.results = []; window.finished = null; window.shots = []; window.notes = [];
-window.start = (only) => { const w = new Worker("/worker.js");
-  w.onmessage = (ev) => { if (ev.data.result) window.results.push(ev.data.result); else if (ev.data.shot) window.shots.push({ ...ev.data.shot, rgba: Array.from(ev.data.shot.rgba) }); else if (ev.data.note) window.notes.push(ev.data.note); else window.finished = ev.data; };
-  w.onerror = (e) => { window.finished = { done: true, fatal: String(e.message) }; };
-  w.postMessage({ only }); };
-</script>`;
+const page = `<!doctype html><meta charset="utf-8"><title>nxweb runtime tests</title><script src="/main.js"></script>`;
 const corpusDir = join(ROOT, "test", "guests", "out");
 const haveBig = buildBig(), shaders = shaderArtifacts();
 const TYPES: Record<string, string> = { ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".nxsl": "application/octet-stream" };
@@ -37,7 +32,8 @@ const server = createServer((req, res) => {
     let m: RegExpExecArray | null;
     if (url === "/") return send(page, "text/html");
     if (url === "/worker.js") return send(readFileSync(join(OUT, "web", "worker.js")), "text/javascript");
-    if (url === "/list") return send(JSON.stringify({ nso: [...Object.keys(MODULES), ...(haveNvn() ? Object.keys(GFX_MODULES) : [])], files: [...Object.keys(NRO_MODULES).map(n => n + ".nro"), "romfs.img", "romfs_blob.bin"], corpus: corpusList(), gfx: haveNvn(), big: haveBig ? "a64_big.O1" : null, shaders }), "application/json");
+    if (url === "/main.js") return send(readFileSync(join(OUT, "web", "main.js")), "text/javascript");
+    if (url === "/list") return send(JSON.stringify({ nso: [...Object.keys(MODULES), ...(haveNvn() ? Object.keys(GFX_MODULES) : [])], files: [...Object.keys(NRO_MODULES).map(n => n + ".nro"), "romfs.img", "romfs_blob.bin"], corpus: corpusList(), gfx: haveNvn(), big: haveBig ? "a64_big.O1" : null, shaders, guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : null }), "application/json");
     if (url === "/shader_worker.js") return send(readFileSync(join(OUT, "web", "shader_worker.js")), "text/javascript");
     if ((m = /^\/shaders\/([\w./-]+)$/.exec(url)) && !m[1].includes("..")) return send(readFileSync(join(SHADER_OUT, m[1])), TYPES[m[1].slice(m[1].lastIndexOf("."))] ?? "application/octet-stream");
     if ((m = /^\/guest\/([\w.]+)$/.exec(url))) return send(readFileSync(join(GUESTS, m[1])), "application/octet-stream");
@@ -57,7 +53,7 @@ const port = (server.address() as any).port;
 const channel = process.env.RT_BROWSER_CHANNEL ?? "chromium";
 // WebGPU in headless Chromium on a machine without a GPU: SwiftShader (the flags the gfx tests use)
 const GPU_ARGS = ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=swiftshader", "--use-vulkan=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"];
-const browser = await chromium.launch({ headless: true, ...(channel === "shell" ? {} : { channel }), args: [...GPU_ARGS, ...(process.env.RT_BROWSER_LOG ? ["--enable-logging=stderr", "--v=0"] : [])] });
+const browser = await chromium.launch({ headless: true, ...(channel === "shell" ? {} : { channel }), args: [...GPU_ARGS, "--autoplay-policy=no-user-gesture-required", ...(process.env.RT_BROWSER_LOG ? ["--enable-logging=stderr", "--v=0"] : [])] });
 let failed = 0, ran = 0;
 try {
   const p = await browser.newPage();

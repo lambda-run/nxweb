@@ -1,0 +1,54 @@
+{
+ "source": "nxnative dm/games/0100CE4010AAC000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100CE4010AAC000",
+ "name": "FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition",
+ "builds": [
+  {
+   "version": 196608,
+   "tag": "v196608",
+   "display": "1.0.3",
+   "modules": {
+    "main": "e1d8b399b787ae4186bc974403a82d97",
+    "subsdk0": "60c6edbbfcebd4176cc301d5d9cb5a6f",
+    "sdk": "5fd4f531c1195e9e5510c9e73f22cd39"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100CE4010AAC000",
+  "program_id": "0100CE4010AAC000",
+  "name": "FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition",
+  "package": "v196608",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/StreamingAssets/Videos/TitleCredit_Int_High.mp4",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x1000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

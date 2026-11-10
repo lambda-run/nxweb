@@ -1,0 +1,57 @@
+{
+ "source": "nxnative dm/games/01007BB017812000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01007BB017812000",
+ "name": "Portal",
+ "builds": [
+  {
+   "version": 196608,
+   "tag": "v196608",
+   "display": "1.0.3",
+   "modules": {
+    "main": "8ec6b5335d7ca09e21c9b6989cfa23fe",
+    "subsdk0": "2f31216323724e1ff64f03eef5fe030d",
+    "subsdk2": "7e9f31f59e001cf5d9b546ffb233f480",
+    "sdk": "2bf3519216f5b9d3e8ce26863c2e98b6"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01007BB017812000",
+  "program_id": "01007BB017812000",
+  "name": "Portal",
+  "pad_layout": "full",
+  "package": "v196608",
+  "modules": "main subsdk0 subsdk2 sdk",
+  "romfs_marker": "game.zip",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

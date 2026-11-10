@@ -1,0 +1,65 @@
+{
+ "source": "nxnative dm/games/040077201BE50000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "040077201BE50000",
+ "name": "Kirby Air Riders",
+ "builds": [
+  {
+   "version": 458752,
+   "tag": "v458752",
+   "display": "1.3.3",
+   "modules": {
+    "main": "9ede03836568bcd34434dfc29bc61e04",
+    "subsdk0": "11a5672eeabf787e8e510902825606d4",
+    "sdk": "89ea3537110354e8427004a0266744c8"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "040077201BE50000",
+  "program_id": "040077201BE50000",
+  "name": "Kirby Air Riders",
+  "pad_layout": "full",
+  "package": "v458752",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Asset/assets.cat",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x2000000"
+ },
+ "needs": [
+  {
+   "key": "tex_flush_upload",
+   "value": "on",
+   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
+  },
+  {
+   "key": "tex_dirty_upload",
+   "value": "on",
+   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x130000000 alias 0x400000000",
+   "what": "nxnative gives this game a 4.75 GB heap region (nxweb: 1.50 GB) and a 16.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 5100273664,
+  "alias_region": 17179869184,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

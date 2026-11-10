@@ -1,0 +1,59 @@
+{
+ "source": "nxnative dm/games/0400D4201C6EA000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0400D4201C6EA000",
+ "name": "Mario Tennis Fever",
+ "builds": [
+  {
+   "version": 327680,
+   "tag": "v327680",
+   "display": "v327680",
+   "modules": {
+    "main": "104bce6874603701935eb76cb7d8b59e",
+    "sdk": "32a9ac1480a6f0e9e2e8a813ae9cd731"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0400D4201C6EA000",
+  "program_id": "0400D4201C6EA000",
+  "name": "Mario Tennis Fever",
+  "pad_layout": "full",
+  "package": "v327680",
+  "modules": "main sdk",
+  "romfs_marker": "42",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x2000000"
+ },
+ "needs": [
+  {
+   "key": "render_cond",
+   "value": "on",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x130000000 alias 0x500000000",
+   "what": "nxnative gives this game a 4.75 GB heap region (nxweb: 1.50 GB) and a 20.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 5100273664,
+  "alias_region": 21474836480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

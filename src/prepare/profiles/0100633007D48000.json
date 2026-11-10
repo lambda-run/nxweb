@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/0100633007D48000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100633007D48000",
+ "name": "Hollow Knight",
+ "builds": [
+  {
+   "version": 589824,
+   "tag": "v589824",
+   "display": "1.5.12620",
+   "modules": {
+    "main": "d1ceb177087be472f4574be16ccd3b0f",
+    "subsdk0": "a870a783a09f57256d3630b73485398e",
+    "sdk": "c668ae02ea221e429677aa61d3dab7c6"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100633007D48000",
+  "program_id": "0100633007D48000",
+  "name": "Hollow Knight",
+  "package": "v589824",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/resources.assets.resS",
+  "sys_resource": "0x1000000",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

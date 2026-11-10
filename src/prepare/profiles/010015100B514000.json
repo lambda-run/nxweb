@@ -1,0 +1,70 @@
+{
+ "source": "nxnative dm/games/010015100B514000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010015100B514000",
+ "name": "Super Mario Bros. Wonder",
+ "builds": [
+  {
+   "version": 0,
+   "tag": "v0",
+   "display": "1.0.0",
+   "modules": {
+    "main": "cd6e42aee7934f4d8393cd43893ae25e",
+    "sdk": "3053b22935e32ddf15ef81997603e5c2"
+   }
+  },
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.0.1",
+   "modules": {
+    "main": "f91868b88f60d3d59009db3389fde314",
+    "sdk": "3053b22935e32ddf15ef81997603e5c2"
+   }
+  },
+  {
+   "version": 327680,
+   "tag": "v327680",
+   "display": "1.2.1",
+   "modules": {
+    "main": "ff773e90972d544eb79406eaa65396d5",
+    "sdk": "e4bd58cac28cf13a08fb417aa013cdcb"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010015100B514000",
+  "program_id": "010015100B514000",
+  "name": "Super Mario Bros. Wonder",
+  "package": "v327680",
+  "modules": "main sdk",
+  "romfs_marker": "System/Resource",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x68000000 alias 0xb8000000",
+   "what": "nxnative gives this game a 1.62 GB heap region (nxweb: 1.50 GB) and a 2.88 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 1744830464,
+  "alias_region": 3087007744,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

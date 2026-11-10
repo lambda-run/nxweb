@@ -1,0 +1,60 @@
+{
+ "source": "nxnative dm/games/010051701FB46000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010051701FB46000",
+ "name": "Monster Train 2",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.1.1",
+   "modules": {
+    "main": "b337cdea2be300e638a0dfb74e9115a9",
+    "subsdk0": "8a72a4dcbfd375d2952288284259da94",
+    "sdk": "6075151627016eef437c1312f2e3ed56"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010051701FB46000",
+  "program_id": "010051701FB46000",
+  "name": "Monster Train 2",
+  "package": "v131072",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/globalgamemanagers",
+  "sys_resource": "0x1000000",
+  "app_pool": "0x40000000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "present_interval",
+   "value": "display",
+   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps)."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

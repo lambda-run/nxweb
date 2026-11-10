@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/010031F019294000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010031F019294000",
+ "name": "Super Monkey Ball Banana Rumble",
+ "builds": [
+  {
+   "version": 458752,
+   "tag": "v458752",
+   "display": "2.20",
+   "modules": {
+    "main": "95548fabbca7a4f723c3468e5cfb34d0",
+    "subsdk0": "29b829cc3bb8021bbd447c98f71a66f2",
+    "sdk": "71b1a025aa30641a53aa4fc53ca742a6"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010031F019294000",
+  "program_id": "010031F019294000",
+  "name": "Super Monkey Ball Banana Rumble",
+  "package": "v458752",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/StreamingAssets/Movie/ev_movie_w07_b.usm",
+  "sys_resource": "0x1000000",
+  "app_pool": "0x40000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x100000000",
+   "what": "nxnative gives this game a 4.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4294967296,
+  "stack_region": 671088640,
+  "fits": false
+ }
+}

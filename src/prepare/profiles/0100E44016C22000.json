@@ -1,0 +1,54 @@
+{
+ "source": "nxnative dm/games/0100E44016C22000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100E44016C22000",
+ "name": "Patrick's Parabox",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.0.1",
+   "modules": {
+    "main": "86171cbde77fb44989fbc97905ffc8f4",
+    "subsdk0": "525feff80957be306b46b74636256582",
+    "sdk": "9c73fb73f529fedc9ffefa28246711cc"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100E44016C22000",
+  "program_id": "0100E44016C22000",
+  "name": "Patrick's Parabox",
+  "package": "v65536",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/globalgamemanagers",
+  "sys_resource": "0x1000000",
+  "app_pool": "0x40000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

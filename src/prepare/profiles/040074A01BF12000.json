@@ -1,0 +1,64 @@
+{
+ "source": "nxnative dm/games/040074A01BF12000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "040074A01BF12000",
+ "name": "Donkey Kong Bananza",
+ "builds": [
+  {
+   "version": 458752,
+   "tag": "v458752",
+   "display": "v458752",
+   "modules": {
+    "main": "e25c90c1c136638885659fd55bf8a03b",
+    "sdk": "18265daea2105b31f25346adfbbd09b5"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "040074A01BF12000",
+  "program_id": "040074A01BF12000",
+  "name": "Donkey Kong Bananza",
+  "pad_layout": "full",
+  "package": "v458752",
+  "modules": "main sdk",
+  "romfs_marker": "System/Resource/ResourceSizeTable.Product.rsizetable.zs",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "render_cond",
+   "value": "on",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
+  },
+  {
+   "key": "gpu_timestamps",
+   "value": "segment",
+   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x240000000 alias 0x10000000",
+   "what": "nxnative gives this game a 9.00 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 9663676416,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

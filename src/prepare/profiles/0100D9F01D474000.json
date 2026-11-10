@@ -1,0 +1,54 @@
+{
+ "source": "nxnative dm/games/0100D9F01D474000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100D9F01D474000",
+ "name": "Rhythm Heaven Groove",
+ "builds": [
+  {
+   "version": 0,
+   "tag": "v0",
+   "display": "1.0.0",
+   "modules": {
+    "main": "03ff4a3bec96bde3a2e37ce3aa4caa0c",
+    "sdk": "cff2680fe74cb7d8d13b525730d1a7fd"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100D9F01D474000",
+  "program_id": "0100D9F01D474000",
+  "name": "Rhythm Heaven Groove",
+  "op_mode": "handheld",
+  "perf_mode": "boost",
+  "package": "v0",
+  "modules": "main sdk",
+  "romfs_marker": "sound/sm/showtime/n_virus_very_hard.cwv",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

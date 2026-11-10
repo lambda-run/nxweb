@@ -1,0 +1,56 @@
+{
+ "source": "nxnative dm/games/0100698009C6E000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100698009C6E000",
+ "name": "Blasphemous",
+ "builds": [
+  {
+   "version": 524288,
+   "tag": "v524288",
+   "display": "1.0.8",
+   "modules": {
+    "main": "ab67af56a9d98348817e8b12c5af3ea1",
+    "subsdk0": "a4b620d9c140a4ac6e010251afd5cb11",
+    "sdk": "86a2afd863c99062d666226a9e7aa764"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100698009C6E000",
+  "program_id": "0100698009C6E000",
+  "name": "Blasphemous",
+  "package": "v524288",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/resources.assets.resS",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x7000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

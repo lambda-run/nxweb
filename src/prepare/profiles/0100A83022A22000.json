@@ -1,0 +1,69 @@
+{
+ "source": "nxnative dm/games/0100A83022A22000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100A83022A22000",
+ "name": "Absolum",
+ "builds": [
+  {
+   "version": 393216,
+   "tag": "v393216",
+   "display": "1.1.1",
+   "modules": {
+    "main": "916f5b8d61baa16d0939404ea047e129",
+    "subsdk2": "ca1378cdd05a63438ef12ee7fbd5ca9c",
+    "sdk": "f118ae1c2e7728471aaf1a0d58484968"
+   }
+  },
+  {
+   "version": 458752,
+   "tag": "v458752",
+   "display": "1.1.2",
+   "modules": {
+    "main": "f2d7d0e177d1e60c33678a9a57ba2056",
+    "subsdk2": "ca1378cdd05a63438ef12ee7fbd5ca9c",
+    "sdk": "f118ae1c2e7728471aaf1a0d58484968"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100A83022A22000",
+  "program_id": "0100A83022A22000",
+  "name": "Absolum",
+  "package": "v458752",
+  "modules": "main subsdk2 sdk",
+  "romfs_marker": "data/textures",
+  "app_pool": "0xCD500000",
+  "game_env": "DOTNET_GCRegionRange=60000000"
+ },
+ "needs": [
+  {
+   "key": "stdalloc_cap",
+   "value": "0xa0000000",
+   "what": "The cap on nn::mem::StandardAllocator's address space is not applied: the game may run out of address space."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

@@ -3,7 +3,10 @@
 // everything but the drawing). Shared by run.mts and web/worker.ts; also used by the page (web/) for its demo.
 import { Runtime, type RuntimeOptions, type RunResult } from "../../src/glue/rt_runtime.ts";
 import { RtGfx } from "../../src/glue/rt_gfx.ts";
-import { RtInput, registerVi, registerHid, BTN } from "../../src/glue/rt_hle.ts";
+import { RtInput, BTN } from "../../src/glue/rt_input.ts";
+import { attachHle } from "../../src/glue/hle_rt.ts";
+import type { HleHost } from "../../src/glue/hle_host.ts";
+import type { HleFront } from "../../src/glue/hle_rt.ts";
 import type { ShaderInfo } from "../../src/glue/gfx_host.ts";
 import type { Env, CaseResult } from "./cases.ts";
 import { RtShaders, type ShaderOptions } from "../../src/glue/rt_shaders.ts";
@@ -37,21 +40,23 @@ export async function demoShaders(): Promise<[string, ShaderInfo][]> {
   return keys.map(([n, k]) => [k, SHADERS[n]]);
 }
 
-export interface Gpu { device: any; canvas?: any; nextFrame?: () => Promise<unknown> }
-export interface GfxProcess { rt: Runtime; gfx: RtGfx; input: RtInput; frameNs: bigint[]; shaders?: RtShaders }
-export interface GfxBoot extends RuntimeOptions { frames: number; script?: string; gpu?: Gpu; raf?: boolean; unpaced?: boolean; nullReplayer?: boolean; shaders?: ShaderOptions; noDemoShaders?: boolean; onPresent?: (f: number, p: GfxProcess) => void }
-// A process with graphics, nn::vi, nn::hid and the demo's shader library attached
+export interface Gpu { device: any; canvas?: any; nextFrame?: () => Promise<unknown>; requestDevice?: () => Promise<any>; adapter?: any }
+export interface GfxProcess { rt: Runtime; gfx: RtGfx; hle: HleHost; input: RtInput; frameNs: bigint[]; shaders?: RtShaders }
+export interface GfxBoot extends RuntimeOptions { frames: number; script?: string; gpu?: Gpu; raf?: boolean; unpaced?: boolean; nullReplayer?: boolean; shaders?: ShaderOptions; noDemoShaders?: boolean; onPresent?: (f: number, p: GfxProcess) => void;
+  holdFences?: () => boolean; hleConfig?: Parameters<HleHost["config"]>[0]; front?: HleFront; setup?: (p: GfxProcess) => void }
+// A process with graphics, the take-over table (nn::vi, nn::hid and the rest; docked) and the demo's shader library attached
 export async function bootGfx(env: Env, files: { name: string; bytes: Uint8Array }[], o: GfxBoot): Promise<GfxProcess> {
-  const rt = new Runtime(env.mods, o), input = new RtInput(), frameNs: bigint[] = [];
+  const rt = new Runtime(env.mods, o), frameNs: bigint[] = [];
   let p!: GfxProcess;
   const gpu = o.nullReplayer ? undefined : o.gpu;
-  const gfx = new RtGfx(rt, env.mods.gfx!, { device: gpu?.device, canvas: gpu?.canvas, nextFrame: o.raf ? gpu?.nextFrame : undefined, unpaced: o.unpaced,
+  const gfx = new RtGfx(rt, env.mods.gfx!, { device: gpu?.device, canvas: gpu?.canvas, nextFrame: o.raf ? gpu?.nextFrame : undefined, unpaced: o.unpaced, requestDevice: gpu?.requestDevice, holdFences: o.holdFences,
     onPresent: f => { frameNs.push(rt.guestNs()); o.onPresent?.(f, p); } });
-  p = { rt, gfx, input, frameNs, shaders: o.shaders ? new RtShaders(gfx, o.shaders) : undefined };
+  const hle = attachHle(rt, env.mods.hle!, { config: { opmode: 1, ...o.hleConfig }, gfx, front: o.front }), input = new RtInput(hle);
+  gfx.onPresentQueued(f => input.frame(f));   // scripted steps are in frames
+  p = { rt, gfx, hle, input, frameNs, shaders: o.shaders ? new RtShaders(gfx, o.shaders) : undefined };
   if (!o.noDemoShaders) for (const [key, info] of await demoShaders()) if (gfx.registerShader(key, info) < 0) throw new Error("registerShader failed");
-  registerVi(rt); registerHid(rt, input);
-  input.frame = () => gfx.stats.frames;
   if (o.script) input.script(o.script, l => rt.log(l));
+  o.setup?.(p);
   rt.register({ name: "demo_frames", fn: () => o.frames });
   if (!rt.loadNso(files)) throw new Error("load failed: " + rt.red.join(" | "));
   return p;
@@ -112,7 +117,7 @@ export function gfxCases(env: Env, gpu: Gpu | undefined, shots: Shot[]): GfxCase
     const q = await run("cube", { frames: 12, script: "3:Right~4,8:L100/0~2,9:A" });
     const want = BTN.Right | BTN.A | 1 << 18;
     eq(q.rt.stdout(), `cube: 12 frames, 12 pad reads, buttons seen 0x${want.toString(16)}\n`, "stdout");
-    eq(q.input.reads, 12, "pad reads");
+    ok(q.input.publishes >= 6, "snapshots published to the table: " + q.input.publishes);
     return [q.rt.logs.filter(l => l.startsWith("hid ")).join("; ")];
   });
   test(`gfx two threads (${where}): one renders, one updates the uniforms under a mutex, an event per frame; identical across runs and budgets`, async () => {

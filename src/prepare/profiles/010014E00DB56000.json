@@ -1,0 +1,54 @@
+{
+ "source": "nxnative dm/games/010014E00DB56000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010014E00DB56000",
+ "name": "Digimon Story Cyber Sleuth: Complete Edition",
+ "builds": [
+  {
+   "version": 196608,
+   "tag": "v196608",
+   "display": "1.0.3",
+   "modules": {
+    "main": "bedae701dd8565cdc494ca8dc3c840e8",
+    "subsdk1": "31ed558beb51f9e273a569dab4f7db82",
+    "sdk": "e29be8ad6778527aa248310d0c71a8a5"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010014E00DB56000",
+  "program_id": "010014E00DB56000",
+  "name": "Digimon Story Cyber Sleuth: Complete Edition",
+  "package": "v196608",
+  "modules": "main subsdk1 sdk",
+  "romfs_marker": "DSDB.nx64.mvgl",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x4a00000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

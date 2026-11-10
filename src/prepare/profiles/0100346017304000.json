@@ -1,0 +1,77 @@
+{
+ "source": "nxnative dm/games/0100346017304000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100346017304000",
+ "name": "Taiko Risshiden V DX",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.1.1",
+   "modules": {
+    "main": "f5ab74b9d45f955de2dc91da8e039c57",
+    "subsdk0": "434729719bfacada3bd0ed4842a10e55",
+    "sdk": "dfa12b7019fffbe725fa4b4f1335988c"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100346017304000",
+  "program_id": "0100346017304000",
+  "name": "Taiko Risshiden V DX",
+  "op_mode": "handheld",
+  "pad_layout": "touch",
+  "package": "v131072",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "TDATA/BUSTUP.G1T",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "f5ab74b9d45f955de2dc91da8e039c57": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 4472748,
+     "orig": "087c149be9e301b2291191f2087dc99b14fd45d3",
+     "new": "087c149b890780520809c99a9f060071f403889a",
+     "why": "frame limiter threshold: N × tick frequency / 60 (umulh by 1/60 → udiv by 60), then 0 when N = 1 (cmp w20, #1; csel x20, xzr, x8, eq): one vsync a frame is the present pacing's; N = 2 keeps the 2 ms rounds"
+    }
+   ]
+  }
+ },
+ "unconverted": [
+  {
+   "kind": "MATCH_CUTS",
+   "module": "main",
+   "rules": 2,
+   "names": [
+    "frame limiter threshold: 0 when N = 1"
+   ]
+  }
+ ],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

@@ -1,0 +1,65 @@
+{
+ "source": "nxnative dm/games/0100B7C00933A000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100B7C00933A000",
+ "name": "Pikmin 4",
+ "builds": [
+  {
+   "version": 262144,
+   "tag": "v262144",
+   "display": "1.1.1",
+   "modules": {
+    "main": "060f827bd2b38703e9ea11e3210d89bc",
+    "subsdk0": "38933ad31c05c6e648f8c5c540bfc5db",
+    "sdk": "30a1e87b52f5a2ac9879685cbfb93d7c"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100B7C00933A000",
+  "program_id": "0100B7C00933A000",
+  "name": "Pikmin 4",
+  "package": "v262144",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Carrot4/Content/Paks/Carrot4-Switch.ucas",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x5000000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "fps_max",
+   "value": "120",
+   "what": "The 120 fps option is not available."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

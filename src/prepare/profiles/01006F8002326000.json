@@ -1,0 +1,77 @@
+{
+ "source": "nxnative dm/games/01006F8002326000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01006F8002326000",
+ "name": "Animal Crossing: New Horizons",
+ "builds": [
+  {
+   "version": 2228224,
+   "tag": "v2228224",
+   "display": "3.0.3",
+   "modules": {
+    "main": "ff1d1c05670db6021c85b624a710b963",
+    "subsdk0": "6c6ceace7be94107a8bd440bc2d60704",
+    "sdk": "a226048605d3597f90cb1067d141cd36"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01006F8002326000",
+  "program_id": "01006F8002326000",
+  "name": "Animal Crossing: New Horizons",
+  "pad_layout": "full",
+  "package": "v2228224",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Movie/OpeningMovie.webm",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x7a00000"
+ },
+ "needs": [
+  {
+   "key": "render_cond",
+   "value": "on",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
+  },
+  {
+   "key": "screen_aspect",
+   "value": "on",
+   "what": "Only 16:9 output: the game's taller-screen mode is not available."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [
+  {
+   "kind": "FRAME_STEP",
+   "build": "ff1d1c05670db6021c85b624a710b963",
+   "sites": 14,
+   "writes": 14,
+   "stub_words": 373,
+   "capabilities": [],
+   "render_scale": false,
+   "note": "recorded"
+  }
+ ],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

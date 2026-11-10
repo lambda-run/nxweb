@@ -143,6 +143,8 @@ export function kernel_clock_freeze(reason: u32, on: i32): void {
   kUnlock();
 }
 export function kernel_clock_reasons(): u32 { return clockReasons(); }
+// The host time (kernel_tick's scale) at which the guest clock reaches a guest time; u64 max while the clock stands
+export function kernel_host_time_of(guestDeadline: u64): u64 { return hostTimeOf(guestDeadline); }
 export function kernel_guest_ns(): u64 { kLock(); const v = guestNs(); kUnlock(); return v; }
 // The system counter, for the translator's `mrs cntpct_el0`. While kernel_clock_reasons() has bit 1 (background) a
 // guest read must wait: make the thread yield instead of reading.

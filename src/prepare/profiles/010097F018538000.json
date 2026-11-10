@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/010097F018538000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010097F018538000",
+ "name": "DAVE THE DIVER",
+ "builds": [
+  {
+   "version": 3080192,
+   "tag": "v3080192",
+   "display": "v1.0.6.1267",
+   "modules": {
+    "main": "f74b633e480e4e161f80a7c16a467f2a",
+    "subsdk0": "1e59dde5383b9cfb60f3e67e92add78b",
+    "sdk": "a5813da32d12ef17099152ca79c9b24d"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010097F018538000",
+  "program_id": "010097F018538000",
+  "name": "DAVE THE DIVER",
+  "package": "v3080192",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/resources.assets",
+  "sys_resource": "0x1000000",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

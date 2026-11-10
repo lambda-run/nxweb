@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/0100D5B026844000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100D5B026844000",
+ "name": "Silver Pines",
+ "builds": [
+  {
+   "version": 0,
+   "tag": "v0",
+   "display": "1.0.0",
+   "modules": {
+    "main": "91046036f8850de3ec306056fcc6ba12",
+    "subsdk0": "92a5f1a1e8d50e4d05b2212f564bf226",
+    "sdk": "ab3835b2a37b1916e296f27e82dd4e36"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100D5B026844000",
+  "program_id": "0100D5B026844000",
+  "name": "Silver Pines",
+  "package": "v0",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/StreamingAssets/Master.assets.bank",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x1000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

@@ -10,7 +10,7 @@
 // and libc by their mangled names); test/hle drives the same HleHost through a fake outside.
 import type { Runtime, HostCpu, HostResult } from "./rt_runtime.ts";
 import { range } from "./rt_layout.ts";
-import { HleHost, type HleEnv, type HleEntry, type HleResult, type TextRequest } from "./hle_host.ts";
+import { HleHost, type HleEnv, type HleEntry, type HleResult, type TextRequest, type VibrationState } from "./hle_host.ts";
 
 // The front end's side: everything is optional; without it the take-overs answer as nxnative does windowless
 export interface HleFront {
@@ -25,13 +25,30 @@ export interface HleFront {
   timeZone?(posixSeconds: bigint): { offset: number; dst: boolean; name: string };
   realNs?(): bigint; monoNs?(): bigint;
   hostAlloc?(size: bigint): bigint;                           // guest-addressable host memory (font engine work buffers)
+  // The controller applet's prompt for too few players: show it and call answer(true = enough players and OK,
+  // false = closed) then or later. Returns false when there is no window (the applet answers as the player closing it)
+  ctrlPrompt?(min: number, max: number, answer: (ok: boolean) => void): boolean;
+  vibration?(state: VibrationState): void;                    // a player's motors changed (the Gamepad API's vibrationActuator)
+  joyMouseWanted?(on: boolean): void;
 }
-export interface HleRtOptions { front?: HleFront; config?: Parameters<HleHost["config"]>[0]; scratch?: number }
+// What the graphics glue offers nn::vi (RtGfx implements it): the layer's shape for the present, the frame count and
+// the present queue, and a report of every present the game queues
+export interface HleGfx {
+  viLayer(w: number, h: number): void; viCrop(x: number, y: number, w: number, h: number): void;
+  viFrameCount(): bigint; viPresentProgress(): { queued: bigint; done: bigint }; viPresentedNs(ticket: bigint): bigint;
+  onPresentQueued(fn: (frames: number) => void): void;
+}
+export interface HleRtOptions { front?: HleFront; config?: Parameters<HleHost["config"]>[0]; scratch?: number; gfx?: HleGfx }
 
 export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptions = {}): HleHost {
   const front = o.front ?? {};
   let cur: HostCpu | null = null;   // the cpu of the take-over that is running (guest calls go to its thread)
   let host!: HleHost;
+  const once = new Set<string>(), redOnce = (key: string, line: string) => { if (!once.has(key)) { once.add(key); rt.log("[RED] " + line); } };
+  // nn::ro and nn::jit: the module's token is the image's guest base
+  const roHandle = new Map<bigint, number>();
+  const ticks: (() => boolean)[] = [];   // vsync events handed out: ticked at every present when graphics are attached
+  const gfx = o.gfx;
   const jsZone = (t: bigint) => {
     const d = new Date(Number(t) * 1000), off = -d.getTimezoneOffset() * 60;
     const jan = -new Date(d.getFullYear(), 0, 1).getTimezoneOffset() * 60, jul = -new Date(d.getFullYear(), 6, 1).getTimezoneOffset() * 60;
@@ -55,9 +72,11 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     eventClear: h => rt.k.kernel_event_clear(h) !== 0,
     eventDupReadable: h => rt.k.kernel_event_dup_readable(h) >>> 0,
     guestSym,
+    // on the thread of the take-over that is running, or of whatever host function runs now (another area binding a
+    // SystemEvent through this table: audio); more than eight arguments go on the guest stack (Runtime.guestCall)
     guestCall: (fn, args) => {
-      if (!cur) { rt.log("[RED] hle: a guest call outside a take-over (no guest thread to run it on): answered 0"); return 0n; }
-      return cur.call(fn, ...args);
+      if (!cur && !rt.inHostCall) { rt.log("[RED] hle: a guest call outside a host function (no guest thread to run it on): answered 0"); return 0n; }
+      return rt.guestCall(fn, args);
     },
     moduleOf: a => rt.modules.findIndex(m => a >= BigInt(m.base) && a < BigInt(m.base + m.imageSize)),
     stubAddr: (id, name) => BigInt(rt.lateStub(name, cpu => invoke(cpu, id))),
@@ -67,7 +86,11 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     webOpen: (p, c, h, d, pu) => front.webOpen?.(p, c, h, d, pu) ?? 2,
     webShow: () => front.webShow?.(), webSend: m => front.webSend?.(m), webClose: () => front.webClose?.(),
     inputHold: on => front.inputHold?.(on),
-    vsyncEvent: binding => { if (front.vsync) front.vsync(() => host.vsyncTick(binding)); else rt.log("[RED] hle: a vsync event was handed out and nothing ticks it (HleFront.vsync)"); },
+    vsyncEvent: binding => {
+      if (front.vsync) front.vsync(() => host.vsyncTick(binding));
+      else if (gfx) ticks.push(() => host.vsyncTick(binding));
+      else rt.log("[RED] hle: a vsync event was handed out and nothing ticks it (HleFront.vsync, or graphics attached)");
+    },
     connectedNpad: () => front.connectedNpad?.() ?? 0,
     nativeImageBlank: (w, h) => front.nativeImageBlank?.(w, h) ?? 0, nativeImageBlankFree: h => front.nativeImageBlankFree?.(h),
     exitRequest: (reason, value, bytes) => {
@@ -77,10 +100,48 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
         rt.requestExit(reason === "abort" ? 1 : 0); host.exitDone();
       }
     },
+    // ---- controllers ----
+    stackArg: i => { const sp = Number(rt.core.sp.value & 0xFFFF_FFFFn); return rt.dv().getBigUint64(sp + 8 * i, true); },
+    ctrlPrompt: front.ctrlPrompt ? (min, max) => front.ctrlPrompt!(min, max, ok => { host.ctrlAnswer(ok); rt.requestWake(); }) : undefined,
+    vibration: front.vibration ? s => front.vibration!(s) : undefined,
+    joyMouseWanted: on => front.joyMouseWanted?.(on),
+    // ---- nn::vi's present side: the graphics glue ----
+    viLayer: gfx ? (w, h) => gfx.viLayer(w, h) : undefined,
+    viCrop: gfx ? (x, y, w, h) => gfx.viCrop(x, y, w, h) : undefined,
+    viFrameCount: gfx ? () => gfx.viFrameCount() : undefined,
+    viPresentProgress: gfx ? () => gfx.viPresentProgress() : undefined,
+    viPresentedNs: gfx ? t => gfx.viPresentedNs(t) : undefined,
+    // ---- nn::ro, nn::jit: the loader and the translator ----
+    roLoad: (image, size, _sha, alone) => {
+      const a = Number(image);
+      if (alone) redOnce("alone", "ro: a module to be linked against itself only (a JIT plugin) is relocated against the loaded modules: the loader has no such mode yet");
+      try {
+        const m = rt.loadModule(`nro@${a.toString(16)}`, rt.u8().slice(a, a + size));
+        roHandle.set(BigInt(m.base), m.handle);
+        return BigInt(m.base);
+      } catch (e) { rt.log(`[RED] ro: ${(e instanceof Error ? e.message : String(e)).replace(/^\[RED\] /, "")}`); return 0n; }
+    },
+    roCalls: (token, kind) => {
+      const h = roHandle.get(token); if (h === undefined) return [];
+      const m = rt.ld.info(h);
+      // as RoModule::CallInit / CallFini: DT_INIT (which in an SDK module runs its init_array), else the array itself
+      return (kind === "init" ? (m.init ? [m.init] : m.initArray.filter(f => f)) : (m.fini ? [m.fini] : [...m.finiArray].reverse().filter(f => f))).map(BigInt);
+    },
+    roActivate: token => { const h = roHandle.get(token); if (h !== undefined) rt.activateModule(h); },
+    roUnload: token => { const h = roHandle.get(token); if (h !== undefined) { rt.unloadModule(h); roHandle.delete(token); } },
+    roLookupIn: (token, name) => { const h = roHandle.get(token); return h === undefined ? 0n : BigInt(rt.ld.lookupIn(h, name) ?? 0); },
+    jitMemory: (rxSize, roSize) => rt.jitAlloc(Number(rxSize), Number(roSize)),
+    jitCodeWritten: (rx, off, size) => rt.jitCodeWritten(Number(rx), Number(off), Number(size)),
+    jitFree: (rx, rxSize, ro, roSize) => rt.jitFree(Number(rx), Number(rxSize), Number(ro), Number(roSize)),
   };
   host = new HleHost(module, env, rt.memory);
   if (o.config) host.config(o.config);
   rt.onHandleClosed(h => host.handleClosed(h));
+  if (gfx) gfx.onPresentQueued(frames => {
+    host.viFrameQueued(BigInt(frames));
+    for (let i = ticks.length - 1; i >= 0; i--) if (!ticks[i]()) ticks.splice(i, 1);
+  });
+  if (front.vibration) host.haptics({ output: true });
   rt.expectOutsideEvents();   // the front end's reports (focus, operation mode, an answer) signal events the guest waits on
   const st = range("hle static");
   if (rt.r.rt_static_check(97, BigInt(st.lo), BigInt(st.hi), BigInt(host.x.hle_static_end() >>> 0))) throw new Error("runtime: the hle module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");

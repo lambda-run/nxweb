@@ -13,7 +13,7 @@ stateDiagram-v2
     Ready --> None: Destroy
 ```
 
-Machine id 21. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 22. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

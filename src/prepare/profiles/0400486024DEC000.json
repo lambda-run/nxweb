@@ -1,0 +1,91 @@
+{
+ "source": "nxnative dm/games/0400486024DEC000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0400486024DEC000",
+ "name": "The Legend of Zelda: Ocarina of Time",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "v131072",
+   "modules": {
+    "main": "e0f3ccfaf50065ae4ea01eb5aeb13b1a",
+    "subsdk0": "b0110087a7b339ef74588d3bd0b4dd5d",
+    "sdk": "1643a838814f9c10c696f930ed681e7f"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0400486024DEC000",
+  "program_id": "0400486024DEC000",
+  "name": "The Legend of Zelda: Ocarina of Time",
+  "pad_layout": "full",
+  "package": "v131072",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Pack/ZsDic.pack.zs",
+  "mem_map_limit": "on",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x3000000"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "render_cond",
+   "value": "on",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
+  },
+  {
+   "key": "gpu_timestamps",
+   "value": "segment",
+   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
+  },
+  {
+   "key": "tex_flush_upload",
+   "value": "on",
+   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
+  },
+  {
+   "key": "tex_dirty_upload",
+   "value": "on",
+   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x200000000 alias 0x100000000",
+   "what": "nxnative gives this game a 8.00 GB heap region (nxweb: 1.50 GB) and a 4.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note",
+  "draw_barriers"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [
+  {
+   "kind": "MATCH_FRAME_STEP",
+   "module": "main",
+   "rules": 1,
+   "names": [
+    "frame ratio from the host's step"
+   ]
+  }
+ ],
+ "address_space": {
+  "heap_region": 8589934592,
+  "alias_region": 4294967296,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

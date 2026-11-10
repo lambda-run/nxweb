@@ -29,12 +29,34 @@
   dt { color: var(--dim); } dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   #log { height: 260px; overflow: auto; font: 12px/1.45 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
   #log .red { color: var(--red); } #log .out { color: #b9e4a0; }
+  #log.onlyred span:not(.red) { display: none; } #log span.hide { display: none; }
   small { color: var(--dim); }
+  h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 3px 10px 3px 0; vertical-align: top; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  th { color: var(--dim); font-weight: 500; white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr.main td:first-child { font-weight: 600; }
+  tr.idle td { color: var(--dim); }
+  .mono { font: 12px/1.45 ui-monospace, monospace; }
+  input[type=text] { background: #11151c; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 0; flex: 1 1 160px; }
+  #redcount { font-weight: 600; padding: 2px 10px; border-radius: 999px; background: #263044; }
+  #redcount[data-red="1"] { background: #6b1f25; }
+  #capture pre, #reporttext { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
+  #reporttext { width: 100%; height: 180px; background: #11151c; color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+  #captureimages { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  #captureimages figure { margin: 0; } #captureimages img { max-width: 240px; height: auto; display: block; border: 1px solid var(--line); }
+  #captureimages figcaption { color: var(--dim); font-size: 12px; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; max-width: 420px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .55); }
+  details > summary { cursor: pointer; color: var(--dim); }
 </style>
 <main>
   <header><h1>nxweb</h1><span>Switch code modules translated to WebAssembly, NVN on WebGPU. You supply the modules; nothing from any game is here.</span></header>
   <div class="panel row">
     <button id="demo">Run the built-in demo (spinning cube)</button>
+    <button id="demotone">Run the audio demo (a 440 Hz tone)</button>
     <label class="file">NSO files…<input id="files" type="file" multiple></label>
     <label class="file">Shader library…<input id="shaders" type="file" accept=".nxsl,.json"></label>
     <label class="file">RomFS image…<input id="rom" type="file" accept=".romfs,.img,.istorage"></label>
@@ -45,9 +67,10 @@
     <span style="flex:1"></span>
     <button id="pause" disabled>Pause</button><button id="resume" disabled>Resume</button><button id="stop" disabled>Stop</button>
   </div>
+  <div class="panel row"><label><input id="guard" type="checkbox"> Host-area guard for the next run</label><small id="guardnote"></small></div>
   <div id="stage">
     <div class="panel"><canvas id="canvas" width="480" height="270"></canvas>
-      <small>Pad: arrow keys or WASD = left stick, IJKL = right stick, Z/X/C/V = A/B/X/Y, Enter = Plus; a connected gamepad is read through the Gamepad API.</small></div>
+      <small>Pad: arrow keys or WASD = left stick, IJKL = right stick, Z/X/C/V = A/B/X/Y, Enter = Plus, Backspace = Minus, Q/E = L/R. Every controller the Gamepad API reports is a player of its own (the first one joins the keyboard as player 1); vibration goes to the player's controller. F9 captures a frame.</small></div>
     <div class="panel"><dl>
       <dt>Frames per second</dt><dd id="fps">–</dd>
       <dt>Guest instructions per second</dt><dd id="ips">–</dd>
@@ -56,12 +79,29 @@
       <dt>Threads waiting outside the guest</dt><dd id="waits">–</dd>
       <dt>Per frame</dt><dd id="split">–</dd>
       <dt>Input</dt><dd id="pad">–</dd>
-      <dt>Modules</dt><dd id="mods">–</dd>
+      <dt>Vibration</dt><dd id="rumble">–</dd>
+      <dt>Options</dt><dd id="options">–</dd>
       <dt>Graphics</dt><dd id="gpu">–</dd>
       <dt>Code, shaders, files</dt><dd id="more">–</dd>
     </dl></div>
   </div>
-  <div class="panel"><pre id="log"></pre></div>
+  <div class="panel"><h2>Machines <small>the kit's state machines as this process has stepped them; the state now for the ones the page can ask</small></h2>
+    <div class="scroll"><table id="machines"><thead><tr><th>Machine</th><th>State now</th><th>Transitions taken</th><th>Newest step</th><th>Stepped by</th></tr></thead><tbody></tbody></table></div>
+    <details><summary id="idlemachines">machines not stepped yet</summary><div id="idlelist" class="mono"></div></details></div>
+  <div class="panel"><h2>Modules</h2>
+    <div class="scroll"><table id="modtable"><thead><tr><th>Module</th><th>Build id</th><th>Base</th><th>Image</th><th>Text / read-only / data / bss</th><th>Unresolved imports</th></tr></thead><tbody></tbody></table></div>
+    <div id="takeovers" style="margin-top:8px"></div>
+    <details><summary>take-overs this program refers to</summary><div id="hitnames" class="mono"></div></details></div>
+  <div class="panel" id="capture"><div class="row"><h2 style="margin:0">Frame capture</h2><button id="capturebtn">Capture a frame (F9)</button><small>the host stream of one frame as text, and the render targets of each pass</small>
+      <span style="flex:1"></span><details><summary>tests</summary><button id="losedevice">Destroy the GPU device now (the replayer asks for a new one)</button></details></div>
+    <div id="captureimages"></div><pre id="capturetext" class="mono"></pre></div>
+  <div class="panel"><div class="row"><h2 style="margin:0">Log</h2><span id="redcount" data-red="0">0 red</span>
+      <label><input id="onlyred" type="checkbox"> red lines only</label><input id="logfilter" type="text" placeholder="filter the log (text)">
+      <button id="copyreport">Copy report</button><small id="reportnote"></small></div>
+    <pre id="log"></pre>
+    <details id="reportbox"><summary>the report (one text block: machine states, modules, counters, the adapter, the options key, the last 200 log lines; nothing from guest memory)</summary><textarea id="reporttext" class="mono" readonly></textarea></details></div>
+  <dialog id="ctrlprompt"><h2>Controllers</h2><p id="ctrltext"></p><p><small>Connect controllers and press a button on each (the keyboard is player 1). OK when enough players have joined.</small></p>
+    <div class="row"><button id="ctrlok">OK</button><button id="ctrlclose">Close</button></div></dialog>
 </main>
 <script src="main.js"></script>
 </html>

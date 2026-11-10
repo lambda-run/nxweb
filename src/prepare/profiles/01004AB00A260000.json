@@ -1,0 +1,74 @@
+{
+ "source": "nxnative dm/games/01004AB00A260000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01004AB00A260000",
+ "name": "DARK SOULS: REMASTERED",
+ "builds": [
+  {
+   "version": 196608,
+   "tag": "v196608",
+   "display": "1.0.3",
+   "modules": {
+    "main": "df3766a2bb651a3e822828abf10b6f7b",
+    "subsdk0": "73f98f5f7a34d4c520bda7c1a19cd9bd",
+    "sdk": "d95547528dcd684e2813ec83d338a472"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01004AB00A260000",
+  "program_id": "01004AB00A260000",
+  "name": "DARK SOULS: REMASTERED",
+  "pad_layout": "full",
+  "package": "v196608",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "dvdbnd0.bdt",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x6e00000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "df3766a2bb651a3e822828abf10b6f7b": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 7368612,
+     "orig": "e10f1f32",
+     "new": "81078052",
+     "why": "frame limiter target: mov w1,#30 → mov w1,#60 (main+0x707090 sleeps out 1000 / fps ms since the last frame)"
+    },
+    {
+     "off": 6715652,
+     "orig": "08ed46bd",
+     "new": "083548bd",
+     "why": "frame update step: ldr s8,[x8,#0x6ec] (1/30) → ldr s8,[x8,#0x834] (1/60), passed to main+0x6a337c"
+    }
+   ]
+  }
+ },
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

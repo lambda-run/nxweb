@@ -1,0 +1,61 @@
+{
+ "source": "nxnative dm/games/0100CC80140F8000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100CC80140F8000",
+ "name": "TRIANGLE STRATEGY",
+ "builds": [
+  {
+   "version": 262144,
+   "tag": "v262144",
+   "display": "1.1.1",
+   "modules": {
+    "main": "9cb4490e8a718bae392c59b0368d7c4e",
+    "subsdk0": "dade22cfe6f24efe62d76409522c850b",
+    "sdk": "5bcf525f24eb28658a8d67ac27800d9b"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100CC80140F8000",
+  "program_id": "0100CC80140F8000",
+  "name": "TRIANGLE STRATEGY",
+  "package": "v262144",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Newera/Content/Paks/Newera-Switch.pak",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x5000000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0xc8000000",
+   "what": "nxnative gives this game a 3.12 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "depth_mode",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 3355443200,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

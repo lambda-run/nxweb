@@ -1,21 +1,54 @@
-// The page (main thread): controls, the canvas handed to the Worker, input sources (keyboard, Gamepad API), and the
-// display of what the Worker reports. The process state shown is the `process` kit machine's state as the Worker
-// reads it from the runtime core; nothing here parses log text.
+// The page (main thread): controls, the canvas handed to the Worker, input sources (keyboard, every controller of
+// the Gamepad API as a source of its own), the page side of the audio device (an AudioContext exists only here),
+// the controller applet's prompt, vibration, and the display of what the Worker reports. The process state shown is
+// the `process` kit machine's state as the Worker reads it from the runtime core, the tables are the machines' and the
+// loader's; nothing here parses log text.
+import { AudioDeviceMain } from "../src/glue/audio_device_main.ts";
+
 const $ = (id: string) => document.getElementById(id)!;
 const worker = new Worker("worker.js");
 const canvas = ($("canvas") as HTMLCanvasElement).transferControlToOffscreen();
 worker.postMessage({ type: "init", canvas }, [canvas]);
+// The audio device's page side: the context is made when a process first uses nn::audio and runs from the first user
+// gesture on (AudioDeviceMain listens for pointerdown, keydown and touchend itself; the click that starts a demo is one)
+const audio = new AudioDeviceMain((m, t) => worker.postMessage(m, t ?? []));
 
+// ---- the log: every line, red ones counted, a filter ----
 const log = $("log");
+let redCount = 0, filter = "";
 function addLog(lines: { text: string; kind: string }[]) {
   const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
-  for (const l of lines) { const s = document.createElement("span"); if (l.kind) s.className = l.kind; s.textContent = l.text + "\n"; log.append(s); }
+  for (const l of lines) {
+    const s = document.createElement("span"); if (l.kind) s.className = l.kind; s.textContent = l.text + "\n";
+    if (filter && !l.text.toLowerCase().includes(filter)) s.classList.add("hide");
+    log.append(s);
+  }
   while (log.childNodes.length > 2000) log.firstChild!.remove();
   if (atEnd) log.scrollTop = log.scrollHeight;
 }
+($("onlyred") as HTMLInputElement).onchange = e => { log.classList.toggle("onlyred", (e.target as HTMLInputElement).checked); log.scrollTop = log.scrollHeight; };
+($("logfilter") as HTMLInputElement).oninput = e => {
+  filter = (e.target as HTMLInputElement).value.trim().toLowerCase();
+  for (const s of Array.from(log.children)) s.classList.toggle("hide", !!filter && !(s.textContent ?? "").toLowerCase().includes(filter));
+};
+
 const fmt = (v: number) => v >= 1e6 ? (v / 1e6).toFixed(2) + " M" : v >= 1e3 ? (v / 1e3).toFixed(1) + " k" : v.toFixed(0);
+const hex = (v: number) => "0x" + v.toString(16);
+const MAIN = ["process", "oe_focus", "audio_out", "gfx_device", "guest_clock", "hle_exit", "input_hold", "ctrl_prompt", "pad_slot"];
+function cells(tr: HTMLTableRowElement, values: string[], numeric: number[] = []) {
+  values.forEach((v, i) => { const td = tr.cells[i] ?? tr.insertCell(); if (td.textContent !== v) td.textContent = v; if (numeric.includes(i)) td.className = "num"; });
+  while (tr.cells.length > values.length) tr.deleteCell(-1);
+}
+function rows(table: HTMLTableElement, n: number): HTMLTableRowElement[] {
+  const body = table.tBodies[0];
+  while (body.rows.length < n) body.insertRow();
+  while (body.rows.length > n) body.deleteRow(-1);
+  return Array.from(body.rows);
+}
+let guardShown = "";
 worker.onmessage = ev => {
   const m = ev.data;
+  if (audio.handle(m)) return;
   if (m.type === "log") addLog(m.lines);
   else if (m.type === "status") {
     const st = $("state");
@@ -30,15 +63,93 @@ worker.onmessage = ev => {
     $("frames").textContent = `${m.frames}, ${m.nvnCalls}`;
     $("waits").textContent = String(m.waiting);
     $("split").textContent = m.split ?? "–";
-    $("mods").textContent = m.modules ?? "–";
     $("gpu").textContent = m.gpu ?? "–";
     $("more").textContent = m.more ?? "–";
+    $("options").textContent = m.options || "–";
+    redCount = m.redTotal ?? 0;
+    const rc = $("redcount"); rc.textContent = `${redCount} red`; rc.dataset.red = redCount ? "1" : "0";
+    // the guard: what the next run gets, and why
+    const g = m.guard, key = JSON.stringify(g);
+    if (g && key !== guardShown) {
+      guardShown = key;
+      ($("guard") as HTMLInputElement).checked = g.next;
+      $("guardnote").textContent = (g.auto ? "Turned on because the last run ended in a fault: a guest access below 0x8000000 (a null or host-area pointer) is then a fault at the exact instruction. " : "") +
+        (g.byDefault ? "On by default; it costs a few percent of run time." : "Off by default (it costs a few percent of run time); it turns itself on for the run after a fault.") + ` This run: ${g.now ? "on" : "off"}.`;
+    }
+    // modules: build id, sizes, unresolved imports by name
+    const mods: any[] = m.modules ?? [];
+    rows($("modtable") as HTMLTableElement, Math.max(1, mods.length)).forEach((tr, i) => {
+      const x = mods[i];
+      cells(tr, x ? [x.name, x.buildId, hex(x.base), hex(x.imageSize), `${hex(x.text)} / ${hex(x.ro)} / ${hex(x.data)} / ${hex(x.bss)}`, x.unresolved.length ? `${x.unresolved.length}: ${x.unresolved.join(", ")}` : "none"] : ["–", "", "", "", "", ""]);
+    });
+    const tk = m.takeovers;
+    $("takeovers").textContent = tk ? `Take-overs: ${tk.forcedHit} forced names hit by this program, ${tk.forcedNotReferenced} not referenced; ${tk.weakUsed} weak ones fill an import no module defines; ${tk.unresolved} imports unresolved.` : "";
+    const hits = tk ? tk.hitNames.join("\n") : "";
+    if ($("hitnames").textContent !== hits) $("hitnames").textContent = hits;
+    // machines: the main ones first, then the others that were stepped; the rest by name
+    if (m.machines) {
+      const all: any[] = m.machines, active = all.filter(r => r.live || r.steps || r.taken).sort((a, b) => (MAIN.indexOf(b.name) >= 0 ? 1 : 0) - (MAIN.indexOf(a.name) >= 0 ? 1 : 0) || (MAIN.indexOf(a.name) - MAIN.indexOf(b.name)));
+      rows($("machines") as HTMLTableElement, active.length).forEach((tr, i) => {
+        const r = active[i];
+        tr.className = MAIN.includes(r.name) ? "main" : "";
+        tr.dataset.machine = r.name;
+        cells(tr, [r.name, r.live || "–", `${r.taken} of ${r.transitions}`, r.last || "–", r.modules || "–"], [2]);
+      });
+      const idle = all.filter(r => !(r.live || r.steps || r.taken));
+      $("idlemachines").textContent = `${idle.length} of ${all.length} machines not stepped by this process`;
+      const names = idle.map(r => r.name).join(", ");
+      if ($("idlelist").textContent !== names) $("idlelist").textContent = names;
+    }
   }
+  else if (m.type === "ctrlPrompt") {
+    $("ctrltext").textContent = `The game asks for ${m.min}${m.max > m.min ? " to " + m.max : ""} players.`;
+    const d = $("ctrlprompt") as HTMLDialogElement;
+    if (!d.open) d.showModal();
+  }
+  else if (m.type === "player") players.set(m.source, m.player);
+  else if (m.type === "vibration") rumble(m.source, m.low, m.high);
+  else if (m.type === "capture") showCapture(m);
+  else if (m.type === "report") void showReport(m.text);
 };
-($("demo") as HTMLButtonElement).onclick = () => worker.postMessage({ type: "demo" });
+($("demo") as HTMLButtonElement).onclick = () => worker.postMessage({ type: "demo", which: "cube" });
+($("demotone") as HTMLButtonElement).onclick = () => worker.postMessage({ type: "demo", which: "tone" });
 $("pause").onclick = () => worker.postMessage({ type: "pause" });
 $("resume").onclick = () => worker.postMessage({ type: "resume" });
 $("stop").onclick = () => worker.postMessage({ type: "stop" });
+($("guard") as HTMLInputElement).onchange = e => worker.postMessage({ type: "guard", on: (e.target as HTMLInputElement).checked });
+$("losedevice").onclick = () => worker.postMessage({ type: "loseDevice" });
+
+// ---- the controller applet's prompt ----
+const answer = (ok: boolean) => { const d = $("ctrlprompt") as HTMLDialogElement; if (d.open) d.close(); worker.postMessage({ type: "ctrlAnswer", ok }); };
+$("ctrlok").onclick = () => answer(true);
+$("ctrlclose").onclick = () => answer(false);
+($("ctrlprompt") as HTMLDialogElement).addEventListener("cancel", e => { e.preventDefault(); answer(false); });
+
+// ---- frame capture: the pass text and the target images ----
+$("capturebtn").onclick = () => worker.postMessage({ type: "capture" });
+function showCapture(m: { text: string; images: { name: string; width: number; height: number; format: string; png: Uint8Array | null }[] }) {
+  $("capturetext").textContent = m.text;
+  const box = $("captureimages");
+  for (const img of Array.from(box.querySelectorAll("img"))) URL.revokeObjectURL((img as HTMLImageElement).src);
+  box.textContent = "";
+  for (const i of m.images) {
+    if (!i.png) continue;
+    const fig = document.createElement("figure"), img = document.createElement("img"), cap = document.createElement("figcaption");
+    img.src = URL.createObjectURL(new Blob([i.png as unknown as BlobPart], { type: "image/png" })); img.alt = i.name; img.width = i.width; img.height = i.height;
+    cap.textContent = `${i.name} (${i.width}x${i.height}, ${i.format})`;
+    fig.append(img, cap); box.append(fig);
+  }
+}
+
+// ---- the report: one text block, to the clipboard and into the page ----
+$("copyreport").onclick = () => worker.postMessage({ type: "report", userAgent: navigator.userAgent });
+async function showReport(text: string) {
+  ($("reporttext") as HTMLTextAreaElement).value = text;
+  ($("reportbox") as HTMLDetailsElement).open = true;
+  let how = "shown below";
+  try { await navigator.clipboard.writeText(text); how = "copied to the clipboard and shown below"; } catch { /* no clipboard permission: the text is in the page */ }
+  $("reportnote").textContent = `report of ${text.split("\n").length} lines ${how}`;
+}
 
 // ---- files ----
 let shaderLib: string | undefined, shaderNxsl: Uint8Array | undefined, rom: File | undefined;
@@ -62,31 +173,80 @@ for (const t of ["dragenter", "dragover"]) document.addEventListener(t, e => { e
 for (const t of ["dragleave", "drop"]) document.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); });
 document.addEventListener("drop", e => { if (e.dataTransfer?.files.length) take(e.dataTransfer.files); });
 
-// ---- input: keyboard and the first gamepad, sent when they change ----
+// ---- input: the keyboard is source 1; every controller is a source of its own, by a stable id ----
 const BTN: Record<string, number> = { A: 1, B: 2, X: 4, Y: 8, LS: 16, RS: 32, L: 64, R: 128, ZL: 256, ZR: 512, Plus: 1024, Minus: 2048, Left: 4096, Up: 8192, Right: 16384, Down: 32768 };
 const keys = new Set<string>();
 const KEY_BTN: Record<string, number> = { KeyZ: BTN.A, KeyX: BTN.B, KeyC: BTN.X, KeyV: BTN.Y, Enter: BTN.Plus, Backspace: BTN.Minus, KeyQ: BTN.L, KeyE: BTN.R };
 // the standard gamepad mapping's buttons in NpadButton terms (the Switch's A is the right button, B the bottom one)
 const PAD_BTN = [BTN.B, BTN.A, BTN.Y, BTN.X, BTN.L, BTN.R, BTN.ZL, BTN.ZR, BTN.Minus, BTN.Plus, BTN.LS, BTN.RS, BTN.Up, BTN.Down, BTN.Left, BTN.Right];
-let last = "";
+const KEYBOARD = 1;
+// A controller's source id: its id string and index hashed (the same controller in the same port gets its player
+// back after a reconnect), never 0 and never the keyboard's
+function sourceId(gp: Gamepad): number {
+  let h = 0x811c9dc5; for (const c of gp.id + "#" + gp.index) { h ^= c.charCodeAt(0); h = Math.imul(h, 0x01000193); }
+  h >>>= 0;
+  return h <= KEYBOARD ? h + 2 : h;
+}
+const sent = new Map<number, string>();   // source -> its last state as text
+const players = new Map<number, number>();   // source -> the player the Worker gave it (0 = player 1)
+const pads = new Map<number, Gamepad>();
+function send(source: number, pad: object | null) {
+  const s = JSON.stringify(pad);
+  if (sent.get(source) === s) return false;
+  if (pad) sent.set(source, s); else sent.delete(source);
+  worker.postMessage({ type: "input", source, pad });
+  return true;
+}
 function sample() {
   const axis = (neg: string[], pos: string[]) => (pos.some(k => keys.has(k)) ? 32767 : 0) - (neg.some(k => keys.has(k)) ? 32767 : 0);
-  const p = { buttons: 0, lx: axis(["ArrowLeft", "KeyA"], ["ArrowRight", "KeyD"]), ly: axis(["ArrowDown", "KeyS"], ["ArrowUp", "KeyW"]), rx: axis(["KeyJ"], ["KeyL"]), ry: axis(["KeyK"], ["KeyI"]) };
-  for (const k of keys) p.buttons |= KEY_BTN[k] ?? 0;
-  let source = keys.size ? "keyboard" : "";
-  const gp = navigator.getGamepads?.().find(g => g && g.connected);
-  if (gp) {
+  const kb = { buttons: 0, lx: axis(["ArrowLeft", "KeyA"], ["ArrowRight", "KeyD"]), ly: axis(["ArrowDown", "KeyS"], ["ArrowUp", "KeyW"]), rx: axis(["KeyJ"], ["KeyL"]), ry: axis(["KeyK"], ["KeyI"]) };
+  for (const k of keys) kb.buttons |= KEY_BTN[k] ?? 0;
+  let changed = send(KEYBOARD, kb);
+  const seen = new Set<number>(), parts = [`keyboard: buttons 0x${kb.buttons.toString(16)}, L ${kb.lx}/${kb.ly}, R ${kb.rx}/${kb.ry}`];
+  for (const gp of navigator.getGamepads?.() ?? []) {
+    if (!gp || !gp.connected) continue;
+    const id = sourceId(gp), p = { buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, rumble: !!(gp as any).vibrationActuator };
     gp.buttons.forEach((b, i) => { if (b.pressed && PAD_BTN[i]) p.buttons |= PAD_BTN[i]; });
-    const dead = (v: number) => Math.abs(v) < 0.12 ? 0 : Math.round(v * 32767), pick = (a: number, b: number) => Math.abs(a) >= Math.abs(b) ? a : b;
-    p.lx = pick(p.lx, dead(gp.axes[0] ?? 0)); p.ly = pick(p.ly, -dead(gp.axes[1] ?? 0)); p.rx = pick(p.rx, dead(gp.axes[2] ?? 0)); p.ry = pick(p.ry, -dead(gp.axes[3] ?? 0));
-    source = (source ? source + " + " : "") + "gamepad " + gp.id.slice(0, 24);
+    const dead = (v: number) => Math.abs(v) < 0.12 ? 0 : Math.round(v * 32767);
+    p.lx = dead(gp.axes[0] ?? 0); p.ly = -dead(gp.axes[1] ?? 0); p.rx = dead(gp.axes[2] ?? 0); p.ry = -dead(gp.axes[3] ?? 0);
+    seen.add(id); pads.set(id, gp);
+    if (send(id, p)) changed = true;
+    const pl = players.get(id);
+    parts.push(`${pl === undefined || pl < 0 ? "controller" : "player " + (pl + 1)} (${gp.id.slice(0, 24)}): buttons 0x${p.buttons.toString(16)}, L ${p.lx}/${p.ly}, R ${p.rx}/${p.ry}${p.rumble ? ", vibration" : ""}`);
   }
-  const s = JSON.stringify(p);
-  if (s !== last) { last = s; worker.postMessage({ type: "input", pad: p }); $("pad").textContent = `${source || "idle"}: buttons 0x${p.buttons.toString(16)}, L ${p.lx}/${p.ly}, R ${p.rx}/${p.ry}`; }
+  for (const id of [...sent.keys()]) if (id !== KEYBOARD && !seen.has(id)) { send(id, null); pads.delete(id); players.delete(id); changed = true; }   // it went away
+  const text = parts.join("; ");
+  if (changed || $("pad").textContent !== text) $("pad").textContent = text;
   requestAnimationFrame(sample);
 }
-addEventListener("keydown", e => { if (!e.repeat) keys.add(e.code); if (e.code.startsWith("Arrow")) e.preventDefault(); });
+addEventListener("keydown", e => {
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+  if (e.code === "F9") { e.preventDefault(); worker.postMessage({ type: "capture" }); return; }
+  if (!e.repeat) keys.add(e.code);
+  if (e.code.startsWith("Arrow")) e.preventDefault();
+});
 addEventListener("keyup", e => keys.delete(e.code));
 addEventListener("blur", () => keys.clear());
 requestAnimationFrame(sample);
-if (new URLSearchParams(location.search).has("demo")) worker.postMessage({ type: "demo" });
+
+// ---- vibration: a player's motors to its controller, where the Gamepad API has an actuator ----
+// The table reports a motor state when it changes; an effect of the Gamepad API has a duration, so a state that is
+// held is played again every 400 ms until it changes to rest.
+const rumbling = new Map<number, { low: number; high: number; timer: number }>();
+function rumble(source: number, low: number, high: number) {
+  const old = rumbling.get(source);
+  if (old) { clearInterval(old.timer); rumbling.delete(source); }
+  const play = () => {
+    const act = (pads.get(source) as any)?.vibrationActuator;
+    if (!act) return;
+    try {
+      if (low <= 0 && high <= 0) { if (act.reset) void act.reset(); else void act.playEffect("dual-rumble", { duration: 1, strongMagnitude: 0, weakMagnitude: 0 }); }
+      else void act.playEffect("dual-rumble", { startDelay: 0, duration: 500, strongMagnitude: Math.min(1, low), weakMagnitude: Math.min(1, high) });
+    } catch { /* a controller that went away */ }
+  };
+  play();
+  if (low > 0 || high > 0) rumbling.set(source, { low, high, timer: window.setInterval(play, 400) });
+  $("rumble").textContent = `source ${source}: low ${low.toFixed(2)}, high ${high.toFixed(2)}${(pads.get(source) as any)?.vibrationActuator ? "" : " (this controller has no actuator)"}`;
+}
+(window as any).nxwebTest = { audio, rumbling };
+if (new URLSearchParams(location.search).has("demo")) worker.postMessage({ type: "demo", which: "cube" });

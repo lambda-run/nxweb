@@ -227,8 +227,13 @@ const gesture: Case[] = [
       near(w.freq, 440, 0.1, "frequency");
       const names = s.states.map((x: { s: string }) => x.s).join(" ");
       check(names === "SilentStarting Live" && s.red.length === 0 && s.refused === 0, `states ${names}, red: ${s.red.join(" | ")}`);
-      check(s.orderErrors === 0 && s.appended === s.reclaimed && s.underruns === 0 && h.underrun === 0, `buffers: ${s.underruns} underruns, device ${h.underrun}`);
-      return `1.5 s suspended, no user activation: ${rt.length} buffers at ${(rt.length / ((rt.at(-1)! - rt[0]) / 1000)).toFixed(1)}/s on the silent sink, nothing mixed, 0 device callbacks; Live ${took} ms after the click; then ${sounding.toFixed(2)} s of ${w.freq.toFixed(2)} Hz, ${w.snr.toFixed(1)} dB, no gap`;
+      if (process.env.AUDIO_TICK_LOG) console.log(`     late ticks (>= 12 ms): ${JSON.stringify(s.lateTicks)}; states ${JSON.stringify(s.states.map((x: { t: number; s: string }) => [Math.round(x.t), x.s]))}; output underruns ${s.underruns}, device ${h.underrun}; ring [wr, rd, under, cb, live] ${JSON.stringify(s.ringLog)}`);
+      // The test's guest is driven by this Worker's 4 ms timer and keeps 20 ms in flight: a timer that comes 15 ms or
+      // more late makes the guest late, and an output underrun then is the guest's (a game whose audio thread is held
+      // up that long underruns the same way). Without a late timer there must be none; the device must never run dry.
+      const late = (s.lateTicks as { gap: number }[]).filter(t => t.gap >= 15).length;
+      check(s.orderErrors === 0 && s.appended === s.reclaimed && s.underruns <= late && h.underrun === 0, `buffers: ${s.underruns} underruns with ${late} late timers, device ${h.underrun}`);
+      return `${late ? `[${late} timer(s) of this Worker came 15 ms or more late: ${s.underruns} underrun(s) of the test's guest] ` : ""}1.5 s suspended, no user activation: ${rt.length} buffers at ${(rt.length / ((rt.at(-1)! - rt[0]) / 1000)).toFixed(1)}/s on the silent sink, nothing mixed, 0 device callbacks; Live ${took} ms after the click; then ${sounding.toFixed(2)} s of ${w.freq.toFixed(2)} Hz, ${w.snr.toFixed(1)} dB, no gap`;
     } },
 ];
 

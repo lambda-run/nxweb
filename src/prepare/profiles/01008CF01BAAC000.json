@@ -1,0 +1,58 @@
+{
+ "source": "nxnative dm/games/01008CF01BAAC000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01008CF01BAAC000",
+ "name": "The Legend of Zelda: Echoes of Wisdom",
+ "builds": [
+  {
+   "version": 196608,
+   "tag": "v196608",
+   "display": "1.1.0",
+   "modules": {
+    "main": "9f221e1afa65ba5443e955158ab97da8",
+    "subsdk0": "d6ad4f66925e3458f012915646501b4d",
+    "subsdk1": "a4108e77b80cd0a9221b085a8e2c42d4",
+    "sdk": "aa65d75ae1f61b1a2276f52a59f07d42"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01008CF01BAAC000",
+  "program_id": "01008CF01BAAC000",
+  "name": "The Legend of Zelda: Echoes of Wisdom",
+  "pad_layout": "full",
+  "package": "v196608",
+  "modules": "main subsdk0 subsdk1 sdk",
+  "romfs_marker": "region_common/audio/edward.bfsar",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x6400000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

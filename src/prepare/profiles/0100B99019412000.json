@@ -1,0 +1,59 @@
+{
+ "source": "nxnative dm/games/0100B99019412000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100B99019412000",
+ "name": "Mario vs. Donkey Kong",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.0.1",
+   "modules": {
+    "main": "43ae51ee9766867da5f1272ca0d3d8a6",
+    "subsdk0": "34577ede441d6dddaa1af845b7869356",
+    "sdk": "d5a1029a57d8cd4fdf4eacad87b0cfd0"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100B99019412000",
+  "program_id": "0100B99019412000",
+  "name": "Mario vs. Donkey Kong",
+  "package": "v65536",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Model/World08_Textures.bfres.zs",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "render_cond",
+   "value": "on",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

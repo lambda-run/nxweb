@@ -1,0 +1,75 @@
+{
+ "source": "nxnative dm/games/0100B04011742000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100B04011742000",
+ "name": "Monster Hunter Rise",
+ "builds": [
+  {
+   "version": 2228224,
+   "tag": "v2228224",
+   "display": "16.0.2",
+   "modules": {
+    "main": "c9a3dd7702075ecd90101f4555389582",
+    "subsdk0": "507f19d1240d09d00992248e8a0fd77e",
+    "sdk": "2d369d9999e3e10e665106f840ffff9b"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100B04011742000",
+  "program_id": "0100B04011742000",
+  "name": "Monster Hunter Rise",
+  "pad_layout": "full",
+  "package": "v2228224",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "re_chunk_000.pak.patch_001.pak",
+  "app_pool": "0xCD500000",
+  "mem_used": "0x14800000"
+ },
+ "needs": [
+  {
+   "key": "tex_flush_upload",
+   "value": "on",
+   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
+  },
+  {
+   "key": "tex_dirty_upload",
+   "value": "on",
+   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
+  },
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "present_interval",
+   "value": "display",
+   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps)."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

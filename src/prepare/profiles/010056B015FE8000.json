@@ -1,0 +1,140 @@
+{
+ "source": "nxnative dm/games/010056B015FE8000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010056B015FE8000",
+ "name": "NieR:Automata The End of YoRHa Edition",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.0.3",
+   "modules": {
+    "main": "3c10ec35c5ef4c3686b4053afb0e58e7",
+    "subsdk0": "be1ee79a9968a35a6b63fc8f1036a6d4",
+    "sdk": "e8cdceb1e77a8465fe20f21928e8d296"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010056B015FE8000",
+  "program_id": "010056B015FE8000",
+  "name": "NieR:Automata The End of YoRHa Edition",
+  "pad_layout": "full",
+  "package": "v131072",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "data014.cpk",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x1000000"
+ },
+ "needs": [
+  {
+   "key": "present_interval",
+   "value": "display",
+   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps)."
+  },
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "gpu_timestamps",
+   "value": "segment",
+   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
+  },
+  {
+   "key": "tex_flush_upload",
+   "value": "on",
+   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
+  },
+  {
+   "key": "tex_dirty_upload",
+   "value": "on",
+   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "3c10ec35c5ef4c3686b4053afb0e58e7": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 5837208,
+     "orig": "20008052",
+     "new": "00008052",
+     "why": "60 FPS present interval mode: 1 -> 0"
+    },
+    {
+     "off": 10202472,
+     "orig": "41008052",
+     "new": "21008052",
+     "why": "60 FPS NVN present interval: 2 -> 1"
+    },
+    {
+     "off": 10220840,
+     "orig": "ac9999528cd9a772",
+     "new": "0c0080520cf0a772",
+     "why": "handheld lower bound follows preset minimum"
+    },
+    {
+     "off": 10220852,
+     "orig": "cc648a52aceaa772",
+     "new": "0c0080520cf0a772",
+     "why": "docked lower bound follows preset minimum"
+    },
+    {
+     "off": 10220596,
+     "orig": "8c46a8528301271e",
+     "new": "8c36a8528301271e",
+     "why": "dynamic resolution: bad frame cost 45 -> 22.5 ms at 60 fps"
+    },
+    {
+     "off": 10220676,
+     "orig": "ac4781520c40a872",
+     "new": "ac4781520c30a872",
+     "why": "dynamic resolution: optimal frame cost 32.01 -> 16.005 ms at 60 fps (first load)"
+    },
+    {
+     "off": 10220756,
+     "orig": "ac4781520c40a87283cc201e8001271e",
+     "new": "ac4781520c30a87283cc201e8001271e",
+     "why": "dynamic resolution: optimal frame cost 32.01 -> 16.005 ms at 60 fps (second load)"
+    },
+    {
+     "off": 10220792,
+     "orig": "00d0271e",
+     "new": "00d0251e",
+     "why": "dynamic resolution: good frame cost 30 -> 15 ms at 60 fps"
+    }
+   ]
+  }
+ },
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ },
+ "capabilities": {
+  "3c10ec35c5ef4c3686b4053afb0e58e7": [
+   "DYNAMIC_RESOLUTION"
+  ]
+ }
+}

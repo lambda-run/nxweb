@@ -181,21 +181,27 @@ function supply(): u32 {
 export function pump(): void {
   if (!dev.attached) return;
   const live = liveCount();
-  dev.ringSet(dev.R_LIVE, live);
   // Nobody plays: the ring is left to run empty, which the device does not count as an underrun (the header's `live`)
-  if (!live || dev.state != dev.DEV_RUNNING) { primed = false; return; }
+  if (!live || dev.state != dev.DEV_RUNNING) { dev.ringSet(dev.R_LIVE, 0); primed = false; return; }
   resamplerSet(RATE, dev.rate);
   let wr = dev.ringGet(dev.R_WR);
   const fill = wr - dev.ringGet(dev.R_RD);
-  if (fill >= dev.target) { primed = true; return; }
+  if (fill >= dev.target) { primed = true; dev.ringSet(dev.R_LIVE, live); return; }
   let room = dev.target - fill;
   if (!primed) {
     primed = true;
     memory.fill(MIXOUT, 0, <usize>BLOCK << 3);
     while (room) { const n = min(room, BLOCK); put(wr, n); wr += n; room -= n; paddedFrames += n; }
+    // The order matters when the device reads the ring from another thread (a shared memory): `live` says "an empty
+    // ring is an underrun now", so it is raised only once the lead is in the ring. The output goes Live because the
+    // device has just called back, that is while its first burst of callbacks is still running: with `live` raised
+    // first, the callbacks of that burst found an empty ring and counted an underrun (seen as 256 or 512 frames
+    // right after going Live in about one start in six).
     dev.ringSet(dev.R_WR, wr);
+    dev.ringSet(dev.R_LIVE, live);
     return;
   }
+  dev.ringSet(dev.R_LIVE, live);
   const low = dev.target >> 2;
   let want = min(room, supply());
   if (fill + want < low) want = room;

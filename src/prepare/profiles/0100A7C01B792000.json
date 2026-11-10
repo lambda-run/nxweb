@@ -1,0 +1,70 @@
+{
+ "source": "nxnative dm/games/0100A7C01B792000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100A7C01B792000",
+ "name": "Minecraft Dungeons II",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.1.3.0",
+   "modules": {
+    "main": "c6b32f4d3d4243ff190b082b4f6aea18",
+    "subsdk0": "3904a8dee6801472d56bd4921378df27",
+    "sdk": "190030518b5d64e5d87b84bc54661af9"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100A7C01B792000",
+  "program_id": "0100A7C01B792000",
+  "name": "Minecraft Dungeons II",
+  "package": "v131072",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Dungeons/Content/Paks/Dungeons-Switch.ucas",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x1400000"
+ },
+ "needs": [
+  {
+   "key": "tex_dyn_slots",
+   "value": "on",
+   "what": "Shaders that index textures by a handle computed at run time are not supported."
+  },
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "fps_max",
+   "value": "120",
+   "what": "The 120 fps option is not available."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x1000000000",
+   "what": "nxnative gives this game a 64.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note",
+  "depth_mode"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 68719476736,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

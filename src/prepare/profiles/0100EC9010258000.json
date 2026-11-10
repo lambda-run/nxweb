@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/0100EC9010258000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100EC9010258000",
+ "name": "Streets of Rage 4",
+ "builds": [
+  {
+   "version": 458752,
+   "tag": "v458752",
+   "display": "1.0.9",
+   "modules": {
+    "main": "8817441976e32e94909a95f64405a99a",
+    "subsdk0": "5a7ada8dd7447c10aa244944f64d0aff",
+    "sdk": "ad3fdfbd62a5f4b082d385ffe420d440"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100EC9010258000",
+  "program_id": "0100EC9010258000",
+  "name": "Streets of Rage 4",
+  "package": "v458752",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "textures",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x76d8000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

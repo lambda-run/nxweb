@@ -1,0 +1,61 @@
+{
+ "source": "nxnative dm/games/01003E601E324000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01003E601E324000",
+ "name": "DRAGON QUEST III HD-2D Remake",
+ "builds": [
+  {
+   "version": 262144,
+   "tag": "v262144",
+   "display": "1.1.2",
+   "modules": {
+    "main": "a6bd61cfb142e663f59f4d92b4ed0474",
+    "subsdk0": "220d36873cbb6d5dc39a9a37127ea80d",
+    "sdk": "a5cb2175cad2ca2afdd4c13577dbd079"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01003E601E324000",
+  "program_id": "01003E601E324000",
+  "name": "DRAGON QUEST III HD-2D Remake",
+  "package": "v262144",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Nicola/Content/Paks/Nicola-Switch_0_P.pak",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x5000000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0xc8000000",
+   "what": "nxnative gives this game a 3.12 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "depth_mode",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 3355443200,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

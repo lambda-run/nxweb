@@ -1,0 +1,63 @@
+{
+ "source": "nxnative dm/games/010049900F546001/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010049900F546001",
+ "name": "Super Mario 3D All-Stars: Super Mario 64",
+ "builds": [
+  {
+   "version": 393216,
+   "tag": "v393216",
+   "display": "1.1.4",
+   "modules": {
+    "main": "e96321640d68646035496a0a1f082422",
+    "sdk": "a847ad19684f06ea3628f1a0671c07c8"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010049900F546001",
+  "program_id": "010049900F546001",
+  "name": "Super Mario 3D All-Stars: Super Mario 64",
+  "pad_layout": "full",
+  "package": "v393216",
+  "modules": "main sdk",
+  "romfs_marker": "rom/Stardust_JP/01_UNSMJ3.002.bin",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "launch_param": "lang8 f32:1.12 f32:2.24"
+ },
+ "needs": [
+  {
+   "key": "program_of",
+   "value": "010049900F546000",
+   "what": "One program of a multi-program game: it runs alone, with the launch parameter of its profile."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0xb0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 2.75 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "jit_key_data",
+  "jit_out_code",
+  "jit_route",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 2952790016,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

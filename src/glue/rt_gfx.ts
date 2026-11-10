@@ -5,67 +5,62 @@
 // With no device (Node) the recorder runs against a null replayer: every NVN call and the lowering happen, nothing is
 // drawn, fences complete at once. See src/runtime/README.md, "Graphics".
 import { Runtime, type HostCpu, type HostResult } from "./rt_runtime.ts";
-import { GfxHost, type ShaderInfo } from "./gfx_host.ts";
+import { GfxHost, type ShaderInfo, type Capture } from "./gfx_host.ts";
 import { range } from "./rt_layout.ts";
 import type { RtShaders, ShaderBlob } from "./rt_shaders.ts";
+import type { HleGfx } from "./hle_rt.ts";
 
 export interface GfxOptions {
-  device?: any;                       // a GPUDevice; omitted: the null replayer
+  device?: any;                       // a GPUDevice (requested with GfxHost.deviceDescriptor(adapter)); omitted: the null replayer
   canvas?: any;                       // an OffscreenCanvas (or canvas) to present to
   vsyncNs?: bigint;                   // one display refresh in guest time (default 16_666_667n)
   // Wall clock only: resolves at the next display frame (requestAnimationFrame). Omitted: frames are paced by time.
   nextFrame?: () => Promise<unknown>;
   onPresent?: (frame: number) => void;
   unpaced?: boolean;                  // measurements: an acquire waits only for the GPU to finish the previous present
+  // A new device after GPUDevice.lost (adapter.requestDevice(GfxHost.deviceDescriptor(adapter)) again); null: none.
+  // Omitted: a lost device stays lost and nothing more is drawn.
+  requestDevice?: () => Promise<any>;
+  // Tests, null replayer only: while it returns true the "GPU" does not finish (fences stay pending until releaseFences())
+  holdFences?: () => boolean;
 }
+// nvnSyncWait's timeout is in nanoseconds; games pass ~0 (NVN's "wait forever") or values of years: no timer then
+const SYNC_FOREVER = 1n << 62n;
 
-// Every texture and buffer a device makes is noted in the set of the process that is current on it and leaves the
-// set when it is destroyed: what a stopped process still has can then be destroyed without knowing the replayer's
-// containers. One patch per device (own properties over createTexture / createBuffer), however many processes use it.
-const TRACK = Symbol.for("nxweb.rt.gpuTrack");
-function trackDevice(device: any): { current: Set<any> | null } {
-  let t = device[TRACK];
-  if (t) return t;
-  t = device[TRACK] = { current: null as Set<any> | null };
-  for (const k of ["createTexture", "createBuffer"]) {
-    const make = device[k];
-    device[k] = function (this: any, ...a: any[]) {
-      const o = make.apply(device, a), set: Set<any> | null = t.current;
-      if (set) { const destroy = o.destroy.bind(o); set.add(o); o.destroy = () => { set.delete(o); destroy(); }; }
-      return o;
-    };
-  }
-  return t;
-}
-
-export class RtGfx {
+export class RtGfx implements HleGfx {
   readonly rt: Runtime;
   readonly x: any;                    // the recorder's exports (nvn_*, gfx_*)
-  readonly host: GfxHost;             // the replayer (with the null replayer: only its shader library is used)
+  readonly host: GfxHost;             // the replayer (with the null replayer: its fences, hooks and shader library are used)
   readonly live: boolean;             // a real device is attached
-  stats = { nvnCalls: 0, frames: 0, syncWaits: 0, syncParked: 0, finishes: 0, acquires: 0, acquireParked: 0 };
+  stats = { nvnCalls: 0, frames: 0, shown: 0, syncWaits: 0, syncParked: 0, syncTimeouts: 0, finishes: 0, finishParked: 0, acquires: 0, acquireParked: 0, floatArgCalls: 0, floatResults: 0,
+    deviceLosses: 0, deviceRestores: 0 };
   times = { execMs: 0 };              // time inside the replayer (WebGPU calls), part of the runtime's host-call time
   shaders: RtShaders | null = null;   // where missing shader keys are looked up (rt_shaders.ts attaches itself)
+  disposedObjects = 0;
+  viLayerSize: { w: number; h: number } | null = null;                       // nn::vi::CreateLayer with a size
+  viLayerCrop: { x: number; y: number; w: number; h: number } | null = null;  // nn::vi::SetLayerCrop
   private opts: GfxOptions;
-  private fenceWaiters = new Map<number, (() => void)[]>();
-  private fenceSeen = 0;
+  private abi: Uint8Array;            // nvn_abi_table(): per function, bits 0..3 how many of d0..d7 it reads, bit 4 a float result
   private lastAcquireAt = -1n;
   private lastPresentDone: Promise<unknown> | null = null;
   private byId = new Map<number, number>();   // NVN function id -> stub address
+  private presentHooks: ((frames: number) => void)[] = [];
+  private shownAt: bigint[] = [];     // when present n reached the screen (host monotonic ns), the last 256
+  private queuedOrder: number[] = []; // presents queued and not yet shown (their frame numbers), in order
+  private heldTo = 0;                 // null replayer under holdFences: fences up to here were signalled
 
   // Before rt.loadNso(): registers nvnBootstrapLoader (forced, as nxnative does) and instantiates the recorder.
   constructor(rt: Runtime, module: WebAssembly.Module, opts: GfxOptions = {}) {
     this.rt = rt; this.opts = opts; this.live = !!opts.device;
     const dec = new TextDecoder();
-    if (this.live) trackDevice(opts.device).current = this.owned;
-    this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l) });
+    this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l), requestDevice: this.live ? opts.requestDevice : undefined });
     const env = {
       memory: rt.memory,
-      log: (p: number, n: number) => { const line = dec.decode(rt.u8().slice(p >>> 0, (p >>> 0) + n)); if (!this.shaders?.dropLine(line)) rt.log(line); },
+      log: (p: number, n: number) => rt.log(dec.decode(rt.u8().slice(p >>> 0, (p >>> 0) + n))),
       abort: () => { throw new Error("abort in the gfx module"); },
       gfx_exec: (p: number, n: number) => {
         if (this.live) { const t0 = performance.now(); this.host.exec(p >>> 0, n >>> 0); this.times.execMs += performance.now() - t0; }
-        else for (let f = this.fenceSeen + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) this.fenceSignal(f);   // null replayer: the "GPU" is done at once
+        else if (!this.opts.holdFences?.()) this.releaseFences();   // null replayer: the "GPU" is done at once
       },
       // the command memory callback: guest code run to completion on the calling thread
       gfx_guest_call: (fn: bigint, a0: bigint, a1: bigint, a2: bigint, a3: bigint) => rt.guestCall(BigInt.asUintN(64, fn), [a0, a1, a2, a3]),
@@ -76,30 +71,49 @@ export class RtGfx {
     if (rt.r.rt_static_check(99, BigInt(st.lo), BigInt(st.hi), BigInt(end))) throw new Error("runtime: the gfx module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
     if (need > arena.hi - arena.lo) throw new Error(`runtime: the gfx arena needs ${need} bytes, the range has ${arena.hi - arena.lo}`);
     if (!this.x.gfx_init(arena.lo, need)) throw new Error("runtime: gfx_init failed");
-    // the replayer's reports go through here so that waiting guest threads hear of them
-    this.host.attach({ ...this.x, gfx_fence_signal: (n: number) => this.fenceSignal(n) });
-    rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => this.stubOfName(cpu.cstr(cpu.x(0), 128)) });    rt.onDispose(() => this.dispose());
+    this.abi = rt.u8().slice(this.x.nvn_abi_table() >>> 0, (this.x.nvn_abi_table() >>> 0) + this.x.nvn_count());
+    // The replayer's reports arrive through its hooks; guest threads wait on host.fence(n) promises (Runtime.waitFor
+    // wakes the run loop when one resolves)
+    this.host.attach(this.x);
+    this.host.onImage = (_w, _i, what) => { if (what === 1) this.imageShown(); };
+    this.host.onDeviceLost = () => { this.stats.deviceLosses++; rt.requestWake(); };
+    this.host.onDeviceRestored = () => { this.stats.deviceRestores++; this.lastPresentDone = null; rt.requestWake(); };
+    rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => this.stubOfName(cpu.cstr(cpu.x(0), 128)) });
+    rt.onDispose(() => this.dispose());
   }
-  // Releases the GPU objects the replayer made for this process (textures and buffers; pipelines, bind groups and
-  // samplers have no destroy and go with their last reference), so that the next process starts from nothing on the
-  // same device and canvas. GfxHost.dispose() is used when the replayer has one; in any case every texture and
-  // buffer made on the device while this process was the device's current one, and not destroyed since, is destroyed
-  // here (trackDevice). Returns how many were.
-  disposedObjects = 0;
+  // Releases the GPU objects the replayer made for this process (GfxHost.dispose: every texture and buffer; pipelines,
+  // bind groups and samplers have no destroy and go with their last reference), so that the next process starts from
+  // nothing on the same device and canvas. Returns how many were destroyed.
   dispose(): number {
-    const h = this.host as any;
-    this.fenceWaiters.clear(); this.lastPresentDone = null;
+    this.lastPresentDone = null;
     if (!this.live) return 0;
-    if (typeof h.dispose === "function") { try { h.dispose(); } catch (e) { this.rt.log(`[RED] runtime: GfxHost.dispose failed: ${e instanceof Error ? e.message : e}`); } }
-    let n = 0;
-    for (const o of [...this.owned]) { try { o.destroy(); n++; } catch { /* gone already */ } }
-    this.owned.clear();
-    const t = this.opts.device[TRACK];
-    if (t && t.current === this.owned) t.current = null;
-    return this.disposedObjects = n;
+    try { this.disposedObjects = this.host.dispose(); } catch (e) { this.rt.log(`[RED] runtime: GfxHost.dispose failed: ${e instanceof Error ? e.message : e}`); }
+    return this.disposedObjects;
   }
-  private owned = new Set<any>();
   registerShader(keyHex: string, info: ShaderInfo): number { this.shaders?.known(keyHex); return this.host.registerShader(keyHex, { entry: "main", ...info } as ShaderInfo); }
+  // The next frame as text and target images (GfxHost.captureFrame; README of src/gfx, "Frame capture"); null on the null replayer
+  captureFrame(o: { png?: boolean } = { png: true }): Promise<Capture> | null { return this.live ? this.host.captureFrame(o) : null; }
+  // Null replayer: everything submitted so far is "done" (called at once unless a test holds the fences)
+  releaseFences(): void {
+    for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
+    this.rt.requestWake();
+  }
+
+  // ---- what nn::vi asks (HleGfx; src/glue/hle_rt.ts) ----
+  viLayer(w: number, h: number): void { this.viLayerSize = { w, h }; }
+  viCrop(x: number, y: number, w: number, h: number): void { this.viLayerCrop = w || h ? { x, y, w, h } : null; }
+  viFrameCount(): bigint { return BigInt(this.stats.frames); }
+  viPresentProgress(): { queued: bigint; done: bigint } { return { queued: BigInt(this.stats.frames), done: BigInt(this.stats.shown) }; }
+  // when present `ticket` (the frame count it made) reached the screen: 0 not known (yet, or too long ago)
+  viPresentedNs(ticket: bigint): bigint { const n = Number(ticket); return n > 0 && n <= this.stats.shown && n > this.stats.shown - 256 ? this.shownAt[n & 255] ?? 0n : 0n; }
+  onPresentQueued(fn: (frames: number) => void): void { this.presentHooks.push(fn); }
+  private imageShown(): void {
+    const n = this.queuedOrder.shift();
+    if (n === undefined) return;
+    this.stats.shown = n;
+    this.shownAt[n & 255] = BigInt(Math.round(performance.now() * 1e6));
+  }
+
   // The key of a stage as the recorder computes it (src/gfx/shader.ts shaderKey; an NVN2 control section: none here)
   // and the bytes it is made of: NVNshaderData { u64 data; u64 control } at sd
   private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
@@ -112,17 +126,10 @@ export class RtGfx {
     const key = Array.from(rt.sha256Of([rt.u8().subarray(c, c + nctl), hasCode ? rt.u8().subarray(data, data + ncode) : new Uint8Array(0)]).subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
     return { key, blob: () => ({ key, control: control(), code: code() }) };
   }
-
-  private fenceSignal(n: number): void {
-    this.x.gfx_fence_signal(n);
-    if (n > this.fenceSeen) this.fenceSeen = n;
-    for (const [f, list] of this.fenceWaiters) if (f <= n) { this.fenceWaiters.delete(f); for (const go of list) go(); }
+  private workDone(): Promise<unknown> | null {
+    if (!this.live) return null;
+    try { return this.host.device.queue.onSubmittedWorkDone(); } catch { return null; }   // a device that is gone
   }
-  private fence(n: number): Promise<void> | null {
-    if (this.x.gfx_fence_done(n)) return null;
-    return new Promise<void>(res => { const l = this.fenceWaiters.get(n) ?? []; l.push(res); this.fenceWaiters.set(n, l); });
-  }
-  private workDone(): Promise<unknown> | null { return this.live ? this.opts.device.queue.onSubmittedWorkDone() : null; }
 
   // ---- stubs ----
   private stubOfName(name: string): number {
@@ -150,24 +157,39 @@ export class RtGfx {
       case "nvnProgramSetShaders": return cpu => {
         const n = cpu.w(1) | 0, sd = Number(cpu.x(2));
         if (this.shaders && sd && n > 0 && n <= 6) for (let i = 0; i < n; i++) { const st = this.stageOf(sd + 16 * i); if (st) this.shaders.need(st.key, st.blob); }
-        return this.call(id, cpu.args());
+        return this.call(id, cpu.argsX());
       };
-      // nvnSyncWait(sync, timeout): the recorder only reports; when the fence is not done and the game is willing to
-      // wait, the thread parks until the replayer signals the fence
+      // nvnSyncWait(sync, timeout ns). The recorder never blocks and says through gfx_wait_fence() when the thread is
+      // to park (src/gfx/README.md, "nvnSyncWait"): on the fence's promise, and for a finite timeout also on a timer
+      // of that many nanoseconds (wall clock; on the deterministic clock guest time stands still while the GPU works,
+      // so a timeout cannot run out). Woken by the fence the call is made again; woken by the timer it is made again
+      // with timeout 0, which ends the parked wait.
       case "nvnSyncWait": return cpu => {
-        const k = this.keep(cpu), sync = Number(cpu.x(0)), timeout = cpu.x(1);
+        const k = this.keep(cpu), timeout = cpu.x(1);
         this.stats.syncWaits++;
-        const res = this.call(id, k.args), fence = res === 2n && timeout !== 0n ? x.gfx_sync_fence(sync) >>> 0 : 0, done = fence ? this.fence(fence) : null;
-        if (!done) return res;
+        const res = this.call(id, k.args), fence = x.gfx_wait_fence() >>> 0;
+        if (!fence) return res;                                   // not fenced, done, or timeout 0: the recorder's answer
+        const again = (expired: boolean): bigint => {
+          const b = k.saved.slice();
+          if (expired) new DataView(b.buffer).setBigUint64(8, 0n, true);
+          this.rt.u8().set(b, k.args);
+          return this.call(id, k.args);
+        };
+        const done = this.host.fence(fence);
+        if (!done) return again(false);                           // it completed inside the call (the null replayer)
         this.stats.syncParked++;
-        return cpu.waitFor(done, undefined, cpu => { cpu.write(k.args, k.saved); return this.call(id, k.args); });
+        const deadline = timeout >= SYNC_FOREVER ? undefined : cpu.now() + timeout;
+        return cpu.waitFor(done, undefined, (_cpu, timedOut) => { if (timedOut) this.stats.syncTimeouts++; return again(timedOut); }, deadline);
       };
-      // nvnQueueFinish: returns when the GPU has finished everything submitted
+      // nvnQueueFinish flushes and puts a fence behind everything; the thread parks until that fence is done: all
+      // submitted work has finished on the GPU and every read-back has landed in guest memory
       case "nvnQueueFinish": return cpu => {
         this.stats.finishes++;
-        this.call(id, cpu.args());
-        const done = this.workDone();
-        return done ? cpu.waitFor(done, undefined, () => 0) : 0;
+        this.call(id, cpu.argsX());
+        const done = this.host.fence(x.gfx_finish_fence() >>> 0);
+        if (!done) return 0;
+        this.stats.finishParked++;
+        return cpu.waitFor(done, undefined, () => 0);
       };
       // nvnWindowAcquireTexture(window, sync, index*): frame pacing. The thread parks until the next display frame:
       // `interval` refreshes after the previous acquire in guest time, and (wall clock) the browser's next frame, or
@@ -193,15 +215,28 @@ export class RtGfx {
       }
       case "nvnQueuePresentTexture": return cpu => {
         const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
-        const res = this.call(id, cpu.args());
-        if (!this.live) { this.x.gfx_image_event(win, index, 0); this.x.gfx_image_event(win, index, 1); }   // null replayer: queued and shown at once
         this.stats.frames++;
+        this.queuedOrder.push(this.stats.frames);
+        if (this.queuedOrder.length > 64) this.queuedOrder.shift();   // a replayer that never shows (a lost device)
+        const res = this.call(id, cpu.argsX());
+        if (!this.live) { this.host.imageEvent(win, index, 0); this.host.imageEvent(win, index, 1); }   // null replayer: queued and shown at once
         this.lastPresentDone = this.workDone();
+        for (const fn of this.presentHooks) fn(this.stats.frames);
         this.opts.onPresent?.(this.stats.frames);
         return res;
       };
     }
-    return cpu => this.call(id, cpu.args());
+    // Every other function. nvn_abi says what the call needs of the floating point registers: 326 of the 332
+    // implemented functions read none, so only x0..x7 are marshalled (HostCpu.argsX); four return a float, which is
+    // at args + 64 after the call and goes to d0.
+    const abi = this.abi[id] ?? 0, floats = abi & 15, retF = (abi & 16) !== 0;
+    if (retF) return cpu => {
+      const a = floats ? cpu.args() : cpu.argsX();
+      this.call(id, a); this.stats.floatResults++;
+      cpu.setD(0, cpu.dv().getBigUint64(a + 64, true));
+    };
+    if (floats) return cpu => { this.stats.floatArgCalls++; return this.call(id, cpu.args()); };
+    return cpu => this.call(id, cpu.argsX());
   }
   private idOf(name: string): number {
     const rt = this.rt, p = (rt.r.rt_scratch_ptr() >>> 0) + 3200;

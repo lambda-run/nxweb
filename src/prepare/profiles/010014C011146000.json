@@ -1,0 +1,56 @@
+{
+ "source": "nxnative dm/games/010014C011146000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010014C011146000",
+ "name": "Subnautica: Below Zero",
+ "builds": [
+  {
+   "version": 655360,
+   "tag": "v655360",
+   "display": "1.23.55063",
+   "modules": {
+    "main": "5b050c55b8264040b642a0cdca5ded83",
+    "subsdk0": "d0f13015e5badf2243d60a2bc9b978dd",
+    "sdk": "3644a6760469451cabc99f00c540acc2"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010014C011146000",
+  "program_id": "010014C011146000",
+  "name": "Subnautica: Below Zero",
+  "pad_layout": "full",
+  "package": "v655360",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/StreamingAssets/music.bank",
+  "sys_resource": "0x800000",
+  "app_pool": "0x40000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

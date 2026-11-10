@@ -1,0 +1,522 @@
+{
+ "source": "nxnative dm/games (MIT, Copyright (c) 2026 seedds)",
+ "profiles": 153,
+ "web_map": {
+  "heap": 1610612736,
+  "alias": 2013200384,
+  "stack": 268435456
+ },
+ "pairs_per_class": {
+  "a": 1489,
+  "b": 1432,
+  "c": 254
+ },
+ "keys_per_class": {
+  "a": 20,
+  "b": 20,
+  "c": 19
+ },
+ "keys_set_per_class": {
+  "a": 17,
+  "b": 18,
+  "c": 19
+ },
+ "top_c": [
+  {
+   "key": "address_space",
+   "profiles": 149
+  },
+  {
+   "key": "fps_target",
+   "profiles": 33
+  },
+  {
+   "key": "tex_flush_upload",
+   "profiles": 12
+  },
+  {
+   "key": "tex_dirty_upload",
+   "profiles": 11
+  },
+  {
+   "key": "render_cond",
+   "profiles": 10
+  },
+  {
+   "key": "present_interval",
+   "profiles": 8
+  },
+  {
+   "key": "fps_max",
+   "profiles": 6
+  },
+  {
+   "key": "gpu_timestamps",
+   "profiles": 5
+  },
+  {
+   "key": "tex_dyn_slots",
+   "profiles": 4
+  },
+  {
+   "key": "fps_hold",
+   "profiles": 2
+  },
+  {
+   "key": "program_of",
+   "profiles": 2
+  },
+  {
+   "key": "screen_aspect",
+   "profiles": 2
+  },
+  {
+   "key": "shader_key_skip",
+   "profiles": 2
+  },
+  {
+   "key": "snowdrop_pools",
+   "profiles": 2
+  },
+  {
+   "key": "stdalloc_cap",
+   "profiles": 2
+  },
+  {
+   "key": "programs",
+   "profiles": 1
+  },
+  {
+   "key": "render_base",
+   "profiles": 1
+  },
+  {
+   "key": "ue_fps_cvar",
+   "profiles": 1
+  },
+  {
+   "key": "ue_texture_pool",
+   "profiles": 1
+  }
+ ],
+ "classes": {
+  "title_id": {
+   "class": "a",
+   "note": "identity: the prepare step selects the profile by it",
+   "what": "",
+   "profiles": 153
+  },
+  "program_id": {
+   "class": "a",
+   "note": "kernel_init cfg +104 (GetInfo ProgramId); fs_set_program_id",
+   "what": "",
+   "profiles": 153
+  },
+  "name": {
+   "class": "a",
+   "note": "label on the prepare page",
+   "what": "",
+   "profiles": 153
+  },
+  "build": {
+   "class": "a",
+   "note": "the builds the game was brought up on: version, display version (hle STR_DISPLAY_VERSION), module build IDs (which cuts apply)",
+   "what": "",
+   "profiles": 153
+  },
+  "package": {
+   "class": "a",
+   "note": "the version the profile was made on (information: nxweb packs the newest in the folder, as nxnative)",
+   "what": "",
+   "profiles": 153
+  },
+  "modules": {
+   "class": "a",
+   "note": "which code modules are loaded and in what order (prepare's Code stage)",
+   "what": "",
+   "profiles": 153
+  },
+  "romfs_marker": {
+   "class": "a",
+   "note": "a path that must exist in the RomFS (prepare's Profile stage warns when it does not)",
+   "what": "",
+   "profiles": 153
+  },
+  "app_pool": {
+   "class": "a",
+   "note": "kernel_init cfg +80 (GetInfo TotalMemorySize)",
+   "what": "",
+   "profiles": 153
+  },
+  "mem_used": {
+   "class": "a",
+   "note": "kernel_init cfg +88 (GetInfo UsedMemorySize beside the heap)",
+   "what": "",
+   "profiles": 37
+  },
+  "sys_resource": {
+   "class": "a",
+   "note": "kernel_init cfg +96 (GetInfo TotalSystemResourceSize); checked against main.npdm",
+   "what": "",
+   "profiles": 122
+  },
+  "mem_map_limit": {
+   "class": "a",
+   "note": "kernel_init cfg flag 1 (MapPhysicalMemory fails past the pool)",
+   "what": "",
+   "profiles": 5
+  },
+  "game_env": {
+   "class": "a",
+   "note": "hle_cfg_str STR_GAME_ENV (the game's getenv)",
+   "what": "",
+   "profiles": 1
+  },
+  "launch_param": {
+   "class": "a",
+   "note": "hle_cfg_str STR_LAUNCH_SPEC (oe::TryPopLaunchParameter)",
+   "what": "",
+   "profiles": 2
+  },
+  "game_args": {
+   "class": "a",
+   "note": "arguments handed to the game before nninitStartup (no profile sets any)",
+   "what": "",
+   "profiles": 0
+  },
+  "op_mode": {
+   "class": "a",
+   "note": "hle_cfg CFG_OPMODE (console / handheld at start)",
+   "what": "",
+   "profiles": 8
+  },
+  "perf_mode": {
+   "class": "a",
+   "note": "hle_cfg CFG_PERF_BOOST",
+   "what": "",
+   "profiles": 2
+  },
+  "alloc_big_align": {
+   "class": "a",
+   "note": "hle_cfg CFG_ALLOC_BIG_ALIGN (StandardAllocator blocks of 64 KB and more aligned to 64 KB)",
+   "what": "",
+   "profiles": 5
+  },
+  "shared_font": {
+   "class": "a",
+   "note": "hle_cfg CFG_SHARED_FONT_TTF",
+   "what": "",
+   "profiles": 0
+  },
+  "device_api": {
+   "class": "a",
+   "note": "the NVN API version nvnDeviceGetInteger reports (an SDK version fact; no profile sets it, the SDK version decides)",
+   "what": "",
+   "profiles": 0
+  },
+  "pad_layout": {
+   "class": "a",
+   "note": "input setting: which controls the game needs (simple / full / touch), a hint for the page's on-screen controls",
+   "what": "",
+   "profiles": 83
+  },
+  "ipa": {
+   "class": "b",
+   "note": "iOS package file name",
+   "what": "",
+   "profiles": 153
+  },
+  "app_category": {
+   "class": "b",
+   "note": "App Store category",
+   "what": "",
+   "profiles": 153
+  },
+  "zip_store": {
+   "class": "b",
+   "note": "IPA compression",
+   "what": "",
+   "profiles": 153
+  },
+  "mem_reserve": {
+   "class": "b",
+   "note": "the Apple host's guest block size; nxweb's map is fixed in a 4 GB memory (see `address_space` under c when it does not fit)",
+   "what": "",
+   "profiles": 153
+  },
+  "mem_alias": {
+   "class": "b",
+   "note": "the iPhone's alias region size; as mem_reserve",
+   "what": "",
+   "profiles": 153
+  },
+  "mem_stack": {
+   "class": "b",
+   "note": "the Apple host's stack region size; nxweb's is 256 MB",
+   "what": "",
+   "profiles": 153
+  },
+  "shader_versions": {
+   "class": "b",
+   "note": "which versions nxnative's offline shader tables are the union of",
+   "what": "",
+   "profiles": 153
+  },
+  "shader_groups": {
+   "class": "b",
+   "note": "shader_split.py's source groups (offline chain bookkeeping)",
+   "what": "",
+   "profiles": 148
+  },
+  "shader_note": {
+   "class": "b",
+   "note": "shader_split.py's table header",
+   "what": "",
+   "profiles": 153
+  },
+  "depth_mode": {
+   "class": "b",
+   "note": "the depth mode for Metal pipelines made before the game runs; nxweb takes the game's nvnDeviceSetDepthMode call",
+   "what": "",
+   "profiles": 52
+  },
+  "pso_mtl4": {
+   "class": "b",
+   "note": "Metal 4 pipeline compiler",
+   "what": "",
+   "profiles": 1
+  },
+  "pso_gpu": {
+   "class": "b",
+   "note": "Metal pipeline archive GPU families",
+   "what": "",
+   "profiles": 0
+  },
+  "enc_thread": {
+   "class": "b",
+   "note": "Metal encoding thread",
+   "what": "",
+   "profiles": 1
+  },
+  "present_snap": {
+   "class": "b",
+   "note": "Metal present snapshots",
+   "what": "",
+   "profiles": 1
+  },
+  "draw_barriers": {
+   "class": "b",
+   "note": "Metal render pass ordering (a GPU time optimization of nxnative's replayer)",
+   "what": "",
+   "profiles": 1
+  },
+  "vconv_range": {
+   "class": "b",
+   "note": "the range of nxnative's CPU vertex conversion (an optimization of its replayer)",
+   "what": "",
+   "profiles": 1
+  },
+  "core_preempt": {
+   "class": "b",
+   "note": "a scheduling remedy over pthreads; nxweb's kernel schedules the four cores itself",
+   "what": "",
+   "profiles": 0
+  },
+  "jit_key_data": {
+   "class": "b",
+   "note": "the nn::jit image an iPhone (which cannot JIT) is served; nxweb translates code at run time",
+   "what": "",
+   "profiles": 1
+  },
+  "jit_out_code": {
+   "class": "b",
+   "note": "as jit_key_data",
+   "what": "",
+   "profiles": 1
+  },
+  "jit_route": {
+   "class": "b",
+   "note": "as jit_key_data (the capture's input script)",
+   "what": "",
+   "profiles": 1
+  },
+  "fps_target": {
+   "class": "c",
+   "note": "hle_fpslock.c / FRAME_STEP stubs",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate.",
+   "profiles": 33
+  },
+  "fps_max": {
+   "class": "c",
+   "note": "hle_fpslock.c",
+   "what": "The 120 fps option is not available.",
+   "profiles": 6
+  },
+  "fps_hold": {
+   "class": "c",
+   "note": "nvn_fstep.h",
+   "what": "Frame holding under a frame-rate cap is not implemented.",
+   "profiles": 2
+  },
+  "present_interval": {
+   "class": "c",
+   "note": "hle_nvn.c present pacing",
+   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps).",
+   "profiles": 8
+  },
+  "ue_fps_cvar": {
+   "class": "c",
+   "note": "hle_fpslock.c",
+   "what": "The Unreal console variable that holds the frame limit is not written.",
+   "profiles": 1
+  },
+  "ue_texture_pool": {
+   "class": "c",
+   "note": "hle_uecvar.c + ue_cvar.py",
+   "what": "Unreal's texture streaming pool is not raised: distant textures may stay blurry.",
+   "profiles": 1
+  },
+  "render_base": {
+   "class": "c",
+   "note": "render-scale stub (FRAME_STEP)",
+   "what": "The render scale setting is not available.",
+   "profiles": 1
+  },
+  "screen_aspect": {
+   "class": "c",
+   "note": "screen-shape stubs (FRAME_STEP)",
+   "what": "Only 16:9 output: the game's taller-screen mode is not available.",
+   "profiles": 2
+  },
+  "tex_flush_upload": {
+   "class": "c",
+   "note": "hle_nvn.c ft_add",
+   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale.",
+   "profiles": 12
+  },
+  "tex_dirty_upload": {
+   "class": "c",
+   "note": "hle_nvn.c nvn_ft_written (page write tracking)",
+   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages).",
+   "profiles": 11
+  },
+  "render_cond": {
+   "class": "c",
+   "note": "nvn_mtl.m OP_RENDER_COND",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong.",
+   "profiles": 10
+  },
+  "tex_dyn_slots": {
+   "class": "c",
+   "note": "shader chain fallback arrays",
+   "what": "Shaders that index textures by a handle computed at run time are not supported.",
+   "profiles": 4
+  },
+  "gpu_timestamps": {
+   "class": "c",
+   "note": "nvn_mtl.m timestamp reports per segment",
+   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution.",
+   "profiles": 5
+  },
+  "shader_key_skip": {
+   "class": "c",
+   "note": "hle_nvn.c keys_hash",
+   "what": "Shader keys do not mask the control-section bytes this engine varies: every variant is translated separately (slow first use).",
+   "profiles": 2
+  },
+  "stdalloc_cap": {
+   "class": "c",
+   "note": "hle_svc.c StandardAllocator gate",
+   "what": "The cap on nn::mem::StandardAllocator's address space is not applied: the game may run out of address space.",
+   "profiles": 2
+  },
+  "snowdrop_pools": {
+   "class": "c",
+   "note": "snowdrop_pools.py (a rewrite found by code)",
+   "what": "Snowdrop's page pools are not resized: the engine reserves 12 GB of address space, which a 4 GB memory cannot give.",
+   "profiles": 2
+  },
+  "programs": {
+   "class": "c",
+   "note": "main.c multi-program",
+   "what": "A game of several programs: only the program in the folder runs; starting another program (oe::ExecuteProgram) is not implemented.",
+   "profiles": 1
+  },
+  "program_of": {
+   "class": "c",
+   "note": "main.c multi-program",
+   "what": "One program of a multi-program game: it runs alone, with the launch parameter of its profile.",
+   "profiles": 2
+  },
+  "address_space": {
+   "class": "c",
+   "note": "wasm32: one 4 GB memory (memory64 or a smaller reported pool)",
+   "what": "nxnative gives this game {detail}; a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried).",
+   "profiles": 149,
+   "derived": true
+  }
+ },
+ "conversion": {
+  "registered_cuts": 66,
+  "converted_cuts": 66,
+  "patch_files": 22,
+  "cut_builds": 15,
+  "unconverted": {
+   "MATCH_CUTS": {
+    "entries": 5,
+    "items": 17,
+    "profiles": [
+     "01001F5010DFA000",
+     "0100346017304000",
+     "01006A800016E000",
+     "sdk_patches.py",
+     "engine_patches.py"
+    ]
+   },
+   "FRAME_STEP": {
+    "entries": 5,
+    "items": 176,
+    "profiles": [
+     "01002B00111A2000",
+     "01006F8002326000",
+     "01007300020FA000",
+     "01007EF00011E000",
+     "0100ECD018EBE000"
+    ]
+   },
+   "MATCH_FRAME_STEP": {
+    "entries": 4,
+    "items": 4,
+    "profiles": [
+     "01002B00111A2000",
+     "0100F2C0115B6000",
+     "0400486024DEC000",
+     "0400C3F00006E000"
+    ]
+   }
+  },
+  "sdk_cuts": 3,
+  "sdk_converted": 3,
+  "sdk_builds": 1
+ },
+ "unconverted_reasons": {
+  "FRAME_STEP": "frame-step and screen-shape stubs: code assembled into a patch area beside the module that reads a state page the host writes each frame; needs a patch area in the loader's map, the state page and the host's frame-step driver (nxnative hle_nvn.c fstep_tick)",
+  "MATCH_FRAME_STEP": "as FRAME_STEP, placed by a function fingerprint (nso_match.locate_stub), which also needs the matcher",
+  "MATCH_CUTS": "cuts located by complete-function fingerprints over the module's unwind table (nxnative dm/tools/nso_match.py, 356 lines, not ported); the registered builds' CUTS of the same patches are converted",
+  "OBS": "observation gates: a host callback at a pc; the translator hook exists in the hand-off format but no gate number has a nxweb callback"
+ },
+ "found_by_code": {
+  "ue_cvar.py": "Unreal console variables by their registered names (for fps_target, ue_texture_pool)",
+  "fps_target.py": "a target frame rate global the game steps by",
+  "ue_fixed_rate.py": "Unreal's FixedFrameRate property and flag",
+  "unity_fps.py": "Unity's targetFrameRate and vSyncCount",
+  "ue_malloc.py": "Unreal's FMallocBinned3 constructor calls cut (37 GB reservation), the host's allocator in its place",
+  "unity_bucket.py": "Unity 2019's bucket allocator reservation cut to 256 MB",
+  "snowdrop_pools.py": "Snowdrop's three page pools resized (profile key snowdrop_pools)",
+  "ue_region.py": "Unreal's 62 GB engine region sized to what the alias region has",
+  "ue_ring.py": "Unreal's NVN dynamic buffers: 3 copies to 4",
+  "region_gates": "observation gates on VammManager's AllocateAddressRegion / FreeAddressRegion (the host's region table)",
+  "spin waits": "spin-wait loops copied behind a yield gate (not needed: src/prepare/README.md)"
+ },
+ "problems": []
+}

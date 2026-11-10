@@ -1,0 +1,69 @@
+{
+ "source": "nxnative dm/games/0100C49025D3E000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100C49025D3E000",
+ "name": "EA SPORTS FC 27",
+ "builds": [
+  {
+   "version": 393216,
+   "tag": "v393216",
+   "display": "1.8d.310c",
+   "modules": {
+    "main": "a48c0de3bc353efa0e4d359bde05ef24",
+    "sdk": "fed212d6e0963706f9f4b16ea5d65879"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100C49025D3E000",
+  "program_id": "0100C49025D3E000",
+  "name": "EA SPORTS FC 27",
+  "package": "v393216",
+  "modules": "main sdk",
+  "romfs_marker": "Data/NX/superbundlelayout/installpackage_05/cas_01.cas",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x600000"
+ },
+ "needs": [
+  {
+   "key": "shader_key_skip",
+   "value": "0x7d0+0x18",
+   "what": "Shader keys do not mask the control-section bytes this engine varies: every variant is translated separately (slow first use)."
+  },
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "present_interval",
+   "value": "display",
+   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps)."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x50000000 alias 0x150000000",
+   "what": "nxnative gives this game a 5.25 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 1342177280,
+  "alias_region": 5637144576,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

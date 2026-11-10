@@ -1,0 +1,19 @@
+{
+  "name": "gfx_shader",
+  "doc": "One shader key as the recorder knows it (src/gfx/shader.ts): sha256(control section + code)[0..8] of a stage a program was given. Unknown: nobody has said anything about the key; a draw that needs it is skipped and the key is reported missing, red, once. Await: the embedder is fetching or translating it (gfx_shader_pending 1): its draws are skipped without a line. Fail: the embedder could not get it (2) and has said so itself: skipped without a line of the recorder's. Register: its reflection record arrived (gfx_shader_register): draws go on; registered again, every pipeline built from it is requested again (gfx_pipeline Reset). Forget (0): the embedder gave up waiting, the key is unknown again.",
+  "states": ["Unknown", "Pending", "Failed", "Ready"],
+  "initial": "Unknown",
+  "events": ["Await", "Fail", "Register", "Forget"],
+  "transitions": [
+    ["Unknown", "Await", "Pending"],
+    ["Failed", "Await", "Pending"],
+    ["Unknown", "Fail", "Failed"],
+    ["Pending", "Fail", "Failed"],
+    ["Unknown", "Register", "Ready"],
+    ["Pending", "Register", "Ready"],
+    ["Failed", "Register", "Ready"],
+    ["Ready", "Register", "Ready"],
+    ["Pending", "Forget", "Unknown"],
+    ["Failed", "Forget", "Unknown"]
+  ]
+}

@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/0100E65002BB8000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100E65002BB8000",
+ "name": "Stardew Valley",
+ "builds": [
+  {
+   "version": 1310720,
+   "tag": "v1310720",
+   "display": "1.6.15.13",
+   "modules": {
+    "main": "e7f845093e8cbc68dacf011ccb620d66",
+    "sdk": "c3c9bfaa757a1a23dc892ea38ab032b5"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100E65002BB8000",
+  "program_id": "0100E65002BB8000",
+  "name": "Stardew Valley",
+  "package": "v1310720",
+  "modules": "main sdk",
+  "romfs_marker": "Content/XACT/Wave Bank.xwb",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0xda5c000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

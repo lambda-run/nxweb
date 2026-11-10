@@ -1,0 +1,1085 @@
+{
+ "source": "nxnative dm/games (MIT, Copyright (c) 2026 seedds)",
+ "games": {
+  "0100000000010000": {
+   "name": "Super Mario Odyssey",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100000011D90000": {
+   "name": "Pokémon Brilliant Diamond",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "010005501E68C000": {
+   "name": "Ace Attorney Investigations Collection",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010012101468C000": {
+   "name": "Metroid Prime Remastered",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010013C00E930000": {
+   "name": "Hollow Knight: Silksong",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010014C011146000": {
+   "name": "Subnautica: Below Zero",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010014E00DB56000": {
+   "name": "Digimon Story Cyber Sleuth: Complete Edition",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010015100B514000": {
+   "name": "Super Mario Bros. Wonder",
+   "builds": 3,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100152000022000": {
+   "name": "Mario Kart 8 Deluxe",
+   "builds": 2,
+   "needs": 2,
+   "cuts": 0
+  },
+  "010016100A186000": {
+   "name": "SteamWorld Heist: Ultimate Edition",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100199023B2E000": {
+   "name": "Atelier Ryza: Ever Darkness & the Secret Hideout DX",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01001F5010DFA000": {
+   "name": "Pokémon Legends: Arceus",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010020400E1C2000": {
+   "name": "Raging Loop",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010020D01AD24000": {
+   "name": "ANIMAL WELL",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100217023F6C000": {
+   "name": "Well Dweller",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100276009872000": {
+   "name": "ŌKAMI HD",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010028600EBDA000": {
+   "name": "Super Mario 3D World + Bowser's Fury",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010029B0118E8000": {
+   "name": "Need For Speed™ Hot Pursuit Remastered",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 1
+  },
+  "010029B018432000": {
+   "name": "Ghost Trick: Phantom Detective",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "01002B00111A2000": {
+   "name": "Hyrule Warriors: Age of Calamity",
+   "builds": 1,
+   "needs": 4,
+   "cuts": 0
+  },
+  "01002B30028F6000": {
+   "name": "Celeste",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01002CD00A51C000": {
+   "name": "Baba Is You",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01002DA013484000": {
+   "name": "The Legend of Zelda: Skyward Sword HD",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01002E7016C46000": {
+   "name": "Cult of the Lamb",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100300012F2A000": {
+   "name": "Advance Wars 1+2: Re-Boot Camp",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100317013770000": {
+   "name": "Mario + Rabbids® Sparks of Hope",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 1
+  },
+  "010031F019294000": {
+   "name": "Super Monkey Ball Banana Rumble",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010032E00E6E2000": {
+   "name": "Return of the Obra Dinn",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100346017304000": {
+   "name": "Taiko Risshiden V DX",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 1
+  },
+  "010035F022078000": {
+   "name": "DRAGON BALL: Sparking! ZERO",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "010036E00FB20000": {
+   "name": "The Great Ace Attorney Chronicles",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "010038600B27E000": {
+   "name": "Bastion",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010038B015560000": {
+   "name": "FINAL FANTASY TACTICS - The Ivalice Chronicles",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 2
+  },
+  "01003E601E324000": {
+   "name": "DRAGON QUEST III HD-2D Remake",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "01003FC01670C000": {
+   "name": "13 Sentinels: Aegis Rim",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010040801A4C8000": {
+   "name": "Blasphemous 2",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010042000A986000": {
+   "name": "DRAGON QUEST BUILDERS 2",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100429011144000": {
+   "name": "Subnautica",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010045C014650000": {
+   "name": "13 Sentinels: Aegis Rim (Japan)",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010049900F546000": {
+   "name": "Super Mario 3D All-Stars",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "010049900F546001": {
+   "name": "Super Mario 3D All-Stars: Super Mario 64",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "010049900F546002": {
+   "name": "Super Mario 3D All-Stars: Super Mario Sunshine",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 2
+  },
+  "01004A4010FEA000": {
+   "name": "Bayonetta 3",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01004AB00A260000": {
+   "name": "DARK SOULS: REMASTERED",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 2
+  },
+  "01004D300C5AE000": {
+   "name": "Kirby and the Forgotten Land",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010051701FB46000": {
+   "name": "Monster Train 2",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "01005270232F2000": {
+   "name": "OCTOPATH TRAVELER 0",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0100535012974000": {
+   "name": "Hades",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010054B01AD92000": {
+   "name": "Unicorn Overlord (Asia)",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010055D009F78000": {
+   "name": "Fire Emblem: Three Houses",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 7
+  },
+  "010056B015FE8000": {
+   "name": "NieR:Automata The End of YoRHa Edition",
+   "builds": 1,
+   "needs": 6,
+   "cuts": 8
+  },
+  "010057D006492000": {
+   "name": "OCTOPATH TRAVELER",
+   "builds": 1,
+   "needs": 4,
+   "cuts": 0
+  },
+  "01005CA01580E000": {
+   "name": "Persona 5 Royal",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01006000040C2000": {
+   "name": "Yoshi's Crafted World",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0100606026F12000": {
+   "name": "FINAL FANTASY RESONANCE",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0100620012D6E000": {
+   "name": "Big Brain Academy: Brain vs. Brain",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010062B01525C000": {
+   "name": "Persona 4 Golden",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100633007D48000": {
+   "name": "Hollow Knight",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010063301BD50000": {
+   "name": "SUPER ROBOT WARS Y",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100646009FBE000": {
+   "name": "Dead Cells",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010067300059A000": {
+   "name": "Mario + Rabbids Kingdom Battle",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "010069401ADB8000": {
+   "name": "Unicorn Overlord",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100698009C6E000": {
+   "name": "Blasphemous",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010069C01AB82000": {
+   "name": "SHIN MEGAMI TENSEI V: Vengeance",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "01006A800016E000": {
+   "name": "Super Smash Bros. Ultimate",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 11
+  },
+  "01006BB00C6F0000": {
+   "name": "The Legend of Zelda: Link's Awakening",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 1
+  },
+  "01006C300E9F0000": {
+   "name": "DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "01006D0017F7A000": {
+   "name": "Mario & Luigi: Brothership",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "01006F8002326000": {
+   "name": "Animal Crossing: New Horizons",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "01006FE013472000": {
+   "name": "Mario Party Superstars",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100713016CCC000": {
+   "name": "AI: THE SOMNIUM FILES - nirvanA Initiative",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01007300020FA000": {
+   "name": "ASTRAL CHAIN",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "010074F013262000": {
+   "name": "Xenoblade Chronicles 3",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 6
+  },
+  "010076F0049A2000": {
+   "name": "Bayonetta",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01007960049A0000": {
+   "name": "Bayonetta 2",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01007A3009184000": {
+   "name": "Princess Peach: Showtime!",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "01007BB017812000": {
+   "name": "Portal",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01007E3006DDA000": {
+   "name": "Kirby Star Allies",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01007EF00011E000": {
+   "name": "The Legend of Zelda: Breath of the Wild",
+   "builds": 1,
+   "needs": 5,
+   "cuts": 7
+  },
+  "010086A022444000": {
+   "name": "BALL x PIT",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010089B00D09C000": {
+   "name": "AI: THE SOMNIUM FILES",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010089C01E9CA000": {
+   "name": "SteamWorld Heist II",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01008BC024FDE000": {
+   "name": "STEINS;GATE RE:BOOT",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01008C0016544000": {
+   "name": "Sea of Stars",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01008CF01BAAC000": {
+   "name": "The Legend of Zelda: Echoes of Wisdom",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01008D7016438000": {
+   "name": "13 Sentinels: Aegis Rim (Asia)",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01008D9022462000": {
+   "name": "The Rogue Prince of Persia",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "01008DB008C2C000": {
+   "name": "Pokémon Shield",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01008F6008C5E000": {
+   "name": "Pokémon Violet",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01008F701C074000": {
+   "name": "Sonic Superstars",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "010092B0091D0000": {
+   "name": "Team Sonic Racing",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01009320084A4000": {
+   "name": "SteamWorld Dig",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010093801237C000": {
+   "name": "Metroid Dread",
+   "builds": 1,
+   "needs": 0,
+   "cuts": 0
+  },
+  "0100965017338000": {
+   "name": "Super Mario Party Jamboree",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010097F018538000": {
+   "name": "DAVE THE DIVER",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "010099C022B96000": {
+   "name": "Super Mario Galaxy",
+   "builds": 1,
+   "needs": 0,
+   "cuts": 0
+  },
+  "01009BF0072D4000": {
+   "name": "Captain Toad: Treasure Tracker",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "01009D901BC56000": {
+   "name": "Donkey Kong Country Returns HD",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100A00019DE0000": {
+   "name": "Hades II",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100A3501946E000": {
+   "name": "OCTOPATH TRAVELER II",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "0100A3900C3E2000": {
+   "name": "Paper Mario: The Origami King",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100A3D008C5C000": {
+   "name": "Pokémon Scarlet",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100A5C00D162000": {
+   "name": "Cuphead",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100A6301214E000": {
+   "name": "Fire Emblem Engage",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "0100A7C01B792000": {
+   "name": "Minecraft Dungeons II",
+   "builds": 1,
+   "needs": 4,
+   "cuts": 0
+  },
+  "0100A83022A22000": {
+   "name": "Absolum",
+   "builds": 2,
+   "needs": 2,
+   "cuts": 0
+  },
+  "0100A9D01C446000": {
+   "name": "DRAGON QUEST VII Reimagined",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0100ABD01785C000": {
+   "name": "Portal 2",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100ABF008968000": {
+   "name": "Pokémon Sword",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100ACD0163D0000": {
+   "name": "Batman: Arkham Knight",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 8
+  },
+  "0100AE00096EA000": {
+   "name": "Hyrule Warriors: Definitive Edition",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100B04011742000": {
+   "name": "Monster Hunter Rise",
+   "builds": 1,
+   "needs": 5,
+   "cuts": 0
+  },
+  "0100B7C00933A000": {
+   "name": "Pikmin 4",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0100B8A026F14000": {
+   "name": "FINAL FANTASY RESONANCE (Asian release)",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0100B8E016F76000": {
+   "name": "NieR:Automata The End of YoRHa Edition",
+   "builds": 1,
+   "needs": 6,
+   "cuts": 8
+  },
+  "0100B99019412000": {
+   "name": "Mario vs. Donkey Kong",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "0100BA4026E94000": {
+   "name": "Castlevania: Belmont's Curse",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100BC0018138000": {
+   "name": "Super Mario RPG",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100BC300CB48000": {
+   "name": "FINAL FANTASY X/X-2 HD Remaster",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100BF00112C0000": {
+   "name": "Catherine: Full Body",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100C1F0051B6000": {
+   "name": "Donkey Kong Country: Tropical Freeze",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100C2A01A730000": {
+   "name": "ROMANCE OF THE THREE KINGDOMS 8 REMAKE",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100C49025D3E000": {
+   "name": "EA SPORTS FC 27",
+   "builds": 1,
+   "needs": 4,
+   "cuts": 0
+  },
+  "0100CA9002322000": {
+   "name": "SteamWorld Dig 2",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100CC80140F8000": {
+   "name": "TRIANGLE STRATEGY",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "0100CD801CE5E000": {
+   "name": "Balatro",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100CE4010AAC000": {
+   "name": "FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100D5B026844000": {
+   "name": "Silver Pines",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100D7C01F254000": {
+   "name": "DRAGON QUEST I & II HD-2D Remake",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "0100D9F01D474000": {
+   "name": "Rhythm Heaven Groove",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100DCA0064A6000": {
+   "name": "Luigi's Mansion 3",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0100E44016C22000": {
+   "name": "Patrick's Parabox",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100E65002BB8000": {
+   "name": "Stardew Valley",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100E95004038000": {
+   "name": "Xenoblade Chronicles 2",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100EC9010258000": {
+   "name": "Streets of Rage 4",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100ECD018EBE000": {
+   "name": "Paper Mario: The Thousand-Year Door",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 1
+  },
+  "0100ED7012DB2000": {
+   "name": "ROMANCE OF THE THREE KINGDOMS XIV: Diplomacy and Strategy Expansion Pack",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100F2C0115B6000": {
+   "name": "The Legend of Zelda: Tears of the Kingdom",
+   "builds": 1,
+   "needs": 5,
+   "cuts": 0
+  },
+  "0100F43008C44000": {
+   "name": "Pokémon Legends: Z-A",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100F5D01DA3A000": {
+   "name": "Brain Memory Training Academy",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0100FD8022DAA000": {
+   "name": "Super Mario Galaxy 2",
+   "builds": 1,
+   "needs": 0,
+   "cuts": 0
+  },
+  "0100FF500E34A000": {
+   "name": "Xenoblade Chronicles: Definitive Edition",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0400245021D2C000": {
+   "name": "Yoshi and the Mysterious Book",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0400380020056000": {
+   "name": "Splatoon Raiders",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "04003F40232DE000": {
+   "name": "Hyrule Warriors: Age of Imprisonment",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0400486024DEC000": {
+   "name": "The Legend of Zelda: Ocarina of Time",
+   "builds": 1,
+   "needs": 6,
+   "cuts": 0
+  },
+  "040074A01BF12000": {
+   "name": "Donkey Kong Bananza",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "040077201BE50000": {
+   "name": "Kirby Air Riders",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "04007EF01F8AE000": {
+   "name": "Fire Emblem Fortune's Weave",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0400A3A01EE4C000": {
+   "name": "Pokemon Pokopia",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  },
+  "0400C3F00006E000": {
+   "name": "Mario Kart World",
+   "builds": 1,
+   "needs": 3,
+   "cuts": 0
+  },
+  "0400D4201C6EA000": {
+   "name": "Mario Tennis Fever",
+   "builds": 1,
+   "needs": 2,
+   "cuts": 0
+  },
+  "0400E88025B1A000": {
+   "name": "Star Fox",
+   "builds": 1,
+   "needs": 1,
+   "cuts": 0
+  }
+ },
+ "builds": {
+  "b424be150a8e7d78701cbe7a439d9ebf": "0100000000010000",
+  "94ceae325c205c4b9d6f7235552f28fd": "0100000011D90000",
+  "f2755f077e2b2dfd89e1c59dcddce91e": "010005501E68C000",
+  "67c9ca1428222752f951021464a7b359": "010012101468C000",
+  "fc9ea4ccc955d5799f37752b2d730b31": "010013C00E930000",
+  "5b050c55b8264040b642a0cdca5ded83": "010014C011146000",
+  "bedae701dd8565cdc494ca8dc3c840e8": "010014E00DB56000",
+  "cd6e42aee7934f4d8393cd43893ae25e": "010015100B514000",
+  "f91868b88f60d3d59009db3389fde314": "010015100B514000",
+  "ff773e90972d544eb79406eaa65396d5": "010015100B514000",
+  "2c336a9bcf79c3040ce506cdd391b578": "0100152000022000",
+  "158c0c7399aabd7bf83795c2ef3484c7": "0100152000022000",
+  "d6759070f75cc4c8a5b8ea59f52292a5": "010016100A186000",
+  "b1c897c145e684a16c0be1a9b96c4dcd": "0100199023B2E000",
+  "aee8f150dda1b5a838806e1a5ea6827a": "01001F5010DFA000",
+  "703c266cfe107f4096c4d0ee657f65a0": "010020400E1C2000",
+  "6a6ec42ffb98642a11f17a0d5e23c702": "010020D01AD24000",
+  "c66955cb8eb7c48507ab69c7d8b0dde9": "0100217023F6C000",
+  "a4fddc7fd35b30cb763bf70c3213dcb7": "0100276009872000",
+  "635fe25c7cb69847f41b49f19cd9aa89": "010028600EBDA000",
+  "799d1061182c1302e08e706b84ce76e5": "010029B0118E8000",
+  "9f52de8549d91cfe840e6d1094f5e3b4": "010029B018432000",
+  "c3cf52bf2b05d7310884971b50bcccb8": "01002B00111A2000",
+  "9382989af9636a1e02aeb3693094e87d": "01002B30028F6000",
+  "4e1e4c7bc925853c998b8af07726c87d": "01002CD00A51C000",
+  "5441af3c89f97e1d25a8ccf14c742bf8": "01002DA013484000",
+  "316a4d4881a9f1e077a07262e917917c": "01002E7016C46000",
+  "320a17744aefd67fec5738ca0c629795": "0100300012F2A000",
+  "5b76a43b231e0640521ac66203f7c178": "0100317013770000",
+  "95548fabbca7a4f723c3468e5cfb34d0": "010031F019294000",
+  "9e93a6566aaa27418dd2435d8d5dffe5": "010032E00E6E2000",
+  "f5ab74b9d45f955de2dc91da8e039c57": "0100346017304000",
+  "68edafd68c7bc1a1af50b82aac838018": "010035F022078000",
+  "1da748fc9499882f24dfca9f583c5574": "010036E00FB20000",
+  "26a2d0ccaee5f39e92aad6bab4ba7c47": "010038600B27E000",
+  "3cfd457814dd647f4cd0f0ae9f9454d2": "010038B015560000",
+  "a6bd61cfb142e663f59f4d92b4ed0474": "01003E601E324000",
+  "4b632573ca5c160eabb70519fb622718": "01003FC01670C000",
+  "040ad650120b583a3dbfe70750c58b4b": "010040801A4C8000",
+  "4f3d7e03666af9b8aa848afac78cb7f7": "010042000A986000",
+  "b3db5a1edaf8454f8cd52b31dc82fb02": "0100429011144000",
+  "932cabe1982fe80a2dbf7c49e09bce0a": "010045C014650000",
+  "7f54bcfb4062dcd911eebc66bd078324": "010049900F546000",
+  "e96321640d68646035496a0a1f082422": "010049900F546001",
+  "b21e3733e11d6fcf1a8d57ce51bef4a5": "010049900F546002",
+  "b47cc79b88b7091ea514b2b725c50ae0": "01004A4010FEA000",
+  "df3766a2bb651a3e822828abf10b6f7b": "01004AB00A260000",
+  "a6ce40dc3aedb1becacd2f1ff4515307": "01004D300C5AE000",
+  "b337cdea2be300e638a0dfb74e9115a9": "010051701FB46000",
+  "9fe60a212cff9b9a3656ab63d4f882e5": "01005270232F2000",
+  "d41357a3da356b09fa400b90f303b564": "0100535012974000",
+  "9c3116f0333ea157526612d17354b375": "010054B01AD92000",
+  "89048449ba238c8cf565518b83bf02d3": "010055D009F78000",
+  "3c10ec35c5ef4c3686b4053afb0e58e7": "010056B015FE8000",
+  "67dacc049ceee8585b1583336c565b43": "010057D006492000",
+  "d4b150b29a931cd381e2a30318fc299f": "01005CA01580E000",
+  "44ae9fd12897c7028bdc393bb0d833d3": "01006000040C2000",
+  "84e182f72ee1da4f477804bd05b54c15": "0100606026F12000",
+  "bfed48f22df30be71b4eeae5b0373a9f": "0100620012D6E000",
+  "66b2b6d53549a6364a43f69e282e3882": "010062B01525C000",
+  "d1ceb177087be472f4574be16ccd3b0f": "0100633007D48000",
+  "0f4138f9b3c475d890aec26313d567dc": "010063301BD50000",
+  "6e35ee0a240291430df6cccb49578378": "0100646009FBE000",
+  "3b39e0c06b8841f1baf0ea4d54286bfe": "010067300059A000",
+  "c841ffe2717ff03a13990480c51da73f": "010069401ADB8000",
+  "ab67af56a9d98348817e8b12c5af3ea1": "0100698009C6E000",
+  "0a4f14a5c12f470a4d3168a8f2ae6005": "010069C01AB82000",
+  "21450c647b8c5940ed5b68218ea128fd": "01006A800016E000",
+  "909e904af78ac1b8deefe97ab2ccdb51": "01006BB00C6F0000",
+  "1719aabfa5eae42b132b65770b871288": "01006C300E9F0000",
+  "59874c9b530095ace0298b938d8e5ea7": "01006D0017F7A000",
+  "ff1d1c05670db6021c85b624a710b963": "01006F8002326000",
+  "2841e26d7fb8aa1783afd4b6c116d4f9": "01006FE013472000",
+  "8a5289dc71707ceb6f391288fb064e7f": "0100713016CCC000",
+  "4b159f0f7a360669738390ee8657b4f0": "01007300020FA000",
+  "82d187fe9ef9be921b8e1b1cddf7bd28": "010074F013262000",
+  "1f4a4708615f76f7cad4f12b5c417806": "010076F0049A2000",
+  "f19b2e01e1794f933a9720c1404bb6f6": "01007960049A0000",
+  "928efe2954f680557b8b3839481c97db": "01007A3009184000",
+  "8ec6b5335d7ca09e21c9b6989cfa23fe": "01007BB017812000",
+  "d55608916fa56c184f2a8fe80da0427c": "01007E3006DDA000",
+  "cd57b23fa4bbad65803d9788c01821ee": "01007EF00011E000",
+  "ed9090f18ae37a5a0966f5cfe5a07cc2": "010086A022444000",
+  "53153920243843459f88ace4c34cee46": "010089B00D09C000",
+  "c05f42851f168030c15689cdbfac742c": "010089C01E9CA000",
+  "e9016a42a1b2bfa323bc987215c30af3": "01008BC024FDE000",
+  "1399a83376b1b1c2e5756fbdf7491956": "01008C0016544000",
+  "9f221e1afa65ba5443e955158ab97da8": "01008CF01BAAC000",
+  "311947020f64f5742ce3c16162c4d87f": "01008D7016438000",
+  "292cbdeb9e2b141bec2ddd8504c747b1": "01008D9022462000",
+  "a16802625e7826bf83b6f9708e475b91": "01008DB008C2C000",
+  "959ed651bf1ae0cccafe8c3f4c64bfd2": "01008F6008C5E000",
+  "f1bb173fc40702f6f911a18f171c3fe9": "01008F701C074000",
+  "ad75285a65eb6ffddfb7df4ec09732cf": "010092B0091D0000",
+  "28ca125827f8105a3accfb212d3138fa": "01009320084A4000",
+  "646761f643afebb379edd5e6a5151af2": "010093801237C000",
+  "d70ce1726c979e45ed4200e9c2b23b2a": "0100965017338000",
+  "f74b633e480e4e161f80a7c16a467f2a": "010097F018538000",
+  "9d08cadcbcc1cea428381745291f8bc2": "010099C022B96000",
+  "41eae379c103e9a512cfa931ba400e93": "01009BF0072D4000",
+  "991eccf3339153e469f15936fac59c52": "01009D901BC56000",
+  "5219053e5eb156be80fbb2f303779531": "0100A00019DE0000",
+  "0d9649011312f62e93f6a5673a09d7e9": "0100A3501946E000",
+  "e74395f066fd8ccb51ec17b39b3da2c8": "0100A3900C3E2000",
+  "ca44e7dd62e61a2a4e8889b3319ae173": "0100A3D008C5C000",
+  "d02cd50295124a48968488416e7e692b": "0100A5C00D162000",
+  "8c08b9719e085f91847b5e0f935d9488": "0100A6301214E000",
+  "c6b32f4d3d4243ff190b082b4f6aea18": "0100A7C01B792000",
+  "916f5b8d61baa16d0939404ea047e129": "0100A83022A22000",
+  "f2d7d0e177d1e60c33678a9a57ba2056": "0100A83022A22000",
+  "f7ec03e4cb9de3bd8319d4e899d2e9cc": "0100A9D01C446000",
+  "b3ad5072371479730d49baebd0c4ec82": "0100ABD01785C000",
+  "a3b75bcd3311385aeed67fbeeb79cbb7": "0100ABF008968000",
+  "feae83dc9e9fb34c77d0a62f1fa9ae9f": "0100ACD0163D0000",
+  "815a2c19d176789688ff33ea875c26c5": "0100AE00096EA000",
+  "c9a3dd7702075ecd90101f4555389582": "0100B04011742000",
+  "060f827bd2b38703e9ea11e3210d89bc": "0100B7C00933A000",
+  "b7f965b9d7227db8e29f04e84ea7331b": "0100B8A026F14000",
+  "98397a10419894652f372d4dc1b6fc2c": "0100B8E016F76000",
+  "43ae51ee9766867da5f1272ca0d3d8a6": "0100B99019412000",
+  "0f1169aa7d0fa4529c861f96adec306e": "0100BA4026E94000",
+  "97f9664cfb2721546954cdeb3b303a4c": "0100BC0018138000",
+  "1ce9f39ddb8a1a93d95309c346e66d9d": "0100BC300CB48000",
+  "93a79c77da81f7f15db021c5c7431eb4": "0100BF00112C0000",
+  "f48bd40d89b529c114f17c7909fe6aa4": "0100C1F0051B6000",
+  "3c737e2d67d57d03ced6019f17f6e47d": "0100C2A01A730000",
+  "a48c0de3bc353efa0e4d359bde05ef24": "0100C49025D3E000",
+  "4417bbfe114aa26572fcc0635e02f58f": "0100CA9002322000",
+  "9cb4490e8a718bae392c59b0368d7c4e": "0100CC80140F8000",
+  "294d920907e888814f9040550861fdf5": "0100CD801CE5E000",
+  "e1d8b399b787ae4186bc974403a82d97": "0100CE4010AAC000",
+  "91046036f8850de3ec306056fcc6ba12": "0100D5B026844000",
+  "ddb633241838c09038ff06706f68aecc": "0100D7C01F254000",
+  "03ff4a3bec96bde3a2e37ce3aa4caa0c": "0100D9F01D474000",
+  "79e5950ffa85acf63e28c9aec051eac2": "0100DCA0064A6000",
+  "86171cbde77fb44989fbc97905ffc8f4": "0100E44016C22000",
+  "e7f845093e8cbc68dacf011ccb620d66": "0100E65002BB8000",
+  "f77f1559371c0ec6d50e78774ac59d95": "0100E95004038000",
+  "8817441976e32e94909a95f64405a99a": "0100EC9010258000",
+  "0effe4af1dec3a7966b934d4a7c3d2bf": "0100ECD018EBE000",
+  "1a971cc40b6d5b3f7cc3317856d822fe": "0100ED7012DB2000",
+  "277178b7dba1b6d4949a84778d4abc58": "0100F2C0115B6000",
+  "b1f12fd919eae86ab8a978317677e64b": "0100F43008C44000",
+  "b0a32fd69b176ec50000000000000000": "0100F5D01DA3A000",
+  "4c4513d976582b4a7a766401a8ea6dbf": "0100FD8022DAA000",
+  "92c78bb3dcbbc3f7a3caf601d7b85f7a": "0100FF500E34A000",
+  "893c30e75521afb8b23326eb6aa0e2dc": "0400245021D2C000",
+  "663c2e087a083f05307f229dfc4042d5": "0400380020056000",
+  "659cb288b5c5b2b49853add616c0d5bf": "04003F40232DE000",
+  "e0f3ccfaf50065ae4ea01eb5aeb13b1a": "0400486024DEC000",
+  "e25c90c1c136638885659fd55bf8a03b": "040074A01BF12000",
+  "9ede03836568bcd34434dfc29bc61e04": "040077201BE50000",
+  "db93b0125f4850601d61c3edde012f8e": "04007EF01F8AE000",
+  "76a489f3bd3642fa5e18bd83d32c98ba": "0400A3A01EE4C000",
+  "9e244438c3d8ef1c703a6a85ef99c4f0": "0400C3F00006E000",
+  "104bce6874603701935eb76cb7d8b59e": "0400D4201C6EA000",
+  "a7730d0f74d168d90422354c8317f76f": "0400E88025B1A000"
+ },
+ "sdk_builds": [
+  "9de92bad67c4150268943ab4843ace65"
+ ]
+}

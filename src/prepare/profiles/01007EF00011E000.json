@@ -1,0 +1,135 @@
+{
+ "source": "nxnative dm/games/01007EF00011E000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01007EF00011E000",
+ "name": "The Legend of Zelda: Breath of the Wild",
+ "builds": [
+  {
+   "version": 1114112,
+   "tag": "v1114112",
+   "display": "1.9.0",
+   "modules": {
+    "main": "cd57b23fa4bbad65803d9788c01821ee",
+    "subsdk0": "f39f4c431234c72eb520cfdd1001bbcf",
+    "sdk": "574284b40c06cf1821a44857939083be"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01007EF00011E000",
+  "program_id": "01007EF00011E000",
+  "name": "The Legend of Zelda: Breath of the Wild",
+  "pad_layout": "full",
+  "package": "v1114112",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Pack/Bootup_Graphics.pack",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "render_base",
+   "value": "1600x900 1280x720",
+   "what": "The render scale setting is not available."
+  },
+  {
+   "key": "gpu_timestamps",
+   "value": "segment",
+   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
+  },
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "screen_aspect",
+   "value": "on",
+   "what": "Only 16:9 output: the game's taller-screen mode is not available."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "present_snap",
+  "pso_mtl4",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "cd57b23fa4bbad65803d9788c01821ee": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 17983244,
+     "orig": "6041201e",
+     "new": "4041201e",
+     "why": "lower bound of the candidate interval: fmov s0,s11 (2.0) → fmov s0,s10 (1.0)"
+    },
+    {
+     "off": 17983248,
+     "orig": "7f0b0071",
+     "new": "7f070071",
+     "why": "lower bound of the candidate interval: cmp w27,#2 → cmp w27,#1"
+    },
+    {
+     "off": 17983068,
+     "orig": "78008052",
+     "new": "58008052",
+     "why": "step-down target recorded when stepping up, max(candidate, w24) − 1: mov w24,#3 → mov w24,#2"
+    },
+    {
+     "off": 17983304,
+     "orig": "1f0d0071",
+     "new": "1f090071",
+     "why": "step-down target recorded when stepping up: cmp w8,#3 → cmp w8,#2"
+    },
+    {
+     "off": 17983380,
+     "orig": "3f0d0071",
+     "new": "3f090071",
+     "why": "stepping down stops at < 3 → at < 2: cmp w9,#3 → cmp w9,#2"
+    },
+    {
+     "off": 17983772,
+     "orig": "c00000b4",
+     "new": "03000014",
+     "why": "interval controller always takes the GPU time path (CPU span timing): cbz x0,#0x1126934 → b #0x1126928"
+    },
+    {
+     "off": 17983860,
+     "orig": "c00000b4",
+     "new": "03000014",
+     "why": "interval controller always takes the GPU time path (takes max(CPU span, GPU time)): cbz x0,#0x112698c → b #0x1126980"
+    }
+   ]
+  }
+ },
+ "unconverted": [
+  {
+   "kind": "FRAME_STEP",
+   "build": "cd57b23fa4bbad65803d9788c01821ee",
+   "sites": 44,
+   "writes": 43,
+   "stub_words": 2988,
+   "capabilities": [],
+   "render_scale": true,
+   "note": "recorded"
+  }
+ ],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

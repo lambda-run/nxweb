@@ -1,0 +1,53 @@
+{
+ "source": "nxnative dm/games/01009320084A4000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01009320084A4000",
+ "name": "SteamWorld Dig",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.12.0",
+   "modules": {
+    "main": "28ca125827f8105a3accfb212d3138fa",
+    "sdk": "d6afd2cb180ca36e58ec21a12cf27eec"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01009320084A4000",
+  "program_id": "01009320084A4000",
+  "name": "SteamWorld Dig",
+  "package": "v65536",
+  "modules": "main sdk",
+  "romfs_marker": "Menus/menus/spriteset.dat",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

@@ -1,0 +1,252 @@
+// End-to-end cases of the parts joined in the integration round: controllers through the take-over table (several
+// players, the applet's prompt, vibration), nn::audio attached (the silent sink's exact release times), the NVN
+// waits (timeouts, device loss). Shared by run.mts (Node) and web/worker.ts (browser); no Node APIs.
+import { Runtime, type RuntimeOptions } from "../../src/glue/rt_runtime.ts";
+import type { CaseResult } from "./cases.ts";
+import type { MoreEnv } from "./more_cases.ts";
+import { bootGfx, type Gpu, type GfxProcess } from "./gfx_cases.ts";
+import { attachHle } from "../../src/glue/hle_rt.ts";
+import { RtInput, KEYBOARD, BTN } from "../../src/glue/rt_input.ts";
+import { RtAudio } from "../../src/glue/rt_audio.ts";
+import type { VibrationState } from "../../src/glue/hle_host.ts";
+import { analyzeTone } from "../audio/analyze.ts";
+
+function fail(msg: string): never { throw new Error(msg); }
+function eq(got: unknown, want: unknown, what: string): void {
+  const str = (v: unknown) => typeof v === "string" ? v : JSON.stringify(v, (_, x) => typeof x === "bigint" ? x.toString() : x);
+  if (str(got) !== str(want)) fail(`${what}:\n--- got ---\n${str(got)}\n--- want ---\n${str(want)}`);
+}
+function ok(c: unknown, what: string): void { if (!c) fail(what); }
+const notForce = (l: string) => !l.includes("forced take-over entry with no reference");
+
+// What the page or the test's page offers the audio cases: the device's page side and what its worklet put out
+export interface AudioPage {
+  send: (m: { audio: Record<string, unknown> }, transfer?: Transferable[]) => void;
+  onMessage: (fn: ((m: unknown) => void) | null) => void;   // { audio } messages of the page side
+  record: (frames: number) => Promise<void>;
+  dump: () => Promise<{ pcm: Float32Array; frames: number; sampleRate: number; underrun: number; callbacks: number; context: string }>;
+}
+export interface IntEnv extends MoreEnv { audioPage?: AudioPage }
+
+export interface IntCase { name: string; fn: () => Promise<string[]> }
+export function intCases(env: IntEnv, gpu: Gpu | undefined): IntCase[] {
+  const list: IntCase[] = [];
+  const test = (name: string, fn: () => Promise<string[] | void>) => list.push({ name, fn: async () => (await fn()) ?? [] });
+  const where = gpu ? "WebGPU" : "null replayer";
+  void where;
+
+  // ---- controllers ----
+  if (env.mods.hle) test("input: keyboard and several controllers as several players by source id, a controller that leaves and comes back, the controller applet's prompt as a wait, vibration routed to the player's controller", async () => {
+    const rt = new Runtime(env.mods);
+    const prompts: [number, number][] = [], rumble: { source: number; state: VibrationState }[] = [];
+    let input!: RtInput;
+    const hle = attachHle(rt, env.mods.hle!, { config: { opmode: 1 }, front: {
+      // the prompt stays up while the test connects two controllers, then OK
+      ctrlPrompt: (min, max, answer) => {
+        prompts.push([min, max]);
+        setTimeout(() => { input.set(77, { buttons: 0, rumble: true }); input.set(88, { buttons: 0, rumble: true }); answer(true); }, 5);
+        return true;
+      },
+      vibration: state => { if (input) rumble.push({ source: input.sourceOf(state.player), state }); },   // (the table reports every motor idle when the output is attached)
+    } });
+    input = new RtInput(hle);
+    const players: string[] = [];
+    rt.register({ name: "pads_step", fn: cpu => {
+      const step = cpu.w(0);
+      if (step === 1) input.set(KEYBOARD, { buttons: BTN.A });
+      else if (step === 2) input.set(77, { buttons: BTN.B, rumble: true });
+      else if (step === 3) input.set(88, { buttons: BTN.X, lx: 32767, rumble: true });
+      else if (step === 4) input.set(77, null);                       // it went away: the keyboard is still player 1
+      else if (step === 5) input.set(99, { buttons: BTN.Y });         // a new controller takes the free player 1
+      else if (step === 6) input.set(77, { buttons: BTN.B });         // back: its player is taken, it gets the next one nobody held
+      else return 0;
+      players.push(`step ${step}: ` + input.players.map(p => `source ${p.source} = player ${p.player + 1}`).join(", "));
+      return 1;
+    } });
+    ok(rt.loadNso([{ name: "pads", bytes: env.nso("pads") }]), "load failed: " + rt.red.join(" | "));
+    const r = await rt.runAsync();
+    eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "how it ended: " + rt.red.join(" | "));
+    eq(rt.stdout().split("\n"), [
+      "step 0: No1 buttons 0x0 lx 0 No2 - No3 - No4 -",
+      "controller applet: rc 0x0, players 2",
+      "step 1: No1 buttons 0x1 lx 0 No2 buttons 0x0 lx 0 No3 - No4 -",
+      "step 2: No1 buttons 0x3 lx 0 No2 buttons 0x0 lx 0 No3 - No4 -",
+      "step 3: No1 buttons 0x3 lx 0 No2 buttons 0x40004 lx 32767 No3 - No4 -",
+      "step 4: No1 buttons 0x1 lx 0 No2 buttons 0x40004 lx 32767 No3 - No4 -",
+      "step 5: No1 buttons 0x9 lx 0 No2 buttons 0x40004 lx 32767 No3 - No4 -",
+      "step 6: No1 buttons 0x9 lx 0 No2 buttons 0x40004 lx 32767 No3 buttons 0x2 lx 0 No4 -",
+      "vibration handles of No2: 2", ""], "what the npads read");
+    eq(prompts, [[2, 4]], "the controller prompt was asked for once, for 2 to 4 players");
+    eq(players.at(-1), "step 6: source 99 = player 1, source 88 = player 2, source 77 = player 3", "players at the end");
+    const last = rumble.at(-1) ?? fail("no vibration reached the front end");
+    eq([last.source, last.state.player], [88, 1], "the vibration went to player 2's controller");
+    const m = last.state.motors[0];
+    ok(Math.abs(m.amplitudeLow - 0.5) < 1e-6 && Math.abs(m.frequencyLow - 160) < 1e-3 && Math.abs(m.amplitudeHigh - 0.25) < 1e-6 && Math.abs(m.frequencyHigh - 320) < 1e-3, "the left motor's value: " + JSON.stringify(m));
+    eq(rt.red.filter(notForce), [], "red lines");
+    return [...players.slice(-1), `the prompt asked for ${prompts[0][0]} to ${prompts[0][1]} players and waited; ${rumble.length} vibration reports, the last to source ${last.source}: ${JSON.stringify(m)}`,
+      rt.logs.find(l => l.startsWith("hid controller applet")) ?? ""];
+  });
+
+  // ---- audio ----
+  const toneBoot = (o: RuntimeOptions, total: number, extra: (rt: Runtime) => Partial<ConstructorParameters<typeof RtAudio>[2] & object> = () => ({})) => {
+    const rt = new Runtime(env.mods, o), hle = attachHle(rt, env.mods.hle!, { config: { opmode: 1 } });
+    const signals: bigint[] = [];
+    const audio = new RtAudio(rt, env.mods.audio!, { hle, onSignal: (_t, ns) => signals.push(ns), ...extra(rt) });
+    rt.register({ name: "tone_buffers", fn: () => total });
+    ok(rt.loadNso([{ name: "tone", bytes: env.nso("tone") }]), "load failed: " + rt.red.join(" | "));
+    return { rt, hle, audio, signals };
+  };
+  const NAME = "the output's name: DeviceOut; localtime of day 400: year 1971";
+  const OPEN = "OpenDefaultAudioOut rc 0x0, 48000 Hz, 2 channels, volume x1000 1000, the event was created by this module's nn::os";
+  if (env.mods.hle && env.mods.audio) test("audio (no device: the silent sink): a guest opens an AudioOut with a SystemEvent bound through the take-over table, keeps four 5 ms buffers of a tone in flight driven by the buffer-released event, and every buffer comes back at exactly its time on the guest clock", async () => {
+    const N = 400, lines: string[] = [];
+    const run = async (budget: number) => {
+      const t = toneBoot({ budget }, N);
+      const before = [0, 3].map(w => Number(t.rt.k.kernel_count(w)));
+      const r = await t.rt.runAsync();
+      eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], `how it ended (budget ${budget}): ` + t.rt.red.join(" | ") + t.rt.stdout());
+      const out = t.rt.stdout().split("\n");
+      eq(out.slice(0, 3), [OPEN, NAME, "StartAudioOut rc 0x0"], "the guest's first lines");
+      ok(new RegExp(`^tone: ${N} buffers came back in ${N} wake-ups, (1999\\d\\d\\d|2000000) us of guest time, the longest gap 500\\d us$`).test(out[3]), "the guest's summary: " + out[3]);
+      eq(t.signals.length, N, "release signals");
+      // 240 frames at 48 kHz are 5 ms: buffer k comes back 5 ms after buffer k - 1, to the nanosecond
+      const gaps = new Set(t.signals.slice(1).map((s, i) => s - t.signals[i]));
+      eq([...gaps], [5_000_000n], `the times between two releases, in guest ns (budget ${budget})`);
+      eq(t.rt.red.filter(notForce), [], "red lines");
+      eq([t.audio.host.outs().length, Number(t.audio.x.audio_red_total())], [0, 0], "outputs left open, red lines of the module");
+      return { t, out, before };
+    };
+    const a = await run(100000), b = await run(100000), c = await run(50);
+    eq(b.t.signals, a.t.signals, "release times of a second run");
+    eq([b.out[3], b.t.rt.stats.slices, b.t.rt.units, b.t.rt.guestNs()], [a.out[3], a.t.rt.stats.slices, a.t.rt.units, a.t.rt.guestNs()], "summary, slices, units and guest clock of a second run");
+    eq(c.t.signals.length, N, "with budget 50");
+    lines.push(a.out[0], a.out[1], a.out[3], `first release at guest ${a.t.signals[0]} ns, then every 5000000 ns exactly, ${N} times; identical on a second run (slices ${a.t.rt.stats.slices}, units ${a.t.rt.units}); budget 50: ${c.t.rt.stats.slices} slices, the same 5000000 ns between releases`,
+      `${a.t.audio.stats.calls} nn::audio calls, ${a.t.audio.stats.ticks} ticks, ${a.t.audio.stats.binds} event bound by the guest's own CreateSystemEvent (${a.t.hle.x.hle_event_count()} bindings in the table at the end)`);
+    // the wall clock: the same guest paced by real time, with the catch-up limit set
+    const w = toneBoot({ clock: "wall" }, 60), t0 = performance.now(), r = await w.rt.runAsync(), ms = performance.now() - t0;
+    eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "wall clock: how it ended");
+    // a host timer that comes late lets two buffers come back in one tick: one signal for both (a signal an entry that released something)
+    ok(/^tone: 60 buffers came back in \d+ wake-ups/.test(w.rt.stdout().split("\n")[2]) && w.signals.length <= 60 && w.signals.length >= 20, `wall clock: ${w.rt.stdout().split("\n")[2]}; ${w.signals.length} signals`);
+    ok(ms > 280 && ms < 2000, `wall clock: 60 buffers of 5 ms took ${ms.toFixed(0)} ms`);
+    lines.push(`wall clock: 60 buffers in ${ms.toFixed(0)} ms (300 ms of audio) with ${w.signals.length} signals, run loop busy ${w.rt.stats.runMs.toFixed(0)} ms`);
+    return lines;
+  });
+  // ---- audio on the real device (browser) ----
+  if (env.audioPage && env.mods.hle && env.mods.audio) test("audio (browser: AudioContext and AudioWorklet): the same guest on the wall clock with the device attached through the page; the tone reaches the device: 440 Hz, no gap, no underrun, as audio:browser checks it", async () => {
+    const page = env.audioPage!, N = 600;
+    const t = toneBoot({ clock: "wall" }, N, () => ({ send: page.send, openDeviceAtStart: true }));
+    const dev = t.audio.device!;
+    let worstTick = 0, lastTick = 0;
+    t.rt.onTick(() => { const n = performance.now(); if (lastTick && n - lastTick > worstTick) worstTick = n - lastTick; lastTick = n; });
+    page.onMessage(m => { t.audio.handle(m); t.rt.requestWake(); });
+    try {
+      const t0 = performance.now();
+      while (!dev.rate && !dev.error) { if (performance.now() - t0 > 10000) fail("the page did not open an AudioContext within 10 s"); await new Promise(r => setTimeout(r, 5)); }
+      ok(!dev.error, "no device: " + dev.error);
+      await page.record(dev.rate * 4);
+      const states: string[] = [];
+      const watch = setInterval(() => { const s = t.audio.host.outs()[0]?.state; if (s && states.at(-1) !== s) states.push(s); }, 2);
+      lastTick = 0;
+      const r = await t.rt.runAsync();
+      clearInterval(watch);
+      eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "how it ended: " + t.rt.red.join(" | ") + t.rt.stdout());
+      await new Promise(r => setTimeout(r, 200));   // what is still in the ring is played
+      const d = await page.dump(), left = new Float32Array(d.frames);
+      for (let i = 0; i < d.frames; i++) left[i] = d.pcm[2 * i];
+      const whole = analyzeTone(left, 440, d.sampleRate), edge = Math.round(d.sampleRate * 0.05);
+      const core = whole.last - whole.first > 4 * edge ? analyzeTone(left, 440, d.sampleRate, whole.first + edge, whole.last - edge) : whole;
+      const sounding = (whole.last - whole.first) / d.sampleRate;
+      eq(t.rt.stdout().split("\n")[0], OPEN, "the guest's first line");
+      ok(states.includes("Live"), "the output's states: " + states.join(" "));
+      ok(sounding > 2.5 && sounding < 3.1, `the device played ${sounding.toFixed(2)} s of sound for 3 s of buffers`);
+      ok(Math.abs(core.freq - 440) < 0.5, `frequency ${core.freq.toFixed(2)} Hz`);
+      ok(Math.abs(core.amp - 0.5) < 0.01, `amplitude ${core.amp.toFixed(4)}`);
+      // a run loop that came back more than the ring's lead late (29 ms at its lowest) leaves a gap: the machine's, not the port's
+      const late = worstTick > 25;
+      ok(late || (core.snr > 60 && core.gaps === 0 && d.underrun === 0), `the tone: ${core.snr.toFixed(1)} dB against a fitted sine, ${core.gaps} gaps, the device ran dry for ${d.underrun} frames; longest time between two ticks ${worstTick.toFixed(1)} ms`);
+      eq(t.rt.red.filter(notForce), [], "red lines");
+      return [`transport ${dev.transport}, context at ${d.sampleRate} Hz (${d.context}); output states ${states.join(" -> ")}`,
+        `${sounding.toFixed(2)} s of ${core.freq.toFixed(2)} Hz, amplitude ${core.amp.toFixed(4)}, ${core.snr.toFixed(1)} dB against a fitted sine, ${core.gaps} gaps, device underrun ${d.underrun} frames in ${d.callbacks} callbacks` + (late ? ` [the run loop came back ${worstTick.toFixed(0)} ms late once: gap checks waived]` : ""),
+        `${t.signals.length} buffers came back, ${t.audio.stats.ticks} ticks, the longest time between two ${worstTick.toFixed(1)} ms; ${t.rt.stdout().split("\n")[2]}`];
+    } finally { page.onMessage(null); if (!t.rt.disposed) { t.rt.kill(); if (!t.rt.disposed) t.rt.dispose(); } }
+  });
+
+  // ---- graphics: the waits ----
+  if (env.haveGfxGuests && env.mods.gfx && env.mods.hle) test("gfx waits (null replayer the test holds back, wall clock): nvnSyncWait with timeout 0, a finite timeout that runs out on the thread's own timer, a finite and an infinite one met by the fence; nvnQueueFinish waits for its fence; float arguments and results by nvn_abi", async () => {
+    let held = false, p!: GfxProcess;
+    p = await bootGfx(env, [{ name: "syncg", bytes: env.nso("syncg") }], { frames: 0, clock: "wall", nullReplayer: true, holdFences: () => held, setup: q => {
+      q.rt.register({ name: "sync_hold", fn: cpu => { held = cpu.w(0) !== 0; if (!held) q.gfx.releaseFences(); } });
+      q.rt.register({ name: "sync_release_in", fn: cpu => { const ms = cpu.w(0); setTimeout(() => { held = false; q.gfx.releaseFences(); }, ms); } });
+    } });
+    const r = await p.rt.runAsync();
+    eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "how it ended: " + p.rt.red.join(" | ") + p.rt.stdout());
+    eq(p.rt.stdout().split("\n"), [
+      "sampler builder: lod bias x1000 = 1250, max anisotropy x1000 = 8000",
+      "SyncWait on a sync that was never fenced: 2",
+      "fence pending, timeout 0: 2",
+      "fence pending, timeout 30 ms: 2, after about 30 ms",
+      "fence completes 15 ms into a wait of 5 s: 1, when it completed",
+      "the same sync again, timeout 0: 0",
+      "a new fence, infinite timeout: 1, when it completed",
+      "QueueFinish returned when the GPU had finished, the fence before it: 0", ""], "the guest's results (0 ALREADY_SIGNALED, 1 CONDITION_SATISFIED, 2 TIMEOUT_EXPIRED)");
+    const s = p.gfx.stats;
+    eq([s.syncWaits, s.syncParked, s.syncTimeouts, s.finishes, s.finishParked], [7, 3, 1, 1, 1], "SyncWait calls, parked, timed out; QueueFinish calls, parked");
+    eq([s.floatArgCalls, s.floatResults], [2, 2], "calls with float arguments marshalled, float results written to d0");
+    eq(p.rt.red.filter(notForce), [], "red lines");
+    return [`${s.syncWaits} SyncWait calls: ${s.syncParked} parked the thread, ${s.syncTimeouts} ended by its timeout; QueueFinish parked on fence ${p.gfx.x.gfx_finish_fence() >>> 0}`,
+      `${s.nvnCalls} NVN calls, of which ${s.floatArgCalls} marshalled d0..d7 and ${s.floatResults} returned a float through d0`];
+  });
+  // On a device the GPU finishes on its own: the same guest, nothing held; the waits end and nothing is red
+  if (gpu && env.haveGfxGuests && env.mods.gfx && env.mods.hle) test("gfx waits (WebGPU, wall clock): the same guest on the device: every wait ends, QueueFinish returns after its fence", async () => {
+    const p = await bootGfx(env, [{ name: "syncg", bytes: env.nso("syncg") }], { frames: 0, clock: "wall", gpu, setup: q => {
+      q.rt.register({ name: "sync_hold", fn: () => { } }); q.rt.register({ name: "sync_release_in", fn: () => { } });
+    } });
+    const r = await p.rt.runAsync();
+    eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "how it ended: " + p.rt.red.join(" | ") + p.rt.stdout());
+    const out = p.rt.stdout().split("\n");
+    eq(out[0], "sampler builder: lod bias x1000 = 1250, max anisotropy x1000 = 8000", "floats");
+    ok(/^a new fence, infinite timeout: [01],/.test(out[6]), "the infinite wait: " + out[6]);
+    ok(/the fence before it: 0$/.test(out[7]), "after QueueFinish: " + out[7]);
+    eq(p.rt.red.filter(notForce), [], "red lines");
+    return out.slice(2, 8).map(l => l) .concat([`SyncWait parked ${p.gfx.stats.syncParked} times, QueueFinish parked ${p.gfx.stats.finishParked} times`]);
+  });
+
+  // ---- graphics: the device goes away in the middle ----
+  if (gpu?.requestDevice && env.haveGfxGuests && env.mods.gfx && env.mods.hle) test("gfx device loss: the GPU device is destroyed while the cube demo runs; the replayer gets a new one through requestDevice, textures are uploaded again from guest memory, and the last frame's pixels are those of a run without a loss", async () => {
+    const hash = (d: Uint8Array) => { let h = 0x811c9dc5; for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16).padStart(8, "0"); };
+    const pixels = async (p: GfxProcess) => { await p.gfx.host.device.queue.onSubmittedWorkDone(); return (await p.gfx.host.readTexture(p.gfx.host.lastPresented)).data as Uint8Array; };
+    const run = async (loseAt: number) => {
+      const device = await gpu.requestDevice!();
+      let lost = 0;
+      const p = await bootGfx(env, [{ name: "cube", bytes: env.nso("cube") }], { frames: 30, gpu: { ...gpu, device }, onPresent: f => { if (f === loseAt) { lost++; device.destroy(); } } });
+      const r = await p.rt.runAsync();
+      eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "how it ended: " + p.rt.red.join(" | "));
+      return { p, lost, px: await pixels(p) };
+    };
+    const plain = await run(0), hit = await run(12);
+    eq(plain.p.rt.red.filter(notForce), [], "red lines of the run without a loss");
+    eq([hit.lost, hit.p.gfx.stats.deviceLosses, hit.p.gfx.stats.deviceRestores, hit.p.gfx.x.gfx_device_state()], [1, 1, 1, 0], "devices destroyed, losses seen, restores, the device machine at the end (0 Live)");
+    eq(hit.p.rt.stdout(), plain.p.rt.stdout(), "stdout");
+    eq(hash(hit.px), hash(plain.px), "the last frame's pixels");
+    const red = hit.p.rt.red.filter(notForce);
+    ok(red.length >= 1 && /^\[RED\] WebGPU device lost \(destroyed\)/.test(red[0]), "the loss is one red line: " + red.join(" | "));
+    ok(red.every(l => /device lost|the GPU device was lost/.test(l)), "no other red line: " + red.join(" | "));
+    plain.p.rt.dispose(); hit.p.rt.dispose();
+    return [`30 frames, the device destroyed at frame 12: ${hit.p.gfx.stats.deviceLosses} loss, ${hit.p.gfx.stats.deviceRestores} restore, last frame's pixel hash ${hash(hit.px)} = ${hash(plain.px)} without a loss`, ...red];
+  });
+  return list;
+}
+
+export async function runIntCases(env: IntEnv, gpu: Gpu | undefined, only: string | undefined, report: (r: CaseResult) => void): Promise<CaseResult[]> {
+  const out: CaseResult[] = [];
+  for (const c of intCases(env, gpu)) {
+    if (only && !c.name.includes(only)) continue;
+    const t0 = performance.now();
+    let r: CaseResult;
+    try { const info = await c.fn(); r = { name: c.name, ok: true, why: "", info, ms: performance.now() - t0 }; }
+    catch (e) { r = { name: c.name, ok: false, why: e instanceof Error ? (e.stack ?? e.message) : String(e), info: [], ms: performance.now() - t0 }; }
+    out.push(r); report(r);
+  }
+  return out;
+}
+export type { GfxProcess };

@@ -1,0 +1,56 @@
+{
+ "source": "nxnative dm/games/0400E88025B1A000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0400E88025B1A000",
+ "name": "Star Fox",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "v131072",
+   "modules": {
+    "main": "a7730d0f74d168d90422354c8317f76f",
+    "subsdk0": "593524e167fecd3c7a42a184c9da3963",
+    "subsdk3": "973102ab6bb2be3dc4f0c3a4c9e7e1c4",
+    "sdk": "41d4de4a3b78214ad20c896960df0e5e"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0400E88025B1A000",
+  "program_id": "0400E88025B1A000",
+  "name": "Star Fox",
+  "pad_layout": "full",
+  "package": "v131072",
+  "modules": "main subsdk0 subsdk3 sdk",
+  "romfs_marker": "data.zip",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x1000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x130000000 alias 0x400000000",
+   "what": "nxnative gives this game a 4.75 GB heap region (nxweb: 1.50 GB) and a 16.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 5100273664,
+  "alias_region": 17179869184,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

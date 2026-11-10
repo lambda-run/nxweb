@@ -1,0 +1,139 @@
+{
+ "source": "nxnative dm/games/0100B8E016F76000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100B8E016F76000",
+ "name": "NieR:Automata The End of YoRHa Edition",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.0.3",
+   "modules": {
+    "main": "98397a10419894652f372d4dc1b6fc2c",
+    "subsdk0": "be1ee79a9968a35a6b63fc8f1036a6d4",
+    "sdk": "e8cdceb1e77a8465fe20f21928e8d296"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100B8E016F76000",
+  "program_id": "0100B8E016F76000",
+  "name": "NieR:Automata The End of YoRHa Edition",
+  "pad_layout": "full",
+  "package": "v131072",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "data014.cpk",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x1000000"
+ },
+ "needs": [
+  {
+   "key": "present_interval",
+   "value": "display",
+   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps)."
+  },
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "gpu_timestamps",
+   "value": "segment",
+   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
+  },
+  {
+   "key": "tex_flush_upload",
+   "value": "on",
+   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
+  },
+  {
+   "key": "tex_dirty_upload",
+   "value": "on",
+   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "98397a10419894652f372d4dc1b6fc2c": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 10225652,
+     "orig": "8c46a8528301271e",
+     "new": "8c36a8528301271e",
+     "why": "dynamic resolution: bad frame cost 45 -> 22.5 ms at 60 fps"
+    },
+    {
+     "off": 10225732,
+     "orig": "ac4781520c40a872",
+     "new": "ac4781520c30a872",
+     "why": "dynamic resolution: optimal frame cost 32.01 -> 16.005 ms at 60 fps (first load)"
+    },
+    {
+     "off": 10225812,
+     "orig": "ac4781520c40a87283cc201e8001271e",
+     "new": "ac4781520c30a87283cc201e8001271e",
+     "why": "dynamic resolution: optimal frame cost 32.01 -> 16.005 ms at 60 fps (second load)"
+    },
+    {
+     "off": 10225848,
+     "orig": "00d0271e",
+     "new": "00d0251e",
+     "why": "dynamic resolution: good frame cost 30 -> 15 ms at 60 fps"
+    },
+    {
+     "off": 5837208,
+     "orig": "20008052",
+     "new": "00008052",
+     "why": "NieR 1.0.3 frame interval default: 30 -> 60 fps (the mode the setter main+0x9c0590 stores at display +0x504)"
+    },
+    {
+     "off": 10207528,
+     "orig": "41008052",
+     "new": "21008052",
+     "why": "NieR 1.0.3 NVN present interval default: 30 -> 60 fps (stored at the device's +0x9c160)"
+    },
+    {
+     "off": 10225896,
+     "orig": "ac9999528cd9a772",
+     "new": "0c0080520cf0a772",
+     "why": "dynamic resolution lower bound follows the selected preset"
+    },
+    {
+     "off": 10225908,
+     "orig": "cc648a52aceaa772",
+     "new": "0c0080520cf0a772",
+     "why": "dynamic resolution lower bound follows the selected preset"
+    }
+   ]
+  }
+ },
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ },
+ "capabilities": {
+  "98397a10419894652f372d4dc1b6fc2c": [
+   "DYNAMIC_RESOLUTION"
+  ]
+ }
+}

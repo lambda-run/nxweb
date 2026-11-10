@@ -70,6 +70,9 @@ export class AudioDevice implements AudioDeviceLike {
   }
   start(): void { this.send({ audio: { cmd: "start" } }); }
   stop(): void { this.send({ audio: { cmd: "stop" } }); }
+  // The process that used the device is gone: the page side closes its AudioContext (the next process opens its own)
+  close(): void { if (this.closed) return; this.closed = true; this.port?.close(); this.port = null; this.send({ audio: { cmd: "close" } }); }
+  private closed = false;
 
   // What the worklet did since the last tick, into the module's ring header
   private before(): void {
@@ -85,8 +88,9 @@ export class AudioDevice implements AudioDeviceLike {
     const n = (wr - this.sent) >>> 0;
     if (this.sh && this.sd) {
       for (let i = 0; i < n; i++) { const p = (((this.sent + i) >>> 0) & (cap - 1)) << 1; this.sd[p] = d[p]; this.sd[p + 1] = d[p + 1]; }
-      Atomics.store(this.sh, RING.LIVE, live);
-      Atomics.store(this.sh, RING.WR, wr);
+      // `live` (an empty ring is an underrun) rises only after the frames are there, and falls before anything else
+      if (live > (this.live < 0 ? 0 : this.live)) { Atomics.store(this.sh, RING.WR, wr); Atomics.store(this.sh, RING.LIVE, live); }
+      else { Atomics.store(this.sh, RING.LIVE, live); Atomics.store(this.sh, RING.WR, wr); }
     } else if (this.port) {
       if (n) {
         const pcm = new Float32Array(n * 2);

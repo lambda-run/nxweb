@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/01002E7016C46000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01002E7016C46000",
+ "name": "Cult of the Lamb",
+ "builds": [
+  {
+   "version": 1966080,
+   "tag": "v1966080",
+   "display": "1.5.28",
+   "modules": {
+    "main": "316a4d4881a9f1e077a07262e917917c",
+    "subsdk0": "b94b22a35b112945c8a43e9c40a93821",
+    "sdk": "871fb219c95d507fd5b45f667d51f9c1"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01002E7016C46000",
+  "program_id": "01002E7016C46000",
+  "name": "Cult of the Lamb",
+  "package": "v1966080",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/resources.resource",
+  "sys_resource": "0x1000000",
+  "app_pool": "0x40000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

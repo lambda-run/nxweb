@@ -96,3 +96,19 @@ export function pipelineReset(): void {
   }
   lastRed = -1;
 }
+// A shader of the library was registered again: every pipeline built from it is asked for again (the replayer makes
+// its module anew). Returns how many.
+export function pipelineResetShader(lib: u32): u32 {
+  let n: u32 = 0;
+  for (let i: u32 = 0; i < N; i++) {
+    const e = entry(i);
+    if (!load<u32>(e, 404)) continue;
+    const compute = load<u8>(e, PK_prim) == 0xff;
+    if (<u32>load<u16>(e, PK_fs) != lib && (compute || <u32>load<u16>(e, PK_vs) != lib)) continue;
+    instOf(i).step(GfxPipelineE.Reset);
+    const r = hostRec(H_PIPELINE_CREATE, 16); store<u32>(r, i, 8); store<u32>(r, <u32>e, 12);
+    n++;
+  }
+  if (n) lastRed = -1;
+  return n;
+}

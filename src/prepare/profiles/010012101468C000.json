@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/010012101468C000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010012101468C000",
+ "name": "Metroid Prime Remastered",
+ "builds": [
+  {
+   "version": 0,
+   "tag": "v0",
+   "display": "1.0.0",
+   "modules": {
+    "main": "67c9ca1428222752f951021464a7b359",
+    "subsdk0": "1506de55e5a3906ee3c63e66395d2f0c",
+    "sdk": "2217a4a3c1f3c883278de72f8b008224"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010012101468C000",
+  "program_id": "010012101468C000",
+  "name": "Metroid Prime Remastered",
+  "package": "v0",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Preload/DuplicateData.pak",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x6600000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

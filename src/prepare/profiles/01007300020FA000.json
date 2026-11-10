@@ -1,0 +1,71 @@
+{
+ "source": "nxnative dm/games/01007300020FA000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01007300020FA000",
+ "name": "ASTRAL CHAIN",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.0.1",
+   "modules": {
+    "main": "4b159f0f7a360669738390ee8657b4f0",
+    "sdk": "e29be8ad6778527aa248310d0c71a8a5"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01007300020FA000",
+  "program_id": "01007300020FA000",
+  "name": "ASTRAL CHAIN",
+  "pad_layout": "full",
+  "package": "v65536",
+  "modules": "main sdk",
+  "romfs_marker": "event/event.pkz",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0xc0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.00 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note",
+  "depth_mode"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [
+  {
+   "kind": "FRAME_STEP",
+   "build": "4b159f0f7a360669738390ee8657b4f0",
+   "sites": 112,
+   "writes": 112,
+   "stub_words": 1727,
+   "capabilities": [],
+   "render_scale": false,
+   "note": "recorded"
+  }
+ ],
+ "address_space": {
+  "heap_region": 3221225472,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

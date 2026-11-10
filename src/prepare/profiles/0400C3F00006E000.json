@@ -1,0 +1,74 @@
+{
+ "source": "nxnative dm/games/0400C3F00006E000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0400C3F00006E000",
+ "name": "Mario Kart World",
+ "builds": [
+  {
+   "version": 0,
+   "tag": "v0",
+   "display": "v0",
+   "modules": {
+    "main": "9e244438c3d8ef1c703a6a85ef99c4f0",
+    "subsdk0": "d39a7a3d44530bb61b35690e5b0383d5",
+    "sdk": "90ebba182862b9ecdc21fcb87b999012"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0400C3F00006E000",
+  "program_id": "0400C3F00006E000",
+  "name": "Mario Kart World",
+  "pad_layout": "full",
+  "package": "v0",
+  "modules": "main subsdk0 subsdk1 sdk",
+  "romfs_marker": "Movie/StaffRoll_00.webm",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x4000000"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "render_cond",
+   "value": "on",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x200000000 alias 0x100000000",
+   "what": "nxnative gives this game a 8.00 GB heap region (nxweb: 1.50 GB) and a 4.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [
+  {
+   "kind": "MATCH_FRAME_STEP",
+   "module": "main",
+   "rules": 1,
+   "names": [
+    "frame interval from the host's step"
+   ]
+  }
+ ],
+ "address_space": {
+  "heap_region": 8589934592,
+  "alias_region": 4294967296,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

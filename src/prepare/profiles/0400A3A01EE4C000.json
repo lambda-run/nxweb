@@ -1,0 +1,57 @@
+{
+ "source": "nxnative dm/games/0400A3A01EE4C000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0400A3A01EE4C000",
+ "name": "Pokemon Pokopia",
+ "builds": [
+  {
+   "version": 655360,
+   "tag": "v655360",
+   "display": "v655360",
+   "modules": {
+    "main": "76a489f3bd3642fa5e18bd83d32c98ba",
+    "subsdk0": "9646a69cb1024ba919fddaa4265e6bc5",
+    "sdk": "cc7da00d672399efe7958790d17fae39"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0400A3A01EE4C000",
+  "program_id": "0400A3A01EE4C000",
+  "name": "Pokemon Pokopia",
+  "pad_layout": "full",
+  "package": "v655360",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "motor_asset_re/KIDS_PLATFORM_OUNCE/root.rdb",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x0",
+  "mem_used": "0x5600000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x240000000 alias 0x10000000",
+   "what": "nxnative gives this game a 9.00 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 9663676416,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

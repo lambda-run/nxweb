@@ -188,6 +188,37 @@ export class GfxHost {
     const gen = this.gen;
     device.lost?.then?.((info: any) => { if (gen === this.gen) void this.deviceLost(info); });
   }
+  // Every texture and buffer the replayer makes, until it destroys it: what dispose() releases
+  private live = new Set<GPU>();
+  private newBuffer(desc: any): GPU { const o = this.device.createBuffer(desc); this.live.add(o); return o; }
+  private newTexture(desc: any): GPU { const o = this.device.createTexture(desc); this.live.add(o); return o; }
+  private kill(o: GPU): void { if (o) { this.live.delete(o); o.destroy(); } }
+  get liveObjects(): number { return this.live.size; }
+  disposed = false;
+  // The process that used this replayer is gone: every texture and buffer it made is destroyed (pipelines, bind
+  // groups, samplers and shader modules have no destroy and go with their last reference, which is dropped here),
+  // completions still under way are ignored, and the canvas is left configured for the next replayer on the device.
+  // Returns how many objects were destroyed. Nothing may be executed afterwards.
+  dispose(): number {
+    if (this.disposed) return 0;
+    this.disposed = true; this.gen++;
+    try { if (this.pass) this.pass.end(); } catch { /* the device may be gone */ }
+    let n = 0;
+    for (const o of this.live) { try { o.destroy(); n++; } catch { /* gone already */ } }
+    this.live.clear();
+    for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.views.clear(); }
+    this.textures.clear(); this.shaders = [];
+    this.pipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
+    this.converted.clear(); this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
+    this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null;
+    this.readbacks = [];
+    // nobody waits on a replayer that is gone
+    const waiters = this.fenceWaiters; this.fenceWaiters = []; this.fencesPending.clear();
+    for (const w of waiters) w.go();
+    this.onFence = this.onImage = this.onDeviceLost = this.onDeviceRestored = null;
+    if (this.device.onuncapturederror) this.device.onuncapturederror = null;
+    return n;
+  }
   private limit(name: string, fallback: number): number { const v = this.device.limits?.[name]; return typeof v === "number" ? v : fallback; }
 
   // The recorder's imports that belong to the replayer; the embedder adds env.log, env.gfx_guest_call, env.gfx_proc_address
@@ -232,6 +263,7 @@ export class GfxHost {
   // (render targets, copies) is empty until the game writes it again (the count is returned and logged red)
   restore(device: GPU): number {
     this.gen++;
+    this.live.clear();   // they belonged to the device that is gone
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.views.clear(); }
     for (const s of this.shaders) if (s) { s.module = undefined; s.variants = undefined; }
     this.pipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
@@ -272,6 +304,14 @@ export class GfxHost {
     if (id >= 0) this.shaders[id] = { info: { ...info, support }, key: keyHex };
     return id;
   }
+  // What the embedder does about a key that is not registered: "pending" it is being fetched or translated (the
+  // recorder skips its draws without its red line), "failed" it could not be had and the embedder has said so
+  // itself, "forget" nothing any more (the recorder reports it missing again). false: the key is registered.
+  shaderPending(keyHex: string, what: "pending" | "failed" | "forget"): boolean {
+    const b = keyHex.match(/../g)!.map(h => parseInt(h, 16));
+    const lo = (b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, hi = (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0;
+    return this.x.gfx_shader_pending(lo, hi, what === "pending" ? 1 : what === "failed" ? 2 : 0) !== 0;
+  }
   private module(id: number): GPU { const s = this.shaders[id]; return (s.module ??= this.device.createShaderModule({ code: s.info.wgsl })); }
   // The module of a vertex shader for attribute classes other than it declares; null when there is none (red: the request)
   private variantModule(id: number, classes: Record<number, VinClass>): GPU | null {
@@ -301,7 +341,7 @@ export class GfxHost {
     if (!ms && (STORAGE_FORMATS.has(t.fmt.tex) || (t.fmt.tex === "bgra8unorm" && this.device.features?.has?.("bgra8unorm-storage")))) usage |= 0x08; /* STORAGE_BINDING */
     const twin = SRGB_TWIN[t.fmt.tex];
     // WebGPU has 1 and 4 samples: a multisampled NVN texture of any count has 4
-    t.gpu = this.device.createTexture({ ...(twin ? { viewFormats: [twin] } : {}), size: { width: up(t.width, t.fmt.bw), height: up(h, t.fmt.bh), depthOrArrayLayers: is3d ? Math.max(1, t.depth) : layers }, format: t.fmt.tex,
+    t.gpu = this.newTexture({ ...(twin ? { viewFormats: [twin] } : {}), size: { width: up(t.width, t.fmt.bw), height: up(h, t.fmt.bh), depthOrArrayLayers: is3d ? Math.max(1, t.depth) : layers }, format: t.fmt.tex,
       dimension: is3d ? "3d" : "2d", mipLevelCount: ms ? 1 : Math.max(1, t.levels), sampleCount: ms ? 4 : 1, usage });
     return t;
   }
@@ -342,10 +382,10 @@ export class GfxHost {
   }
   private dummies = new Map<string, GPU>();
   private dummyView(dim: string): GPU {
-    this.dummy ??= this.device.createTexture({ size: { width: 1, height: 1, depthOrArrayLayers: 6 }, format: "rgba8unorm", usage: 0x04 | 0x02 });
+    this.dummy ??= this.newTexture({ size: { width: 1, height: 1, depthOrArrayLayers: 6 }, format: "rgba8unorm", usage: 0x04 | 0x02 });
     let v = this.dummies.get(dim);
     if (!v) {
-      if (dim === "3d") v = this.device.createTexture({ size: { width: 1, height: 1, depthOrArrayLayers: 1 }, dimension: "3d", format: "rgba8unorm", usage: 0x04 | 0x02 }).createView();
+      if (dim === "3d") v = this.newTexture({ size: { width: 1, height: 1, depthOrArrayLayers: 1 }, dimension: "3d", format: "rgba8unorm", usage: 0x04 | 0x02 }).createView();
       else v = this.dummy.createView({ dimension: dim, ...(dim === "2d" ? { arrayLayerCount: 1 } : {}) });
       this.dummies.set(dim, v);
     }
@@ -364,7 +404,7 @@ export class GfxHost {
   private epoch = 1;          // changes whenever guest memory may have
   private flushNo = 1;
   private upOff = 0;          // the offset of the last upload() inside the buffer it returned (a GPU-written range holds it at an offset)
-  private alloc(cap: number): GPU { return this.pool.get(cap)?.pop() ?? this.device.createBuffer({ size: cap, usage: 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80 /* COPY_SRC COPY_DST INDEX VERTEX UNIFORM STORAGE */ }); }
+  private alloc(cap: number): GPU { return this.pool.get(cap)?.pop() ?? this.newBuffer({ size: cap, usage: 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80 /* COPY_SRC COPY_DST INDEX VERTEX UNIFORM STORAGE */ }); }
   private upload(addr: number, size: number, kind: number): GPU | null {
     this.upOff = 0;
     if (this.gpuRanges.size && kind !== 1) { const r = this.gpuRangeOver(addr, size); if (r) { this.upOff = addr - r.addr; return r.buf; } }
@@ -418,7 +458,7 @@ export class GfxHost {
     const r = this.gpuRanges.get(`${addr}:${size}`);
     if (!r) return;
     this.endPass();
-    const n = (size + 3) & ~3, buf = this.device.createBuffer({ size: n, usage: 0x01 | 0x08 });
+    const n = (size + 3) & ~3, buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
     this.encoder().copyBufferToBuffer(r.buf, 0, buf, 0, n);
     r.pending++;
     this.queuedBufs.push({ buf, range: r });
@@ -439,7 +479,7 @@ export class GfxHost {
     let c = this.uaCur;
     if (!c || c.used + size > UA_CHUNK) {
       if (c) this.uaDone.push(c);
-      c = this.uaCur = this.uaPool.pop() ?? { buf: this.device.createBuffer({ size: UA_CHUNK, usage: 0x08 | 0x40 }), staging: new Uint8Array(UA_CHUNK), used: 0 };
+      c = this.uaCur = this.uaPool.pop() ?? { buf: this.newBuffer({ size: UA_CHUNK, usage: 0x08 | 0x40 }), staging: new Uint8Array(UA_CHUNK), used: 0 };
     }
     const off = c.used;
     c.used = (off + size + this.uaAlign - 1) & ~(this.uaAlign - 1);
@@ -500,13 +540,13 @@ export class GfxHost {
       if (gen !== this.gen) return;
       const src = new Uint8Array(q.buf.getMappedRange()), mem = this.u8;
       for (let z = 0; z < q.depth; z++) for (let y = 0; y < q.rows; y++) mem.set(src.subarray((z * q.rows + y) * q.srcRow, (z * q.rows + y) * q.srcRow + q.wb), q.dst + z * q.img + y * q.row);
-      q.buf.unmap(); q.buf.destroy(); this.dropUploads();
+      q.buf.unmap(); this.kill(q.buf); this.dropUploads();
     }, (e: any) => { if (!this.lost && gen === this.gen) this.log(`[RED] CopyTextureToBuffer readback failed: ${e?.message ?? e}`); }));
     for (const q of this.queuedBufs.splice(0)) this.readbacks.push(q.buf.mapAsync(1).then(() => {
       if (gen !== this.gen) return;
       const r = q.range;
       this.u8.set(new Uint8Array(q.buf.getMappedRange()).subarray(0, r.size), r.addr);
-      q.buf.unmap(); q.buf.destroy(); this.stats.bufferReadbacks++;
+      q.buf.unmap(); this.kill(q.buf); this.stats.bufferReadbacks++;
       // Guest memory now holds what the GPU wrote: later binds upload from it again
       if (--r.pending === 0 && this.gpuRanges.get(`${r.addr}:${r.size}`) === r) { this.gpuRanges.delete(`${r.addr}:${r.size}`); this.inUse.push(r.buf); }
       this.dropUploads();
@@ -628,8 +668,8 @@ export class GfxHost {
       const { layouts, g0 } = this.groupLayouts(stages, false);
       pipe.layouts = layouts; pipe.g0 = g0;
       pipe.desc = { layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }), compute: { module: this.module(csId), entryPoint: cs.entry } };
-      this.device.createComputePipelineAsync(pipe.desc).then((p: GPU) => { if (gen !== this.gen) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
-        (e: any) => { if (gen !== this.gen) return; pipe.desc = null; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] compute pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
+      this.device.createComputePipelineAsync(pipe.desc).then((p: GPU) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
+        (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.desc = null; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] compute pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
       return;
     }
     const vsId = dv.getUint16(k + PK.vs, true), fsId = dv.getUint16(k + PK.fs, true), vs = this.shaders[vsId].info, fs = this.shaders[fsId].info, flags = dv.getUint8(k + PK.flags);
@@ -693,8 +733,8 @@ export class GfxHost {
     }
     pipe.desc = desc;
     // Asynchronously, so a pipeline first needed later is ready by then; the draw that needs it now builds it itself (usePipeline)
-    this.device.createRenderPipelineAsync(desc).then((p: GPU) => { if (gen !== this.gen) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
-      (e: any) => { if (gen !== this.gen) return; pipe.desc = null; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
+    this.device.createRenderPipelineAsync(desc).then((p: GPU) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
+      (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.desc = null; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
   }
   private usePipeline(id: number): boolean {
     const pipe = this.pipes.get(id);
@@ -725,7 +765,7 @@ export class GfxHost {
       else if (prim === 6 || prim === 9) for (let i = 1; i + 1 < n; i++) out.push(src[0], src[i], src[i + 1]);                    // fan, polygon
       else if (prim === 7) for (let i = 0; i + 3 < n; i += 4) out.push(src[i], src[i + 1], src[i + 2], src[i], src[i + 2], src[i + 3]);   // quads
       else for (let i = 0; i + 3 < n; i += 2) out.push(src[i], src[i + 1], src[i + 3], src[i], src[i + 3], src[i + 2]);           // quad strip
-      const buf = this.device.createBuffer({ size: Math.max(4, out.length * 4), usage: 0x10 | 0x08 });
+      const buf = this.newBuffer({ size: Math.max(4, out.length * 4), usage: 0x10 | 0x08 });
       this.device.queue.writeBuffer(buf, 0, new Uint32Array(out));
       if (this.converted.size >= 1024) { for (const v of this.converted.values()) this.inUse.push(v.buf); this.converted.clear(); }
       this.converted.set(key, c = { buf, n: out.length });
@@ -797,16 +837,16 @@ export class GfxHost {
     if (layouts[2]) {
       const key = this.fix.join(",");
       let g = this.fixGroups.get(key);
-      if (!g) { const b = this.device.createBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(b, 0, new Float32Array(this.fix)); g = this.device.createBindGroup({ layout: layouts[2], entries: [{ binding: 0, resource: { buffer: b } }] }); this.fixGroups.set(key, g); }
+      if (!g) { const b = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(b, 0, new Float32Array(this.fix)); g = this.device.createBindGroup({ layout: layouts[2], entries: [{ binding: 0, resource: { buffer: b } }] }); this.fixGroups.set(key, g); }
       this.pass.setBindGroup(2, g);
     }
     this.bindDirty = false;
     return true;
   }
   private zero: GPU = null;
-  private zeroBuffer(): GPU { return (this.zero ??= this.device.createBuffer({ size: 65536, usage: 0x40 | 0x08 })); }
+  private zeroBuffer(): GPU { return (this.zero ??= this.newBuffer({ size: 65536, usage: 0x40 | 0x08 })); }
   private scratchSt: GPU = null;
-  private scratchStorage(): GPU { return (this.scratchSt ??= this.device.createBuffer({ size: 65536, usage: 0x80 | 0x08 })); }
+  private scratchStorage(): GPU { return (this.scratchSt ??= this.newBuffer({ size: 65536, usage: 0x80 | 0x08 })); }
   private dispatch(dv: DataView, p: number) {
     if (!this.pass || !this.computePass) return;
     this.stats.dispatches++;
@@ -941,7 +981,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   // Depth texels (f32 rows) into a depth texture: WebGPU writes depth32float and depth24plus only by drawing. Encoded
   // and submitted on its own, so it takes effect at once like writeTexture
   private depthData(t: Tex, level: number, z: number, x: number, y: number, w: number, h: number, ptr: number, pitch: number) {
-    const src = this.device.createTexture({ size: { width: w, height: h }, format: "r32float", usage: 0x04 | 0x02 });
+    const src = this.newTexture({ size: { width: w, height: h }, format: "r32float", usage: 0x04 | 0x02 });
     this.device.queue.writeTexture({ texture: src }, this.u8.subarray(ptr, ptr + pitch * (h - 1) + w * 4), { bytesPerRow: pitch, rowsPerImage: h }, { width: w, height: h });
     const key = `depthup|${t.gpu.format}`;
     let pl = this.helpers.get(key);
@@ -952,7 +992,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
       pl = this.device.createRenderPipeline({ layout: "auto", vertex: { module: m, entryPoint: "vs" }, fragment: { module: m, entryPoint: "fs", targets: [] }, depthStencil: { format: t.gpu.format, depthCompare: "always", depthWriteEnabled: true } });
       this.helpers.set(key, pl);
     }
-    const ub = this.device.createBuffer({ size: 16, usage: 0x40 | 0x08 });
+    const ub = this.newBuffer({ size: 16, usage: 0x40 | 0x08 });
     this.device.queue.writeBuffer(ub, 0, new Float32Array([x, y, 0, 0]));
     const a: any = { view: this.attachView(t, level, z), depthLoadOp: "load", depthStoreOp: "store" };
     if (t.fmt.stencil) { a.stencilLoadOp = "load"; a.stencilStoreOp = "store"; }
@@ -962,7 +1002,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     pass.setViewport(x, y, w, h, 0, 1); pass.setScissorRect(x, y, w, h);
     pass.draw(3); pass.end();
     this.device.queue.submit([enc.finish()]);
-    src.destroy(); ub.destroy();
+    this.kill(src); this.kill(ub);
   }
   // Texels from the recorder (texcontent.ts): linear rows in memory. Takes effect at once; the recorder only sends
   // them before the submission's first use of the texture, so nothing encoded and not yet submitted reads it
@@ -989,7 +1029,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     const level = dv.getUint32(p + 24, true), layer = dv.getUint32(p + 28, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 32 + i * 4, true)), f = t.fmt;
     if (t.gpu.sampleCount > 1 || f.tex === "depth24plus" || f.tex === "depth24plus-stencil8" || f.conv) { this.red("t2bfmt", "CopyTextureToBuffer from a multisampled or 24-bit depth texture, or one whose format the host converts: WebGPU cannot copy the guest's bytes out, dropped"); return; }
     const bx = Math.ceil(r[3] / f.bw), by = Math.ceil(r[4] / f.bh), depth = Math.max(1, r[5]), wb = bx * f.bpb, row = dv.getUint32(p + 56, true) || wb, img = dv.getUint32(p + 60, true) || row * by, srcRow = Math.ceil(wb / 256) * 256;
-    const buf = this.device.createBuffer({ size: srcRow * by * depth, usage: 0x01 | 0x08 });
+    const buf = this.newBuffer({ size: srcRow * by * depth, usage: 0x01 | 0x08 });
     this.endPass();
     this.encoder().copyTextureToBuffer({ texture: t.gpu, mipLevel: level, origin: { x: r[0], y: r[1], z: r[2] + (t.gpu.dimension === "3d" ? 0 : layer) }, ...(f.kind === "depth" ? { aspect: "depth-only" } : {}) },
       { buffer: buf, bytesPerRow: srcRow, rowsPerImage: by }, { width: bx * f.bw, height: by * f.bh, depthOrArrayLayers: depth });
@@ -1003,7 +1043,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.endPass();
     const g = t.gpu;
     if (g.sampleCount > 1) { this.red("snapms", "a draw samples a multisampled target of its own pass: no copy is made, it reads the texture itself"); return; }
-    t.snap ??= this.device.createTexture({ size: { width: g.width, height: g.height, depthOrArrayLayers: g.depthOrArrayLayers }, format: g.format, dimension: g.dimension, mipLevelCount: g.mipLevelCount, usage: 0x04 | 0x02 | 0x10 });
+    t.snap ??= this.newTexture({ size: { width: g.width, height: g.height, depthOrArrayLayers: g.depthOrArrayLayers }, format: g.format, dimension: g.dimension, mipLevelCount: g.mipLevelCount, usage: 0x04 | 0x02 | 0x10 });
     for (let l = 0; l < g.mipLevelCount; l++)
       this.encoder().copyTextureToTexture({ texture: g, mipLevel: l }, { texture: t.snap, mipLevel: l }, { width: Math.max(1, g.width >> l), height: Math.max(1, g.height >> l), depthOrArrayLayers: g.depthOrArrayLayers });
     this.stats.snapshots++;
@@ -1026,6 +1066,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
 
   // ---- the stream ----
   exec(ptr: number, len: number) {
+    if (this.disposed) return;
     let dv = this.dv;
     for (let p = ptr, end = ptr + len; p < end;) {
       const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
@@ -1037,7 +1078,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
             depth: dv.getUint32(d + 24, true), levels: dv.getUint32(d + 28, true), views: new Map(), fmt: hostFormat(format, this.caps)! });
           break;
         }
-        case H.TEX_DESTROY: { const s = this.u64(dv, p + 8), t = this.textures.get(s); if (t) { this.flush(); this.groups.clear(); t.gpu?.destroy(); t.snap?.destroy(); this.textures.delete(s); } break; }
+        case H.TEX_DESTROY: { const s = this.u64(dv, p + 8), t = this.textures.get(s); if (t) { this.flush(); this.groups.clear(); this.kill(t.gpu); this.kill(t.snap); this.textures.delete(s); } break; }
         case H.BEGIN_PASS: this.beginPass(dv, p); break;
         case H.END_PASS: { const targets = !this.computePass && this.pass ? this.passInfo?.targets : undefined; this.endPass(); if (this.cap && targets) this.captureTargets(targets); break; }
         case H.BEGIN_COMPUTE: this.endPass(); this.pass = this.encoder().beginComputePass(); this.computePass = true; this.cur = null; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); this.stats.computePasses++; break;
@@ -1105,14 +1146,14 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     if (!t) throw new Error(`no texture ${serial}`);
     // width and height are in blocks, bytesPerPixel the bytes of one block (a texel for uncompressed formats)
     const pw = Math.max(1, t.width >> level), ph = t.target === 0 || t.target === 3 ? 1 : Math.max(1, t.height >> level), w = Math.ceil(pw / t.fmt.bw), h = Math.ceil(ph / t.fmt.bh), bpp = t.fmt.bpb, row = Math.ceil(w * bpp / 256) * 256;
-    const buf = this.device.createBuffer({ size: row * h, usage: 0x01 | 0x08 /* MAP_READ | COPY_DST */ });
+    const buf = this.newBuffer({ size: row * h, usage: 0x01 | 0x08 /* MAP_READ | COPY_DST */ });
     const enc = this.device.createCommandEncoder();
     enc.copyTextureToBuffer({ texture: t.gpu, mipLevel: level, origin: { x: 0, y: 0, z: layer }, ...(t.fmt.kind === "depth" ? { aspect: "depth-only" } : {}) }, { buffer: buf, bytesPerRow: row, rowsPerImage: h }, { width: w * t.fmt.bw, height: h * t.fmt.bh, depthOrArrayLayers: 1 });
     this.device.queue.submit([enc.finish()]);
     await buf.mapAsync(1);
     const src = new Uint8Array(buf.getMappedRange()), data = new Uint8Array(w * h * bpp);
     for (let y = 0; y < h; y++) data.set(src.subarray(y * row, y * row + w * bpp), y * w * bpp);
-    buf.unmap(); buf.destroy();
+    buf.unmap(); this.kill(buf);
     return { width: w, height: h, bytesPerPixel: bpp, data };
   }
 

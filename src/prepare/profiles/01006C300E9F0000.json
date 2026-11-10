@@ -1,0 +1,59 @@
+{
+ "source": "nxnative dm/games/01006C300E9F0000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01006C300E9F0000",
+ "name": "DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition",
+ "builds": [
+  {
+   "version": 262144,
+   "tag": "v262144",
+   "display": "1.0.4",
+   "modules": {
+    "main": "1719aabfa5eae42b132b65770b871288",
+    "subsdk0": "93ff8252d975adf07230cb86c83301c5",
+    "sdk": "fcf93a41b08c5193a1410d262602dc62"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01006C300E9F0000",
+  "program_id": "01006C300E9F0000",
+  "name": "DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition",
+  "package": "v262144",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "JackGame/Content/Paks/pakchunk1-Switch.pak",
+  "pad_layout": "full",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

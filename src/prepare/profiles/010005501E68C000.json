@@ -1,0 +1,53 @@
+{
+ "source": "nxnative dm/games/010005501E68C000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010005501E68C000",
+ "name": "Ace Attorney Investigations Collection",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.0.0.2",
+   "modules": {
+    "main": "f2755f077e2b2dfd89e1c59dcddce91e",
+    "subsdk0": "2f9e7f4ec017bb00e214af7c2fd70f4b",
+    "sdk": "311deab1f062b504f3d646a49ddcd4e8"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010005501E68C000",
+  "program_id": "010005501E68C000",
+  "name": "Ace Attorney Investigations Collection",
+  "package": "v131072",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/globalgamemanagers",
+  "app_pool": "0x40000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

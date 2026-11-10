@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/01008C0016544000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01008C0016544000",
+ "name": "Sea of Stars",
+ "builds": [
+  {
+   "version": 786432,
+   "tag": "v786432",
+   "display": "2.0.59001",
+   "modules": {
+    "main": "1399a83376b1b1c2e5756fbdf7491956",
+    "subsdk0": "ff0149d0b5e882b87c2f06a981302b13",
+    "sdk": "3053b22935e32ddf15ef81997603e5c2"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01008C0016544000",
+  "program_id": "01008C0016544000",
+  "name": "Sea of Stars",
+  "package": "v786432",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/globalgamemanagers",
+  "sys_resource": "0x1000000",
+  "app_pool": "0x60000000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

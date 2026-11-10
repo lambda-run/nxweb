@@ -42,10 +42,20 @@ function guestStep(): void {
   if (cfg.event) { const ev = events[0]; if (!ev.flag) return; ev.flag = false; }
   refill();
 }
+// Where this Worker's timer came late: the gaps of 12 ms or more between two ticks (the timer is cfg.tickMs)
+let lastUnder = 0, lastLive = 0; const ringLog: unknown[] = [];
+let lastTick = 0; const lateTicks: { at: number; gap: number }[] = [];
 function tick(): void {
   if (!ticking) return;
+  const pn = performance.now();
+  if (lastTick && pn - lastTick >= 12 && lateTicks.length < 64) lateTicks.push({ at: Math.round(pn), gap: Math.round(pn - lastTick) });
+  lastTick = pn;
   const t = now();
+  const hb = host.ringHeader(), b4 = [hb[RING.WR], hb[RING.RD], hb[RING.UNDER], hb[RING.CB], hb[RING.LIVE]];
   device.tick(t, t);
+  const ha = host.ringHeader();
+  if ((ha[RING.UNDER] !== lastUnder || ha[RING.LIVE] !== lastLive) && ringLog.length < 40) ringLog.push({ at: Math.round(pn * 10) / 10, before: b4, after: [ha[RING.WR], ha[RING.RD], ha[RING.UNDER], ha[RING.CB], ha[RING.LIVE]], state: OUT_S[host.x.audio_out_state(0)] });
+  lastUnder = ha[RING.UNDER]; lastLive = ha[RING.LIVE];
   if (g) { const s = OUT_S[host.x.audio_out_state(0)] ?? "closed"; if (states.at(-1)?.s !== s) states.push({ t: performance.now(), s }); }
   guestStep();
 }
@@ -54,6 +64,7 @@ function stats(): Record<string, unknown> {
   return { state: g ? OUT_S[x.audio_out_state(0)] : "none", appended, reclaimed, orderErrors, queued: queue.length, underruns: Number(x.audio_out_stat(0, 7)), silenceBytes: Number(x.audio_out_stat(0, 8)),
     signals: events[0]?.signals ?? 0, ringUnder: h[RING.UNDER], callbacks: h[RING.CB], rd: h[RING.RD], wr: h[RING.WR], rate: device.rate, transport: device.transport, context: device.context,
     mixed: Number(x.audio_mixed_frames()), refused: x.kit_refused_total(), red: logs.filter(l => l.startsWith("[RED] ")), states: states.map(s => ({ ...s })), trace: host.outTrace(0), releaseTimes: releaseTimes.slice(),
+    lateTicks: lateTicks.slice(), ringLog,
     isolated: (self as unknown as { crossOriginIsolated: boolean }).crossOriginIsolated, sharedMemory: typeof SharedArrayBuffer !== "undefined" && x.memory.buffer instanceof SharedArrayBuffer, now: performance.now() };
 }
 

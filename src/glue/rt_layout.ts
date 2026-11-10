@@ -6,7 +6,7 @@
 
 export const HOST_END = 0x0800_0000;   // the guest's code region starts here (kernel default layout)
 
-export interface Range { name: string; lo: number; hi: number; module?: "rt" | "loader" | "kernel" | "gfx" | "fs" | "hle"; what: string }
+export interface Range { name: string; lo: number; hi: number; module?: "rt" | "loader" | "kernel" | "gfx" | "fs" | "hle" | "audio"; what: string }
 
 const SIZES: [name: string, size: number, module: Range["module"] | undefined, what: string][] = [
   ["null guard",     0x0001_0000, undefined, "never written by the host: a guest null pointer reads zeroes here"],
@@ -16,14 +16,18 @@ const SIZES: [name: string, size: number, module: Range["module"] | undefined, w
   ["kernel static",  0x00A0_0000, "kernel",  "src/kernel static data: thread records and contexts, handle table, alias page states (8 MB)"],
   ["gfx static",     0x0010_0000, "gfx",     "src/gfx static data (its --memoryBase in build/runtime/gfx.wasm)"],
   ["gfx arena",      0x0200_0000, undefined, "gfx_init(arena, gfx_arena_bytes()): 24 MB today, 32 MB kept"],
-  ["file staging",   0x0170_0000, undefined, "NSO/NRO file bytes while the loader needs them (23 MB)"],
-  ["hle static",     0x0010_0000, "hle",     "src/hle static data (its --memoryBase in build/runtime/hle.wasm; about 350 KB)"],
+  ["file staging",   0x0160_0000, undefined, "NSO/NRO file bytes while the loader needs them (22 MB)"],
   ["fs static",      0x0010_0000, "fs",      "src/fs static data (its --memoryBase in build/runtime/fs.wasm; about 400 KB)"],
   ["fs arena",       0x0070_0000, undefined, "fs_init(arena): RomFS tables of the mounted images, save trees, directory snapshots (7 MB)"],
   ["a64 translator", 0x0100_0000, undefined, "src/a64 translator static data and buffers (its --memoryBase, root a64:build script)"],
   ["a64 helpers",    0x0001_0000, undefined, "src/a64 helpers static data (its --memoryBase)"],
   ["a64 entry bits", 0x0080_0000, undefined, "translator: 1 bit per instruction of the 256 MB code region (known function entries)"],
   ["pc map",         0x014B_0000, undefined, "translator pc map: first level (256 KB), zero leaf, then one 64 KB leaf per touched 64 KB of code"],
+  // ---- from here on the guest may read and write (GUARD_BASE): the two modules below hand the guest pointers into
+  // ---- their static data, as nxnative's host does in its one address space (SystemEvent objects the SDK fills,
+  // ---- localtime's struct tm, language lists, device names)
+  ["hle static",     0x0010_0000, "hle",     "src/hle static data (its --memoryBase in build/runtime/hle.wasm; about 460 KB)"],
+  ["audio static",   0x0010_0000, "audio",   "src/audio static data (its --memoryBase in build/runtime/audio.wasm; about 300 KB with the device ring). Its arena is host-allocated at the first nn::audio call"],
   ["host stubs",     0x0004_0000, undefined, "loader stub region: 4 bytes (UDF #id) per host function, 65536 stubs"],
 ];
 
@@ -57,4 +61,9 @@ export const A64 = {
   entryBitsBase: range("a64 entry bits").lo, codeRegionLo: GUEST.codeBase, codeRegionSize: 0x1000_0000,
   pcmapBase: range("pc map").lo, pcmapEnd: range("pc map").hi,
 };
+// With the guard (RuntimeOptions.guard) a guest load or store below this address traps: the null page and the state of
+// the runtime, the loader, the kernel, graphics, the file system and the translator. Above it, still in the host
+// area: the take-over table's and the audio module's static data (the guest is handed pointers into them) and the
+// stub region.
+export const GUARD_BASE = range("hle static").lo;
 export const STUBS = { base: range("host stubs").lo, cap: (range("host stubs").hi - range("host stubs").lo) >>> 2 };

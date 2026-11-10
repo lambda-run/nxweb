@@ -1,0 +1,67 @@
+{
+ "source": "nxnative dm/games/01006BB00C6F0000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01006BB00C6F0000",
+ "name": "The Legend of Zelda: Link's Awakening",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.1.0",
+   "modules": {
+    "main": "909e904af78ac1b8deefe97ab2ccdb51",
+    "subsdk0": "c8a3cc0b1d1858330a881c0c2fc87940",
+    "subsdk1": "8df876f80ce4ceee62360b31405c452f",
+    "sdk": "3ae34e689d7a35f13cbf42bfd672af8b"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01006BB00C6F0000",
+  "program_id": "01006BB00C6F0000",
+  "name": "The Legend of Zelda: Link's Awakening",
+  "package": "v131072",
+  "modules": "main subsdk0 subsdk1 sdk",
+  "romfs_marker": "region_common/shader/postprocess.bfsha",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note",
+  "depth_mode"
+ ],
+ "unknown": [],
+ "cuts": {
+  "909e904af78ac1b8deefe97ab2ccdb51": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 17617008,
+     "orig": "080040f9",
+     "new": "c0035fd6",
+     "why": "physics completion task release (calls its own destructor): ldr x8,[x0] → ret (no longer destroyed; the step function rebuilds it in place every step)"
+    }
+   ]
+  }
+ },
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

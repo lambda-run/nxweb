@@ -1,0 +1,60 @@
+{
+ "source": "nxnative dm/games/0400380020056000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0400380020056000",
+ "name": "Splatoon Raiders",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "v65536",
+   "modules": {
+    "main": "663c2e087a083f05307f229dfc4042d5",
+    "subsdk0": "07e685d1c23a77a389fd205288ae904c",
+    "sdk": "41d4de4a3b78214ad20c896960df0e5e"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0400380020056000",
+  "program_id": "0400380020056000",
+  "name": "Splatoon Raiders",
+  "pad_layout": "full",
+  "package": "v65536",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "System/RegionLangMask.txt",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x2000000"
+ },
+ "needs": [
+  {
+   "key": "render_cond",
+   "value": "on",
+   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x130000000 alias 0x400000000",
+   "what": "nxnative gives this game a 4.75 GB heap region (nxweb: 1.50 GB) and a 16.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 5100273664,
+  "alias_region": 17179869184,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

@@ -13,6 +13,9 @@ import { shaInit, shaUpdate, shaFinal, DIGEST } from "./sha256";
 import { PROG_nstage, PROG_sd, PROG_serial } from "./obj";
 import { progEntry, PE_ok, PE_key, PE_shader } from "./tables";
 import { arenaAlloc } from "./arena";
+import { Inst } from "../kit/machine";
+import { GFX_SHADER, GfxShaderE, GfxShaderS } from "../kit/gen/tables";
+import { pipelineResetShader } from "./pipeline";
 
 // Reflection record (144 bytes), as the embedder passes it (GfxHost.registerShader fills it from the shader chain's record)
 export const RF_stage: usize = 0;       // u32: 0 vertex, 1 fragment, 2 compute
@@ -31,19 +34,48 @@ export const RF_SIZE: usize = 144;
 const LIB_N: u32 = 4096;
 const LE_SIZE: usize = 152;              // u64 key, reflection record
 let LIB: usize = 0;
-export function shaderInit(): void { LIB = arenaAlloc(<usize>LIB_N * LE_SIZE); }
+// What is known about a key (machine gfx_shader), for keys the embedder has spoken of: { u64 key, Inst }
+const KEYS_N: u32 = 4096 + 256, KE_SIZE: usize = 24;
+let KEYS: usize = 0, nKeys: u32 = 0, keysFullRed = false;
+export function shaderInit(): void { LIB = arenaAlloc(<usize>LIB_N * LE_SIZE); KEYS = arenaAlloc(<usize>KEYS_N * KE_SIZE); }
+function keyInst(key: u64, make: bool): usize {
+  for (let i: u32 = 0; i < nKeys; i++) if (load<u64>(KEYS + <usize>i * KE_SIZE) == key) return KEYS + <usize>i * KE_SIZE + 8;
+  if (!make) return 0;
+  if (nKeys == KEYS_N) { if (!keysFullRed) { keysFullRed = true; L.redLine("shader key table full: further keys are neither pending nor failed"); } return 0; }
+  const e = KEYS + <usize>nKeys * KE_SIZE;
+  store<u64>(e, key); Inst.at(e + 8).init(GFX_SHADER, nKeys); nKeys++;
+  return e + 8;
+}
+// The embedder says what it does about a key: 1 it is on its way (fetched, translated), 2 it could not be had (the
+// embedder reports that itself), 0 nothing any more. False when the key's state does not allow it (it is registered)
+export function shaderPending(key: u64, what: i32): bool {
+  const p = keyInst(key, what != 0);
+  if (!p) return what == 0;
+  const m = Inst.at(p), ev: u8 = what == 1 ? GfxShaderE.Await : what == 2 ? GfxShaderE.Fail : GfxShaderE.Forget;
+  if (!m.can(ev)) return false;
+  return m.step(ev);
+}
+// 0 Unknown, 1 Pending, 2 Failed, 3 Ready
+export function shaderKeyState(key: u64): i32 { const p = keyInst(key, false); return p ? <i32>Inst.at(p).state : 0; }
 let libCount: u32 = 0;
 let libVersion: u32 = 1;
 
 const CTL: usize = memory.data(0x880);
 
 export function libRegister(key: u64, refl: usize): i32 {
-  for (let i: u32 = 0; i < libCount; i++) if (load<u64>(LIB + <usize>i * LE_SIZE) == key) { memory.copy(LIB + <usize>i * LE_SIZE + 8, refl, RF_SIZE); libVersion++; return <i32>i; }
+  for (let i: u32 = 0; i < libCount; i++) if (load<u64>(LIB + <usize>i * LE_SIZE) == key) {
+    // registered again (another translation, a variant): every pipeline built from the old record is requested again
+    memory.copy(LIB + <usize>i * LE_SIZE + 8, refl, RF_SIZE); libVersion++;
+    const k = keyInst(key, true); if (k) Inst.at(k).step(GfxShaderE.Register);
+    pipelineResetShader(i);
+    return <i32>i;
+  }
   if (libCount == LIB_N) { L.redLine("shader library full (4096 shaders)"); return -1; }
   const e = LIB + <usize>libCount * LE_SIZE;
   store<u64>(e, key); memory.copy(e + 8, refl, RF_SIZE);
   libVersion++;
   libCount++;
+  const k = keyInst(key, true); if (k) Inst.at(k).step(GfxShaderE.Register);
   return <i32>(libCount - 1);
 }
 export function libRefl(id: i32): usize { return LIB + <usize>id * LE_SIZE + 8; }
@@ -87,6 +119,9 @@ export function progSetKeys(entry: usize, n: i32, sd: usize): void {
 const MISSING: usize = memory.data(512);
 let nMissing: u32 = 0;
 function reportMissing(key: u64): void {
+  // a key the embedder is fetching, or has reported as failed itself, is not reported again here
+  const st = shaderKeyState(key);
+  if (st == GfxShaderS.Pending || st == GfxShaderS.Failed) return;
   for (let i: u32 = 0; i < min<u32>(nMissing, 64); i++) if (load<u64>(MISSING + (<usize>i << 3)) == key) return;
   store<u64>(MISSING + (<usize>(nMissing & 63) << 3), key); nMissing++;
   L.red("shader ");

@@ -14,7 +14,7 @@ stateDiagram-v2
     note right of Finishing: carries end
 ```
 
-Machine id 28. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 29. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

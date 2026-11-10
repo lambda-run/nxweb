@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/04003F40232DE000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "04003F40232DE000",
+ "name": "Hyrule Warriors: Age of Imprisonment",
+ "builds": [
+  {
+   "version": 196608,
+   "tag": "v196608",
+   "display": "v196608",
+   "modules": {
+    "main": "659cb288b5c5b2b49853add616c0d5bf",
+    "subsdk0": "2f1ad4154aecbb0c128030906af67685",
+    "sdk": "820cd7d096aac448693f504400cc2375"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "04003F40232DE000",
+  "program_id": "04003F40232DE000",
+  "name": "Hyrule Warriors: Age of Imprisonment",
+  "pad_layout": "full",
+  "package": "v196608",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "b6e28c40/root.rdb",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x240000000 alias 0x10000000",
+   "what": "nxnative gives this game a 9.00 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 9663676416,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

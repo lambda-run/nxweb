@@ -1,0 +1,108 @@
+{
+ "source": "nxnative dm/games/0100ACD0163D0000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100ACD0163D0000",
+ "name": "Batman: Arkham Knight",
+ "builds": [
+  {
+   "version": 327680,
+   "tag": "v327680",
+   "display": "1.0.5",
+   "modules": {
+    "main": "feae83dc9e9fb34c77d0a62f1fa9ae9f",
+    "sdk": "2aef2cffb104ee7c9e212fd2f4c731e9"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100ACD0163D0000",
+  "program_id": "0100ACD0163D0000",
+  "name": "Batman: Arkham Knight",
+  "package": "v327680",
+  "modules": "main sdk",
+  "romfs_marker": "BmGame/Movies/Ending.usm",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x2000000"
+ },
+ "needs": [
+  {
+   "key": "shader_key_skip",
+   "value": "0x770+0x78",
+   "what": "Shader keys do not mask the control-section bytes this engine varies: every variant is translated separately (slow first use)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "feae83dc9e9fb34c77d0a62f1fa9ae9f": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 26405908,
+     "orig": "68cb0090",
+     "new": "a4040014",
+     "why": "GMalloc setup: adrp x8 (first instruction of the inlined allocator constructor, 1 GB + 37 GB of address space) → b 0x192fea4 (__cxa_guard_release); the host allocator is in the object already (hle_uemalloc.c)"
+    },
+    {
+     "off": 12955172,
+     "orig": "4a3d4092",
+     "new": "4b3d4092",
+     "why": "queue push: and x10, x10, #0xffff → and x11, x10, #0xffff (w10 keeps the tail)"
+    },
+    {
+     "off": 12955176,
+     "orig": "28792af8",
+     "new": "28792bf8",
+     "why": "queue push: str x8, [x9, x10, lsl #3] → str x8, [x9, x11, lsl #3] (the item)"
+    },
+    {
+     "off": 12955180,
+     "orig": "681a40b9",
+     "new": "bf3a03d5",
+     "why": "queue push: ldr w8, [x19, #0x18] (the tail again) → dmb ishst"
+    },
+    {
+     "off": 12955184,
+     "orig": "08050011",
+     "new": "48050011",
+     "why": "queue push: add w8, w8, #1 → add w8, w10, #1 (then str w8, [x19, #0x18]: the new tail)"
+    },
+    {
+     "off": 12954508,
+     "orig": "680240f9",
+     "new": "bf3903d5",
+     "why": "queue pop: ldr x8, [x19] → dmb ishld (after the tail load; w8 = head)"
+    },
+    {
+     "off": 12954516,
+     "orig": "691e40b9",
+     "new": "093d4092",
+     "why": "queue pop: ldr w9, [x19, #0x1c] (the head again) → and x9, x8, #0xffff"
+    },
+    {
+     "off": 12954520,
+     "orig": "293d4092",
+     "new": "680240f9",
+     "why": "queue pop: and x9, x9, #0xffff → ldr x8, [x19] (the ring; then ldr x8, [x8, x9, lsl #3]: the item)"
+    }
+   ]
+  }
+ },
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 1476395008,
+  "stack_region": 268435456,
+  "fits": true
+ }
+}

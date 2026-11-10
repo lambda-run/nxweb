@@ -49,7 +49,14 @@
     "audio:names": "node src/audio/host/gen_names.mts /home/user/nxnative/dm/host",
     "audio:build": "asc src/audio/index.ts -o build/audio/audio.wasm -O2 --runtime stub",
     "audio:test": "node test/audio/run.mts",
-    "audio:browser": "node test/audio/browser.mts"
+    "audio:browser": "node test/audio/browser.mts",
+    "prepare:build": "node src/prepare/host/build.mts",
+    "prepare:profiles": "python3 tools/prepare/convert_profiles.py",
+    "prepare:profiles:check": "python3 tools/prepare/convert_profiles.py --check",
+    "prepare:test": "node test/prepare/run.mts",
+    "prepare:measure": "node test/prepare/measure.mts",
+    "prepare:browser": "node test/prepare/browser.mts",
+    "prepare:web": "node web/prepare_build.mts --serve"
   },
   "keywords": [],
   "author": "",

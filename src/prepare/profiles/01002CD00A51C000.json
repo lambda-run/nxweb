@@ -1,0 +1,54 @@
+{
+ "source": "nxnative dm/games/01002CD00A51C000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01002CD00A51C000",
+ "name": "Baba Is You",
+ "builds": [
+  {
+   "version": 786432,
+   "tag": "v786432",
+   "display": "1.0.12",
+   "modules": {
+    "main": "4e1e4c7bc925853c998b8af07726c87d",
+    "sdk": "a65883c2863f42f93e0f43f2d7aba0e8"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01002CD00A51C000",
+  "program_id": "01002CD00A51C000",
+  "name": "Baba Is You",
+  "package": "v786432",
+  "modules": "main sdk",
+  "romfs_marker": "Assets.dat",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x6000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

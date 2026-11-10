@@ -1,0 +1,54 @@
+{
+ "source": "nxnative dm/games/010013C00E930000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010013C00E930000",
+ "name": "Hollow Knight: Silksong",
+ "builds": [
+  {
+   "version": 655360,
+   "tag": "v655360",
+   "display": "1.0.30000",
+   "modules": {
+    "main": "fc9ea4ccc955d5799f37752b2d730b31",
+    "subsdk0": "c89c804fc3b26757661a70fc125aa923",
+    "sdk": "e01950c58e17b080c90494784ea1dd29"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010013C00E930000",
+  "program_id": "010013C00E930000",
+  "name": "Hollow Knight: Silksong",
+  "package": "v655360",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/globalgamemanagers",
+  "sys_resource": "0x1000000",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

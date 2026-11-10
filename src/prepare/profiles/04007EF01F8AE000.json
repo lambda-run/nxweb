@@ -1,0 +1,66 @@
+{
+ "source": "nxnative dm/games/04007EF01F8AE000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "04007EF01F8AE000",
+ "name": "Fire Emblem Fortune's Weave",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "v131072",
+   "modules": {
+    "main": "db93b0125f4850601d61c3edde012f8e",
+    "subsdk2": "7d73f8e808341683306a4425a4989ed5",
+    "sdk": "5b1602f3a2965f44ab13124cadbdf148"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "04007EF01F8AE000",
+  "program_id": "04007EF01F8AE000",
+  "name": "Fire Emblem Fortune's Weave",
+  "pad_layout": "full",
+  "package": "v131072",
+  "modules": "main subsdk2 sdk",
+  "romfs_marker": "Fs.bin.zst",
+  "app_pool": "0x240000000",
+  "sys_resource": "0x4000000"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "fps_max",
+   "value": "120",
+   "what": "The 120 fps option is not available."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x130000000 alias 0x400000000",
+   "what": "nxnative gives this game a 4.75 GB heap region (nxweb: 1.50 GB) and a 16.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "depth_mode",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 5100273664,
+  "alias_region": 17179869184,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

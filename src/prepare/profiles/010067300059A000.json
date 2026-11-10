@@ -1,0 +1,61 @@
+{
+ "source": "nxnative dm/games/010067300059A000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010067300059A000",
+ "name": "Mario + Rabbids Kingdom Battle",
+ "builds": [
+  {
+   "version": 589824,
+   "tag": "v589824",
+   "display": "1.9.589692",
+   "modules": {
+    "main": "3b39e0c06b8841f1baf0ea4d54286bfe",
+    "subsdk0": "3758eb95355911f578cd54846e006a5a",
+    "sdk": "9de92bad67c4150268943ab4843ace65"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010067300059A000",
+  "program_id": "010067300059A000",
+  "name": "Mario + Rabbids Kingdom Battle",
+  "package": "v589824",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "moria/sdf/nx/data/sdf-B-1052.sdfdata",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x1000000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "snowdrop_pools",
+   "value": "2048 512 512",
+   "what": "Snowdrop's page pools are not resized: the engine reserves 12 GB of address space, which a 4 GB memory cannot give."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note",
+  "depth_mode"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

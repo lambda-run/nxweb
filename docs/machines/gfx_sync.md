@@ -25,7 +25,7 @@ stateDiagram-v2
     note right of Parked: carries fence
 ```
 
-Machine id 16. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 17. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

@@ -1,0 +1,98 @@
+{
+ "source": "nxnative dm/games/010074F013262000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "010074F013262000",
+ "name": "Xenoblade Chronicles 3",
+ "builds": [
+  {
+   "version": 720896,
+   "tag": "v720896",
+   "display": "2.2.1",
+   "modules": {
+    "main": "82d187fe9ef9be921b8e1b1cddf7bd28",
+    "subsdk0": "be1ee79a9968a35a6b63fc8f1036a6d4",
+    "sdk": "e8cdceb1e77a8465fe20f21928e8d296"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "010074F013262000",
+  "program_id": "010074F013262000",
+  "name": "Xenoblade Chronicles 3",
+  "pad_layout": "full",
+  "package": "v720896",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "bf3.ard",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x2000000",
+  "mem_map_limit": "on"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "82d187fe9ef9be921b8e1b1cddf7bd28": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 19457420,
+     "orig": "e001c0d2",
+     "new": "2000c0d2",
+     "why": "malloc address region: 60 GB to 4 GB"
+    },
+    {
+     "off": 19142768,
+     "orig": "e98340b2",
+     "new": "e9ff9fd2",
+     "why": "first arena bump size, low part: mov x9,#0xffff"
+    },
+    {
+     "off": 19142784,
+     "orig": "4900a0f2",
+     "new": "4900a4f2",
+     "why": "first arena bump size: 512 MB + 128 KB + 64 KB - 1"
+    },
+    {
+     "off": 19142872,
+     "orig": "e97b5fb2",
+     "new": "e98361b2",
+     "why": "first arena subtraction, sign extension"
+    },
+    {
+     "off": 19142876,
+     "orig": "c9ffbff2",
+     "new": "c9ffbbf2",
+     "why": "first arena subtraction: -(512 MB + 128 KB)"
+    },
+    {
+     "off": 19142888,
+     "orig": "2800c0f2",
+     "new": "4800a4f2",
+     "why": "first arena stored capacity: 512 MB + 128 KB"
+    }
+   ]
+  }
+ },
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

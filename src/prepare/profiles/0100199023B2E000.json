@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/0100199023B2E000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100199023B2E000",
+ "name": "Atelier Ryza: Ever Darkness & the Secret Hideout DX",
+ "builds": [
+  {
+   "version": 65536,
+   "tag": "v65536",
+   "display": "1.2.0",
+   "modules": {
+    "main": "b1c897c145e684a16c0be1a9b96c4dcd",
+    "subsdk0": "14765b1d77b12d8654ea87a61c65e2b1",
+    "sdk": "f118ae1c2e7728471aaf1a0d58484968"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100199023B2E000",
+  "program_id": "0100199023B2E000",
+  "name": "Atelier Ryza: Ever Darkness & the Secret Hideout DX",
+  "pad_layout": "full",
+  "package": "v65536",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Data/NX/Sound/pack01.ktsl2stbin",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

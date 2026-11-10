@@ -1,0 +1,56 @@
+{
+ "source": "nxnative dm/games/01007960049A0000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01007960049A0000",
+ "name": "Bayonetta 2",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.2",
+   "modules": {
+    "main": "f19b2e01e1794f933a9720c1404bb6f6",
+    "subsdk0": "a82aa14c5d5a359ad04dc4eab9f5d590",
+    "sdk": "8ceabb1750539c3874cc9fab45cab335"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01007960049A0000",
+  "program_id": "01007960049A0000",
+  "name": "Bayonetta 2",
+  "pad_layout": "full",
+  "package": "v131072",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "data002.cpk",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "mem_used": "0x6600000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

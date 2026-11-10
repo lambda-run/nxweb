@@ -1,0 +1,54 @@
+{
+ "source": "nxnative dm/games/0100CD801CE5E000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100CD801CE5E000",
+ "name": "Balatro",
+ "builds": [
+  {
+   "version": 851968,
+   "tag": "v851968",
+   "display": "1.1.3",
+   "modules": {
+    "main": "294d920907e888814f9040550861fdf5",
+    "sdk": "f118ae1c2e7728471aaf1a0d58484968"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100CD801CE5E000",
+  "program_id": "0100CD801CE5E000",
+  "name": "Balatro",
+  "op_mode": "handheld",
+  "pad_layout": "touch",
+  "package": "v851968",
+  "modules": "main sdk",
+  "romfs_marker": "resources/fonts/NotoSansSC-Bold.ttf",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xc0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.00 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3221225472,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

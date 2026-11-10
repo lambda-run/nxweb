@@ -1,0 +1,71 @@
+{
+ "source": "nxnative dm/games/0100317013770000/game.tsv and patches.py (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100317013770000",
+ "name": "Mario + Rabbids® Sparks of Hope",
+ "builds": [
+  {
+   "version": 393216,
+   "tag": "v393216",
+   "display": "1.6.2225577",
+   "modules": {
+    "main": "5b76a43b231e0640521ac66203f7c178",
+    "sdk": "43211771ed39e7fcef03d88e27091831"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100317013770000",
+  "program_id": "0100317013770000",
+  "name": "Mario + Rabbids® Sparks of Hope",
+  "package": "v393216",
+  "modules": "main sdk",
+  "romfs_marker": "moria/sdf/nx/data/sdf_A_0000.sdfdata",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x1000000",
+  "pad_layout": "full"
+ },
+ "needs": [
+  {
+   "key": "snowdrop_pools",
+   "value": "2048 512 1280",
+   "what": "Snowdrop's page pools are not resized: the engine reserves 12 GB of address space, which a 4 GB memory cannot give."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0x118000000",
+   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {
+  "5b76a43b231e0640521ac66203f7c178": {
+   "module": "main",
+   "cuts": [
+    {
+     "off": 607060,
+     "orig": "0108a052",
+     "new": "2100a052",
+     "why": "Unused 272-byte slot pool: 4,194,304 -> 65,536 slots, 1.06 GB -> 17 MB of address space (mov w1,#0x10000)"
+    }
+   ]
+  }
+ },
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 4697620480,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

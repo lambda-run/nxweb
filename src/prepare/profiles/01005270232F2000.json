@@ -1,0 +1,64 @@
+{
+ "source": "nxnative dm/games/01005270232F2000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01005270232F2000",
+ "name": "OCTOPATH TRAVELER 0",
+ "builds": [
+  {
+   "version": 327680,
+   "tag": "v327680",
+   "display": "1.0.5",
+   "modules": {
+    "main": "9fe60a212cff9b9a3656ab63d4f882e5",
+    "subsdk0": "ca7f78a09c547c54beac3a33ed6bf364",
+    "sdk": "7bba185a35ee9b4d0af66a4df910a823"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01005270232F2000",
+  "program_id": "01005270232F2000",
+  "name": "OCTOPATH TRAVELER 0",
+  "package": "v327680",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "Octopath_Traveler0/Content/Paks/pakchunk0-Switch.pak",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [
+  {
+   "key": "fps_target",
+   "value": "60",
+   "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
+  },
+  {
+   "key": "tex_dyn_slots",
+   "value": "on",
+   "what": "Shaders that index textures by a handle computed at run time are not supported."
+  },
+  {
+   "key": "address_space",
+   "value": "heap 0x8000000 alias 0xc8000000",
+   "what": "nxnative gives this game a 3.12 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "depth_mode",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 134217728,
+  "alias_region": 3355443200,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

@@ -1,0 +1,56 @@
+{
+ "source": "nxnative dm/games/01008D7016438000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "01008D7016438000",
+ "name": "13 Sentinels: Aegis Rim (Asia)",
+ "builds": [
+  {
+   "version": 0,
+   "tag": "v0",
+   "display": "1.00",
+   "modules": {
+    "main": "311947020f64f5742ce3c16162c4d87f",
+    "subsdk0": "507f19d1240d09d00992248e8a0fd77e",
+    "sdk": "2d369d9999e3e10e665106f840ffff9b"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "01008D7016438000",
+  "program_id": "01008D7016438000",
+  "name": "13 Sentinels: Aegis Rim (Asia)",
+  "package": "v0",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "ROBO_CN.CPK",
+  "app_pool": "0xCD500000",
+  "sys_resource": "0x0",
+  "alloc_big_align": "on"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note",
+  "depth_mode"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

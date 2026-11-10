@@ -1,0 +1,55 @@
+{
+ "source": "nxnative dm/games/0100BF00112C0000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100BF00112C0000",
+ "name": "Catherine: Full Body",
+ "builds": [
+  {
+   "version": 131072,
+   "tag": "v131072",
+   "display": "1.0.1a",
+   "modules": {
+    "main": "93a79c77da81f7f15db021c5c7431eb4",
+    "subsdk0": "c8a3cc0b1d1858330a881c0c2fc87940",
+    "subsdk1": "60c6edbbfcebd4176cc301d5d9cb5a6f",
+    "sdk": "5fd4f531c1195e9e5510c9e73f22cd39"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100BF00112C0000",
+  "program_id": "0100BF00112C0000",
+  "name": "Catherine: Full Body",
+  "package": "v131072",
+  "modules": "main subsdk0 subsdk1 sdk",
+  "romfs_marker": "data/Model.cpk",
+  "app_pool": "0xCD500000",
+  "mem_used": "0x6000000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}

@@ -7,14 +7,28 @@ import { webCacheStore } from "../../../src/glue/a64_host.ts";
 import { OpfsStorage } from "../../../src/glue/fs_dev_opfs.ts";
 import { FS_KIND } from "../../../src/glue/fs_host.ts";
 import { workerTranslator, webShaderStore } from "../../../src/glue/rt_shaders.ts";
+import { runIntCases, type IntEnv, type AudioPage } from "../int_cases.ts";
+import { GfxHost } from "../../../src/glue/gfx_host.ts";
 
 const bytes = async (url: string) => new Uint8Array(await (await fetch(url)).arrayBuffer());
 
+// The page side of the audio device (web/main.ts of this test: AudioDeviceMain) and what its worklet recorded
+let audioFn: ((m: unknown) => void) | null = null, audioSeq = 0;
+const audioWaiting = new Map<number, (v: any) => void>();
+const audioAsk = (what: string, extra: object = {}) => new Promise<any>(res => { const id = ++audioSeq; audioWaiting.set(id, res); (self as any).postMessage({ audioTest: what, id, ...extra }); });
+const audioPage: AudioPage = {
+  send: (m, t) => (self as any).postMessage(m, t ?? []),
+  onMessage: fn => { audioFn = fn; },
+  record: async frames => { await audioAsk("record", { frames }); },
+  dump: () => audioAsk("dump"),
+};
 self.onmessage = async (ev: MessageEvent) => {
+  if (ev.data?.audio) { audioFn?.(ev.data); return; }
+  if (ev.data?.audioTestDone) { audioWaiting.get(ev.data.audioTestDone)?.(ev.data.result); audioWaiting.delete(ev.data.audioTestDone); return; }
   try {
-    const list: { nso: string[]; files: string[]; corpus: string[]; gfx: boolean; big: string | null; shaders: { library: boolean; translator: boolean; why: string } } = await (await fetch("/list")).json();
+    const list: { nso: string[]; files: string[]; corpus: string[]; gfx: boolean; big: string | null; shaders: { library: boolean; translator: boolean; why: string }; guardRounds: number | null } = await (await fetch("/list")).json();
     const mod = async (n: string) => WebAssembly.compile(await bytes(`/wasm/${n}.wasm`));
-    const [rt, kernel, loader, translator, helpers, gfx, fsm, hle] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle"].map(mod));
+    const [rt, kernel, loader, translator, helpers, gfx, fsm, hle, audio] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"].map(mod));
     const nso = new Map<string, Uint8Array>();
     await Promise.all(list.nso.map(async n => { nso.set(n, await bytes(`/nso/${n}.nso`)); }));
     const corpus: CorpusGuest[] = await Promise.all(list.corpus.map(async name => {
@@ -25,7 +39,7 @@ self.onmessage = async (ev: MessageEvent) => {
     await Promise.all(list.files.map(async n => { files.set(n, await bytes(`/guest/${n}`)); }));
     let big: CorpusGuest | undefined;
     if (list.big) { const side = await (await fetch(`/big/${list.big}.json`)).json(); big = { name: list.big, side, image: await bytes(`/big/${side.image}`), expected: await bytes(`/big/${side.expected_stdout}`) }; }
-    const env: MoreEnv = { haveGfxGuests: list.gfx, mods: { rt, kernel, loader, translator, helpers, gfx, fs: fsm, hle }, nso: n => nso.get(n) ?? (() => { throw new Error("no NSO " + n); })(),
+    const env: IntEnv = { guardRounds: list.guardRounds ?? undefined, audioPage: ev.data.audio === false ? undefined : audioPage, haveGfxGuests: list.gfx, mods: { rt, kernel, loader, translator, helpers, gfx, fs: fsm, hle, audio }, nso: n => nso.get(n) ?? (() => { throw new Error("no NSO " + n); })(),
       file: n => files.get(n) ?? (() => { throw new Error("no file " + n); })(), corpus, big,
       // saves in the Origin Private File System, the container opened ahead so that a mount does not wait; the rom
       // device is the test image in a Blob (read with FileReaderSync)
@@ -55,14 +69,18 @@ self.onmessage = async (ev: MessageEvent) => {
     let gpu: Gpu | undefined, adapterInfo = "no WebGPU";
     const g = (navigator as any).gpu, adapter = g ? await g.requestAdapter() : null;
     if (adapter) {
-      const device = await adapter.requestDevice();
-      adapterInfo = adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "WebGPU";
-      gpu = { device, canvas: new OffscreenCanvas(480, 270), nextFrame: () => new Promise(r => (self as any).requestAnimationFrame(r)) };
+      // every feature the replayer can use and the adapter's own per-stage limits (GfxHost.deviceDescriptor)
+      const desc = GfxHost.deviceDescriptor(adapter), device = await adapter.requestDevice(desc);
+      adapterInfo = (adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "WebGPU") + `; device with ${desc.requiredFeatures.length} features (${desc.requiredFeatures.join(", ") || "none"}), limits raised: ${Object.entries(desc.requiredLimits).map(([k, v]) => `${k} ${v}`).join(", ")}`;
+      // a new device (after a loss, or for a test that destroys its own): an adapter gives one device, so a new adapter each time
+      const requestDevice = async () => { const a = await g.requestAdapter(); return a ? a.requestDevice(GfxHost.deviceDescriptor(a)) : null; };
+      gpu = { device, canvas: new OffscreenCanvas(480, 270), nextFrame: () => new Promise(r => (self as any).requestAnimationFrame(r)), requestDevice };
     }
     const shots: Shot[] = [];
     if (!gpu) (self as any).postMessage({ result: { name: "gfx: this browser has no WebGPU adapter: the graphics cases run on the null replayer only", ok: false, why: "no adapter", info: [], ms: 0 } });
     await runGfxCases(env, gpu, ev.data.only, shots, r => (self as any).postMessage({ result: r }));
     await runMoreCases(env, gpu, ev.data.only, r => (self as any).postMessage({ result: r }));
+    await runIntCases(env, gpu, ev.data.only, r => (self as any).postMessage({ result: r }));
     for (const s of shots) (self as any).postMessage({ shot: s });
     (self as any).postMessage({ note: "WebGPU adapter: " + adapterInfo });
     (self as any).postMessage({ done: true, isolated: (self as any).crossOriginIsolated, sab: typeof SharedArrayBuffer !== "undefined" });

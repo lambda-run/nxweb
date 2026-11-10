@@ -1,0 +1,48 @@
+{
+ "source": "nxnative dm/games/0100FD8022DAA000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100FD8022DAA000",
+ "name": "Super Mario Galaxy 2",
+ "builds": [
+  {
+   "version": 393216,
+   "tag": "v393216",
+   "display": "1.4.0",
+   "modules": {
+    "main": "4c4513d976582b4a7a766401a8ea6dbf",
+    "subsdk0": "8a72a4dcbfd375d2952288284259da94",
+    "sdk": "6075151627016eef437c1312f2e3ed56"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100FD8022DAA000",
+  "program_id": "0100FD8022DAA000",
+  "name": "Super Mario Galaxy 2",
+  "pad_layout": "full",
+  "op_mode": "handheld",
+  "package": "v393216",
+  "modules": "main subsdk0 sdk",
+  "romfs_marker": "hagi.config",
+  "app_pool": "0xCD500000"
+ },
+ "needs": [],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 268435456,
+  "alias_region": 536870912,
+  "stack_region": 268435456,
+  "fits": true
+ }
+}

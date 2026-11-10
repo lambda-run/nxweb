@@ -1,0 +1,54 @@
+{
+ "source": "nxnative dm/games/0100A00019DE0000/game.tsv (MIT, Copyright (c) 2026 seedds)",
+ "title_id": "0100A00019DE0000",
+ "name": "Hades II",
+ "builds": [
+  {
+   "version": 0,
+   "tag": "v0",
+   "display": "0.0.126424",
+   "modules": {
+    "main": "5219053e5eb156be80fbb2f303779531",
+    "sdk": "d83a56a5558798414c78ec722867a7da"
+   }
+  }
+ ],
+ "apply": {
+  "title_id": "0100A00019DE0000",
+  "program_id": "0100A00019DE0000",
+  "name": "Hades II",
+  "pad_layout": "full",
+  "package": "v0",
+  "modules": "main sdk",
+  "romfs_marker": "Audio/Switch/Music.bank",
+  "app_pool": "0xCD500000",
+  "mem_used": "0x6c00000"
+ },
+ "needs": [
+  {
+   "key": "address_space",
+   "value": "heap 0xd0000000 alias 0x10000000",
+   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+  }
+ ],
+ "dropped": [
+  "ipa",
+  "app_category",
+  "shader_versions",
+  "zip_store",
+  "mem_reserve",
+  "mem_alias",
+  "mem_stack",
+  "shader_groups",
+  "shader_note"
+ ],
+ "unknown": [],
+ "cuts": {},
+ "unconverted": [],
+ "address_space": {
+  "heap_region": 3489660928,
+  "alias_region": 268435456,
+  "stack_region": 268435456,
+  "fits": false
+ }
+}
