@@ -35,7 +35,7 @@ export class RtGfx implements HleGfx {
   readonly x: any;                    // the recorder's exports (nvn_*, gfx_*)
   readonly host: GfxHost;             // the replayer (with the null replayer: its fences, hooks and shader library are used)
   readonly live: boolean;             // a real device is attached
-  stats = { nvnCalls: 0, frames: 0, shown: 0, syncWaits: 0, syncParked: 0, syncTimeouts: 0, finishes: 0, finishParked: 0, acquires: 0, acquireParked: 0, floatArgCalls: 0, floatResults: 0,
+  stats = { nvnCalls: 0, frames: 0, shown: 0, syncWaits: 0, syncParked: 0, syncTimeouts: 0, finishes: 0, finishParked: 0, acquires: 0, acquireParked: 0, acquireLate: 0, floatArgCalls: 0, floatResults: 0,
     deviceLosses: 0, deviceRestores: 0 };
   times = { execMs: 0 };              // time inside the replayer (WebGPU calls), part of the runtime's host-call time
   shaders: RtShaders | null = null;   // where missing shader keys are looked up (rt_shaders.ts attaches itself)
@@ -226,7 +226,10 @@ export class RtGfx implements HleGfx {
           if (wall && this.opts.nextFrame) { if (now >= slot) slot = now; else done = this.displayFrame(slot - quarter); }
           else { at = slot; if (!wall) done = this.lastPresentDone; }
         }
-        if (!done && (at === undefined || at <= now)) { this.lastAcquireAt = now; return this.call(id, k.args); }
+        if (!done && (at === undefined || at <= now)) {
+          if (this.lastAcquireAt >= 0n && !this.opts.unpaced) this.stats.acquireLate++;   // at or past its slot: not held
+          this.lastAcquireAt = now; return this.call(id, k.args);
+        }
         this.stats.acquireParked++;
         return cpu.waitFor(done, at, cpu => { this.lastAcquireAt = this.opts.unpaced || (wall && !this.opts.nextFrame) ? cpu.now() : slot; cpu.write(k.args, k.saved); return this.call(id, k.args); });
       };
