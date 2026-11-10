@@ -302,14 +302,6 @@ export namespace KthreadWaitKind {
   export const sleep: u64 = 5;
   export const clock: u64 = 6;
 }
-export namespace KthreadWaitKind {
-  export const lock: u64 = 1;
-  export const condvar: u64 = 2;
-  export const address: u64 = 3;
-  export const sync: u64 = 4;
-  export const sleep: u64 = 5;
-  export const clock: u64 = 6;
-}
 
 // module (src/kit/defs/module.json, docs/machines/module.md)
 export const MODULE: u8 = 11;

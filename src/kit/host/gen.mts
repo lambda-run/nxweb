@@ -31,7 +31,16 @@ export const HITS: usize = memory.data(${blob.hitsSize});
     s += `export const ${d.name.toUpperCase()}: u8 = ${d.id};\n`;
     s += `export namespace ${P}S {\n${d.states.map((n, i) => `  export const ${n}: u8 = ${i};\n`).join("")}}\n`;
     s += `export namespace ${P}E {\n${d.events.map((n, i) => `  export const ${n}: u8 = ${i};\n`).join("")}}\n`;
+    // Two states may carry the same named enumeration (a wait kind kept while paused): one namespace, and the value
+    // lists must agree, since a second declaration with other values would give one name two meanings.
+    const emitted = new Map<string, string>();
     for (const sd of Object.values(d.data)) if (sd.values) {
+      const key = sd.values.join(",");
+      if (emitted.has(sd.name)) {
+        if (emitted.get(sd.name) !== key) throw new Error(`${d.name}: data "${sd.name}" is declared with different values on two states`);
+        continue;
+      }
+      emitted.set(sd.name, key);
       s += `export namespace ${P}${sd.name[0].toUpperCase()}${sd.name.slice(1)} {\n${sd.values.map((n, i) => `  export const ${n}: u64 = ${i + 1};\n`).join("")}}\n`;
     }
   }
