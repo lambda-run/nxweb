@@ -89,24 +89,26 @@ What is not free: `kernel_init` initializes one kit instance per alias page, 8 M
 **Not `shared`.** The memory is not a SharedArrayBuffer: the translator has shared builds
 (`translator.shared.wasm`, atomics for exclusives) but the runtime runs every guest thread in one Worker.
 
-### Memory safety of the host area (`guard`, default on)
+### Memory safety of the host area (`guard: true`, off by default)
 
-Linear memory has no page protection, so without help a guest write below 0x0800_0000 lands in the kernel's, the
-loader's or the translator's state and a null read returns zero. With `guard` (translator option `guardBase` =
-0x0800_0000) every guest load and store is biased: the address is computed as `wrap(addr) - guardBase` and the memory
-instruction carries the constant offset `guardBase`. WebAssembly computes the effective address without wrapping,
-so an address below the guard lands at 4 GB or above and the access traps, at the cost of one subtraction and no
-branch (DC ZVA does a one-byte guarded load first). The trap is an ordinary `trap` fault whose pc is exact (below).
+Linear memory has no page protection, so a guest write below 0x0800_0000 lands in the kernel's, the loader's or the
+translator's state and a null read returns zero. With `new Runtime(mods, { guard: true })` (translator option
+`guardBase` = 0x0800_0000) every guest load and store is biased: the address is computed as
+`wrap(addr) - guardBase` and the memory instruction carries the constant offset `guardBase`. WebAssembly computes
+the effective address without wrapping, so an address below the guard lands at 4 GB or above and the access traps,
+at the cost of one subtraction and no branch (DC ZVA does a one-byte guarded load first). The trap is an ordinary
+`trap` fault whose pc is exact, and the line says what it most likely was (see "Process lifecycle and faults").
 
 Cost, measured on the 61-image corpus (160.1 M guest instructions, run time without translation, guard on against
-off, 7 interleaved rounds per run, on a machine other jobs were using): Node 22, five runs: +5.6 / +2.6 / +6.8 /
-+8.6 % by the minimum and +3.4 / +5.8 / +2.0 / +9.9 % by the median (mean about +5.6 %); Chromium 153, one run:
-+5.3 % (minimum), +6.2 % (median). That is at the "about 5 %" line the task set, not clearly under it; it is the
-default because what it prevents (silent corruption of host state) cannot be diagnosed afterwards.
-`new Runtime(mods, { guard: false })` turns it off; the cache key contains the setting.
+off, 7 interleaved rounds per run, on a machine other jobs were using): Node 22, six runs: +5.6 / +2.6 / +6.8 /
++8.6 / +5.7 % by the minimum of the rounds and +3.4 / +5.8 / +2.0 / +9.9 / +10.5 % by the median (means: about
++5.9 % and +6.3 %); Chromium 153, one run: +5.3 % (minimum), +6.2 % (median). That is not under the 5 % the task
+set for making it the default, so it is an option, off by default: a debugging aid for a wild pointer, at about
+6 %. `rt:test` measures it again on every run ("guard: what the trap ... costs"). The cache key contains the
+setting.
 
-Not protected: writes into a module's text or read-only data, guest memory another thread owns, and host functions
-(they are host code: `cpu.write` goes anywhere).
+Not protected even with it: writes into a module's text or read-only data, guest memory another thread owns, and
+host functions (they are host code: `cpu.write` goes anywhere).
 
 ## Start contract (test modules)
 
@@ -259,7 +261,7 @@ callbacks, so they must not block.
 `await rt.cacheSave()` when there is something new (it writes nothing when nothing was translated since). One
 entry per code range, keyed by **build id @ load address / `A64Host.optionsKey()`** (a flat image: its SHA-256
 instead of a build id); the options key contains the translator's cache version and every code-changing option,
-`guard` included. Stores: `webCacheStore()` (Cache API; the page uses it) and `test/a64/cache_node.ts` (files).
+`guardBase` included. Stores: `webCacheStore()` (Cache API; the page uses it) and `test/a64/cache_node.ts` (files).
 Run-time modules are not covered: they load inside a host call, where nothing can be awaited.
 
 Cold and warm start of the a64 owner's large guest (1.66 MB image, 404,510 instructions translated on a cold start,
@@ -448,9 +450,9 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 - (f) faults: jump to 0x6000_0000, an undefined instruction, a load from 0xF000_0000 in a second thread, runaway
   recursion, a damaged NSO, a deadlock, a fatal `svcBreak`: each `Stopped` with its kind and the red lines.
 - (g) the 21-program corpus (61 flat images) through this loop, budgets 100000 and 50: 61 of 61 both times.
-- Guard: a null read and a write into the kernel's static data each end in a `trap` fault whose pc is the load or
-  store instruction itself (the line names the instruction and its base register); with `guard: false` the read
-  gives 0 and the write lands. The guard's cost on the corpus is measured by a test of its own (see Memory).
+- Guard (`guard: true`): a null read and a write into the kernel's static data each end in a `trap` fault whose pc
+  is the load or store instruction itself (the line names the instruction and its base register); without it the
+  read gives 0 and the write lands. The guard's cost on the corpus is measured by a test of its own (see Memory).
 - (h) run-time modules: an NRO is loaded through nn::ro, its init function runs, it is called through a looked-up
   symbol and through the main module's own import (bound at load, 0 again after unload), a double load is refused,
   it is unloaded (fini function) and loaded again, three rounds, its data restored each time; no translated unit
@@ -532,8 +534,9 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
 
 ## Gaps
 
-- **Memory protection is the guard only**: text and read-only data are writable; an address at or above 4 GB wraps
-  (contract); with `guard: false` the host area is open as before.
+- **No memory protection by default.** A guest write below 0x0800_0000 overwrites host state and a null pointer
+  reads zeroes unless the process runs with `guard: true` (about 6 % slower; see Memory). Text and read-only data
+  are writable either way; an address at or above 4 GB wraps (contract).
 - **Stack overflow is found late**: at the end of the slice, when sp is already in unmapped memory (the test ends
   3.6 MB below the stack). A stack that borders mapped memory overflows into it unnoticed.
 - **After a trap the registers are stale** (last write-back) unless `preciseFaults: 2` (about twice the run time);

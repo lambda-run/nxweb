@@ -239,9 +239,9 @@ export function cases(env: Env): Case[] {
   });
 
   // ---- (f) ----
-  const faultCase = (file: string, what: string, kind: string, before: string, check: (rt: Runtime, r: RunResult) => void) =>
+  const faultCase = (file: string, what: string, kind: string, before: string, check: (rt: Runtime, r: RunResult) => void, o: RuntimeOptions = {}) =>
     test(`f fault: ${what} ends in Stopped(fault ${kind}) with a red line`, () => {
-      const rt = boot([file]);
+      const rt = boot([file], o);
       let r!: RunResult;
       try { r = rt.run(); } catch (e) { fail(`run() threw instead of stopping: ${e}`); }
       eq(r.state, "Stopped", "state"); eq(rt.state, "Stopped", "machine state");
@@ -273,21 +273,21 @@ export function cases(env: Env): Case[] {
   });
   // the guard on the host area: any guest access below 0x0800_0000 traps, and the trap's pc is the instruction itself
   const isMemInsn = (rt: Runtime, pc: bigint) => ((rt.dv().getUint32(Number(pc), true) >>> 25) & 5) === 4;
-  faultCase("fault_null", "a read through a null pointer", "trap", "reading through a null pointer\n", (rt, r) => {
+  faultCase("fault_null", "with `guard: true`, a read through a null pointer", "trap", "reading through a null pointer\n", (rt, r) => {
     const line = rt.red.at(-2)!, pc = r.stop!.fault!.pc, t = rt.modules[0].text;
     ok(Number(pc) >= t.addr && Number(pc) < t.addr + t.size && isMemInsn(rt, pc), "the pc is a load instruction in the module's text: " + hex(pc));
     ok(!line.includes("last synced pc"), "the pc is exact: " + line);
     ok(line.includes("a null or host-area pointer"), line);
-  });
-  faultCase("fault_host", "a write into the kernel's static data", "trap", "writing into the host area (0x1000100, the kernel's static data)\n", (rt, r) => {
+  }, { guard: true });
+  faultCase("fault_host", "with `guard: true`, a write into the kernel's static data", "trap", "writing into the host area (0x1000100, the kernel's static data)\n", (rt, r) => {
     ok(isMemInsn(rt, r.stop!.fault!.pc) && !rt.red.at(-2)!.includes("last synced pc"), rt.red.at(-2)!);
     ok(rt.dv().getUint32(0x1000100, true) !== 0x55, "the word was not written");
-  });
-  test("f guard off (guard: false): the same null read returns zero and the same write lands in the kernel's memory, as before", () => {
-    const rt = boot(["fault_null"], { guard: false });
+  }, { guard: true });
+  test("f without the guard (the default): the same null read returns zero and the same write lands in the kernel's memory", () => {
+    const rt = boot(["fault_null"]);
     exited(rt.run(), 1, rt);
     eq(rt.stdout(), "reading through a null pointer\nread 0x0\nNOT REACHED\n", "stdout");
-    const rt2 = boot(["fault_host"], { guard: false });
+    const rt2 = boot(["fault_host"]);
     rt2.run();
     eq(rt2.dv().getUint32(0x1000100, true), 0x55, "the word in the kernel's static data");
     return ["a null read gave 0; 0x55 was written at 0x1000100"];

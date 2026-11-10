@@ -14,7 +14,7 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 |---|---|
 | State machine kit (`src/kit`) | Working: 38 machines. `kit:test` 85 tests pass; 347 of 362 transitions are exercised (the 15 missing belong to machines an owner is still adding) |
 | ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs (61 images) |
-| ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), 75 test images pass in four configurations in Node and in Chromium; translation cache; optional trap on host-area accesses |
+| ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), 75 test images pass in four configurations in Node and in Chromium; translation cache; an option that makes guest accesses to host memory trap |
 | Module loader (`src/loader`) | Working, 68 tests (no real game file tried) |
 | Kernel core (`src/kernel`) | Working, 63 tests |
 | Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 39 end-to-end tests under Node, RTB_COUNT in Chromium: multi-threaded NSO modules, run-time modules (NRO), faults with exact pcs, restart without reload |

@@ -38,9 +38,9 @@ One `WebAssembly.Memory` (wasm32, up to 4 GB). A guest address is an offset into
 ```
 
 Every AssemblyScript module is built with `--importMemory --memoryBase <its range>` and has no heap; the runtime
-checks at start that the table tiles the host area and each module's static data ends inside its range. Guest loads
-and stores are compiled so that an address below 0x0800_0000 traps (`guard`), which keeps guest bugs out of host
-state. The memory starts at 128 MB and grows on demand.
+checks at start that the table tiles the host area and each module's static data ends inside its range. With the
+`guard` option guest loads and stores are compiled so that an address below 0x0800_0000 traps, which keeps guest
+bugs out of host state (about 6 % slower, so off by default). The memory starts at 128 MB and grows on demand.
 
 ## The life of a guest call, from translated code to WebGPU and back
 

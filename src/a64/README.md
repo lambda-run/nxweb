@@ -112,12 +112,12 @@ Atomic accesses trap on a misaligned address. CPU state stays in per-instance gl
 set `pc` to 0xFFFF_FFE0 inside the import (its return value is ignored), let everything unwind, and later resume at
 the saved pc; the read is then executed again. Off, it is a plain call with nothing written back.
 
-**Guard (`guardBase`, default 0 = off; the runtime turns it on).** Guest data accesses below `guardBase` trap: the
+**Guard (`guardBase`, default 0 = off; the runtime's `guard: true` sets it).** Guest data accesses below `guardBase` trap: the
 address is `wrap(addr) - guardBase` and every memory instruction carries the offset `guardBase` (`aw`, `mem`,
 `vmem`, `moff` in `emit.ts`), so a lower address reaches 4 GB or more in the engine's unwrapped effective-address
 computation. One subtraction per access, no branch; DC ZVA does a one-byte guarded load before its `memory.fill`.
-With 0 the emitted bytes are what they were. Measured by the runtime on the shared corpus: about +5 % run time
-(runs between +2 % and +10 % on a busy machine; `src/runtime/README.md`). The pc map, `save_ctx` / `load_ctx` and
+With 0 the emitted bytes are what they were. Measured by the runtime on the shared corpus: about +6 % run time
+(runs between +2 % and +10 % on a busy machine; `src/runtime/README.md`), which is why it is not the default. The pc map, `save_ctx` / `load_ctx` and
 the helpers are host accesses and are not biased.
 
 **Fault pcs.** Default (no run-time cost): every unit carries a side table (module byte offset -> guest pc, 8 bytes

@@ -47,13 +47,13 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
       ok(r.stop?.kind === "exit" && r.stop.code === 3, "exit: " + rt.red.join(" | "));
       return { rt, got, saved: await rt.cacheSave() };
     };
-    const cold = await start({}), warm = await start({}), other = await start({ guard: false }), again = await start({ guard: false });
+    const cold = await start({}), warm = await start({}), other = await start({ guard: true }), again = await start({ guard: true });
     eq([cold.got.units, cold.rt.a64.cacheHits], [0, 0], "cold start: units from the cache, cache hits");
     ok(cold.saved > 0 && cold.rt.a64.translatedInsns > 0, "the cold start stored its units");
     ok(warm.got.ranges === 2 && warm.rt.a64.cacheHits > 0, `warm start: ${warm.got.ranges} ranges, ${warm.rt.a64.cacheHits} hits`);
     eq([warm.rt.a64.translatedInsns, warm.saved], [0, 0], "warm start: instructions translated, bytes stored");
     eq(warm.rt.stdout(), cold.rt.stdout(), "stdout of the warm start");
-    eq([other.got.units, again.got.units > 0, again.rt.a64.translatedInsns], [0, true, 0], "other translator options (guard off): a miss, then its own entry");
+    eq([other.got.units, again.got.units > 0, again.rt.a64.translatedInsns], [0, true, 0], "other translator options (guard on): a miss, then its own entry");
     lines.push(`two NSO modules: cold ${cold.rt.a64.translatedInsns} instructions translated, ${cold.saved} bytes stored under 2 keys; warm ${warm.got.units} units available, ${warm.rt.a64.cacheHits} used, 0 translated; with other options a miss`);
     // (2) cold and warm start of a larger guest (a flat image: the key is its SHA-256)
     const g = env.big;

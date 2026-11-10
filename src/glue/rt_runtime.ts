@@ -22,8 +22,9 @@ export interface RuntimeOptions {
   reserve4g?: boolean;                // allocate the whole 4 GB at once instead of growing on demand (default false)
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
-  // Guest loads and stores below 0x0800_0000 (the host area: kernel, loader, translator state, the null page) trap
-  // instead of reading or corrupting it (default true; one subtraction per access, see README "Memory safety").
+  // true: guest loads and stores below 0x0800_0000 (the host area: kernel, loader, translator state, the null page)
+  // trap instead of reading or corrupting it. Default false: it costs about 6 % of run time on the corpus (one
+  // subtraction per access; README "Memory safety"). Turn it on to find a wild pointer.
   guard?: boolean;
   preciseFaults?: 0 | 1 | 2;          // translator: 2 makes the register dump of a trap exact too (about twice the run time)
   cache?: A64CacheStore;              // translation cache: cacheLoad() before run(), cacheSave() after
@@ -189,7 +190,7 @@ export class Runtime {
     this.a64 = new A64Host(mods.translator, mods.helpers, {
       memory: this.memory, layout: A64,
       maxInsns: opts.maxInsns, maxFuncs: opts.maxFuncs, depthLimit: opts.depthLimit, tailCalls: opts.tailCalls, fma: opts.fma, nanFix: opts.nanFix,
-      cntYield: true, preciseFaults: opts.preciseFaults, guardBase: opts.guard === false ? 0 : HOST_END,
+      cntYield: true, preciseFaults: opts.preciseFaults, guardBase: opts.guard ? HOST_END : 0,
       onTranslate: (pc: bigint) => this.onTranslate(pc),
       imports: {
         svc: (n: number) => this.svc(n),
@@ -880,7 +881,7 @@ export class Runtime {
     if (pc === undefined || !/out of bounds/.test(message)) return message;
     const insn = this.dv().getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
     if (!isMem) return message;
-    const guard = this.opts.guard !== false;
+    const guard = !!this.opts.guard;
     return `${message}: the instruction ${hex(insn)} at ${hex(pc)} loads or stores through ${base === 31 ? "sp" : "x" + base} at an address ` +
       (guard ? `below ${hex(HOST_END)} (a null or host-area pointer) or beyond the end of the memory` : "beyond the end of the memory");
   }
