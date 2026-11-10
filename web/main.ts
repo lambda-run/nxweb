@@ -159,7 +159,7 @@ fetch("demo/doom.json").then(r => r.ok ? r.json() : {}).catch(() => ({})).then((
   $("doomnote").textContent = !info.present ? "Doom: not in this build (the engine is fetched by tools/doom/fetch.sh, not included)."
     : (info.wad ? "Doom: the shareware data file is in this build." : "Doom: choose doom1.wad (the shareware data file; it is not included).") +
       " Arrows or WASD move and turn, Z fires (and selects in menus), X opens doors (and goes back in menus), C runs, V changes the weapon (and answers y), Q/E strafe, Enter selects, Backspace is Escape (the menu).";
-  ($("wadlabel") as HTMLElement).hidden = !info.present;
+  ($("wadlabel") as HTMLElement).hidden = !info.present || !!info.wad;   // the chooser only when the build has no data file
   if (info.present && info.wad && new URLSearchParams(location.search).has("doom")) runDoom();
 });
 $("pause").onclick = () => worker.postMessage({ type: "pause" });
