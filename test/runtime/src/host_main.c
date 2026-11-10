@@ -14,6 +14,14 @@ IMPORT u32 host_sum(const u8 *p, u32 n);
 IMPORT s64 host_wait(s64 timeout_ns);   // blocks until host_post, returns the posted value, or -1 on timeout
 IMPORT void host_post(s64 v);
 
+IMPORT u64 host_each(u64 (*fn)(u64, u64), u64 n, u64 ctx);   // the host calls fn(i, ctx) for i < n and adds the results
+static u64 each_calls;
+static u64 each_fn(u64 i, u64 ctx) {
+  each_calls++;
+  if (i == 2) say("  a guest callback, called by the host, making an SVC");
+  u64 v = ctx; for (u64 k = 0; k < 3000; k++) v = v * 31 + i + k;   // long enough to outlast a small budget
+  return v & 0xFFFF;
+}
 static u8 stack[0x4000] __attribute__((aligned(16)));
 static Thread poster;
 static void post_fn(void *arg) { svcSleepThread(2000000); host_post((s64)(u64)arg); }
@@ -38,6 +46,8 @@ int rt_entry(u64 x0, Handle main_thread) {
   s64 v = host_wait(-1);
   l_s(&l, "host_wait() = "); l_d(&l, v); l_s(&l, ", blocked at least 2 ms: "); l_s(&l, svcGetSystemTick() - t0 >= 38400 ? "yes" : "no"); l_out(&l);
   thread_join(&poster);
+  u64 total = host_each(each_fn, 5, 7);
+  l_s(&l, "host_each: "); l_u(&l, each_calls); l_s(&l, " callbacks, sum "); l_u(&l, total); l_out(&l);
   say("host calls done");
   svcExitProcess(0);
 }

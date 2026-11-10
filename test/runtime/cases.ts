@@ -196,15 +196,16 @@ export function cases(env: Env): Case[] {
   });
 
   // ---- (e) ----
-  test("e host calls: forced and weak take-overs, an unresolved import (red once, returns 0), guest memory access, a blocking host function", () => {
+  for (const budget of [100000, 50]) test(`e host calls (budget ${budget}): forced and weak take-overs, an unresolved import (red once, returns 0), guest memory access, a blocking host function, a callback into guest code`, () => {
     let token: bigint | null = null, ev = { r: 0, w: 0 }, hostLines: string[] = [], waits = 0;
-    const rt = boot(["host_main", "host_lib"], {}, rt => {
+    const rt = boot(["host_main", "host_lib"], { budget }, rt => {
       rt.register({ name: "forced_fn", forced: true, fn: cpu => cpu.w(0) * 2 + 1000 });
       rt.register({ name: "weak_fn", fn: cpu => cpu.w(0) * 101 });
       rt.register({ name: "lib_wins", fn: () => 0xBAD });
       rt.register({ name: "host_log", fn: cpu => { hostLines.push(cpu.cstr(cpu.x(0))); cpu.log("guest: " + cpu.cstr(cpu.x(0))); } });
       rt.register({ name: "host_fill", fn: cpu => { const n = cpu.w(1), seed = cpu.w(2); cpu.write(cpu.x(0), Uint8Array.from({ length: n }, (_, i) => (i * seed + 1) & 0xFF)); } });
       rt.register({ name: "host_sum", fn: cpu => cpu.read(cpu.x(0), cpu.w(1)).reduce((a, b) => a + b, 0) });
+      rt.register({ name: "host_each", fn: cpu => { const fn = cpu.x(0), n = cpu.w(1), ctx = cpu.x(2); let sum = 0n; for (let i = 0; i < n; i++) sum += cpu.call(fn, i, ctx); return sum; } });
       rt.register({ name: "host_post", fn: cpu => { token = BigInt.asIntN(64, cpu.x(0)); cpu.rt.k.kernel_event_signal(ev.w); } });
       rt.register({ name: "host_wait", fn: (cpu: HostCpu) => {
         if (!ev.r) ev = newEvent(cpu.rt);
@@ -218,9 +219,11 @@ export function cases(env: Env): Case[] {
       } });
     });
     exited(rt.run(), 0, rt);
+    let each = 0n;
+    for (let i = 0n; i < 5n; i++) { let v = 7n; for (let k = 0n; k < 3000n; k++) v = BigInt.asUintN(64, v * 31n + i + k); each += v & 0xFFFFn; }
     const sum = Array.from({ length: 64 }, (_, i) => (i * 3 + 1) & 0xFF).reduce((a, b) => a + b, 0);
     eq(rt.stdout(), `forced_fn(5) = 1010\nlib_calls_forced(5) = 1011\nweak_fn(3) = 303\nlib_wins(3) = 2003\nmissing_fn(9) = 0\nmissing_fn(10) = 0\n` +
-      `host_fill wrote, guest sums ${sum}, host_sum reads ${sum}\nhost_wait(1 ms) with nobody posting = -1\nhost_wait() = 77, blocked at least 2 ms: yes\nhost calls done\n`, "stdout");
+      `host_fill wrote, guest sums ${sum}, host_sum reads ${sum}\nhost_wait(1 ms) with nobody posting = -1\nhost_wait() = 77, blocked at least 2 ms: yes\n  a guest callback, called by the host, making an SVC\nhost_each: 5 callbacks, sum ${each}\nhost calls done\n`, `stdout (budget ${budget})`);
     eq(hostLines, ["a line from the guest through host_log"], "host_log");
     eq(waits, 2, "host_wait calls");
     const calls = rt.red.filter(l => l.startsWith("[RED] call to unresolved import"));
@@ -275,7 +278,7 @@ export function cases(env: Env): Case[] {
     const lines = rt.red.slice(-1);
     // every thread waits forever: the main thread waits for an event nobody signals
     const rt2 = boot(["host_main", "host_lib"], {}, rt => {
-      for (const name of ["forced_fn", "weak_fn", "host_log", "host_fill", "host_sum", "host_post"]) rt.register({ name, forced: name === "forced_fn", fn: () => 0 });
+      for (const name of ["forced_fn", "weak_fn", "host_log", "host_fill", "host_sum", "host_post", "host_each"]) rt.register({ name, forced: name === "forced_fn", fn: () => 0 });
       rt.register({ name: "host_wait", fn: cpu => cpu.block(newEvent(cpu.rt).r, -1n, () => 0) });
     });
     const r2 = rt2.run();

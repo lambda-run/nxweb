@@ -56,7 +56,13 @@ export interface HostCpu {
   // (ns, -1n = forever) passes; other guest threads run meanwhile. Then resume() runs on the same thread and its
   // result is the host function's result. x0..x3 are not preserved across the wait (they are caller-saved).
   block(readableEvent: number, timeoutNs: bigint, resume: (r: WaitResult, cpu: HostCpu) => HostResult): HostResult;
+  // Call back into guest code: runs the guest function at `fn` to completion on the calling thread, from inside the
+  // host function, and returns its x0. The callback may make SVCs that return at once and call host functions; if it
+  // blocks (a wait, a sleep, an exit of its thread) the process stops with a host fault: a host frame cannot be
+  // suspended. It is not preempted: its slices are refilled until it returns. x30 of the host call is preserved.
+  call(fn: bigint | number, ...args: (bigint | number)[]): bigint;
 }
+class GuestCallAbort extends Error { }
 export interface HostFunctionDef {
   name: string;
   forced?: boolean;                   // true: wins over every module's own definition; false (default): fills an import no module defines
@@ -66,6 +72,7 @@ export interface HostFunctionDef {
 const ACT_CONTINUE = 0, ACT_SWITCH = 1;
 const FOREVER = 0xFFFF_FFFF_FFFF_FFFFn;
 const PC_YIELD = BigInt(GUEST.pcYield), PC_EXIT = BigInt(GUEST.pcExit), PC_SPECIAL = 0xFFFF_FF00n, M32 = 0xFFFF_FFFFn;
+const PC_CALLBACK = 0xFFFF_FFD0n;   // x30 of a guest function a host function calls: its return ends the nested run
 const START_NAME = "<rt.start>";
 // (module (import "env" "host_call" (func)) (func (export "f") call 0)): the table entry every stub pc maps to
 const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0,
@@ -113,6 +120,7 @@ export class Runtime {
   private pauseAsked = false;
   private wallStart = 0;
   private sleeper: Int32Array | null = null;
+  private frozenSeen = false;
 
   constructor(mods: RuntimeModules, opts: RuntimeOptions = {}) {
     this.opts = { budget: 100000, clock: "deterministic", nsPerUnit: 100, mainStackSize: GUEST.mainStackSize, ...opts };
@@ -287,6 +295,12 @@ export class Runtime {
   private cntpct(): bigint {
     if (this.flat) { this.flatTick += 1000n; return this.flatTick; }
     this.tick();
+    if ((this.k.kernel_clock_reasons() & 2) && !this.frozenSeen) {
+      // The kernel wants a counter read to wait while the app is in the background. An `mrs` is not a point where
+      // translated code can unwind (no pc check after it), so the read returns the value the clock stands at.
+      this.frozenSeen = true;
+      this.log("[RED] runtime: cntpct_el0 read while the guest clock is frozen for background: the read does not wait (not implemented), it returns the standing value");
+    }
     return this.k.kernel_guest_ticks();
   }
   private sleepMs(ms: number): void {
@@ -370,6 +384,7 @@ export class Runtime {
       log: (line: string) => rt.log(line),
       jump: (pc) => act({ kind: "jump", pc: BigInt(pc) }),
       block: (event, timeout, resume) => act({ kind: "block", event, timeout, resume }),
+      call: (fn, ...args) => rt.guestCall(BigInt(fn), args),
     };
   }
   // The thunk: pc is a stub address, registers are written back, x30 is where the guest wants to continue
@@ -399,6 +414,29 @@ export class Runtime {
       } else res = h.fn(cpu);
     }
     this.finishHostCall(res, cpu, pc);
+  }
+  // A guest function run to completion inside a host call: a nested core.run() that ends when the function returns
+  // to PC_CALLBACK. The outer translated frames are still on the wasm stack; they go on when the host call returns.
+  private guestCall(fn: bigint, args: (bigint | number)[]): bigint {
+    const c = this.core, r = this.r, lr: bigint = c.x30.value;
+    args.forEach((a, i) => { c["x" + i].value = BigInt.asUintN(64, BigInt(a)); });
+    c.x30.value = PC_CALLBACK; c.pc.value = fn;
+    for (;;) {
+      c.run();
+      if (this.pendFault || this.stopFlag) throw new GuestCallAbort();
+      const pc: bigint = c.pc.value;
+      if (pc === PC_CALLBACK) break;
+      if (pc === PC_YIELD) { this.fault(FAULT.host, `a guest callback at ${hex(fn)} blocked or gave up its core inside a host function`, fn, false); throw new GuestCallAbort(); }
+      if (pc >= PC_SPECIAL) { this.fault(FAULT.jump, `${hex(pc)} reached inside a guest callback at ${hex(fn)}`, pc); throw new GuestCallAbort(); }
+      if (c.budget.value < 0) {   // the callback is not preempted: account the slice and give it another
+        const now: bigint = this.opts.clock === "wall" ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value);
+        if (this.opts.clock === "wall") r.rt_clock_slice_end(c.budget.value);
+        this.k.kernel_tick(now);
+        c.budget.value = this.opts.budget; r.rt_clock_slice_begin(this.opts.budget);
+      }
+    }
+    c.x30.value = lr;
+    return c.x0.value;
   }
   private finishHostCall(res: HostResult, cpu: HostCpu, stubPc: number): void {
     const c = this.core;
@@ -466,6 +504,7 @@ export class Runtime {
       try { c.run(); } catch (e) { trap = e ?? new Error("unknown exception"); }
       k.kernel_tick(wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value));
       if (wall) r.rt_clock_slice_end(c.budget.value);
+      if (trap instanceof GuestCallAbort && !this.pendFault && this.stopFlag) trap = undefined;   // the process ended inside a callback
       if (trap !== undefined || this.pendFault) {
         // the registers go into the thread's context for the report (after a trap: as of the last write-back)
         const pf = this.pendFault;

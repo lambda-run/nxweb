@@ -13,9 +13,11 @@ const SIZES: [name: string, size: number, module: Range["module"] | undefined, w
   ["rt static",      0x000F_0000, "rt",      "src/runtime static data: process machine, fault record, clock, scratch"],
   ["loader static",  0x0010_0000, "loader",  "src/loader static data (tables, kit trace)"],
   ["loader arena",   0x0060_0000, undefined, "module records, export tables, names (ld_init)"],
-  ["kernel static",  0x0100_0000, "kernel",  "src/kernel static data: thread records and contexts, handle table, alias page states (8 MB)"],
+  ["kernel static",  0x00A0_0000, "kernel",  "src/kernel static data: thread records and contexts, handle table, alias page states (8 MB)"],
+  ["gfx static",     0x0010_0000, undefined, "reserved: src/gfx static data (its --memoryBase), not instantiated by the runtime yet"],
+  ["gfx arena",      0x0100_0000, undefined, "reserved: gfx_init(arena, 16 MB), the NVN tables and host-lent segments"],
   ["file staging",   0x0200_0000, undefined, "NSO/NRO file bytes while the loader needs them"],
-  ["pc map",         0x047C_0000, undefined, "translator pc map: one u32 per guest instruction of [host stubs lo, + pc map size)"],
+  ["pc map",         0x03CC_0000, undefined, "translator pc map: one u32 per guest instruction of [host stubs lo, + pc map size)"],
   ["host stubs",     0x0004_0000, undefined, "loader stub region: 4 bytes (UDF #id) per host function, 65536 stubs"],
 ];
 
