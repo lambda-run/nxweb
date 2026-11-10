@@ -502,6 +502,9 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnQueueFinish: passBreak(); finishFence = fenceNew(); store<u64>(hostRec(H_FENCE, 16), finishFence, 8); hostRec(H_FLUSH, 8); hostFlush(); return 0;
     case F.nvnQueueFenceSync: passBreak(); emitFence(P(a, 1)); hostFlush(); return 0;
     case F.nvnQueuePresentTexture: windowPresent(P(a, 1), I(a, 2)); return 0;
+    // nxnative queues a wait for the sync's fence ahead of the queue's later work. Here every queue's submissions run in
+    // order on one host queue, so a fence submitted before the wait is already ahead of what follows it: nothing to add
+    case F.nvnQueueWaitSync: return 1;
     case F.nvnQueueAcquireTexture: return windowAcquire(P(a, 1), 0, P(a, 2));
 
     // ---------- Windows ----------
@@ -686,6 +689,9 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnTextureBuilderGetStorageClass: return 0;
     // Guest memory is the GPU's memory: the dirty scan and pool flushes find written texels; nothing to flush here (as nxnative)
     case F.nvnTextureFlushTexels: return 0;
+    // Compute runs in submission order on the one host queue, with no overlap or priority (as nxnative)
+    case F.nvnCommandBufferSetComputeOverlapMode: return 0;
+    case F.nvnCommandBufferSetComputeWorkloadPriority: return 0;
     case F.nvnCommandBufferSetRecordingMode: return 0;   // the host records every command buffer alike (as nxnative)
     case F.nvnCommandBufferSignalEvent: C.signalEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 5)); return 0;
     case F.nvnCommandBufferWaitEvent: C.waitEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 3)); return 0;
