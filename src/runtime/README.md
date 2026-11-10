@@ -564,6 +564,12 @@ system, the shader lookup and `runAsync()`.
   hand-off's name, the RomFS and add-on contents as devices over the folder's files). Two built-in demos (the cube;
   a 440 Hz tone through nn::audio), built from `test/runtime/src`. NSO files, a shader library and a RomFS image can
   still be picked or dropped directly.
+- **Doom.** A third button, on when the build has `demo/doom.nso` (the doomgeneric engine as a guest, `test/doom`;
+  `web:build` makes it only when the engine is on the build machine, and copies the data file only when `DOOM_WAD`
+  names it). Without a data file in the build the button opens a file dialog; `doom1.wad` can also be dropped on the
+  page. The Worker makes a one-file RomFS image of the bytes (`fs_romfs_one.ts`), gives the canvas the size of the
+  game's window (1280x720; the page then shows it at full width) and registers the guest's two hooks (`doom_frame`,
+  whose game facts the page shows; `doom_args`).
 - **State.** The badge is the `process` machine's state (`rt_state`), the reason beside `Stopped` the data it
   carries. **Machines**: a table of the kit's machines this process has stepped (transitions taken of each table,
   the newest step from the trace rings, which modules stepped it), with the state now for the ones the page can ask
@@ -573,8 +579,10 @@ system, the shader lookup and `runAsync()`.
   **Copy report** makes one text block (the machines' states, modules, counters, the adapter, the translator's
   options key, the fault's lines, the last 200 log lines) with nothing from guest memory: the guest's own output
   lines are left out. It goes to the clipboard and into the page.
-- **Input.** The keyboard is player 1; every controller the Gamepad API reports is a source of its own (its id and
-  index hashed) and a player of its own; vibration is played on the player's controller (`vibrationActuator`), a
+- **Input.** The keyboard is player 1 and its state is sent at every key event (controllers are sampled once per
+  animation frame; sampled like that, a key pressed and released between two frames was lost: found with Doom's
+  menu on a busy machine, tested by a press and release inside one task); every controller the Gamepad API reports
+  is a source of its own (its id and index hashed) and a player of its own; vibration is played on the player's controller (`vibrationActuator`), a
   held state every 400 ms. The controller applet's prompt is a dialog (OK / Close).
 - **Graphics.** F9 or the button captures a frame: the pass text and the target images. A test button destroys the
   GPU device under the running process.

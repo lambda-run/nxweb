@@ -385,3 +385,30 @@ test("romfs: a refused image stays refused and is red; a read error of the devic
   fail = false;
   assert.equal((await fs2.read(h, 0, 4))[0], R.OK);
 });
+
+// src/glue/fs_romfs_one.ts: the image an embedder makes of one file the user picked
+both("romfs: a one-file image made in memory (romfsOfFile) is what the Python reader and the module read; names of several lengths, an empty file", async (async) => {
+  const { romfsOfFile, romfsImageOfFile } = await import("../../src/glue/fs_romfs_one.ts");
+  const r = rng(77);
+  for (const [name, size] of [["doom1.wad", 100_003], ["a", 0], ["abcd", 1], ["name with spaces.bin", 4096], ["x".repeat(61), 77]] as [string, number][]) {
+    const bytes = new Uint8Array(r.bytes(size)), file = img(`one${+async}_${name.length}.img`);
+    const parts = romfsOfFile(name, bytes);
+    assert.equal(parts[1], bytes, "the file's bytes are a part of the image, not a copy");
+    const image = romfsImageOfFile(name, bytes);
+    assert.equal(image.length, parts.reduce((a: number, p: Uint8Array) => a + p.length, 0));
+    writeFileSync(file, image);
+    const rows = ls(file);
+    assert.deepEqual(rows.map(x => [x.path, x.type, x.size, x.sha256]), [[Buffer.from(name).toString("hex"), "f", size, createHash("sha256").update(bytes).digest("hex")]], "the Python reader's listing");
+    const fs = node(file, async);
+    assert.equal(await fs.mount("MountRom", "rom", 0, 0), R.OK);
+    const es = await fs.list("rom:/");
+    assert.deepEqual(es?.map(e => [e.name.toString(), e.type, e.size]), [[name, 1, size]]);
+    const [or, h] = await fs.open(`rom:/${name}`);
+    assert.equal(or, R.OK);
+    assert.deepEqual(await fs.size(h), [R.OK, size]);
+    const [rr, data] = await fs.read(h, 0, size + 10);
+    assert.equal(rr, R.OK); assert.ok(data.equals(Buffer.from(bytes)), "the file's bytes through the module");
+    assert.equal((await fs.open("rom:/other"))[0], R.NOT_FOUND);
+  }
+  assert.throws(() => romfsOfFile("a/b", new Uint8Array(1)), /plain file name/);
+});

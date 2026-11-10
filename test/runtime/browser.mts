@@ -89,7 +89,7 @@ try {
       try {
         await q.goto(web.url);
         const text = (id: string) => q.textContent("#" + id) as Promise<string>;
-        const until = async (what: string, f: () => Promise<boolean>) => { for (let i = 0; i < 150; i++) { if (await f()) return; await new Promise(r => setTimeout(r, 100)); } throw new Error("timed out waiting for " + what + "; state " + await text("state") + ", log: " + (await text("log")).slice(-600)); };
+        const until = async (what: string, f: () => Promise<boolean>, tries = 150) => { for (let i = 0; i < tries; i++) { if (await f()) return; await new Promise(r => setTimeout(r, 100)); } throw new Error("timed out waiting for " + what + "; state " + await text("state") + ", log: " + (await text("log")).slice(-600)); };
         if (await text("state") !== "Empty") throw new Error("the page does not start in Empty: " + await text("state"));
         // the first screen: one way in, the demos under it, the developer tables folded away (and remembered open)
         if (await q.isVisible("#fps") || await q.isVisible("#machines") || !await q.isVisible("#demo") || !await q.frameLocator("#prepare").locator("#pickfile").isVisible()) throw new Error("the landing state: the developer details are open, or the way in is not shown");
@@ -144,6 +144,17 @@ try {
         const report = await q.inputValue("#reporttext");
         for (const want of ["nxweb report: the built-in demo (cube.nso)", "graphics: WebGPU:", "translator options key: ", "host-area guard on", "process: Running", "fault: none", "cube: build id ", "take-overs: ", "  process: Running", "  gfx_device: Live, lost 1 time", "counters:", "log: the last "])
           if (!report.includes(want)) throw new Error(`the report lacks "${want}":\n` + report.slice(0, 1500));
+        // a key pressed and released inside one task, between two animation frames: both states reach the process
+        // (sampled once per frame, the page never saw such a press)
+        const published = async () => {
+          await q.evaluate(() => { (document.getElementById("reporttext") as HTMLTextAreaElement).value = ""; });
+          await q.click("#copyreport");
+          await until("the report", async () => (await q.inputValue("#reporttext")).includes("input snapshots published"));
+          return Number(/input snapshots published: (\d+)/.exec(await q.inputValue("#reporttext"))![1]);
+        };
+        const p0 = await published();
+        await q.evaluate(() => { for (const type of ["keydown", "keyup"]) window.dispatchEvent(new KeyboardEvent(type, { code: "KeyZ", key: "z", bubbles: true })); });
+        await until("the tap's two input states", async () => await published() === p0 + 2, 30);
         await q.click("#pause");
         await until("Paused", async () => await text("state") === "Paused");
         const f1 = await text("frames"); await new Promise(r => setTimeout(r, 400));

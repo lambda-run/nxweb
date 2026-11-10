@@ -82,6 +82,9 @@ worker.onmessage = ev => {
     $("frames").textContent = `${m.frames}, ${m.nvnCalls}`;
     $("waits").textContent = String(m.waiting);
     $("split").textContent = m.split ?? "–";
+    // the Doom demo's own facts, as the guest reports them with every frame
+    const d = m.doom;
+    $("doomstate").textContent = !d ? "–" : `tic ${d.gametic}: ${d.gamestate === 3 ? "title" : d.gamestate === 0 ? (d.demo ? "attract demo" : d.usergame ? "game" : "level") + `, map ${d.map}, health ${d.health}, bullets ${d.bullets}, at ${d.x}/${d.y}, angle ${Math.round(d.angle / 2 ** 32 * 360)}` : d.gamestate === 1 ? "intermission" : "finale"}${d.menu ? ", menu up" : ""}`;
     $("gpu").textContent = m.gpu ?? "–";
     $("more").textContent = m.more ?? "–";
     $("options").textContent = m.options || "–";
@@ -132,6 +135,7 @@ worker.onmessage = ev => {
     const d = $("ctrlprompt") as HTMLDialogElement;
     if (!d.open) d.showModal();
   }
+  else if (m.type === "needwad") $("doomnote").classList.add("ask");                  // Doom was asked for and there is no data file yet
   else if (m.type === "player") players.set(m.source, m.player);
   else if (m.type === "vibration") rumble(m.source, m.low, m.high);
   else if (m.type === "capture") showCapture(m);
@@ -139,6 +143,25 @@ worker.onmessage = ev => {
 };
 ($("demo") as HTMLButtonElement).onclick = () => worker.postMessage({ type: "demo", which: "cube" });
 ($("demotone") as HTMLButtonElement).onclick = () => worker.postMessage({ type: "demo", which: "tone" });
+// Doom: the button is on when the build has the guest (demo/doom.json); the data file is the build's or the user's
+let wadFile: Uint8Array | undefined, wadKnown = false;
+const doomButton = $("demodoom") as HTMLButtonElement;
+function runDoom() {
+  doomButton.blur(); canvasEl.focus({ preventScroll: true });   // Enter and the other keys go to the game from now on, not to the button
+  if (!wadKnown && !wadFile) { ($("wad") as HTMLInputElement).click(); return; }   // no data file yet: ask for it; choosing one starts the game
+  $("doomnote").classList.remove("ask");
+  worker.postMessage({ type: "demo", which: "doom", wad: wadFile });
+  if (wadFile) { wadKnown = true; wadFile = undefined; }   // the Worker keeps it
+}
+doomButton.onclick = runDoom;
+fetch("demo/doom.json").then(r => r.ok ? r.json() : {}).catch(() => ({})).then((info: { present?: boolean; wad?: boolean }) => {
+  doomButton.disabled = !info.present; wadKnown = !!info.wad;
+  $("doomnote").textContent = !info.present ? "Doom: not in this build (the engine is fetched by tools/doom/fetch.sh, not included)."
+    : (info.wad ? "Doom: the shareware data file is in this build." : "Doom: choose doom1.wad (the shareware data file; it is not included).") +
+      " Arrows or WASD move and turn, Z fires (and selects in menus), X opens doors (and goes back in menus), C runs, V changes the weapon (and answers y), Q/E strafe, Enter selects, Backspace is Escape (the menu).";
+  ($("wadlabel") as HTMLElement).hidden = !info.present;
+  if (info.present && info.wad && new URLSearchParams(location.search).has("doom")) runDoom();
+});
 $("pause").onclick = () => worker.postMessage({ type: "pause" });
 $("resume").onclick = () => worker.postMessage({ type: "resume" });
 $("stop").onclick = () => worker.postMessage({ type: "stop" });
@@ -199,6 +222,11 @@ async function take(list: FileList | File[]) {
   for (const f of files) {
     if (/\.nxsl$/i.test(f.name)) { shaderNxsl = new Uint8Array(await f.arrayBuffer()); addLog([{ text: `page: shader library ${f.name} (${shaderNxsl.length} bytes) will be consulted first at the next load`, kind: "" }]); }
     else if (/\.(romfs|img|istorage)$/i.test(f.name)) { rom = f; addLog([{ text: `page: RomFS image ${f.name} (${f.size} bytes) is the rom device of the next load`, kind: "" }]); }
+    else if (/\.wad$/i.test(f.name)) {
+      wadFile = new Uint8Array(await f.arrayBuffer());
+      addLog([{ text: `page: data file ${f.name} (${wadFile.length} bytes) for Doom`, kind: "" }]);
+      if (!doomButton.disabled) runDoom();
+    }
     else if (f.name.endsWith(".json")) { shaderLib = await f.text(); addLog([{ text: `page: shader library ${f.name} (${shaderLib.length} bytes) will be used for the next load`, kind: "" }]); }
     else nso.push({ name: f.name.replace(/\.nso$/i, ""), bytes: new Uint8Array(await f.arrayBuffer()) });
   }
@@ -210,6 +238,7 @@ async function take(list: FileList | File[]) {
 ($("files") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
 ($("shaders") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
 ($("rom") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
+($("wad") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
 // A drop on the developers' box is module files for the Worker; a drop anywhere else on the page is a game (a .nup
 // file or a folder) for "Open a game", which also says what anything else is
 const drop = $("drop");
@@ -248,11 +277,18 @@ function send(source: number, pad: object | null) {
   worker.postMessage({ type: "input", source, pad });
   return true;
 }
-function sample() {
+// The keyboard's state now, sent when it changed. Called at every key event, not only once per animation frame: a key
+// pressed and released between two frames (a quick tap, a page that is busy) is then two states the Worker gets, and
+// the take-over table latches the press for the game's next read. Sampled once per frame it was never seen.
+function keyboard() {
   const axis = (neg: string[], pos: string[]) => (pos.some(k => keys.has(k)) ? 32767 : 0) - (neg.some(k => keys.has(k)) ? 32767 : 0);
   const kb = { buttons: 0, lx: axis(["ArrowLeft", "KeyA"], ["ArrowRight", "KeyD"]), ly: axis(["ArrowDown", "KeyS"], ["ArrowUp", "KeyW"]), rx: axis(["KeyJ"], ["KeyL"]), ry: axis(["KeyK"], ["KeyI"]) };
   for (const k of keys) kb.buttons |= KEY_BTN[k] ?? 0;
-  let changed = send(KEYBOARD, kb);
+  return { kb, changed: send(KEYBOARD, kb) };
+}
+function sample() {
+  const k = keyboard(), kb = k.kb;
+  let changed = k.changed;
   const seen = new Set<number>(), parts = [`keyboard: buttons 0x${kb.buttons.toString(16)}, L ${kb.lx}/${kb.ly}, R ${kb.rx}/${kb.ry}`];
   for (const gp of navigator.getGamepads?.() ?? []) {
     if (!gp || !gp.connected) continue;
@@ -273,11 +309,11 @@ function sample() {
 addEventListener("keydown", e => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
   if (e.code === "F9") { e.preventDefault(); worker.postMessage({ type: "capture" }); return; }
-  if (!e.repeat) keys.add(e.code);
+  if (!e.repeat) { keys.add(e.code); keyboard(); }
   if (e.code.startsWith("Arrow")) e.preventDefault();
 });
-addEventListener("keyup", e => keys.delete(e.code));
-addEventListener("blur", () => keys.clear());
+addEventListener("keyup", e => { keys.delete(e.code); keyboard(); });
+addEventListener("blur", () => { keys.clear(); keyboard(); });
 requestAnimationFrame(sample);
 
 // ---- vibration: a player's motors to its controller, where the Gamepad API has an actuator ----

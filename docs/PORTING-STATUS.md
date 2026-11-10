@@ -6,9 +6,26 @@ nxnative runs Switch games natively on Apple silicon: the game's ARM64 code runs
 runs on the CPU" by a translator. Counts below are taken from the code in this repository and from the generated
 inventories (`test/hle/status.tsv`, `src/gfx/names.txt`, `src/fs/names.ts`), on the day this was written; where an
 area is still being worked on by its owner, its README is the current figure. **No game has been run.** Everything
-is verified against self-made modules, hand-assembled shaders and nxnative's own tests where they could be ported.
+is verified against self-made modules, hand-assembled shaders and nxnative's own tests where they could be ported,
+and one third-party program that is not a Switch game (Doom, below).
 
 Ported = written here and tested. Cut = left out on purpose, with the reason. Open = needed, not there.
+
+## A third-party program: Doom (`test/doom`)
+
+Not a Switch game and not part of nxnative: the open-source engine doomgeneric (GPL-2, fetched by
+`tools/doom/fetch.sh`, never committed) built as an NSO from C with this repository's platform layer and C library,
+as the first workload of some size that nobody here wrote. With the shareware data file (not included):
+
+| | State |
+|---|---|
+| Boot, title, attract demos | Works. All three recorded demos run to their end under `-timedemo`; every 50th frame of demo3 (42 frames over 2134 tics) is bit-identical to the same engine built for the test machine with the host's compiler |
+| A new game from the menu, playing with keyboard or pad | Works (tested with scripted input under Node and with the keyboard in headless Chromium) |
+| Saved games | Works: files of the save data (nn::fs, committed at once); a second process loads what the first saved |
+| Screen | 640x400 XRGB copied into an NVN texture every frame (`CopyBufferToTexture`), drawn 4:3 into a 1280x720 window |
+| Speed | 5.7 M guest instructions per frame; about 1.1 G instructions per second under Node (5 ms per frame unpaced); 35 frames per second in headless Chromium on SwiftShader with 4 to 5 ms of work per frame |
+| Sound and music | Open: the engine runs with its null sound module |
+| Found in nxweb on the way | Two things, both fixed with a test in their area. The translator's single-instruction mode (how instructions are counted) made one WebAssembly module per instruction: 2 GB of engine memory after 7,000 instructions; now the instructions after an entry share its module. The page sampled the keyboard once per animation frame: a key pressed and released between two frames never reached the game; now every key event is sent. Nothing else: no instruction, relocation, SVC, nn::fs or NVN path was missing or wrong |
 
 ## The CPU (no counterpart in nxnative)
 

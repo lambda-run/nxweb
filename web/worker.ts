@@ -12,7 +12,8 @@ import { webCacheStore } from "../src/glue/a64_host.ts";
 import { RtShaders, workerTranslator, webShaderStore, type ShaderTranslator } from "../src/glue/rt_shaders.ts";
 import { RtFs } from "../src/glue/rt_fs.ts";
 import { RtAudio } from "../src/glue/rt_audio.ts";
-import { MemStorage, FS_KIND, type FsStorage } from "../src/glue/fs_host.ts";
+import { MemStorage, BlobDevice, FS_KIND, type FsStorage } from "../src/glue/fs_host.ts";
+import { romfsOfFile } from "../src/glue/fs_romfs_one.ts";
 import { OpfsStorage } from "../src/glue/fs_dev_opfs.ts";
 import { attachHle } from "../src/glue/hle_rt.ts";
 import type { HleHost } from "../src/glue/hle_host.ts";
@@ -79,13 +80,18 @@ async function storageFor(main: Uint8Array, rom: Blob | undefined): Promise<FsSt
     return mem;
   }
 }
-interface LoadOptions { nxsl?: Uint8Array; rom?: Blob; hooks?: (me: Runtime) => void; name?: string; game?: HandoffOptions; storage?: FsStorage }
+interface LoadOptions { nxsl?: Uint8Array; rom?: Blob; hooks?: (me: Runtime) => void; name?: string; game?: HandoffOptions; storage?: FsStorage; canvas?: [number, number] }
+// the canvas is the size of the image a program presents: 480x270 unless the load says otherwise
+const CANVAS: [number, number] = [480, 270];
 async function load(files: { name: string; bytes: Uint8Array }[], shaders: [string, any][], r: number | undefined, o: LoadOptions = {}) {
   await ready;
   if (!mods) return;
   // the process before this one ends here: its threads, its translated code and its graphics objects are released
   if (rt) { await endProcess(rt); await runDone; }
   ratio = r; stdoutSeen = 0; last = undefined;
+  const [cw, ch] = o.canvas ?? CANVAS;
+  if (canvas && (canvas.width !== cw || canvas.height !== ch)) { canvas.width = cw; canvas.height = ch; }
+  post({ type: "canvas", width: cw, height: ch });
   const storage = o.storage ?? await storageFor(files[0].bytes, o.rom);
   const guard = guardNow = guardWanted, game = o.game;
   // files given to the page directly: the default layout, unless their images need a larger code region than it has
@@ -204,6 +210,7 @@ function status() {
   const more = rt ? `${cacheNote}; ${rt.disposed ? 0 : rt.a64.units.length} units, ${rt.a64.translatedInsns} instructions translated now; shaders: ${sh ? `${sh.registered} ready (${sh.fromLibrary} library, ${sh.fromStore} stored, ${sh.translated} translated), ${sh.failed} failed` : "–"}${shaderTranslator ? "" : ", no in-page translator"}; ${fsNote}${fsys ? `, ${fsys.stats.calls} nn::fs calls` : ""}` : "";
   const m: any = { type: "status", more, state: rt ? STATES[rt.r.rt_state()] : "Empty", frames: gfx?.stats.frames ?? 0, nvnCalls: gfx?.stats.nvnCalls ?? 0, waiting: rt?.waitingOutside ?? 0, gpu: gpuInfo, options: optionsNote, redTotal, guard: { now: guardNow, next: guardWanted, auto: guardAuto, byDefault: GUARD_DEFAULT },
     modules: modRows, takeovers: tk };
+  if (rt && doomState?.rt === rt) m.doom = { ...doomState, rt: undefined };
   if (rt) {
     // why it stopped: the data the process machine's Stopped state carries (kind << 32 | value), read from the runtime core
     const kind = rt.r.rt_stop_kind(), value = rt.r.rt_stop_value();
@@ -247,6 +254,31 @@ let lastMachines: ReturnType<typeof machineRows> = [], lastOptionsKey = "";
 function remember(p: Runtime): void { if (p === rt && !p.disposed) { lastMachines = machineRows(p.memory, kitParts(), liveStates()); lastOptionsKey = p.a64.optionsKey(); } }
 
 // The built-in demos: guests built from test/runtime/src, nothing from any game
+// Doom: the doomgeneric engine as a guest (test/doom; built only when the engine is on the build machine). Its data
+// file is the build's copy, or the file the user gave the page; here it becomes the one file of a RomFS image.
+let doomWad: Uint8Array | undefined;
+async function doom(wad?: Uint8Array) {
+  if (wad) doomWad = wad;
+  const info = await fetch("demo/doom.json").then(r => r.ok ? r.json() : {}).catch(() => ({}));
+  if (!info.present) { log("[RED] page: this build has no Doom demo (the engine was not on the build machine: tools/doom/fetch.sh, then npm run web:build)"); return; }
+  if (!doomWad && info.wad) doomWad = new Uint8Array(await fetch("demo/doom1.wad").then(r => r.arrayBuffer()));
+  if (!doomWad) { log("page: Doom needs its data file: choose doom1.wad (the shareware episode) with the button beside the Doom button, or drop it on the page"); post({ type: "needwad" }); return; }
+  if (String.fromCharCode(...doomWad.subarray(0, 4)) !== "IWAD") log(`[RED] page: the data file does not start with "IWAD" (${doomWad.length} bytes): the engine will probably refuse it`);
+  const bytes = new Uint8Array(await fetch("demo/doom.nso").then(r => r.arrayBuffer()));
+  const rom = new Blob(romfsOfFile("doom1.wad", doomWad) as unknown as BlobPart[]);
+  // the process before this one ends first: it holds the save files this one is about to open
+  if (rt) { await endProcess(rt); await runDone; }
+  // saves in OPFS as for any program; where there is no OPFS the data file is still attached (a Blob read synchronously)
+  const storage = await storageFor(bytes, rom);
+  if (storage instanceof MemStorage) { storage.setImage(FS_KIND.ROM, 0, new BlobDevice(rom)); fsNote += "; the data file is attached all the same"; }
+  await load([{ name: "doom", bytes }], await demoShaders(), info.instructionsPerUnit, { name: "Doom (doomgeneric, doom.nso)", storage, canvas: [1280, 720],
+    hooks: me => {
+      // the guest tells every frame's game facts (test/doom/guest/dg_nx.c DoomState): the page shows the newest
+      me.register({ name: "doom_frame", fn: cpu => { const st = new Int32Array(me.memory.buffer, Number(cpu.x(2)), 10); doomState = { rt: me, gametic: cpu.w(0), gamestate: st[0], menu: !!st[1], demo: !!st[2], usergame: !!st[3], map: st[4], health: st[5], bullets: st[6], x: st[7], y: st[8], angle: st[9] >>> 0 }; return 0; } });
+      me.register({ name: "doom_args", fn: () => 0 });
+    } });
+}
+let doomState: { rt: Runtime; gametic: number; gamestate: number; menu: boolean; demo: boolean; usergame: boolean; map: number; health: number; bullets: number; x: number; y: number; angle: number } | undefined;
 async function demo(which: string) {
   if (which === "tone") {
     // nn::audio: a 440 Hz tone, five seconds of 5 ms buffers refilled on the buffer-released event
@@ -263,6 +295,7 @@ self.onmessage = async (ev: MessageEvent) => {
   try {
     if (m.audio) { audio?.handle(m); rt?.requestWake(); }
     else if (m.type === "init") canvas = m.canvas;
+    else if (m.type === "demo" && m.which === "doom") await doom(m.wad);
     else if (m.type === "demo") await demo(m.which ?? "cube");
     else if (m.type === "load") {
       let shaders: [string, any][] = [];

@@ -74,7 +74,11 @@ the larger-code check below: one module per function costs about 230 KB of engin
 +-256 KB window; BL/BLR/SVC fall through; BR/RET/BRK end a path. The size cap (`maxInsns`, default
 1500) stops discovery; a branch or fallthrough to an address outside the function becomes a tail
 transfer (`pc = target; return_call_indirect pcmap[target]`). `maxInsns = 1` gives one function per
-instruction (used by the fuzz gate).
+instruction (used by the fuzz gate, and by the runtime to count instructions: one budget unit each).
+In that mode the up to 255 instructions that follow an entry and have no translation yet are
+functions of the same module, up to `maxFuncs` (the fuzz gate sets 1: one module per instruction).
+One module per instruction cost about 280 KB of engine memory each: counting the instructions of a
+program with 125,000 of them (the Doom guest, `test/doom`) ran out of memory after 7,000.
 
 **Function body.** Basic blocks sorted by address inside
 `loop { block..block { br_table state } b0 } b1 } ... }`: fallthrough and forward branches are plain

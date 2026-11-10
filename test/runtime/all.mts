@@ -3,6 +3,7 @@
 //   a64                   Gate 2 (the guest programs; the instruction fuzz is `npm run a64:fuzz`, a separate CI job).
 //                         Programs listed in A64_EXPECTED_FAILURES may fail without failing the run: they are reported.
 //   runtime               the end-to-end tests under Node (`npm run rt:browser` needs Playwright and is not part of this)
+//   doom                  the Doom guest (test/doom): skipped unless the engine and the data file are on this machine
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -51,6 +52,8 @@ step("a64:guests", () => {
 });
 step("rt:test", () => { const r = npm("rt:test"); return { ok: r.code === 0, note: last(r.out, /^rt:test/) }; });
 step("prepare:test", () => { const r = npm("prepare:test"); return { ok: r.code === 0, note: last(r.out, /^prepare:test/) }; });
+// skipped (and passing) without the engine and the data file: DOOMGENERIC or tools/doom/fetch.sh, DOOM_WAD
+step("doom:test", () => { const r = npm("doom:test"); return { ok: r.code === 0, note: last(r.out, /^doom:test/) }; });
 
 console.log("\n===== summary =====");
 for (const s of steps) console.log(`${s.ok ? "ok  " : "[RED] FAIL"} ${s.name.padEnd(12)} ${(s.ms / 1000).toFixed(1).padStart(6)} s  ${s.note}`);

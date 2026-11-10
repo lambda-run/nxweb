@@ -5,7 +5,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, extname, normalize } from "node:path";
 import { buildWeb, WEB } from "./build.mts";
 
-const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".nso": "application/octet-stream" };
+const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".nso": "application/octet-stream", ".wad": "application/octet-stream" };
 export function serve(port: number): Promise<{ server: Server; url: string }> {
   const server = createServer((req, res) => {
     const head = { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp", "Cache-Control": "no-store" };

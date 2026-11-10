@@ -22,6 +22,7 @@
   #state { font-weight: 600; padding: 2px 10px; border-radius: 999px; background: #263044; }
   #state[data-state=Running] { background: #1f4d2e; } #state[data-state=Paused] { background: #57471c; }
   #state[data-state=Stopped] { background: #3a2530; } #state[data-fault="1"] { background: #6b1f25; }
+  #doomnote { flex-basis: 100%; } #doomnote.ask { color: var(--acc); }
   canvas { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; display: block; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
   dt { color: var(--dim); } dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
@@ -81,6 +82,9 @@
     <div class="demos"><span>No game? Try the built-in demos:</span>
     <button id="demo">Run the built-in demo (spinning cube)</button>
     <button id="demotone">Run the audio demo (a 440 Hz tone)</button>
+    <button id="demodoom" disabled>Run Doom (shareware)</button>
+    <label class="file" id="wadlabel" hidden>choose doom1.wad…<input id="wad" type="file" accept=".wad"></label>
+    <small id="doomnote">Doom: –</small>
     </div>
   </section>
   <section class="panel" id="player" aria-label="The game" data-idle="1">
@@ -109,7 +113,7 @@
     <label class="file">NSO files…<input id="files" type="file" multiple></label>
     <label class="file">Shader library…<input id="shaders" type="file" accept=".nxsl,.json"></label>
     <label class="file">RomFS image…<input id="rom" type="file" accept=".romfs,.img,.istorage"></label>
-    <div id="drop">or drop NSO files (main first, or a file named main), an optional shader library (.nxsl) and a RomFS image (.romfs, .img) here</div>
+    <div id="drop">or drop NSO files (main first, or a file named main), an optional shader library (.nxsl) and a RomFS image (.romfs, .img) here; doom1.wad starts Doom</div>
   </div>
   <div class="panel row"><label><input id="guard" type="checkbox"> Host-area guard for the next run</label><small id="guardnote"></small></div>
   <div class="panel"><dl>
@@ -119,6 +123,7 @@
       <dt>Frames, NVN calls</dt><dd id="frames">–</dd>
       <dt>Threads waiting outside the guest</dt><dd id="waits">–</dd>
       <dt>Per frame</dt><dd id="split">–</dd>
+      <dt>Doom demo</dt><dd id="doomstate">–</dd>
       <dt>Input</dt><dd id="pad">–</dd>
       <dt>Vibration</dt><dd id="rumble">–</dd>
       <dt>Options</dt><dd id="options">–</dd>

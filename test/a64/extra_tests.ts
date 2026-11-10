@@ -235,5 +235,27 @@ export function runExtraTests(m: Mods): TestResult[] {
     eq("leaves asked for after the free", given, before);
     return `${given} leaves from the allocator, the memory grew ${grown} time(s); pc map ${r.t.host.pcMapBytes >> 10} KB`;
   });
+  test("single-instruction mode (maxInsns 1): the instructions after an entry share its module; one unit of budget per instruction; maxFuncs 1 keeps one module per instruction", () => {
+    // f(x0): 600 times `add x0, x0, #1`, then a loop of 5 rounds over three instructions, then ret
+    const N = 600;
+    const code = [...new Array(N).fill(0x91000400),   // add x0, x0, #1
+      0xD28000A1,                                      // mov x1, #5
+      0x91000800, 0xF1000421, 0x54FFFFC1,              // loop: add x0, x0, #2; subs x1, x1, #1; b.ne loop
+      RET];
+    const run = (o: Partial<A64Options>) => {
+      const t = mk(m, { maxInsns: 1, ...o });
+      t.put(BASE, code); t.host.addCode(BASE, code.length * 4);
+      const x0 = t.call(BASE, [7n]);
+      eq("f(7)", x0, BigInt(7 + N + 10));
+      return { modules: t.host.modules, used: (1 << 30) - t.c.budget.value };
+    };
+    const insns = N + 1 + 5 * 3 + 1;
+    const shared = run({}), alone = run({ maxFuncs: 1 });
+    eq("budget units used = instructions executed", shared.used, insns);
+    eq("the same with one module per instruction", alone.used, insns);
+    if (shared.modules > 4) throw new Error(`${shared.modules} modules for ${code.length} instructions: the instructions after an entry did not come along`);
+    eq("modules with maxFuncs 1", alone.modules, code.length);
+    return `${code.length} instructions, ${insns} executed: ${shared.modules} modules (was one per instruction: ${alone.modules} with maxFuncs 1), ${shared.used} budget units either way`;
+  });
   return out;
 }

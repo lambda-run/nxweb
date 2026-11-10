@@ -1,14 +1,45 @@
 // `npm run web:build`: everything web/index.html needs, in build/web/: the bundled page and Worker scripts, the
 // runtime's wasm modules, and the built-in demo (the cube guest, built from test/runtime/src; nothing from any game)
-// with the ratio "guest instructions per budget unit" measured for it here, for the page's instructions readout.
+// with the ratio "guest instructions per budget unit" measured for it here, for the page's instructions readout; and
+// the Doom demo when its engine is on this machine (see buildDoomDemo).
 import { buildSync } from "esbuild";
 import { copyFileSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT, OUT, GUESTS, SHADER_OUT, build, buildModules, loadEnv, haveNvn, shaderArtifacts } from "../test/runtime/harness.mts";
 import { bootGfx } from "../test/runtime/gfx_cases.ts";
 import { buildPreparePage } from "./prepare_build.mts";
+import { buildDoom, doomWad } from "../test/doom/harness.mts";
+import { bootDoom } from "../test/doom/boot.ts";
 
 export const WEB = join(ROOT, "build", "web");
+// The Doom demo (test/doom): build/web/demo/doom.nso when the engine is here (it is not in this repository:
+// tools/doom/fetch.sh or DOOMGENERIC), and the data file beside it only when DOOM_WAD names one (otherwise the page
+// asks for it). demo/doom.json tells the page what is there; without the engine the button stays off.
+async function buildDoomDemo(): Promise<void> {
+  const demo = join(WEB, "demo");
+  for (const f of ["doom.nso", "doom1.wad"]) rmSync(join(demo, f), { force: true });
+  const info: { present: boolean; wad: boolean; instructionsPerUnit?: number } = { present: false, wad: false };
+  const nso = buildDoom(l => console.error("web:build: " + l.replace(/^doom: /, "the Doom demo: ")));
+  if (nso) {
+    copyFileSync(nso, join(demo, "doom.nso")); info.present = true;
+    const wad = doomWad();
+    if (wad) {
+      copyFileSync(wad, join(demo, "doom1.wad")); info.wad = true;
+      // instructions per budget unit over 100 tics of the engine's -timedemo (the same work whatever the clock says)
+      const env = loadEnv(), bytes = new Uint8Array(readFileSync(nso)), data = new Uint8Array(readFileSync(wad));
+      const units = async (o: object) => {
+        let u0 = -1, u1 = 0;
+        const p = await bootDoom(env, bytes, data, { args: "-timedemo demo1", ...o, onFrame: f => { if (u0 < 0 && f.gametic >= 100) u0 = p.rt.units; if (f.gametic >= 200) { u1 = p.rt.units; return true; } } });
+        await p.rt.runAsync();
+        return u1 - u0;
+      };
+      const normal = await units({}), insns = await units({ maxInsns: 1, budget: 1 << 20 });
+      info.instructionsPerUnit = insns / normal;
+      console.log(`web:build: the Doom demo: doom.nso and doom1.wad are in build/web/demo; ${Math.round(insns / 100)} guest instructions per frame, ${(insns / normal).toFixed(1)} per budget unit`);
+    } else console.error("web:build: the Doom demo: DOOM_WAD is not set, so the page will ask for doom1.wad (the data file is never fetched or committed)");
+  }
+  writeFileSync(join(demo, "doom.json"), JSON.stringify(info));
+}
 export async function buildWeb(): Promise<void> {
   build(); buildModules();
   mkdirSync(join(WEB, "wasm"), { recursive: true }); mkdirSync(join(WEB, "demo"), { recursive: true });
@@ -24,7 +55,7 @@ export async function buildWeb(): Promise<void> {
     cpSync(join(SHADER_OUT, "xlate_wasm"), join(WEB, "shaders", "xlate_wasm"), { recursive: true });
     copyFileSync(join(SHADER_OUT, "nx_naga.wasm"), join(WEB, "shaders", "nx_naga.wasm"));
   } else console.error("web:build: the in-page shader translator is not built (tools/shaders; dotnet, cargo and the nxnative checkout): the page uses shader libraries only");
-  if (!haveNvn()) { writeFileSync(join(WEB, "demo", "demo.json"), "{}"); console.error("[RED] web:build: the demo guest needs nxnative's nvn.h and was not built: the demo button will fail"); return; }
+  if (!haveNvn()) { await buildDoomDemo(); writeFileSync(join(WEB, "demo", "demo.json"), "{}"); console.error("[RED] web:build: the demo guest needs nxnative's nvn.h and was not built: the demo button will fail"); return; }
   copyFileSync(join(GUESTS, "cube.nso"), join(WEB, "demo", "cube.nso"));
   // the same frames on the null replayer, normally (budget units) and with one instruction per unit
   const env = loadEnv(), files = [{ name: "cube", bytes: new Uint8Array(readFileSync(join(GUESTS, "cube.nso"))) }];
@@ -33,6 +64,7 @@ export async function buildWeb(): Promise<void> {
   const one = { maxInsns: 1, budget: 1 << 20 };
   const normal = await units(240, {}) - await units(120, {}), insns = await units(240, one) - await units(120, one);
   writeFileSync(join(WEB, "demo", "demo.json"), JSON.stringify({ instructionsPerUnit: insns / normal, frames: 120, instructions: insns, budgetUnits: normal }));
+  await buildDoomDemo();
   console.log(`web:build: build/web ready; demo: ${insns} guest instructions and ${normal} budget units per 120 frames in steady state (${(insns / normal).toFixed(1)} instructions per unit, ${Math.round(insns / 120)} per frame)`);
 }
 if (process.argv[1] && import.meta.filename === process.argv[1]) {

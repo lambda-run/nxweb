@@ -138,8 +138,14 @@ static void nvn_load(NVNdevice *dev, int early) {
 #undef X
 }
 
-// ---- memory: one static block, bump-allocated ----
-static u8 g_mem[12 << 20] __attribute__((aligned(4096)));
+// ---- memory: one static block, bump-allocated (a guest with larger images sets the two sizes before including this) ----
+#ifndef GFX_MEM_MB
+#define GFX_MEM_MB 12
+#endif
+#ifndef GFX_TEXSTORE_MB
+#define GFX_TEXSTORE_MB 6
+#endif
+static u8 g_mem[GFX_MEM_MB << 20] __attribute__((aligned(4096)));
 static u64 g_top;
 static void *galloc(u64 n, u64 align) { g_top = (g_top + align - 1) & ~(align - 1); void *p = g_mem + g_top; g_top += n; return p; }
 static void *memcpy_(void *d, const void *s, u64 n) { u8 *a = d; const u8 *b = s; while (n--) *a++ = *b++; return d; }
@@ -212,7 +218,7 @@ static void gfx_init(int w, int h) {
   nvnQueueBuilderSetQueueMemory(&qb, galloc(qmem, 4096), qmem);
   if (!nvnQueueInitialize(&g_queue, &qb)) say("[guest] QueueInitialize failed");
   int rw = NVN_MEMORY_POOL_FLAGS_CPU_CACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED;
-  pool_init(&g_cmdpool, 1 << 20, rw); pool_init(&g_data, 1 << 20, rw); pool_init(&g_texstore, 6 << 20, rw); pool_init(&g_desc, 1 << 20, rw);
+  pool_init(&g_cmdpool, 1 << 20, rw); pool_init(&g_data, 1 << 20, rw); pool_init(&g_texstore, GFX_TEXSTORE_MB << 20, rw); pool_init(&g_desc, 1 << 20, rw);
   if (!nvnCommandBufferInitialize(&g_cmd, &g_dev)) say("[guest] CommandBufferInitialize failed");
   nvnCommandBufferAddCommandMemory(&g_cmd, &g_cmdpool.obj, 0, g_cmdpool.size);
   nvnCommandBufferAddControlMemory(&g_cmd, galloc(4096, 16), 4096);

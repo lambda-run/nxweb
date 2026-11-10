@@ -30,6 +30,7 @@ let entryPtr: usize = 0;
 let metaPtr: usize = 0;
 let outP: usize = 0;
 const ENTRY_CAP = 4096;
+const SINGLE_RUN = 255;   // single-instruction mode: instructions taken along after an entry
 let unitInsns: u32 = 0;
 
 export function init(): void {
@@ -365,6 +366,20 @@ export function translate(nEntries: i32): u32 {
       if (hi > curHi) hi = curHi;
       for (let pc = lo; pc < hi && nFn < fnLimit; pc += 4) {
         if (isEntry(pc) && !isDone(pc)) addFn(pc, true);
+      }
+    }
+  }
+  if (optMaxInsns == 1) {
+    // single-instruction mode: every function is one instruction, and the instruction after it is entered through
+    // the pc map. A module per instruction costs the engine hundreds of kilobytes each (a program that runs seven
+    // thousand different instructions took 2 GB), so the instructions that follow each entry in its code range and
+    // have no translation yet come along as functions of this unit, up to the unit's function limit.
+    for (let i = 0; i < nEntries; i++) {
+      let e = load<u64>(entryPtr + (<usize>i << 3));
+      if (!findRange(e)) continue;
+      for (let pc = e + 4, n = 0; pc < curHi && n < SINGLE_RUN && nFn < fnLimit; pc += 4, n++) {
+        if (isDone(pc)) break;
+        addFn(pc, true);
       }
     }
   }
