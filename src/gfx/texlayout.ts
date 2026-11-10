@@ -89,6 +89,7 @@ function levelOffset(d: usize, level: u32, tileH: u32, tileD: u32): u64 {
     const ht = (hg + (<u32>1 << th) - 1) >> th, dt = (ld + (<u32>1 << td) - 1) >> td;
     off += (<u64>wg * ht * dt) << (9 + th + td);
   }
+  return 0;
 }
 function layerBytes(d: usize, tileH: u32, tileD: u32): u64 {
   const levels = load<u32>(d, TD_levels);

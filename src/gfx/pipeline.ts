@@ -6,6 +6,7 @@ import * as L from "./log";
 import { Inst } from "../kit/machine";
 import { GFX_PIPELINE, GfxPipelineE, GfxPipelineS } from "../kit/gen/tables";
 import { hostRec, H_PIPELINE_CREATE } from "./hostops";
+import { arenaAlloc } from "./arena";
 
 export const PK_vs: usize = 0;             // u16 library id of the vertex shader
 export const PK_fs: usize = 2;             // u16 library id of the fragment shader
@@ -34,7 +35,8 @@ export const PK_SIZE: usize = 376;
 
 const N: u32 = 2048;                       // entries, a power of two; the table is open-addressed by the key's hash
 const E_SIZE: usize = 400;                 // key, +376 Inst, +392 u32 hash, +396 u32 used
-const TAB: usize = memory.data(819200);
+let TAB: usize = 0;
+export function pipelineInit(): void { TAB = arenaAlloc(<usize>N * E_SIZE); }
 let count: u32 = 0;
 let lastRed: i32 = -1;
 

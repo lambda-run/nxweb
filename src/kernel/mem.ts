@@ -116,7 +116,7 @@ export function memInit(cfg: usize, flagMapLimit: bool): i32 {
 }
 
 // The linear memory reaches end (grown when it does not)
-function commit(end: u64): bool {
+export function commit(end: u64): bool {
   const have = <u64>memory.size() << 16;
   if (end <= have) return true;
   if (end > 0x100000000) return false;

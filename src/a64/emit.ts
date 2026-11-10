@@ -11,6 +11,8 @@ export let optMaxInsns: i32 = 1500; // function size cap
 export let optMaxFuncs: i32 = 48;   // functions per unit (entries + auto-added BL targets)
 export let optFma: bool = true;     // relaxed-simd fused multiply-add
 export let optTail: bool = true;    // wasm tail calls for jumps
+export let optNan: bool = true;     // ARM NaN generation/propagation fix-up on FP arithmetic
+export let optDepth: i32 = 160;     // nested guest calls before a call unwinds through the run loop (0 = off)
 
 export function setOpt(id: i32, v: u32): void {
   switch (id) {
@@ -21,6 +23,8 @@ export function setOpt(id: i32, v: u32): void {
     case 4: optMaxFuncs = <i32>v; break;
     case 5: optFma = v != 0; break;
     case 6: optTail = v != 0; break;
+    case 7: optNan = v != 0; break;
+    case 8: optDepth = <i32>v; break;
   }
 }
 
@@ -111,8 +115,9 @@ export const G_EXADDR = 73;
 export const G_EXVAL = 74;
 export const G_BUDGET = 75;
 export const G_EXVAL2 = 76;
-export const G_TBASE = 77;
-export const NGLOB = 78;
+export const G_DEPTH = 77;
+export const G_TBASE = 78;
+export const NGLOB = 79;
 
 // imported function indices in a unit
 export const F_SVC = 0;
@@ -120,7 +125,15 @@ export const F_UNIMPL = 1;
 export const F_BRK = 2;
 export const F_CNTPCT = 3;
 export const F_CRC = 4;
-export const NIMPF = 5;
+export const F_VOP = 5;
+export const F_NAN1S = 6;
+export const F_NAN1D = 7;
+export const F_NAN2S = 8;
+export const F_NAN2D = 9;
+export const F_NAN3S = 10;
+export const F_NAN3D = 11;
+export const F_RND = 12;
+export const NIMPF = 13;
 
 export const T_I32: u8 = 0x7F;
 export const T_I64: u8 = 0x7E;
@@ -136,6 +149,7 @@ const regLoc = new StaticArray<i32>(NREG);
 const tmpLoc = new StaticArray<i32>(5 * 16);
 export const L_STATE: u32 = 0;
 export const L_BUD: u32 = 1;
+export const L_DEPTH: u32 = 2;
 
 export function newLocal(ty: u8): u32 { locTy[nLoc] = ty; return nLoc++; }
 export function regLocal(r: i32): u32 {
@@ -371,8 +385,12 @@ function idxDyn(): void {
   b(0xA7); i32c(<i32>optCodeLo); b(0x6B); i32c(-4); b(0x71); ltee(t); i32c(<i32>optMapSize); b(0x49);
   b(0x04); b(T_I32); lget(t); b(0x28); b(2); leb(optPcmapBase); b(0x05); i32c(0); b(0x0B);
 }
+// depth bookkeeping: a nested call announces depth+1, a tail transfer hands on the current depth
+function depthForCall(): void { if (optDepth > 0) { lget(L_DEPTH); i32c(1); b(0x6A); gset(G_DEPTH); } }
+// stack: i32 table index ->
 function tailIndirect(): void {
-  if (optTail) { b(0x13); b(0); b(0); } else { b(0x11); b(0); b(0); b(0x0F); }
+  if (optTail) { if (optDepth > 0) { lget(L_DEPTH); gset(G_DEPTH); } b(0x13); b(0); b(0); }
+  else { depthForCall(); b(0x11); b(0); b(0); b(0x0F); }
 }
 function pcCheck(ret: u64): void {
   gget(G_PC); i64c(<i64>ret); b(0x52); b(0x04); b(0x40); b(0x0F); b(0x0B);
@@ -423,6 +441,7 @@ export function branchIf(target: u64): void {
 export function callConst(target: u64, ret: u64): void {
   i64c(<i64>ret); rset(30);
   let f = addFn(target, false);
+  depthForCall();
   if (f >= 0) { writeback(); b(0x10); leb(NIMPF + f); }
   else { i64c(<i64>target); gset(G_PC); writeback(); idxConst(target); b(0x11); b(0); b(0); }
   pcCheck(ret);
@@ -432,6 +451,7 @@ export function callDyn(ret: u64): void {
   let t = t64(11);
   ltee(t); gset(G_PC);
   i64c(<i64>ret); rset(30);
+  depthForCall();
   writeback(); lget(t); idxDyn(); b(0x11); b(0); b(0);
   pcCheck(ret);
 }
@@ -457,6 +477,6 @@ export function beginFunction(): void {
   for (let i = 0; i < NREG; i++) regLoc[i] = -1;
   for (let i = 0; i < 80; i++) tmpLoc[i] = -1;
   cmpA32 = -1; cmpB32 = -1; cmpA64 = -1; cmpB64 = -1;
-  nLoc = 0; newLocal(T_I32); newLocal(T_I32);
+  nLoc = 0; newLocal(T_I32); newLocal(T_I32); newLocal(T_I32);
   lastCmp = 0;
 }

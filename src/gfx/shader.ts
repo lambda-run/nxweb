@@ -12,6 +12,7 @@ import * as L from "./log";
 import { shaInit, shaUpdate, shaFinal, DIGEST } from "./sha256";
 import { PROG_nstage, PROG_sd, PROG_serial } from "./obj";
 import { progEntry, PE_ok, PE_key, PE_shader } from "./tables";
+import { arenaAlloc } from "./arena";
 
 // Reflection record (32 bytes), as the embedder passes it
 export const RF_stage: usize = 0;       // u32: 0 vertex, 1 fragment
@@ -24,7 +25,8 @@ export const RF_SIZE: usize = 32;
 
 const LIB_N: u32 = 4096;
 const LE_SIZE: usize = 40;              // u64 key, reflection record
-const LIB: usize = memory.data(163840);
+let LIB: usize = 0;
+export function shaderInit(): void { LIB = arenaAlloc(<usize>LIB_N * LE_SIZE); }
 let libCount: u32 = 0;
 let libVersion: u32 = 1;
 
@@ -36,7 +38,8 @@ export function libRegister(key: u64, refl: usize): i32 {
   const e = LIB + <usize>libCount * LE_SIZE;
   store<u64>(e, key); memory.copy(e + 8, refl, RF_SIZE);
   libVersion++;
-  return <i32>libCount++;
+  libCount++;
+  return <i32>(libCount - 1);
 }
 export function libRefl(id: i32): usize { return LIB + <usize>id * LE_SIZE + 8; }
 function libFind(key: u64): i32 {
@@ -101,10 +104,10 @@ export function progShader(prog: usize, want: u32): i32 {
     const slot = e + PE_shader + (<usize>i << 1);
     let id = <i32>load<i16>(slot) - 1;
     if (id < 0 || load<u32>(e, PE_shader + 12) != libVersion) {
-      id = libFind(load<u64>(e, PE_key + (<usize>i << 3)));
+      id = libFind(load<u64>(e + PE_key + (<usize>i << 3)));
       store<i16>(slot, <i16>(id + 1));
     }
-    if (id < 0) { reportMissing(load<u64>(e, PE_key + (<usize>i << 3))); found = -2; continue; }
+    if (id < 0) { reportMissing(load<u64>(e + PE_key + (<usize>i << 3))); found = -2; continue; }
     if (load<u32>(libRefl(id), RF_stage) == want && found == -1) found = id;
   }
   store<u32>(e, libVersion, PE_shader + 12);

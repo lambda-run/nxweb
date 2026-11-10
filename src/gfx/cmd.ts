@@ -7,6 +7,7 @@ import { Inst } from "../kit/machine";
 import { GFX_CMDBUF, GfxCmdbufE, GfxCmdbufS } from "../kit/gen/tables";
 import * as O from "./obj";
 import { dpoolBase } from "./tables";
+import { arenaAlloc } from "./arena";
 
 // @ts-ignore: decorator
 @external("env", "gfx_guest_call")
@@ -30,7 +31,8 @@ export function cmdInitialize(c: usize, dev: u64): u64 {
 const HOSTSEG_SZ: usize = 256 << 10;
 const HOSTSEG_SMALL: usize = 4 << 10;
 const ARENA_SIZE: usize = 8 << 20;
-const ARENA: usize = memory.data(8388608);
+let ARENA: usize = 0;
+export function cmdInit(): void { ARENA = arenaAlloc(ARENA_SIZE); }
 const NSEG: i32 = 512;
 const SEG: usize = memory.data(16384);       // { u32 mem, u32 n, u32 busy, u32 pad, u64 org_lo, u64 org_hi } x NSEG
 let nseg: i32 = 0;
@@ -134,7 +136,7 @@ export function memoryFree(c: usize): u64 { const cur = load<u64>(c, O.CMD_cur),
 function rec(c: usize, op: u32, payload: usize): usize {
   const m = inst(c);
   if (!m.can(GfxCmdbufE.Record)) { m.step(GfxCmdbufE.Record); return 0; }
-  const sz = <u32>((8 + payload + 7) & ~<usize>7);
+  const sz = (<u32>payload + 15) & ~7;
   const p = allocKeep(c, sz, O.OP_RESERVE);
   m.step(GfxCmdbufE.Record);
   store<u32>(p, op);
@@ -272,7 +274,7 @@ export function bindTextures(c: usize, st: i32, first: i32, n: i32, h: usize): v
 // which: 0 value mask, 1 write mask, 2 reference
 export function setStencil(c: usize, face: i32, v: i32, which: i32): void {
   const r = rec(c, O.OP_STENCIL, O.P_STENCIL_SIZE);
-  if (r) { store<i32>(r, face); store<i32>(r, v, 4 + (<usize>which << 2)); store<i32>(r, which, 16); }
+  if (r) { store<i32>(r, face); store<i32>(r + 4 + (<usize>which << 2), v); store<i32>(r, which, 16); }
 }
 export function setPolygonOffsetClamp(c: usize, factor: f32, units: f32, clamp: f32): void {
   const r = rec(c, O.OP_POLY_OFFSET, O.P_POLY_OFFSET_SIZE);
@@ -292,7 +294,7 @@ export function barrier(c: usize, bits: i32): void { const r = rec(c, O.OP_BARRI
 export function setPool(c: usize, pool: u64, tex: bool): void {
   const r = rec(c, tex ? O.OP_SET_TEX_POOL : O.OP_SET_SAMP_POOL, O.P_SET_POOL_SIZE);
   if (r) store<u64>(r, pool);
-  store<i32>(c, dpoolBase(pool, tex), tex ? O.CMD_tex_base : O.CMD_samp_base);
+  store<i32>(c + (tex ? O.CMD_tex_base : O.CMD_samp_base), dpoolBase(pool, tex));
 }
 // The copy strides are command buffer state, written into the record only when one is set (SetCopyRowStride takes
 // no command memory)

@@ -3,6 +3,7 @@
 // `env.gfx_exec(ptr, len)` in order. The replayer executes them one by one and decides nothing: every pass boundary,
 // load action, binding and pipeline is already resolved here. Field layouts are documented at each emitter; the
 // replayer's reader (gfx_host.ts) is the other end of the same table.
+import { arenaAlloc } from "./arena";
 // @ts-ignore: decorator
 @external("env", "gfx_exec")
 declare function hostExec(ptr: usize, len: u32): void;
@@ -32,7 +33,8 @@ export const H_FLUSH: u32 = 22;            // the submission ends: finish the en
 export const H_MEM_DIRTY: u32 = 23;        // guest memory changed under the stream (UpdateUniformBuffer, CopyBufferToBuffer): drop uploads
 
 const CAP: usize = 1 << 20;
-const BUF: usize = memory.data(1048576);
+let BUF: usize = 0;
+export function hostInit(): void { BUF = arenaAlloc(CAP); }
 let len: usize = 0;
 let execs: u32 = 0;
 

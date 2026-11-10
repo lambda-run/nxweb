@@ -1,7 +1,8 @@
 // nxweb a64: scalar floating point and SIMD&FP register loads/stores.
 import {
   b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, vmem, mem, fc, ar, cm, cst,
-  getX, getXsp, setX, setXsp, rget, rset, t32, t64, tf32, tf64, tv, emitCond, killCmp, optFma,
+  getX, getXsp, setX, setXsp, rget, rset, t32, t64, tf32, tf64, tv, emitCond, killCmp, optFma, optNan, gget,
+  G_FPCR, F_NAN1S, F_NAN2S, F_NAN3S, F_RND,
   R_N, R_Z, R_C, R_V, R_V0, T_I32,
 } from "./emit";
 import { getExtended } from "./int";
@@ -77,6 +78,51 @@ export function minMaxNum(d: bool, isMax: bool): void {
   b(0x71); i32c(1); b(0x71);
   b(0x1B);
 }
+// stack: r -> r' ; scalar NaN fix-up with operands in float temps 3 (a) and 4 (b); n = operand count
+export function nanFixS(d: bool, n: i32): void {
+  if (!optNan) return;
+  let R = d ? tf64(5) : tf32(5), A = d ? tf64(3) : tf32(3), B = d ? tf64(4) : tf32(4);
+  ltee(R); lget(R); fcm(d, 0x5C);
+  b(0x04); b(0x40);
+  lget(A); if (n == 2) lget(B);
+  b(0x10); leb((n == 2 ? F_NAN2S : F_NAN1S) + (d ? 1 : 0)); lset(R);
+  b(0x0B);
+  lget(R);
+}
+// push i32: FPCR.RMode != 0
+export function rmodeTest(): void { gget(G_FPCR); i32c(0xC00000); b(0x71); }
+// stack: i64 x -> i64 ; rnd(op | RMode << 8, x)
+export function rndCall(op: i32): void {
+  let t = t64(6);
+  lset(t); gget(G_FPCR); i32c(14); b(0x76); i32c(0x300); b(0x71); i32c(op); b(0x72); lget(t); b(0x10); leb(F_RND);
+}
+// stack: i64 x -> i64 ; rnd(op, x)
+export function rndConst(op: i32): void { let t = t64(6); lset(t); i32c(op); lget(t); b(0x10); leb(F_RND); }
+// stack: x -> x rounded by FPCR.RMode (FRINTI / FRINTX)
+function frintCurrent(d: bool): void {
+  let X = d ? tf64(0) : tf32(0);
+  lset(X);
+  rmodeTest();
+  b(0x04); b(d ? 0x7C : 0x7D);
+  lget(X); if (d) b(0xBD); else { b(0xBC); b(0xAD); }
+  rndCall(d ? 0 : 1);
+  if (d) b(0xBF); else { b(0xA7); b(0xBE); }
+  b(0x05); lget(X); fa(d, 0x90); b(0x0B);
+}
+// stack: i64 (already extended) -> float ; honours FPCR.RMode
+function intToFp(d: bool, U: bool, fbits: i32): void {
+  let X = t64(5);
+  lset(X);
+  rmodeTest();
+  b(0x04); b(d ? 0x7C : 0x7D);
+  lget(X); rndCall((d ? (U ? 4 : 3) : (U ? 6 : 5)) | (fbits << 16));
+  if (d) b(0xBF); else { b(0xA7); b(0xBE); }
+  b(0x05);
+  lget(X); b(d ? (U ? 0xBA : 0xB9) : (U ? 0xB5 : 0xB4));
+  if (fbits) { if (d) f64c(<u64>(1023 - fbits) << 52); else f32c(<u32>(127 - fbits) << 23); fa(d, 0x94); }
+  b(0x0B);
+}
+
 export function vfpExpand64(imm8: u32): u64 {
   let sign: u64 = imm8 >> 7, b6 = (imm8 >> 6) & 1;
   let exp: u64 = (b6 ? 0x3FC : 0x400) | ((imm8 >> 4) & 3);
@@ -101,6 +147,18 @@ export function trFp(pc: u64, insn: u32): bool {
       // madd(a,b,c) = a*b+c ; nmadd = -(a*b)+c
       let useN = (o1 ^ o0) != 0;
       simd(d ? (useN ? 0x108 : 0x107) : (useN ? 0x106 : 0x105));
+      if (optNan) {
+        let R = d ? tf64(5) : tf32(5);
+        simd(d ? 0x21 : 0x1F); b(0); ltee(R); lget(R); fcm(d, 0x5C);
+        b(0x04); b(0x40);
+        getF(ra, d); if (o1) fa(d, 0x8C);
+        getF(rn, d); if (o1 ^ o0) fa(d, 0x8C);
+        getF(rm, d);
+        b(0x10); leb(F_NAN3S + (d ? 1 : 0)); lset(R);
+        b(0x0B);
+        lget(R); setF(rd, d);
+        return true;
+      }
       if (d) v128c(~(<u64>0), 0); else v128c(0xFFFFFFFF, 0);
       simd(0x4E); vset(rd);
     } else {
@@ -117,9 +175,8 @@ export function trFp(pc: u64, insn: u32): bool {
     let fbits = 64 - scale;
     if (!sf && scale < 32) return false;
     if (rmode == 0 && (opcode == 2 || opcode == 3)) {
-      getX(rn, sf); b((d ? 0xB7 : 0xB2) + (sf ? 2 : 0) + (opcode & 1));
-      if (d) f64c(<u64>(1023 - fbits) << 52); else f32c(<u32>(127 - fbits) << 23);
-      fa(d, 0x94); setF(rd, d);
+      getX(rn, sf); if (!sf) b((opcode & 1) ? 0xAD : 0xAC);
+      intToFp(d, (opcode & 1) != 0, fbits); setF(rd, d);
       return true;
     }
     if (rmode == 3 && opcode < 2) {
@@ -153,7 +210,8 @@ export function trFp(pc: u64, insn: u32): bool {
     if (ty > 1) return false;
     if (opcode == 2 || opcode == 3) {
       if (rmode != 0) return false;
-      getX(rn, sf); b((d ? 0xB7 : 0xB2) + (sf ? 2 : 0) + (opcode & 1)); setF(rd, d);
+      getX(rn, sf); if (!sf) b((opcode & 1) ? 0xAD : 0xAC);
+      intToFp(d, (opcode & 1) != 0, 0); setF(rd, d);
       return true;
     }
     let mode: u32 = opcode >= 4 ? 4 : rmode;
@@ -165,6 +223,15 @@ export function trFp(pc: u64, insn: u32): bool {
     return true;
   }
   if (insn >>> 31) return false;
+  if ((insn & 0x7C00) == 0x4000) { // half-precision conversions
+    let opcode = (insn >> 15) & 63;
+    if (ty == 3 && opcode == 4) { vget(rn); simd(0x19); b(0); b(0xAD); rndConst(7); b(0xA7); setVint(rd, false); return true; }
+    if (ty == 3 && opcode == 5) { vget(rn); simd(0x19); b(0); b(0xAD); rndConst(8); setVint(rd, true); return true; }
+    if (ty < 2 && opcode == 7) {
+      getF(rn, d); if (d) b(0xBD); else { b(0xBC); b(0xAD); }
+      rndConst(d ? 10 : 9); b(0xA7); setVint(rd, false); return true;
+    }
+  }
   if (ty > 1) return false;
   switch ((insn >> 10) & 3) {
     case 1: { // FCCMP / FCCMPE
@@ -179,7 +246,8 @@ export function trFp(pc: u64, insn: u32): bool {
     }
     case 2: { // two-source
       let opcode = (insn >> 12) & 15;
-      getF(rn, d); getF(rm, d);
+      let A = d ? tf64(3) : tf32(3), B = d ? tf64(4) : tf32(4);
+      getF(rn, d); ltee(A); getF(rm, d); ltee(B);
       switch (opcode) {
         case 0: fa(d, 0x94); break;
         case 1: fa(d, 0x95); break;
@@ -189,9 +257,11 @@ export function trFp(pc: u64, insn: u32): bool {
         case 5: fa(d, 0x96); break;
         case 6: minMaxNum(d, true); break;
         case 7: minMaxNum(d, false); break;
-        case 8: fa(d, 0x94); fa(d, 0x8C); break;
+        case 8: fa(d, 0x94); break;
         default: return false;
       }
+      nanFixS(d, 2);
+      if (opcode == 8) fa(d, 0x8C);
       setF(rd, d);
       return true;
     }
@@ -220,15 +290,22 @@ export function trFp(pc: u64, insn: u32): bool {
       case 0: getF(rn, d); setF(rd, d); return true;
       case 1: getF(rn, d); fa(d, 0x8B); setF(rd, d); return true;
       case 2: getF(rn, d); fa(d, 0x8C); setF(rd, d); return true;
-      case 3: getF(rn, d); fa(d, 0x91); setF(rd, d); return true;
-      case 4: if (!d) return false; getF(rn, true); b(0xB6); setF(rd, false); return true;
-      case 5: if (d) return false; getF(rn, false); b(0xBB); setF(rd, true); return true;
+      case 3: getF(rn, d); ltee(d ? tf64(3) : tf32(3)); fa(d, 0x91); nanFixS(d, 1); setF(rd, d); return true;
+      case 4: {
+        if (!d) return false;
+        let X = tf64(0);
+        getF(rn, true); lset(X);
+        rmodeTest(); b(0x04); b(0x7D);
+        lget(X); b(0xBD); rndCall(2); b(0xA7); b(0xBE);
+        b(0x05); lget(X); b(0xB6); b(0x0B);
+        setF(rd, false); return true;
+      }
       case 8: getF(rn, d); roundMode(d, 0); setF(rd, d); return true;
       case 9: getF(rn, d); roundMode(d, 1); setF(rd, d); return true;
       case 10: getF(rn, d); roundMode(d, 2); setF(rd, d); return true;
       case 11: getF(rn, d); roundMode(d, 3); setF(rd, d); return true;
       case 12: getF(rn, d); roundMode(d, 4); setF(rd, d); return true;
-      case 14: case 15: getF(rn, d); roundMode(d, 0); setF(rd, d); return true;
+      case 14: case 15: getF(rn, d); frintCurrent(d); setF(rd, d); return true;
     }
     return false;
   }

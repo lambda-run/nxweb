@@ -94,8 +94,6 @@ function steal(c: i32): KThread | null {
 export function scheduleCore(c: i32): KThread | null {
   computeEff();
   store<u8>(RESCHED + <usize>c, 0);
-  const was = cur(c);
-  if (was >= 0 && thr(was).state == KthreadS.PausePending) { thr(was).m.step(KthreadE.Stop); setCur(c, -1); }
   let t = pickLocal(c);
   if (t == null) t = steal(c);
   const old = cur(c);

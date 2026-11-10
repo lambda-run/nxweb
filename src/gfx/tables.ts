@@ -3,12 +3,17 @@
 // A serial is (generation << 16 | slot) + 1 style: the low 16 bits are the table slot, so a lookup is one compare.
 import * as L from "./log";
 import { VIEW_SIZE, SP_SIZE } from "./obj";
+import { arenaAlloc } from "./arena";
 
 let generation: u64 = 0;
+export function tablesInit(): void {
+  TEXTAB = arenaAlloc(<usize>TEX_SLOTS << 4); PROGTAB = arenaAlloc(<usize>PROG_SLOTS * PE_SIZE);
+  TEXDESC = arenaAlloc(<usize>TEXDESC_N * TDE_SIZE); SAMPDESC = arenaAlloc(<usize>SAMPDESC_N * SDE_SIZE);
+}
 
 // ---- textures: serial -> flags ----
 export const TEX_SLOTS: u32 = 65536;
-const TEXTAB: usize = memory.data(1048576);          // TEX_SLOTS * 16: u64 serial, u32 flags
+let TEXTAB: usize = 0;                               // TEX_SLOTS * 16: u64 serial, u32 flags
 export const TF_HOST: u32 = 1;                       // the replayer has been told to create it
 let texNext: u32 = 1;
 export function texNew(): u64 {
@@ -30,7 +35,7 @@ export function texFree(serial: u64): void { const e = texEntry(serial); if (e) 
 // ---- programs: serial -> per-stage shader keys and library ids ----
 export const PROG_SLOTS: u32 = 8192;
 export const PE_serial: usize = 0, PE_ok: usize = 8, PE_key: usize = 16, PE_shader: usize = 64, PE_SIZE: usize = 80;   // key: 6 x u64, shader: 6 x i16 (library id + 1, 0 = not looked up)
-const PROGTAB: usize = memory.data(655360);
+let PROGTAB: usize = 0;
 let progNext: u32 = 1;
 export function progNew(): usize {
   for (let k: u32 = 0; k < PROG_SLOTS; k++) {
@@ -51,10 +56,10 @@ export function progFree(serial: u64): void { const e = progEntry(serial); if (e
 // Each pool of a kind gets a numbering base at its first Initialize, so the IDs of two pools do not collide (dpool_add).
 export const TEXDESC_N: u32 = 65536;
 export const TDE_serial: usize = 0, TDE_view: usize = 8, TDE_has_view: usize = 24, TDE_SIZE: usize = 32;
-const TEXDESC: usize = memory.data(2097152);
+let TEXDESC: usize = 0;
 export const SAMPDESC_N: u32 = 8192;
 export const SDE_SIZE: usize = 48;                   // samp_par (40), +40 u8 registered
-const SAMPDESC: usize = memory.data(393216);
+let SAMPDESC: usize = 0;
 export function sampTablePtr(): usize { return SAMPDESC; }
 export function texDesc(id: u32): usize { return id < TEXDESC_N ? TEXDESC + <usize>id * TDE_SIZE : 0; }
 export function sampDesc(id: u32): usize { return id < SAMPDESC_N ? SAMPDESC + <usize>id * SDE_SIZE : 0; }

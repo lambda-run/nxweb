@@ -4,7 +4,7 @@ import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, simd, P, setP,
   optPcmapBase, optCodeLo, optMapSize, optMaxInsns, optMaxFuncs, optTail,
   codeBase, inCode, insnAt, markAt, M_VIS, M_LEAD,
-  NREG, G_PC, G_BUDGET, G_TBASE, NGLOB, NIMPF, F_UNIMPL, T_I32, T_I64, T_V128,
+  NREG, G_PC, G_BUDGET, G_TBASE, G_DEPTH, NGLOB, NIMPF, F_UNIMPL, T_I32, T_I64, T_V128, optDepth, L_DEPTH,
   locTy, nLoc, regLocalRaw, resetLocals, newLocal, L_STATE, L_BUD,
   EV_R, EV_W, EV_WB, EV_RELOAD, evBuf, nEv, insPos, insKind, insMI, insMV, nIns, fbBase, overflow,
   rollback, blkPc, succ0, succ1, nBlk, setNBlk, setCurBlk, term, setTerm, gotoPc, emitTrap,
@@ -56,13 +56,14 @@ function globName(g: i32): void {
   else if (g == 68) name("pc"); else if (g == 69) name("fpcr"); else if (g == 70) name("fpsr");
   else if (g == 71) name("tpidr"); else if (g == 72) name("tpidrro"); else if (g == 73) name("excl_addr");
   else if (g == 74) name("excl_val"); else if (g == 75) name("budget"); else if (g == 76) name("excl_val2");
+  else if (g == 77) name("depth");
   else name("table_base");
 }
 function globType(g: i32): u8 {
   if (g < 32) return T_I64;
   if (g < 36) return T_I32;
   if (g < 68) return T_V128;
-  if (g == 69 || g == 70 || g == 75 || g == 77) return T_I32;
+  if (g == 69 || g == 70 || g == 75 || g == 77 || g == 78) return T_I32;
   return T_I64;
 }
 function secBegin(id: u32): usize { b(id); let at = P; setP(P + 5); return at; }
@@ -290,6 +291,7 @@ function translateFunction(entry: u64): bool {
   emitLocals(0);
   gget(G_BUDGET); i32c(1); b(0x6B); ltee(L_BUD); gset(G_BUDGET);
   lget(L_BUD); i32c(0); b(0x48);
+  if (optDepth > 0) { gget(G_DEPTH); ltee(L_DEPTH); i32c(optDepth); b(0x4A); b(0x72); }
   b(0x04); b(0x40); i64c(<i64>entry); gset(G_PC); b(0x0F); b(0x0B);
   emitMasked(nI[entryBlk], nV[entryBlk], false);
   if (entryBlk) { i32c(entryBlk); lset(L_STATE); }
@@ -330,12 +332,20 @@ export function translate(nEntries: i32): u32 {
   setP(hdrTmp);
   b(0); b(0x61); b(0x73); b(0x6D); b(1); b(0); b(0); b(0);
   let s = secBegin(1);
-  leb(5);
+  leb(13);
   b(0x60); b(0); b(0);
   b(0x60); b(1); b(T_I32); b(0);
   b(0x60); b(2); b(T_I64); b(T_I32); b(0);
   b(0x60); b(0); b(1); b(T_I64);
   b(0x60); b(4); b(T_I32); b(T_I64); b(T_I32); b(T_I32); b(1); b(T_I32);
+  b(0x60); b(4); b(T_I32); b(T_V128); b(T_V128); b(T_V128); b(1); b(T_V128);
+  b(0x60); b(1); b(0x7D); b(1); b(0x7D);
+  b(0x60); b(1); b(0x7C); b(1); b(0x7C);
+  b(0x60); b(2); b(0x7D); b(0x7D); b(1); b(0x7D);
+  b(0x60); b(2); b(0x7C); b(0x7C); b(1); b(0x7C);
+  b(0x60); b(3); b(0x7D); b(0x7D); b(0x7D); b(1); b(0x7D);
+  b(0x60); b(3); b(0x7C); b(0x7C); b(0x7C); b(1); b(0x7C);
+  b(0x60); b(2); b(T_I32); b(T_I64); b(1); b(T_I64);
   secEnd(s);
   s = secBegin(2);
   leb(2 + NGLOB + NIMPF);
@@ -350,6 +360,14 @@ export function translate(nEntries: i32): u32 {
   name("env"); name("brk"); b(0); b(2);
   name("env"); name("cntpct"); b(0); b(3);
   name("cpu"); name("crc32"); b(0); b(4);
+  name("hlp"); name("vop"); b(0); b(5);
+  name("hlp"); name("nan1s"); b(0); b(6);
+  name("hlp"); name("nan1d"); b(0); b(7);
+  name("hlp"); name("nan2s"); b(0); b(8);
+  name("hlp"); name("nan2d"); b(0); b(9);
+  name("hlp"); name("nan3s"); b(0); b(10);
+  name("hlp"); name("nan3d"); b(0); b(11);
+  name("hlp"); name("rnd"); b(0); b(12);
   secEnd(s);
   s = secBegin(3);
   leb(nFn); for (let f = 0; f < nFn; f++) b(0);
@@ -405,6 +423,7 @@ export function buildCore(): u32 {
   b(0x02); b(0x40); b(0x03); b(0x40);
   gget(G_PC); i64c(0xFFFFFF00); b(0x5A); b(0x0D); b(1);
   gget(G_BUDGET); i32c(0); b(0x48); b(0x0D); b(1);
+  i32c(0); gset(G_DEPTH);
   idxFromPc(t); b(0x11); b(0); b(0);
   b(0x0C); b(0);
   b(0x0B); b(0x0B);

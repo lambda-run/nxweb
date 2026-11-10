@@ -1,15 +1,15 @@
 {
   "id": 0,
   "name": "kthread",
-  "doc": "Lifecycle of one guest thread in the kernel (src/kernel). Created is the slot while CreateThread fills it in; Dormant is a published thread before StartThread. A pause is a state: a thread that is waiting keeps its wait under it (PausedWaiting carries the same wait kind, PausedContending is a paused Contending), and a running thread is PausePending until its next scheduling point. Contending is a condition-variable waiter that was signalled while its mutex was held: it now waits for that lock. Terminate is process teardown and leaves every state but Created.",
-  "states": ["Created", "Dormant", "Runnable", "Running", "Waiting", "Contending", "PausePending", "PausedDormant", "PausedRunnable", "PausedWaiting", "PausedContending", "Exited"],
+  "doc": "Lifecycle of one guest thread in the kernel (src/kernel). Created is the slot while CreateThread fills it in; Dormant is a published thread before StartThread. A pause is a state: a thread that is waiting keeps its wait under it (PausedWaiting carries the same wait kind, PausedContending is a paused Contending), and it takes effect at a scheduling point: with green threads every thread but the caller of SetThreadActivity is at one, so a running thread of another core goes straight to PausedRunnable. Contending is a condition-variable waiter that was signalled while its mutex was held: it now waits for that lock. Terminate is process teardown and leaves every state but Created.",
+  "states": ["Created", "Dormant", "Runnable", "Running", "Waiting", "Contending", "PausedDormant", "PausedRunnable", "PausedWaiting", "PausedContending", "Exited"],
   "initial": "Created",
   "final": ["Exited"],
   "data": {
     "Waiting": { "name": "waitKind", "values": ["lock", "condvar", "address", "sync", "sleep", "clock"] },
     "PausedWaiting": { "name": "waitKind", "values": ["lock", "condvar", "address", "sync", "sleep", "clock"] }
   },
-  "events": ["Create", "Start", "Schedule", "Preempt", "Yield", "Block", "Requeue", "Wake", "PauseRequest", "Stop", "Resume", "Exit", "Terminate"],
+  "events": ["Create", "Start", "Schedule", "Preempt", "Yield", "Block", "Requeue", "Wake", "PauseRequest", "Resume", "Exit", "Terminate"],
   "transitions": [
     ["Created", "Create", "Dormant"],
     ["Dormant", "Start", "Runnable"],
@@ -24,11 +24,9 @@
 
     ["Dormant", "PauseRequest", "PausedDormant"],
     ["Runnable", "PauseRequest", "PausedRunnable"],
-    ["Running", "PauseRequest", "PausePending"],
+    ["Running", "PauseRequest", "PausedRunnable"],
     ["Waiting", "PauseRequest", "PausedWaiting"],
     ["Contending", "PauseRequest", "PausedContending"],
-    ["PausePending", "Stop", "PausedRunnable"],
-    ["PausePending", "Resume", "Running"],
     ["PausedDormant", "Start", "PausedRunnable"],
     ["PausedDormant", "Resume", "Dormant"],
     ["PausedRunnable", "Resume", "Runnable"],
@@ -43,7 +41,6 @@
     ["Running", "Terminate", "Exited"],
     ["Waiting", "Terminate", "Exited"],
     ["Contending", "Terminate", "Exited"],
-    ["PausePending", "Terminate", "Exited"],
     ["PausedDormant", "Terminate", "Exited"],
     ["PausedRunnable", "Terminate", "Exited"],
     ["PausedWaiting", "Terminate", "Exited"],

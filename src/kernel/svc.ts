@@ -61,14 +61,14 @@ export function stopProcess(reason: i32, code: i32): void {
   stopReason = reason; exitCode = code;
 }
 
-// SetThreadActivity. A pause is a state. Under green threads the target is always at a scheduling point (only the
-// caller executes), so a running target of another core stops at once; with cores on Workers it stays PausePending
-// until its own scheduling point (scheduleCore) and the caller would wait for that.
+// SetThreadActivity. A pause is a state, never a signal. It takes effect at the target's scheduling point, and under
+// green threads every thread but the caller is at one (only the caller executes), so a running thread of another core
+// stops at once with its whole context saved. With cores on Workers the machine needs a pending state between the
+// request and the target's own scheduling point, and the caller has to wait for it (README, gaps).
 function pause(t: KThread): void {
   const s = t.state;
   if (!t.m.can(KthreadE.PauseRequest)) return;   // paused already, or exited: nothing to do, as nxnative
   t.m.step(KthreadE.PauseRequest, t.m.data);
-  if (s == KthreadS.Running) t.m.step(KthreadE.Stop);
   if (s == KthreadS.Running || s == KthreadS.Runnable) schedLeft(t);
 }
 function resume(t: KThread): void {

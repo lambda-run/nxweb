@@ -2,9 +2,9 @@
 // block in the contract's save_ctx layout, and the objects a WaitSynchronization retains.
 import { Inst } from "../kit/machine";
 import { KTHREAD, KthreadS, KthreadE, KthreadWaitKind } from "../kit/gen/tables";
-import { FOREVER, H_CUR_THREAD, st32, st64, guestOk } from "./base";
+import { FOREVER, H_CUR_THREAD, st32, st64 } from "./base";
 import { O_THREAD, hPeek } from "./handle";
-import { tlsSlots, tlsSlotAddr, TLS_SLOT, TLS_TLR, TLS_THREAD_OBJ, TLS_BLOCK } from "./mem";
+import { commit, tlsSlots, tlsSlotAddr, TLS_SLOT, TLS_TLR, TLS_THREAD_OBJ, TLS_BLOCK } from "./mem";
 
 export const MAX_THREADS: i32 = 256;
 export const CTX_OFF: usize = 160;
@@ -114,12 +114,12 @@ export function threadsInit(): void {
 export function threadLimit(): i32 { const s = tlsSlots(); return s < <u64>MAX_THREADS ? <i32>s : MAX_THREADS; }
 
 // A new thread in Dormant with its first context: x0 = arg, sp, pc = entry, x30 = the thread-exit pc, and its
-// thread-local memory. null when no slot is free or the thread-local region is not in the linear memory.
+// thread-local memory. null when no slot is free or the linear memory cannot grow to its thread-local slot.
 export function threadNew(entry: u64, arg: u64, stackTop: u64, prio: i32, core: i32): KThread | null {
   const lim = threadLimit();
   let i = 0;
   while (i < lim && thr(i).used) i++;
-  if (i == lim || !guestOk(tlsSlotAddr(<u32>i), TLS_SLOT)) return null;
+  if (i == lim || !commit(tlsSlotAddr(<u32>i) + TLS_SLOT)) return null;
   const t = thr(i);
   memory.fill(changetype<usize>(t), 0, STRIDE);
   t.used = true; t.index = i;

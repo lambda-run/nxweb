@@ -2,9 +2,9 @@
 // Everything is computed on the full v128; 64-bit and scalar forms then clear the unused part.
 import {
   b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, fc,
-  getX, setX, t32, t64, tf32, tf64, tv, optFma,
+  getX, setX, t32, t64, tf32, tf64, tv, optFma, optNan, gget, G_FPCR, F_VOP,
 } from "./emit";
-import { vget, vset, setF, setVint, roundMode, vfpExpand32, vfpExpand64, minMaxNum } from "./fp";
+import { vget, vset, setF, setVint, roundMode, vfpExpand32, vfpExpand64, minMaxNum, rmodeTest } from "./fp";
 
 const SH = new StaticArray<u8>(16);
 function shuffle(): void { simd(0x0D); for (let i = 0; i < 16; i++) b(SH[i]); }
@@ -126,6 +126,36 @@ function satNarrowTo(sz: u32, Q: bool, rd: i32, srcS: bool, dstS: bool): void {
   vset(rd);
 }
 
+// helper call: vop(op, a, b, c). Callers push i32 op first via vopBegin, then three vectors, then vopEnd.
+function vopBegin(op: i32): void { i32c(op); }
+function vopEnd(): void { b(0x10); leb(F_VOP); }
+function vzero(): void { v128c(0, 0); }
+const NA = 8, NB = 9, NR = 10;   // tv slots: NaN fix-up operands / result
+// stack: r -> r' ; vector NaN fix-up, operands in tv(NA) / tv(NB); n = 1, 2 or 3 (3: addend tv(NA), n tv(NB), m tv(11))
+function nanFixV(d: bool, n: i32): void {
+  if (!optNan) return;
+  let R = tv(NR);
+  ltee(R); lget(R); vfcmp(d, 1); simd(0x53);
+  b(0x04); b(0x40);
+  if (n == 3) {
+    vopBegin(25 | ((d ? 3 : 2) << 8)); lget(tv(NA)); lget(tv(NB)); lget(tv(11)); vopEnd();
+    lget(R); lget(R); lget(R); vfcmp(d, 1); simd(0x52); lset(R);
+  } else {
+    vopBegin((n == 2 ? 24 : 23) | ((d ? 3 : 2) << 8)); lget(tv(NA)); if (n == 2) lget(tv(NB)); else vzero(); lget(R); vopEnd(); lset(R);
+  }
+  b(0x0B);
+  lget(R);
+}
+function fsplat(d: bool, v: f64): void {
+  if (d) { let x = reinterpret<u64>(v); v128c(x, x); } else { let y: u64 = reinterpret<u32>(<f32>v); v128c(y | (y << 32), y | (y << 32)); }
+}
+// push mask: (|A| == inf && B == 0) || (A == 0 && |B| == inf)
+function infZeroMask(d: bool, A: u32, B: u32): void {
+  lget(A); vfo(d, 0); fsplat(d, Infinity); vfcmp(d, 0); lget(B); vzero(); vfcmp(d, 0); simd(0x4E);
+  lget(B); vfo(d, 0); fsplat(d, Infinity); vfcmp(d, 0); lget(A); vzero(); vfcmp(d, 0); simd(0x4E);
+  simd(0x50);
+}
+
 // lanewise scalar fallback. kind 0: float -> int (round mode, then saturating convert)
 // kind 1: int -> float, kind 2: float rounding, kind 3: float -> int after scaling by 2^fbits,
 // kind 4: int -> float then scale by 2^-fbits
@@ -169,47 +199,61 @@ function threeSameFp(insn: u32, scalar: bool): bool {
   let fm: i32 = scalar ? (d ? 1 : 2) : (Q ? 0 : 1);
   if (!scalar && d && !Q) return false;
   let key = (U << 6) | (a << 5) | opcode;
+  let A = tv(NA), B = tv(NB);
+  let pair = key == 0x5A || key == 0x5E || key == 0x7E || key == 0x58 || key == 0x78;
+  if (pair) {
+    if (scalar) return false;
+    let e = d ? 8 : 4;
+    pairSh(e, Q, 0); vget(rn); vget(rm); shuffle(); lset(A);
+    pairSh(e, Q, 1); vget(rn); vget(rm); shuffle(); lset(B);
+  } else { vget(rn); lset(A); vget(rm); lset(B); }
   switch (key) {
-    case 0x19: vget(rn); vget(rm); vget(rd); vfma(d, false); break;
-    case 0x39: vget(rn); vget(rm); vget(rd); vfma(d, true); break;
-    case 0x1A: vget(rn); vget(rm); vfo(d, 4); break;
-    case 0x3A: vget(rn); vget(rm); vfo(d, 5); break;
-    case 0x5A: {
-      if (scalar) return false;
-      let e = d ? 8 : 4;
-      pairSh(e, Q, 0); vget(rn); vget(rm); shuffle();
-      pairSh(e, Q, 1); vget(rn); vget(rm); shuffle();
-      vfo(d, 4); break;
-    }
-    case 0x7A: vget(rn); vget(rm); vfo(d, 5); vfo(d, 0); break;
-    case 0x5B: vget(rn); vget(rm); vfo(d, 6); break;
-    case 0x1C: vget(rn); vget(rm); vfcmp(d, 0); break;
-    case 0x5C: vget(rn); vget(rm); vfcmp(d, 5); break;
-    case 0x7C: vget(rn); vget(rm); vfcmp(d, 3); break;
-    case 0x5D: vget(rn); vfo(d, 0); vget(rm); vfo(d, 0); vfcmp(d, 5); break;
-    case 0x7D: vget(rn); vfo(d, 0); vget(rm); vfo(d, 0); vfcmp(d, 3); break;
-    case 0x1E: vget(rn); vget(rm); vfo(d, 9); break;
-    case 0x3E: vget(rn); vget(rm); vfo(d, 8); break;
-    case 0x5F: vget(rn); vget(rm); vfo(d, 7); break;
-    case 0x5E: case 0x7E: {   // FMAXP / FMINP
-      if (scalar) return false;
-      let e = d ? 8 : 4;
-      pairSh(e, Q, 0); vget(rn); vget(rm); shuffle();
-      pairSh(e, Q, 1); vget(rn); vget(rm); shuffle();
-      vfo(d, a ? 8 : 9); break;
-    }
-    case 0x18: case 0x38: { // FMAXNM / FMINNM
-      vget(rn); vget(rm); vMinMaxNum(d, a == 0);
+    case 0x19: case 0x39: { // FMLA / FMLS
+      let neg = key == 0x39;
+      lget(A); lget(B); vget(rd); vfma(d, neg);
+      if (optNan) { lget(B); lset(tv(11)); lget(A); if (neg) vfo(d, 1); lset(B); vget(rd); lset(A); nanFixV(d, 3); }
       break;
     }
-    case 0x58: case 0x78: { // FMAXNMP / FMINNMP
-      if (scalar) return false;
-      let e = d ? 8 : 4;
-      pairSh(e, Q, 0); vget(rn); vget(rm); shuffle();
-      pairSh(e, Q, 1); vget(rn); vget(rm); shuffle();
-      vMinMaxNum(d, a == 0);
+    case 0x1A: case 0x5A: lget(A); lget(B); vfo(d, 4); nanFixV(d, 2); break;
+    case 0x3A: lget(A); lget(B); vfo(d, 5); nanFixV(d, 2); break;
+    case 0x7A: lget(A); lget(B); vfo(d, 5); nanFixV(d, 2); vfo(d, 0); break;
+    case 0x5B: lget(A); lget(B); vfo(d, 6); nanFixV(d, 2); break;
+    case 0x1B: { // FMULX
+      lget(A); lget(B); vfo(d, 6); nanFixV(d, 2); lset(tv(NR));
+      fsplat(d, 2.0); lget(A); lget(B); simd(0x51); fsplat(d, -0.0); simd(0x4E); simd(0x50);
+      lget(tv(NR)); infZeroMask(d, A, B); simd(0x52);
       break;
     }
+    case 0x1F: { // FRECPS: 2 - a*b
+      if (optFma) { lget(A); lget(B); fsplat(d, 2.0); vfma(d, true); }
+      else { fsplat(d, 2.0); lget(A); lget(B); vfo(d, 6); vfo(d, 5); }
+      if (optNan) { lget(A); vfo(d, 1); lset(tv(11)); lget(tv(11)); lset(A); nanFixV(d, 2); lget(tv(11)); vfo(d, 1); lset(A); }
+      lset(tv(NR));
+      fsplat(d, 2.0); lget(tv(NR)); infZeroMask(d, A, B); simd(0x52);
+      break;
+    }
+    case 0x3F: { // FRSQRTS: (3 - a*b) / 2, halving one operand exactly before the fused step
+      let M = tv(11), Ah = tv(12), Bh = tv(13);
+      lget(B); vfo(d, 0); fsplat(d, 1.0); vfcmp(d, 5); lset(M);
+      lget(A); lget(A); fsplat(d, 0.5); vfo(d, 6); lget(M); simd(0x52); lset(Ah);
+      lget(B); fsplat(d, 0.5); vfo(d, 6); lget(B); lget(M); simd(0x52); lset(Bh);
+      if (optFma) { lget(Ah); lget(Bh); fsplat(d, 1.5); vfma(d, true); }
+      else { fsplat(d, 1.5); lget(Ah); lget(Bh); vfo(d, 6); vfo(d, 5); }
+      if (optNan) { lget(A); lset(Ah); lget(A); vfo(d, 1); lset(A); nanFixV(d, 2); lget(Ah); lset(A); }
+      lset(tv(NR));
+      fsplat(d, 1.5); lget(tv(NR)); infZeroMask(d, A, B); simd(0x52);
+      break;
+    }
+    case 0x1C: lget(A); lget(B); vfcmp(d, 0); break;
+    case 0x5C: lget(A); lget(B); vfcmp(d, 5); break;
+    case 0x7C: lget(A); lget(B); vfcmp(d, 3); break;
+    case 0x5D: lget(A); vfo(d, 0); lget(B); vfo(d, 0); vfcmp(d, 5); break;
+    case 0x7D: lget(A); vfo(d, 0); lget(B); vfo(d, 0); vfcmp(d, 3); break;
+    case 0x1E: case 0x5E: lget(A); lget(B); vfo(d, 9); nanFixV(d, 2); break;
+    case 0x3E: case 0x7E: lget(A); lget(B); vfo(d, 8); nanFixV(d, 2); break;
+    case 0x5F: lget(A); lget(B); vfo(d, 7); nanFixV(d, 2); break;
+    case 0x18: case 0x58: lget(A); lget(B); vMinMaxNum(d, true); nanFixV(d, 2); break;
+    case 0x38: case 0x78: lget(A); lget(B); vMinMaxNum(d, false); nanFixV(d, 2); break;
     default: return false;
   }
   finish(rd, fm);
