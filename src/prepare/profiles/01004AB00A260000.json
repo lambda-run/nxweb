@@ -26,13 +26,7 @@
   "sys_resource": "0x0",
   "mem_used": "0x6e00000"
  },
- "needs": [
-  {
-   "key": "address_space",
-   "value": "heap 0xd0000000 alias 0x10000000",
-   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",
@@ -64,11 +58,20 @@
    ]
   }
  },
+ "match_cuts": {},
  "unconverted": [],
  "address_space": {
   "heap_region": 3489660928,
   "alias_region": 268435456,
   "stack_region": 268435456,
-  "fits": false
+  "fit": "profile",
+  "fits": true,
+  "note": "",
+  "layout": {
+   "heap": 3330277376,
+   "alias": 268435456,
+   "stack": 268435456,
+   "pool": 3444572160
+  }
  }
 }

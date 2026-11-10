@@ -3,15 +3,15 @@
 // the glue to files and storage. Every stage records { state, input, output } in the manifest; a stage whose input
 // hash is the one recorded with a finished output is skipped, so a run that was cancelled, failed or lost its tab
 // goes on where it stopped, and `redo(stage)` is: forget that record, run. See ../README.md.
-import { PrepWasm, type FailReason, type Counts, type PrepState, type Cut, type NpdmInfo } from "./wasm.ts";
+import { PrepWasm, type FailReason, type Counts, type PrepState, type Cut, type NpdmInfo, type MatchRule, type MatchOutcome } from "./wasm.ts";
 import type { PrepTree, TreeListing, TreeFile } from "./tree.ts";
 import type { PrepStore } from "./store.ts";
-import type { ProfileSource, Profile, ProfileNeed } from "./profiles.ts";
+import type { ProfileSource, Profile, ProfileNeed, SdkCuts } from "./profiles.ts";
 import { PrepError, detectLayout, pickVersion, identityDir, checkDlc, loadOrder, type Layout } from "./detect.ts";
 import { DirRomDevice, PrepStorage, treeSource, blobSource, type RomIndex } from "./romdev.ts";
 import type { FsDevice, FsStorage } from "../../glue/fs_host.ts";
 
-export const PREPARE_FORMAT = 1;                        // in every input hash: a change of this file's outputs bumps it
+export const PREPARE_FORMAT = 2;                        // in every input hash: a change of this file's outputs bumps it
 export const SHADER_CHAIN = "nxweb-shaders-1/page";     // src/glue/rt_shaders.ts SHADER_CHAIN (checked by the tests)
 export const SHADER_STORE = "nxweb-shaders";            // webShaderStore()'s default name
 export const DEFAULT_APP_POOL = "0xCD500000";           // a 4 GB Switch's application pool (nxnative profile_guess.py APP_POOL)
@@ -42,9 +42,20 @@ export interface ProfileOut {
   apply: Record<string, string>; needs: ProfileNeed[]; unconverted: Profile["unconverted"];
   load: string[];                                    // the modules to load, in order
   cuts: { module: string; buildId: string; from: string; cuts: Cut[] }[];
+  // function-matched rules for the modules no registered cut names: the profile's own, then those for every game
+  match: { module: string; buildId: string; sets: [MatchRule[], MatchRule[]] }[];
+  // the regions the profile reserves and what the runtime's layout rule made of them when the profile was converted
+  // (tools/prepare/layout_verdict.mts: "profile" as reserved, "pool" what the pool lets the game commit, "short" not)
+  space: { heap_region: number; alias_region: number; stack_region: number } | null;
+  layout: { fit: "profile" | "pool" | "short"; note: string } | null;
   warnings: string[];
 }
-export interface CodeOut { modules: { name: string; buildId: string; from: "folder" | "store"; path: string; size: number; sha256: string; imageSize: number; cuts: number }[]; cuts: number }
+export interface CodeOut {
+  modules: { name: string; buildId: string; from: "folder" | "store"; path: string; size: number; sha256: string; imageSize: number; cuts: number }[]; cuts: number;
+  // what became of each function-matched patch, and the cuts that were placed (applied like registered ones)
+  matched: (MatchOutcome & { module: string; buildId: string; from: string })[];
+  matchCuts: AppliedCut[];
+}
 export interface ShadersOut { mode: "on-demand"; chain: string; store: string; prewarm: null }
 
 export interface AppliedCut extends Cut { module: string; buildId: string }
@@ -54,7 +65,7 @@ export interface TranslatorHook { module: string; buildId: string; offset: numbe
 export interface HandOff {
   format: number;
   titleId: string; programId: string; name: string; version: number; displayVersion: string | null;
-  profile: { id: string | null; provisional: boolean; registeredBuild: boolean; apply: Record<string, string>; needs: ProfileNeed[] };
+  profile: { id: string | null; provisional: boolean; registeredBuild: boolean; apply: Record<string, string>; needs: ProfileNeed[]; space: ProfileOut["space"]; layout: ProfileOut["layout"] };
   npdm: DetectOut["npdm"];
   modules: { name: string; buildId: string; size: number; cuts: number; bytes(): Promise<Uint8Array> }[];   // load order; main first
   rom: FsDevice | null;
@@ -210,12 +221,12 @@ export class Prepare {
       const pid = pidx.games[det.titleId] ? det.titleId : pidx.builds[main.buildId] ?? null;
       const profile = pid ? await this.o.profiles.game(pid) : null;
       const sdk = await this.o.profiles.sdk();
-      const sdkCuts = det.modules.map(m => sdk.cuts[m.buildId] ? [m.buildId, sdk.cuts[m.buildId]] : null).filter(x => x);
+      const sdkCuts = [det.modules.map(m => sdk.cuts[m.buildId] ? [m.buildId, sdk.cuts[m.buildId]] : null).filter(x => x), det.modules.map(m => sdk.match_cuts?.[m.name] ?? null)];
       const prof = await stage<ProfileOut>("profile", this.hash(["profile", det.titleId, det.version, det.modules.map(m => [m.name, m.buildId]), det.npdm, profile, sdkCuts, idx.rom.tablesSha]),
-        () => this.profile(det, l, profile, pid === det.titleId ? "title" : pid ? "build" : null, sdk.cuts), () => {});
+        () => this.profile(det, l, profile, pid === det.titleId ? "title" : pid ? "build" : null, sdk), () => {});
       // ---- Code ----
       const loadFiles = prof.load.map(n => l.files.find(f => f.path === det.exefs + n)!);
-      await stage<CodeOut>("code", this.hash(["code", loadFiles.map(fileKey), prof.load.map(n => det.modules.find(m => m.name === n)!.buildId), prof.cuts]), () => this.code(det, prof),
+      await stage<CodeOut>("code", this.hash(["code", loadFiles.map(fileKey), prof.load.map(n => det.modules.find(m => m.name === n)!.buildId), prof.cuts, prof.match]), () => this.code(det, prof),
         o => { this.w.setCount("cuts", o.cuts); this.w.setCount("modules", o.modules.length); });
       // ---- Shaders ----
       await stage<ShadersOut>("shaders", this.hash(["shaders", SHADER_CHAIN, SHADER_STORE, det.titleId]), async () => {
@@ -302,7 +313,7 @@ export class Prepare {
     return { rom: out[0], aoc: out.slice(1).map((t, i) => ({ ...t, index_: det.dlc[i].index, titleId: det.dlc[i].titleId })) };
   }
 
-  private async profile(det: DetectOut, l: TreeListing, p: Profile | null, by: "title" | "build" | null, sdk: Record<string, { module: string; cuts: Cut[] }>): Promise<ProfileOut> {
+  private async profile(det: DetectOut, l: TreeListing, p: Profile | null, by: "title" | "build" | null, sdk: SdkCuts): Promise<ProfileOut> {
     await this.point("profile:work");
     const have = det.modules.map(m => m.name), bid = (n: string) => det.modules.find(m => m.name === n)!.buildId;
     const warnings: string[] = [];
@@ -327,16 +338,22 @@ export class Prepare {
       apply = { title_id: det.titleId, program_id: det.programId, name: det.npdm.name, modules: load.join(" "), app_pool: DEFAULT_APP_POOL, sys_resource: "0x" + det.npdm.sysResource.toString(16) };
       warnings.push("no profile: provisional values from the game files; nothing is known about this game");
     }
-    const cuts: ProfileOut["cuts"] = [];
+    const cuts: ProfileOut["cuts"] = [], match: ProfileOut["match"] = [];
     for (const m of load) {
-      const b = bid(m), c = p?.cuts[b] ?? sdk[b];
+      const b = bid(m), c = p?.cuts[b] ?? sdk.cuts[b];
       if (c && c.cuts.length) cuts.push({ module: m, buildId: b, from: p?.cuts[b] ? `profile ${p.title_id}` : "sdk", cuts: c.cuts.map(x => ({ off: x.off, orig: x.orig, new: x.new, why: x.why })) });
+      // nxnative: a module whose build has no registered cuts (an empty list is one: the build keeps its code) gets the
+      // function-matched rules, the selected profile's and those for every game's module of that name
+      const own = p?.match_cuts?.[m] ?? [], wide = sdk.match_cuts?.[m] ?? [];
+      if (!c && (own.length || wide.length)) match.push({ module: m, buildId: b, sets: [own, wide] });
     }
-    return { found: !!p, by, id: p?.title_id ?? null, name: p?.name ?? det.npdm.name, provisional: !p, registered, unregistered, display, apply, needs: p?.needs ?? [], unconverted: p?.unconverted ?? [], load, cuts, warnings };
+    const sp = p?.address_space;
+    return { found: !!p, by, id: p?.title_id ?? null, name: p?.name ?? det.npdm.name, provisional: !p, registered, unregistered, display, apply, needs: p?.needs ?? [], unconverted: p?.unconverted ?? [], load, cuts, match,
+      space: sp ? { heap_region: sp.heap_region, alias_region: sp.alias_region, stack_region: sp.stack_region } : null, layout: sp?.fit ? { fit: sp.fit, note: sp.note ?? "" } : null, warnings };
   }
 
   private async code(det: DetectOut, prof: ProfileOut): Promise<CodeOut> {
-    const out: CodeOut = { modules: [], cuts: 0 };
+    const out: CodeOut = { modules: [], cuts: 0, matched: [], matchCuts: [] };
     const mods = prof.load.map(n => det.modules.find(m => m.name === n)!);
     this.w.setCount("total", mods.length); this.w.setCount("bytesTotal", mods.reduce((n, m) => n + m.size, 0));
     for (const m of mods) {
@@ -345,7 +362,24 @@ export class Prepare {
       const info = this.w.nsoCheck(file);
       if ("error" in info) throw new PrepError("module", `${path}: ${info.error.replace(/^\[RED\] (loader|prepare): /, "")}`);
       if (info.buildId !== m.buildId) throw new PrepError("module", `${path} changed while it was read`);
-      const c = prof.cuts.find(c => c.module === m.name);
+      let c: { cuts: Cut[] } | undefined = prof.cuts.find(c => c.module === m.name);
+      const rules = prof.match.find(x => x.module === m.name);
+      if (!c && rules) {
+        // found by function: a patch that does not match exactly is left out and reported (red for the game's own
+        // patches, plain for those tried on every game); what is found is applied below like a registered cut
+        const r = this.w.match(file, rules.sets);
+        if ("error" in r) throw new PrepError(r.code === -1 ? "module" : "cut", `${path} (build ${m.buildId}): ${r.error.replace(/^\[RED\] (loader|prepare): /, "")}`);
+        for (const o of r.outcomes) {
+          const from = o.set === 0 ? `profile ${prof.id}` : "every game";
+          out.matched.push({ ...o, module: m.name, buildId: m.buildId, from });
+          this.w.log(o.matched ? `prepare: ${m.name}: function patch '${o.name}': matched at ${o.offsets.map(x => "0x" + x.toString(16)).join(", ")} (${o.why})`
+            : `${o.set === 0 ? "[RED] " : ""}prepare: ${m.name}: function patch '${o.name}' skipped: ${o.why}`);
+        }
+        if (r.cuts.length) {
+          c = { cuts: r.cuts.map(x => ({ off: x.off, orig: x.orig, new: x.new, why: x.why })) };
+          out.matchCuts.push(...c.cuts.map(x => ({ ...x, module: m.name, buildId: m.buildId })));
+        }
+      }
       if (c) {
         const r = this.w.cut(file, c.cuts);
         if ("error" in r) throw new PrepError(r.code === -1 ? "module" : "cut", `${path} (build ${m.buildId}): ${r.error.replace(/^\[RED\] (loader|prepare): /, "")}`);
@@ -374,9 +408,9 @@ export class Prepare {
     const aocIx = await Promise.all(idx.aoc.map(async a => ({ slot: a.index_, image: await this.romIndex(a) })));
     const romDev = new DirRomDevice(rom.index, treeSource(tree, rom.paths));
     const aoc = new Map<number, FsDevice>(aocIx.map(a => [a.slot, new DirRomDevice(a.image.index, treeSource(tree, a.image.paths))]));
-    const cuts: AppliedCut[] = prof.cuts.flatMap(c => c.cuts.map(x => ({ ...x, module: c.module, buildId: c.buildId })));
+    const cuts: AppliedCut[] = [...prof.cuts.flatMap(c => c.cuts.map(x => ({ ...x, module: c.module, buildId: c.buildId }))), ...(code.matchCuts ?? [])];
     const base = { format: PREPARE_FORMAT, titleId: det.titleId, programId: prof.apply.program_id ?? det.programId, name: prof.name, version: det.version, displayVersion: prof.display,
-      profile: { id: prof.id, provisional: prof.provisional, registeredBuild: prof.registered, apply: prof.apply, needs: prof.needs }, npdm: det.npdm,
+      profile: { id: prof.id, provisional: prof.provisional, registeredBuild: prof.registered, apply: prof.apply, needs: prof.needs, space: prof.space ?? null, layout: prof.layout ?? null }, npdm: det.npdm,
       saveId: `nxweb-save-${det.titleId}`, cuts, hooks: [] as TranslatorHook[], shaders: sh };
     const bytes = (m: CodeOut["modules"][number]) => async (): Promise<Uint8Array> => {
       if (m.from === "folder") return tree.read(m.path, 0, m.size);

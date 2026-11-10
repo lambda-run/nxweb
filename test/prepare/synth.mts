@@ -2,7 +2,7 @@
 // guests (test/runtime/src, built by its harness), main.npdm is made here from the fields the prepare step reads,
 // RomFS trees are written here or unpacked from an image tools/mkromfs.py synthesizes.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { ROOT, OUT } from "../../src/prepare/host/build.mts";
 
@@ -95,3 +95,83 @@ export function bnsh(variations: ({ stage: number; control: Uint8Array; code: Ui
   return out;
 }
 export { existsSync };
+
+// ---- function-matched cuts: modules with unwind tables, and hand-made images ----
+// The runtime's and the translator's test sources compiled once more WITH unwind tables (the test guests have none),
+// as modules of the loader's layout: real compiler output whose functions an .eh_frame_hdr names. `-shared` leaves
+// undefined functions as imports through a PLT. Only what links is returned; nothing here needs to run except
+// "hello", which is the runtime's guest of that name.
+export interface UnwindModule { name: string; path: string }
+export function unwindModules(levels = ["O2", "Os"]): UnwindModule[] {
+  const dir = join(SCRATCH, "unwind");
+  mkdirSync(dir, { recursive: true });
+  const quiet = (cmd: string, args: string[]) => { try { execFileSync(cmd, args, { cwd: ROOT, stdio: "ignore" }); return true; } catch { return false; } };
+  const nvn = join(process.env.NXNATIVE_NVN_INCLUDE ?? join(process.env.NXNATIVE ?? "/home/user/nxnative", "dm", "gfx", "nvn", "include"));
+  const sources = [["rt", join(ROOT, "test", "runtime", "src")], ["a64", join(ROOT, "test", "guests", "src")]].flatMap(([tag, d]) =>
+    existsSync(d) ? readdirSync(d).filter(f => f.endsWith(".c")).sort().map(f => ({ name: `${tag}_${f.slice(0, -2)}`, src: join(d, f) })) : []);
+  const out: UnwindModule[] = [];
+  for (const level of levels) for (const s of sources) {
+    const base = join(dir, `${s.name}.${level}`), nso = base + ".nso";
+    if (!existsSync(nso) || statSync(nso).mtimeMs < statSync(s.src).mtimeMs) {
+      const ok = quiet("clang", ["--target=aarch64-none-elf", "-fPIC", "-ffreestanding", "-nostdlib", "-" + level, "-mcpu=cortex-a57", "-mno-outline-atomics", "-fsemantic-interposition", "-funwind-tables", "-w",
+          "-I", join(ROOT, "test", "guests", "rt"), "-I", GUESTS, "-I", nvn, "-c", s.src, "-o", base + ".o"])
+        && quiet("ld.lld", ["-shared", "-z", "max-page-size=4096", "-z", "norelro", "--build-id=sha1", "--hash-style=both", "--eh-frame-hdr", ...(s.name.startsWith("a64_") ? ["--defsym=rt_entry=0"] : []),
+          "-T", join(ROOT, "test", "loader", "src", "module.ld"), join(GUESTS, "crt0.o"), base + ".o", join(GUESTS, "svc.o"), "-o", base + ".so"])
+        && quiet("python3", [join(ROOT, "tools", "elf2nso.py"), base + ".so", nso, "--lz4"]);
+      if (!ok) continue;
+    }
+    out.push({ name: `${s.name}.${level}`, path: nso });
+  }
+  return out;
+}
+
+// AArch64 words for the hand-made images
+export const A64 = {
+  RET: 0xD65F03C0, NOP: 0xD503201F,
+  movX0X23: 0xAA1703E0,                    // mov x0, x23
+  addX0X23: 0x914012E0,                    // add x0, x23, #0x4000
+  movz: (rd: number, imm: number) => (0xD2800000 | (imm << 5) | rd) >>> 0,
+  adrp: (rd: number, pc: number, target: number) => { const imm = ((target & ~0xFFF) - (pc & ~0xFFF)) >> 12; return (0x90000000 | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5) | rd) >>> 0; },
+  addi: (rd: number, rn: number, imm12: number) => (0x91000000 | (imm12 << 10) | (rn << 5) | rd) >>> 0,
+  ldr: (rt: number, rn: number, imm12: number) => (0xF9400000 | (imm12 << 10) | (rn << 5) | rt) >>> 0,
+  b: (from: number, to: number) => (0x14000000 | (((to - from) >> 2) & 0x3FFFFFF)) >>> 0,
+  bl: (from: number, to: number) => (0x94000000 | (((to - from) >> 2) & 0x3FFFFFF)) >>> 0,
+  beq: (delta: number) => (0x54000000 | (((delta >> 2) & 0x7FFFF) << 5)) >>> 0,
+  svc: (n: number) => (0xD4000001 | (n << 5)) >>> 0,
+};
+// An unpacked module image of 0x4000 bytes whose unwind table names the given functions (start -> words): the word
+// at +4 leads to MOD0 at 0x20, MOD0 to an .eh_frame_hdr at 0x3000 (version 1, a sorted table of start and FDE,
+// relative to the header), one CIE ("zR", PC-relative 4-byte pointers) at 0x3200 and an FDE per function after it.
+// Text ends at 0x2000. `raw` writes more words anywhere (code without an unwind entry, data).
+export const MATCH_TEXT_END = 0x2000;
+export function matchImage(functions: Record<number, number[]>, raw: Record<number, number[]> = {}): Uint8Array {
+  const out = new Uint8Array(0x4000), dv = new DataView(out.buffer), fns = Object.entries(functions).map(([s, w]) => [Number(s), w] as const).sort((a, b) => a[0] - b[0]);
+  dv.setUint32(4, 0x20, true);
+  out.set([0x4D, 0x4F, 0x44, 0x30], 0x20);                                    // "MOD0"
+  dv.setInt32(0x30, 0x3000 - 0x20, true); dv.setInt32(0x34, 0x300C + fns.length * 8 - 0x20, true);
+  out.set([1, 0x1B, 0x03, 0x3B], 0x3000);
+  dv.setInt32(0x3004, 0x3200 - 0x3004, true); dv.setUint32(0x3008, fns.length, true);
+  dv.setUint32(0x3200, 16, true); dv.setUint32(0x3204, 0, true);
+  out.set([1, 0x7A, 0x52, 0, 4, 0x78, 0x1E, 1, 0x1B], 0x3208);                // version 1, "zR", align 4 / -8, x30, 1 byte: the encoding
+  fns.forEach(([start, words], i) => {
+    words.forEach((w, k) => dv.setUint32(start + 4 * k, w, true));
+    const fde = 0x3240 + i * 24;
+    dv.setInt32(0x300C + i * 8, start - 0x3000, true); dv.setInt32(0x3010 + i * 8, fde - 0x3000, true);
+    dv.setUint32(fde, 16, true); dv.setUint32(fde + 4, fde + 4 - 0x3200, true); dv.setInt32(fde + 8, start - (fde + 8), true); dv.setUint32(fde + 12, words.length * 4, true);
+  });
+  for (const [at, words] of Object.entries(raw)) words.forEach((w, k) => dv.setUint32(Number(at) + 4 * k, w, true));
+  return out;
+}
+// The same image with one imported function: a PLT stub at `plt` that loads the GOT slot at `slot`, and the dynamic
+// table (at 0x2100), DT_JMPREL (0x2200), symbol table (0x2300) and strings (0x2400) that name the slot
+export function withImport(image: Uint8Array, name: string, plt = 0x1800, slot = 0x2500): Uint8Array {
+  const out = image.slice(), dv = new DataView(out.buffer);
+  dv.setInt32(0x24, 0x2100 - 0x20, true);
+  ([[20, 7], [23, 0x2200], [2, 24], [6, 0x2300], [5, 0x2400], [0, 0]] as const).forEach(([tag, value], i) => { dv.setBigInt64(0x2100 + i * 16, BigInt(tag), true); dv.setBigUint64(0x2108 + i * 16, BigInt(value), true); });
+  dv.setBigUint64(0x2200, BigInt(slot), true); dv.setBigUint64(0x2208, (1n << 32n) | 1026n, true);      // R_AARCH64_JUMP_SLOT of symbol 1
+  dv.setUint32(0x2318, 1, true);                                                                        // symbol 1: its name at +1
+  out.set(new TextEncoder().encode(name), 0x2401);
+  const lo = slot & 0xFFF;
+  [A64.adrp(16, plt, slot), (0xF9400211 | ((lo / 8) << 10)) >>> 0, A64.addi(16, 16, lo), 0xD61F0220].forEach((w, k) => dv.setUint32(plt + 4 * k, w, true));
+  return out;
+}

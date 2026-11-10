@@ -24,7 +24,7 @@ Ported = written here and tested. Cut = left out on purpose, with the reason. Op
 | nxnative | nxweb | State |
 |---|---|---|
 | `loader.c`, `main.c`, `entry.S` | `src/loader`, `src/glue/rt_runtime.ts` | Ported: NSO / NRO, relocation, binding rules, run-time load and unload. Cut: offline rewriting of modules (nxnative patches code; the translator needs none). Open: ZBIC (zstd) segments, TLS relocations, NSP / XCI containers, NACP |
-| `scripts/build_ipa_from_nsp.py`, `dm/games` (153 profiles), the patch files | `src/prepare`, `tools/prepare` | Ported for a folder of extracted files: detection by nxnative's dump-folder rules, NPDM (program id, system resource, stack size), the profiles converted (153; 66 of 66 registered code cuts), cuts applied in the page, a RomFS device over the folder, a manifest that survives a reload. Applied by the runtime: the memory keys (as a per-game address-space layout), `op_mode`, `perf_mode`, `alloc_big_align`, `game_env`, `launch_param`. Open: packages (NSP / XCI / NCA: nothing is decrypted), frame-step patches (5 games), cuts found by function fingerprints, shaders pre-warm; 14 profiles need more than a 32-bit address space |
+| `scripts/build_ipa_from_nsp.py`, `dm/games` (153 profiles), the patch files | `src/prepare`, `tools/prepare` | Ported for a folder of extracted files: detection by nxnative's dump-folder rules, NPDM (program id, system resource, stack size), the profiles converted (153; 66 of 66 registered code cuts, 17 of 17 function-matched rules), cuts applied in the page, cuts for unregistered builds placed by function fingerprint (`src/prepare/match.ts`: nxnative's `nso_match.py`, fingerprints equal on 937 of 937 compiled test functions that have one), a RomFS device over the folder, a manifest that survives a reload. Applied by the runtime: the memory keys (as a per-game address-space layout), `op_mode`, `perf_mode`, `alloc_big_align`, `game_env`, `launch_param`. Open: packages (NSP / XCI / NCA: nothing is decrypted), frame-step stubs (8 profiles: "Frame-step stubs" below), the nine rewrites nxnative finds by code, shaders pre-warm; 14 profiles need more than a 32-bit address space (the prepare step's report takes that verdict from the runtime's `layoutFor` and names them) |
 | `hle_svc.c`, `hle_thread.c`, `thread.c`, `hle_guestthread.c` | `src/kernel` | Ported: 41 SVC numbers (0x01-0x12, 0x16-0x1F, 0x21, 0x24-0x27, 0x29, 0x2C, 0x2D, 0x32-0x35, 0x45) with a real scheduler in place of pthreads. Cut: nxnative's scheduling remedies (yield back-off, QoS mapping, spin gates). Open: IPC beyond stubs, shared / transfer / code memory, process and debug SVCs |
 | `hle_os.c` | `src/kernel/clock.ts`, `src/hle/os.ts` | Ported: guest clock with freeze reasons, entropy, getenv, allocator hook |
 | `hle_ro.c` (10 names) | `src/hle/ro.ts` over `Runtime.loadModule` | Ported: 10 of 10 names; a guest loads, calls and unloads an NRO 500 times. Cut: finding NROs by hash among offline-rewritten ones. Open: NRR checks |
@@ -69,6 +69,55 @@ one answer: the runtime refuses a second registration.
 | nn::jit | 7 | 7 (against a fake plugin) |
 | nn::audio, codecs | 118 | 112, attached (6 red stubs: the audio renderer) |
 | movies, video codecs | 128 | 128 cut stubs |
+
+## Frame-step stubs (`FRAME_STEP`, `MATCH_FRAME_STEP`): not converted, and what is missing
+
+What they are in nxnative (`dm/tools/patch_nso.py`, "Frame step in whole vsyncs"; the stubs themselves are in
+`dm/games/<id>/patches.py`): for a `main` of a registered build, a Python function `FRAME_STEP[build ID](ctx)`
+assembles code into a **patch area** beside the module (`ctx.emit`, `ctx.here()`), replaces instructions of the
+game with branches into it (`ctx.site(offset, original bytes)`, `ctx.put(offset, words, reason)`), and that code
+reads and writes a **state page** (`ctx.state`: the page after nxnative's key page, zero in the file, read-write).
+The host writes the page: `loader.c dm_fps_state_apply` once at start (+0 the target frame rate as a float, 0 =
+every stub runs the original instructions; +0x10 the render scale; +0x40 dynamic resolution on or off; +0x48 to
++0x98 the screen shape and HUD placement), and `hle_nvn.c fstep_tick` at every present (+0x20 the step in vsyncs it
+decided with `nvn_fstep.h`: how long the frame stays on screen, plus one while the game is behind real time). The
+stubs write back (+0x24 a step the game fixes itself, +0x28 one game's vsyncs per update, +0x30 vsyncs stepped).
+`MATCH_FRAME_STEP` is the same for a build without `FRAME_STEP`: the function the stubs patch is found by its
+fingerprint (`nso_match.locate_stub`) and the stub writes at `ctx.base` + offsets, reads the game's globals with
+`ctx.address(offset)` from the original text and may name more functions (`ctx.others`).
+
+In the pinned nxnative: `FRAME_STEP` for 5 builds of 5 profiles (01002B00111A2000, 01006F8002326000,
+01007300020FA000, 01007EF00011E000, 0100ECD018EBE000: 176 sites, 5,179 stub words by the converter's recording)
+and `MATCH_FRAME_STEP` rules in 4 (01002B00111A2000, 0100F2C0115B6000, 0400486024DEC000, 0400C3F00006E000): 8
+profiles. `src/prepare/profiles/report.json` (`conversion.unconverted`) and each profile's `unconverted` list name
+them, and the prepare page shows the line for the game. The profile keys they serve stay class c: `fps_target`
+(for these games), `render_base`, `screen_aspect`, `fps_hold`.
+
+What does not exist here, precisely:
+
+1. **A patch area in the module's mapping.** `src/loader` maps an NSO's three segments and its bss and nothing
+   beside them; the hand-off (`HandOff`) carries module files and same-length cuts. Needed: executable words
+   mapped with the module within branch reach of its text (±128 MB for `b`, which the 252 MB code region does not
+   give for free), known to the translator as code (its entry bits and pc map cover the code region by module).
+2. **The state page**: a zero, read-write guest page at an address the stubs' `adrp` reaches, and its address
+   given to the runtime (nxnative: `FPS_STATE_OFF` in the fixups table).
+3. **The stubs as data.** A stub function is Python that computes its words from `ctx.here()` and `ctx.state`
+   (branches back into the game, `adrp` to the state page), so what it emits depends on where the patch area and
+   the page lie, and in nxnative those offsets follow from the module's size. The converter runs each function
+   with a recording context at an assumed layout, which counts sites and words but yields words that are right
+   only for that layout. To emit them the recording must either be made with the layout the loader will use for
+   that build (the build is known, the module's size is not until the player's file is read), or record which
+   words are position dependent. A `MATCH_FRAME_STEP` stub additionally needs the matched addresses and the
+   original text at prepare time, that is, the stub's logic in the page, not its output.
+4. **The driver.** Nothing writes a step: `src/glue/rt_gfx.ts` paces `nvnWindowAcquireTexture` to the display
+   frame and counts presents, but there is no port of `nvn_fstep.h` (156 lines, a pure function with nxnative's
+   unit test `tests/t_fstep.c`) or of `fstep_tick` (frame cost, late frames, holds, probes), and no present
+   interval the host decides (`present_interval` and `fps_target` are class c for every profile). With the page at
+   0 the stubs run the original instructions, so installing them without the driver would change nothing.
+5. **The settings** that fill the page at start (target rate, render scale, dynamic resolution, screen shape): no
+   page-side setting exists for any of them.
+
+Nothing was emitted or half-applied: a profile with these patches runs the game's own frame logic.
 
 ## State machines
 

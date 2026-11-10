@@ -55,6 +55,8 @@
     "prepare:build": "node src/prepare/host/build.mts",
     "prepare:profiles": "python3 tools/prepare/convert_profiles.py",
     "prepare:profiles:check": "python3 tools/prepare/convert_profiles.py --check",
+    "prepare:writes": "python3 tools/prepare/gen_match_writes.py --fuzz 400000",
+    "prepare:writes:check": "python3 tools/prepare/gen_match_writes.py --check",
     "prepare:test": "node test/prepare/run.mts",
     "prepare:measure": "node test/prepare/measure.mts",
     "prepare:browser": "node test/prepare/browser.mts",

@@ -107,7 +107,7 @@ try {
     if (!/^2 files, 3 directories, [\d.]+ KB, read in place; 1 add-on contents$/.test(rows[1]!)) throw new Error("index row: " + rows[1]);
     if (rows[3] !== "main, sdk; 0 cuts applied") throw new Error("code row: " + rows[3]);
     const m = await manifest(storeDir);
-    eq([m.format, m.folder, m.machine, Object.values(m.stages).map((s: any) => s.state), m.stages.detect.output.titleId, m.stages.detect.output.version], [1, folder, "Ready", ["done", "done", "done", "done", "done"], APP_HEX, 65536], "manifest");
+    eq([m.format, m.folder, m.machine, Object.values(m.stages).map((s: any) => s.state), m.stages.detect.output.titleId, m.stages.detect.output.version], [2, folder, "Ready", ["done", "done", "done", "done", "done"], APP_HEX, 65536], "manifest");
     eq(await storeFiles(storeDir), [`aoc2.index`, `aoc2.tables`, "manifest.json", "rom.index", "rom.tables"], "what is stored: tables and the manifest, no copy of any game file");
     eq(await page.evaluate(() => !(document.getElementById("play") as HTMLButtonElement).disabled), true, "Play is enabled");
     return `manifest in OPFS ${storeDir}: 5 stages done, input hashes ${Object.values(m.stages).map((s: any) => s.input.slice(0, 8)).join(" ")}`;
@@ -208,8 +208,11 @@ try {
     const prof = await page.textContent("#profile");
     if (prof !== "DARK SOULS: REMASTERED (not a build the profile was made on)") throw new Error("profile: " + prof);
     const needs = await page.evaluate(() => [...document.querySelectorAll("#needs li")].map(li => (li as HTMLElement).dataset.key));
-    eq(needs, ["address_space"], "what will not work");
-    eq(await page.isVisible("#needsbox"), true, "the list is shown");
+    eq(needs, [], "what will not work: nothing (its 3.25 GB heap region is no need any more: by the runtime's layout rule it fits)");
+    eq(await page.isVisible("#needsbox"), false, "no list");
+    eq(await page.getAttribute("#layout", "data-fit"), "profile", "the address-space verdict, the runtime's");
+    const fitText = await page.textContent("#layout");
+    if (fitText !== "fits as the profile reserves it") throw new Error("layout text: " + fitText);
     const m = await manifest("nxweb-prepare-DarkGame");
     eq([m.stages.profile.output.id, m.stages.profile.output.apply.mem_used, m.stages.profile.output.cuts.length], [DS, "0x6e00000", 0], "profile output");
     await open();
@@ -220,7 +223,7 @@ try {
     const err = await page.textContent("#error");
     if (!/this is an exefs folder .* pick the folder above it/.test(err!)) throw new Error("error text: " + err);
     eq(await page.evaluate(() => document.getElementById("machine")!.textContent), "Failed (layout)", "the machine's reason");
-    return `needs: ${needs.join(", ")}; the exefs folder alone: ${err}`;
+    return `needs: ${needs.join(", ") || "none"}; memory: ${fitText}; the exefs folder alone: ${err}`;
   });
 
   await run("cancel from the page: a run held in the Code stage is cancelled, the manifest records it, the next run finishes", async () => {

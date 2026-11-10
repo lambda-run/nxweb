@@ -35,11 +35,6 @@
    "key": "tex_dirty_upload",
    "value": "on",
    "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
-  },
-  {
-   "key": "address_space",
-   "value": "heap 0xd0000000 alias 0x10000000",
-   "what": "nxnative gives this game a 3.25 GB heap region (nxweb: 1.50 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
   }
  ],
  "dropped": [
@@ -55,11 +50,20 @@
  ],
  "unknown": [],
  "cuts": {},
+ "match_cuts": {},
  "unconverted": [],
  "address_space": {
   "heap_region": 3489660928,
   "alias_region": 268435456,
   "stack_region": 268435456,
-  "fits": false
+  "fit": "profile",
+  "fits": true,
+  "note": "",
+  "layout": {
+   "heap": 3303014400,
+   "alias": 268435456,
+   "stack": 268435456,
+   "pool": 3444572160
+  }
  }
 }

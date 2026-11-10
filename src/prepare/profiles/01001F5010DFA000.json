@@ -25,13 +25,7 @@
   "app_pool": "0xCD500000",
   "sys_resource": "0x1000000"
  },
- "needs": [
-  {
-   "key": "address_space",
-   "value": "heap 0x8000000 alias 0x118000000",
-   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",
@@ -46,20 +40,66 @@
  ],
  "unknown": [],
  "cuts": {},
- "unconverted": [
-  {
-   "kind": "MATCH_CUTS",
-   "module": "main",
-   "rules": 1,
-   "names": [
-    "capture demo: the empty result when the weak reference at +0x88 is unset or dead"
-   ]
-  }
- ],
+ "match_cuts": {
+  "main": [
+   {
+    "name": "capture demo: the empty result when the weak reference at +0x88 is unset or dead",
+    "functions": [
+     {
+      "size": 2672,
+      "fingerprints": [
+       "123f93c4fa74d68f6100dab6ec8310a5047b2b3535b72361b6e658e3e48d792e"
+      ],
+      "cuts": [
+       {
+        "off": 48,
+        "orig": "bf031af8",
+        "new": "64020014",
+        "why": "capture demo: the empty result when the weak reference at +0x88 is unset or dead: no reference at +0x88 (as 1.1.1 main+0x16e341c)"
+       },
+       {
+        "off": 1084,
+        "orig": "fefeff17",
+        "new": "5f010014",
+        "why": "capture demo: the empty result when the weak reference at +0x88 is unset or dead: after the lock (as 1.1.1 main+0x16e3828)"
+       },
+       {
+        "off": 1480,
+        "orig": "811f0054",
+        "new": "a11e0054",
+        "why": "capture demo: the empty result when the weak reference at +0x88 is unset or dead: frees a duplicate block (as 1.1.1 main+0x16e39b4)"
+       },
+       {
+        "off": 1552,
+        "orig": "811d0054",
+        "new": "611c0054",
+        "why": "capture demo: the empty result when the weak reference at +0x88 is unset or dead: frees a duplicate block (as 1.1.1 main+0x16e39fc)"
+       },
+       {
+        "off": 2488,
+        "orig": "f7031f2a1bffff17f7031f2a19ffff17",
+        "new": "a8035af8c8b3ffb59f7e00a9c8ffff17",
+        "why": "capture demo: the empty result when the weak reference at +0x88 is unset or dead: the null check and the empty result (as 1.1.1 main+0x16e3da4)"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "unconverted": [],
  "address_space": {
   "heap_region": 134217728,
   "alias_region": 4697620480,
   "stack_region": 268435456,
-  "fits": false
+  "fit": "pool",
+  "fits": true,
+  "note": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it",
+  "layout": {
+   "heap": 134217728,
+   "alias": 3690921984,
+   "stack": 67108864,
+   "pool": 3444572160
+  }
  }
 }

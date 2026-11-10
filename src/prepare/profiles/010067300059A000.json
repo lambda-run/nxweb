@@ -30,11 +30,6 @@
    "key": "snowdrop_pools",
    "value": "2048 512 512",
    "what": "Snowdrop's page pools are not resized: the engine reserves 12 GB of address space, which a 4 GB memory cannot give."
-  },
-  {
-   "key": "address_space",
-   "value": "heap 0x8000000 alias 0x118000000",
-   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
   }
  ],
  "dropped": [
@@ -51,11 +46,20 @@
  ],
  "unknown": [],
  "cuts": {},
+ "match_cuts": {},
  "unconverted": [],
  "address_space": {
   "heap_region": 134217728,
   "alias_region": 4697620480,
   "stack_region": 268435456,
-  "fits": false
+  "fit": "pool",
+  "fits": true,
+  "note": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it",
+  "layout": {
+   "heap": 134217728,
+   "alias": 3690921984,
+   "stack": 67108864,
+   "pool": 3444572160
+  }
  }
 }

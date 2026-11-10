@@ -37,11 +37,20 @@
  ],
  "unknown": [],
  "cuts": {},
+ "match_cuts": {},
  "unconverted": [],
  "address_space": {
   "heap_region": 1610612736,
   "alias_region": 268435456,
   "stack_region": 268435456,
-  "fits": true
+  "fit": "profile",
+  "fits": true,
+  "note": "",
+  "layout": {
+   "heap": 1610612736,
+   "alias": 268435456,
+   "stack": 268435456,
+   "pool": 3444572160
+  }
  }
 }

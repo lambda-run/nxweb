@@ -29,8 +29,8 @@
  "needs": [
   {
    "key": "address_space",
-   "value": "heap 0x130000000 alias 0x400000000",
-   "what": "nxnative gives this game a 4.75 GB heap region (nxweb: 1.50 GB) and a 16.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
+   "value": "heap 0x130000000 alias 0x400000000 stack 0x10000000",
+   "what": "This game does not fit a 32-bit memory: the profile reserves heap 4.75 GB, alias 16.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)."
   }
  ],
  "dropped": [
@@ -46,11 +46,20 @@
  ],
  "unknown": [],
  "cuts": {},
+ "match_cuts": {},
  "unconverted": [],
  "address_space": {
   "heap_region": 5100273664,
   "alias_region": 17179869184,
   "stack_region": 268435456,
-  "fits": false
+  "fit": "short",
+  "fits": false,
+  "note": "the profile reserves heap 4.75 GB, alias 16.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)",
+  "layout": {
+   "heap": 134217728,
+   "alias": 3690921984,
+   "stack": 67108864,
+   "pool": 3825139712
+  }
  }
 }

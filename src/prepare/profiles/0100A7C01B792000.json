@@ -39,11 +39,6 @@
    "key": "fps_max",
    "value": "120",
    "what": "The 120 fps option is not available."
-  },
-  {
-   "key": "address_space",
-   "value": "heap 0x8000000 alias 0x1000000000",
-   "what": "nxnative gives this game a 64.00 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
   }
  ],
  "dropped": [
@@ -60,11 +55,20 @@
  ],
  "unknown": [],
  "cuts": {},
+ "match_cuts": {},
  "unconverted": [],
  "address_space": {
   "heap_region": 134217728,
   "alias_region": 68719476736,
   "stack_region": 268435456,
-  "fits": false
+  "fit": "pool",
+  "fits": true,
+  "note": "the profile reserves heap 0.13 GB, alias 64.00 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it",
+  "layout": {
+   "heap": 134217728,
+   "alias": 3690921984,
+   "stack": 67108864,
+   "pool": 3444572160
+  }
  }
 }
