@@ -26,6 +26,7 @@ import * as PK from "./pipeline";
 import { syncFence } from "./sync";
 import { contentNeed, contentGpuWrite, contentStage, contentState, contentInUse, regionCopy, submitDone } from "./texcontent";
 import { GfxTextureS } from "../kit/gen/tables";
+import * as R from "./report";
 
 // ---- current state (nxnative's S and R) ----
 let prog: usize = 0;
@@ -189,6 +190,7 @@ function setRenderTargets(r: usize): void {
   // The same targets again while their pass is open: the pass goes on (games re-send targets before every group of draws)
   if (pass().state == GfxPassS.Open && n == rtN && memory.compare(RT, RT_NEW, 288) == 0) return;
   passEvent(GfxPassE.SetTargets);
+  if (R.segCut()) H.hostRec(H.H_FLUSH, 8);      // gpu_timestamps segment: what was encoded so far goes to the GPU (nxnative sub_cut)
   memory.copy(RT, RT_NEW, 288); rtN = n; rtW = w; rtH = h;
   dirty = D_ALL;
 }
@@ -546,7 +548,7 @@ function draw(r: usize, size: u32, indexed: bool): void {
     const o = H.hostRec(H.H_DRAW, 32);
     store<u32>(o, first, 8); store<u32>(o, count, 12); store<u32>(o, instances, 16); store<u32>(o, baseInstance, 20); store<u32>(o, conv, 24);
   }
-  nDraws++;
+  nDraws++; R.segDraw();
 }
 
 // ---- copies ----
@@ -609,6 +611,7 @@ function copyT2B(r: usize, size: u32): void {
 // draws bound), then guest memory changes, then the replayer is told to forget its uploads
 function memWrite(dst: usize, src: usize, n: usize): void {
   H.hostFlush();
+  R.reportOverwrite(dst, n);
   memory.copy(dst, src, n);
   H.hostRec(H.H_MEM_DIRTY, 8);
   dirty |= D_VBUF | D_UBO;
@@ -628,8 +631,8 @@ function exec(p: usize, depth: i32): void {
         else exec(<usize>load<u64>(a), depth + 1);
         break;
       case O.OP_SET_RT: setRenderTargets(a); break;
-      case O.OP_CLEAR_COLOR: clearColor(a); break;
-      case O.OP_CLEAR_DS: clearDepthStencil(a); break;
+      case O.OP_CLEAR_COLOR: if (!R.renderSkip(1)) clearColor(a); break;
+      case O.OP_CLEAR_DS: if (!R.renderSkip(1)) clearDepthStencil(a); break;
       case O.OP_VIEWPORTS:
         if (load<i32>(a) + load<i32>(a, 4) > 1 && once(31)) L.redLine("SetViewports beyond index 0: WebGPU has one viewport and no layer-selected viewports, the others are ignored");
         if (load<i32>(a) == 0 && load<i32>(a, 4) >= 1) { memory.copy(VP, a + O.P_VIEWPORTS_v, 16); hasVp = true; dirty |= D_VP; } break;
@@ -699,8 +702,8 @@ function exec(p: usize, depth: i32): void {
       }
       case O.OP_POLY_OFFSET: memory.copy(POLYOFF, a, 12); dirty |= D_PIPE; break;
       case O.OP_BLEND_COLOR: memory.copy(BLENDC, a, 16); dirty |= D_BLENDC; break;
-      case O.OP_DRAW: draw(a, size, false); break;
-      case O.OP_DRAW_IDX: draw(a, size, true); break;
+      case O.OP_DRAW: if (!R.renderSkip(0)) draw(a, size, false); break;
+      case O.OP_DRAW_IDX: if (!R.renderSkip(0)) draw(a, size, true); break;
       case O.OP_BARRIER: if (load<i32>(a)) passBreak(); break;
       // The pools' numbering bases were added to bound handles when the binds were recorded; handles read from uniform
       // data (slotHandle) take the bases of the pools set here
@@ -712,6 +715,10 @@ function exec(p: usize, depth: i32): void {
       case O.OP_COPY_B2B: memWrite(<usize>load<u64>(a, 8), <usize>load<u64>(a), <usize>load<u64>(a, 16)); break;
       case O.OP_UPDATE_UB: memWrite(<usize>load<u64>(a), a + 16, <usize>load<u64>(a, 8)); break;
       case O.OP_FENCE_SYNC: { const s = <usize>load<u64>(a); passBreak(); emitFence(s); break; }
+      // Counter reports and render enable (report.ts). A reset has nothing to do while no counter is counted here
+      case O.OP_REPORT_COUNTER: R.reportIssue(<u32>load<u64>(a), load<u64>(a, 8)); break;
+      case O.OP_RESET_COUNTER: break;
+      case O.OP_RENDER_COND: R.renderCond(load<i32>(a), load<u64>(a, 8)); break;
       default:
         if (!load<u8>(NOT_REPLAYED + op)) { store<u8>(NOT_REPLAYED + op, 1); L.red("command record op "); L.u(op); L.str(" is recorded but not replayed yet"); L.end(); }
     }
@@ -727,8 +734,10 @@ export function emitFence(sync: usize): void {
 
 export function submit(n: i32, handles: usize): void {
   nSubmits++;
+  R.segSubmitBegin();
   for (let i = 0; i < n; i++) { const h = <usize>load<u64>(handles + (<usize>i << 3)); if (h) exec(h, 0); }
   passEvent(GfxPassE.Submit);
+  R.reportCommit();
   H.hostRec(H.H_FLUSH, 8);
   H.hostFlush();
   submitDone();

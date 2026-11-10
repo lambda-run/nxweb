@@ -54,7 +54,7 @@ export function prep_count_add(i: i32, v: f64): void { if (i >= 0 && i < NCOUNT)
 
 // ---- memory for what goes in and out ----
 export function prep_alloc(len: u32): usize { return alloc(len); }
-export function prep_arena_reset(): void { arenaReset(); }
+export function prep_arena_reset(): void { cuts.nsoOpenClear(); arenaReset(); }
 export function prep_arena_used(): usize { return arenaUsed(); }
 export function prep_error_ptr(): usize { return errorPtr(); }
 export function prep_error_len(): i32 { return errorLen(); }
@@ -80,6 +80,11 @@ export function npdm_name_ptr(): usize { return npdm.npdmNamePtr(); }
 export function nso_parse(ptr: usize, len: u32): i32 { return cuts.nsoParse(ptr, len); }
 export function nso_peek(ptr: usize, len: u32): i32 { return cuts.nsoPeek(ptr, len); }
 export function nso_check(ptr: usize, len: u32): i32 { return cuts.nsoCheck(ptr, len); }
+// the same in steps, the unpacked image kept for cut_apply and match_run on the same file (cuts.ts nsoOpenBegin)
+export function nso_open_begin(ptr: usize, len: u32): i32 { return cuts.nsoOpenBegin(ptr, len); }
+export function nso_open_step(budget: u32): i32 { return cuts.nsoOpenStep(budget); }
+export function nso_open_work_total(): f64 { return cuts.nsoOpenWorkTotal(); }
+export function nso_open_work_done(): f64 { return cuts.nsoOpenWorkDone(); }
 export function nso_build_id_ptr(): usize { return cuts.nsoBuildIdPtr(); }
 export function nso_image_size(): u32 { return cuts.nsoImageSize(); }
 export function nso_text_size(): u32 { return cuts.nsoTextSize(); }

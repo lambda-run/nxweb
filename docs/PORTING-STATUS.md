@@ -40,7 +40,7 @@ as the first workload of some size that nobody here wrote. With the shareware da
 
 | nxnative | nxweb | State |
 |---|---|---|
-| `loader.c`, `main.c`, `entry.S` | `src/loader`, `src/glue/rt_runtime.ts` | Ported: NSO / NRO, relocation, binding rules, run-time load and unload. Cut: offline rewriting of modules (nxnative patches code; the translator needs none). Open: ZBIC (zstd) segments, TLS relocations, NSP / XCI containers (a NUP container is opened by the prepare step, with its NACP) |
+| `loader.c`, `main.c`, `entry.S` | `src/loader`, `src/glue/rt_runtime.ts` | Ported: NSO / NRO, relocation, binding rules, run-time load and unload. Cut: offline rewriting of modules (nxnative patches code; the translator needs none). ZBIC segments (system 22.0.0 on) are decoded (`src/loader/zbic.ts`, written from the format; nxnative uses the `zbic` package). Open: compressed NROs (system 23.0.0 on), TLS relocations, NSP / XCI containers (a NUP container is opened by the prepare step, with its NACP) |
 | `scripts/build_ipa_from_nsp.py`, `dm/games` (153 profiles), the patch files | `src/prepare`, `tools/prepare` | Ported for a NUP container (`scripts/pack_nup.py`: `src/prepare/host/nup.ts`, the same checks, the file read in place by ranges, zstd frames decompressed per file on demand, every file checked against its SHA-256 as it is first read whole, NACP name / display version / icon; compared with nxnative's own reader in the tests) and for a folder of extracted files: detection by nxnative's dump-folder rules, NPDM (program id, system resource, stack size), the profiles converted (153; 66 of 66 registered code cuts, 17 of 17 function-matched rules), cuts applied in the page, cuts for unregistered builds placed by function fingerprint (`src/prepare/match.ts`: nxnative's `nso_match.py`, fingerprints equal on 937 of 937 compiled test functions that have one), a RomFS device over the folder, a manifest that survives a reload. Applied by the runtime: the memory keys (as a per-game address-space layout), `op_mode`, `perf_mode`, `alloc_big_align`, `game_env`, `launch_param`. Open: encrypted packages (NSP / XCI / NCA: nothing is decrypted, the page says what such a file is and what to convert it to), NUP limits (a file larger than about 2 GB that is stored compressed cannot be decompressed in one piece; `addon_update` and `system` packages are named and not used), frame-step stubs (8 profiles: "Frame-step stubs" below), the nine rewrites nxnative finds by code, shaders pre-warm; 14 profiles need more than a 32-bit address space (the prepare step's report takes that verdict from the runtime's `layoutFor` and names them) |
 | `hle_svc.c`, `hle_thread.c`, `thread.c`, `hle_guestthread.c` | `src/kernel` | Ported: 41 SVC numbers (0x01-0x12, 0x16-0x1F, 0x21, 0x24-0x27, 0x29, 0x2C, 0x2D, 0x32-0x35, 0x45) with a real scheduler in place of pthreads. Cut: nxnative's scheduling remedies (yield back-off, QoS mapping, spin gates). Open: IPC beyond stubs, shared / transfer / code memory, process and debug SVCs |
 | `hle_os.c` | `src/kernel/clock.ts`, `src/hle/os.ts` | Ported: guest clock with freeze reasons, entropy, getenv, allocator hook |
@@ -62,7 +62,7 @@ one answer: the runtime refuses a second registration.
 
 | nxnative | nxweb | State |
 |---|---|---|
-| NVN on Metal (`dm/gfx/nvn`, 20,281 lines) | `src/gfx` + `src/glue/gfx_host.ts` | Ported: 332 of 743 NVN entry points are implemented (nxnative: 489), the record formats byte for byte, the render pass machine, pipelines, texture content tracking, bindless textures whose handle is a word of a uniform slot (resolved at each draw, as nxnative's `tex_ubo` / `samp_ubo`), 46 browser scenes verified by pixels. The rest are red stubs |
+| NVN on Metal (`dm/gfx/nvn`, 20,281 lines) | `src/gfx` + `src/glue/gfx_host.ts` | Ported: 338 of 743 NVN entry points are implemented (nxnative: 489), the record formats byte for byte, the render pass machine, pipelines, texture content tracking, bindless textures whose handle is a word of a uniform slot (resolved at each draw, as nxnative's `tex_ubo` / `samp_ubo`), counter reports with 614.4 MHz timestamps, and what five profile keys switch on (`render_cond`, `tex_flush_upload`, `tex_dirty_upload`, `gpu_timestamps`, `present_interval`: "Profile keys of the graphics layer" below), 55 browser scenes verified by pixels. The rest are red stubs |
 | | | Open: compute, storage buffers, images, transform feedback, tessellation and geometry stages, multisample resolve, sparse pools, ASTC and some packed formats, more than one viewport, logic ops, alpha test, border colours (see `src/gfx/README.md`, Gaps). Per-stage binding limits: the device is asked for the adapter's limits, only what a shader uses is bound, and a stage that still does not fit fails with a red line naming the WebGPU limit and the excess; nxnative binds through Metal argument buffers and has no such limit. The only adapter measured (SwiftShader) grants the defaults (12 uniform buffers, 16 textures, 16 samplers a stage), so a stage beyond them has not drawn here. Bindless handle arrays and pools indexed at run time (`tex_htab`, `tex_c2a`, `tex_pool`): not supported, WebGPU's core has no binding arrays |
 | Shader chain: `shader_split.py`, `dmsh_xlate` (Ryujinx), SPIRV-Cross, MSL fix-ups, Metal libraries | `tools/shaders`, `src/shaders`, `src/glue/rt_shaders.ts` | Ported: key, translator (unchanged, also as WebAssembly in the page), a SPIR-V pass with 9 rewrites and naga in place of SPIRV-Cross and the MSL fix-ups, a library format, lookup at run time with translation in a Worker. 4 hand-assembled Maxwell programs (one bindless) and 27 of 43 GLSL test shaders convert; a bindless texture whose handle the translator traced to a uniform word is placed with where its handle is. Cut: everything written against MSL text. Open: bindless handle arrays and pools, bindless with a separate sampler, storage buffers and images, geometry / tessellation lowering, `vs_pad`, integer inputs and outputs, the per-game answer table, NVN2 / Ampere code, `shader_split.py` in a page |
 | OpenGL and Vulkan front ends (`dm/gfx/gl`, `vk`: 294 pass-through rows) | | Cut: NVN only |
@@ -127,18 +127,71 @@ What does not exist here, precisely:
    original text at prepare time, that is, the stub's logic in the page, not its output.
 4. **The driver.** Nothing writes a step: `src/glue/rt_gfx.ts` paces `nvnWindowAcquireTexture` to the display
    frame and counts presents, but there is no port of `nvn_fstep.h` (156 lines, a pure function with nxnative's
-   unit test `tests/t_fstep.c`) or of `fstep_tick` (frame cost, late frames, holds, probes), and no present
-   interval the host decides (`present_interval` and `fps_target` are class c for every profile). With the page at
-   0 the stubs run the original instructions, so installing them without the driver would change nothing.
+   unit test `tests/t_fstep.c`) or of `fstep_tick` (frame cost, late frames, holds, probes). The present interval
+   the host decides is there (`src/gfx/window.ts`: the game's own, `present_interval display`, a present cap), and
+   the step would be one more input to it. With the page at 0 the stubs run the original instructions, so
+   installing them without the driver would change nothing.
 5. **The settings** that fill the page at start (target rate, render scale, dynamic resolution, screen shape): no
    page-side setting exists for any of them.
 
 Nothing was emitted or half-applied: a profile with these patches runs the game's own frame logic.
 
+## Profile keys of the graphics layer: what is applied, and the frame rate keys that are not
+
+Applied (class a in `tools/prepare/convert_profiles.py`; the mechanisms and their tests are in `src/gfx/README.md`):
+
+| Key | Profiles | nxnative | Here |
+|---|---|---|---|
+| `render_cond` | 10 | `SetRenderEnable(Conditional)` recorded and evaluated at replay on the CPU; a timestamp report's counter field is 0 | the same at lowering time, with a report on its way counted as the 0 it will write. Occlusion counts do not exist here: a condition on one always draws (nxnative evaluates a landed one) |
+| `tex_flush_upload` | 12 | textures in CPU-writable pools are registered; a pool flush over one makes it CPU-written (uploaded, re-uploaded when its pages change) | the same registration; a flush marks the texture until its next use: a full check then, and a texture the GPU wrote goes back to the CPU when its storage changed since the GPU took it |
+| `tex_dirty_upload` | 11 | registered textures' pages are write-protected; a poll hands written ones to the upload | no page protection in a WebAssembly memory: a scanner hashes registered textures in use, 4 MB a submission (about 1 ms at the measured 3.5 to 4 GB/s). A silent rewrite shows at the next draw while they are under 4 MB together, else within two rounds of `ceil(bytes / 4 MB)` submissions |
+| `gpu_timestamps` | 5 | `segment`: a report takes the GPU start / end of the `sub_cut` segment it lies in, from Metal's commit feedback | the same segments (a cut every 64 draws at a target change); the times from WebGPU timestamp queries where the device has `timestamp-query` (quantised by the browser, placed on the guest clock by the moment the completion is reported), else estimated on the CPU from when a segment was handed over and reported done. The page's Graphics row says which |
+| `present_interval` | 8 | `display`: one frame per display tick whatever the game sets, and the game reads that back | the same; the acquire is held for the interval in vsyncs of 1/60 s, also on screens that are not at 60 Hz |
+
+26 of the 153 profiles list fewer things under "What will not work for this game", and 7 of them nothing any more
+(102 profiles have an empty list, 95 before).
+
+### Frame rate: `fps_target` (33 profiles), `fps_max` (6), `fps_hold` (2) stay listed, and what is missing
+
+What nxnative does with them (`dm/gfx/nvn/hle_nvn.c`, `dm/host/hle_fpslock.c`, `docs/reference/frame-rate.md`):
+`fps_target` (0, 30 or 60) is the rate the host wants the game at. The host presents at it (`fps_present_cap`)
+**only when something makes the game step by it**, because a game presented at a rate it does not step by runs fast
+or in slow motion; without that the log says "present cap not applied" and the game's own interval stays. The two
+things that make a game follow are the frame-step stubs (8 profiles, above) and an **engine frame limiter the host
+writes at every present** (`dm_fps_lock_tick`): the engine's own limit, kept at the target in the game's memory.
+`fps_max 120` lets the player's Frame rate choice go to 120 for a game checked at that speed (the profile's
+`fps_target` is never 120), with the frame step's controller counting in ticks of 1/120 s. `fps_hold off` forbids
+the frame step to hold a frame longer than the cap's vsyncs when frames come late.
+
+Ported: the present cap itself (`gfx_set_present_cap(30 | 60)`: the interval becomes 60 / cap in both interval modes,
+tested on the guest clock). Nothing calls it, for the reason nxnative gives. Missing, precisely:
+
+1. **The engine limiters** (`hle_fpslock.c`, 380 lines; none ported). Rows by build ID with fixed addresses: RE
+   Engine's frame limit (1 build), Next Level Games' frame time (1), Criterion's frame timing (1 build, 5 fields),
+   EA's frame regulator (1); NieR's frame interval and display mode (2 builds); Frostbite's simulation rate, found
+   at run time by its reflection records and the code that registers them. These need only the module's base and
+   build ID and a write into guest memory at each present: small, and enough for 6 of the 33 profiles (one of
+   which also has frame-step stubs). Not done
+   in this round.
+2. **The four finders the rewriter runs on any build** (`dm/tools/ue_cvar.py`, `ue_fixed_rate.py`, `unity_fps.py`,
+   `fps_target.py`, 620 lines of Python over the module's code; `src/prepare/README.md` lists them under "found by
+   code"): Unreal's console variables and fixed frame rate, Unity's `targetFrameRate` and `vSyncCount`, a target
+   rate global by its readers. They give the limiter its addresses in the games nxnative has no row for: the other 20 of the
+   33 profiles, all 6 of `fps_max` and the one with `ue_fps_cvar`. They belong in the prepare step (the module's
+   text is there) with a place in the hand-off for what they find.
+3. **A Frame rate choice for the player** (nxnative's launcher setting, `DM_FPS_TARGET`): `fps_max` only bounds
+   that choice, and no page-side setting exists.
+4. **The frame step's controller**, `nvn_fstep.h` (156 lines, a pure function with nxnative's unit test) and
+   `fstep_tick` (frame cost from CPU and GPU time, late frames, probes): it decides the hold, which `fps_hold`
+   limits. It runs only with a frame-step state page or at 120 fps, so it has no input here before 1 to 3 exist;
+   both `fps_hold` profiles are among the 8 with frame-step stubs.
+
+Until then these games run at the rate their own code chooses, at the right speed.
+
 ## State machines
 
-44 machines in the kit today (kit 2, loader 1, kernel 3, runtime 1, gfx 8, fs 6, hle 15, audio 7, prepare 1), each
-with a generated diagram in `docs/machines`; `kit:test` takes all 434 transitions. The audio renderer's four
+45 machines in the kit today (kit 2, loader 1, kernel 3, runtime 1, gfx 9, fs 6, hle 15, audio 7, prepare 1), each
+with a generated diagram in `docs/machines`; `kit:test` takes all 445 transitions. The audio renderer's four
 (`audio_ren`, `audio_ren_thread`, `audio_render`, `audio_ren_update`) are the host's side of the SDK's renderer: the
 renderer's life from open to close with its render thread, the thread's loop, one render, one update. A voice's state
 (stopped / playing / paused, its wave buffer queue) is the SDK's, in the game, as in nxnative: the host has no voice.

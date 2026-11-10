@@ -1,9 +1,11 @@
 // NSO0 and NRO0 files: the header, validated against the file's size before anything it says is used, and the
-// segments (stored as they are or LZ4 block compressed) written to their place in memory.
+// segments (stored as they are, LZ4 block compressed, or ZBIC compressed: system 22.0.0 on) written to their place
+// in memory.
 // The checks are those of nxnative's dm/tools/nso.py (Horizon's own, plus bounds so a small file cannot claim gigabytes).
 // A damaged file is refused with a "[RED] " line; nothing is ever read outside [file, file + fileLen).
 import { lz4Decompress } from "./lz4";
-import { sha256 } from "./sha256";
+import { zbicBegin, zbicStep, zbicProduced, zbicWhy, ZBIC_MAGIC } from "./zbic";
+import { shaStart, shaBlocks, shaFinish } from "./sha256";
 import { PAGE, red, puts, putu, putx, emit } from "./util";
 import { ModuleRefuseReason } from "../kit/gen/tables";
 
@@ -15,7 +17,7 @@ export const OPT_VERIFY_HASH: u32 = 1;   // check a segment's SHA-256 where the 
 
 const LZ4_MAX_RATIO: u64 = 255;          // an LZ4 block produces at most 255 bytes per stored byte
 const SIZE_MAX: u32 = 0x7FFFFFFF;        // Horizon reads segment sizes as s32
-const NSO_ZSTD: u32 = 1 << 7;            // ZBIC segments (system 22.0.0 on): not decoded here
+export const NSO_ZSTD: u32 = 1 << 7;     // the compressed segments are ZBIC (zbic.ts), not LZ4: system 22.0.0 on
 const NRO_COMPRESSED: u32 = 1 << 1;
 export const IMAGE_MAX: u64 = 0xFFFFF000;   // an image, bss included, must fit below 4 GB (docs/CONTRACT.md)
 
@@ -85,8 +87,13 @@ export function parseHeader(L: Layout, file: usize, len: u32, opts: u32): u64 {
         puts(" bytes): the file is cut short or damaged"); emit(); return ModuleRefuseReason.layout;
       }
       if (comp && st > sz) { bad(i); puts("is stored compressed in "); putx(st); puts(" bytes, more than its "); putx(sz); emit(); return ModuleRefuseReason.layout; }
-      if (comp && (flags & NSO_ZSTD)) { bad(i); puts("is ZBIC (zstd) compressed, which this loader does not decode"); emit(); return ModuleRefuseReason.header; }
-      if (comp && <u64>sz > <u64>st * LZ4_MAX_RATIO) {
+      if (comp && (flags & NSO_ZSTD)) {
+        // a ZBIC stream has no fixed ratio (nxnative holds such a segment only to its own size); it must start as one
+        const magic = st >= 4 ? load<u32>(file + <usize>fo) : 0;
+        if (magic != ZBIC_MAGIC && (magic & 0xFFFFFFF0) != 0x184D2A50) {
+          bad(i); puts("is marked ZBIC compressed (NSO flag bit 7) but does not start with a ZBIC frame: the file is damaged"); emit(); return ModuleRefuseReason.header;
+        }
+      } else if (comp && <u64>sz > <u64>st * LZ4_MAX_RATIO) {
         bad(i); puts("claims "); putx(sz); puts(" bytes from "); putx(st); puts(" stored, more than LZ4 can produce"); emit(); return ModuleRefuseReason.layout;
       }
     }
@@ -141,29 +148,86 @@ export function parseHeader(L: Layout, file: usize, len: u32, opts: u32): u64 {
 // Write the whole image to [dst, dst + L.imageSize), which the caller has checked to be free linear memory: the three
 // segments from the file (decompressed, hashes checked if asked), zeros between them and for the bss.
 // Returns 0, or the reason for the refusal after logging a red line. Reads only inside the file: the offsets were
-// validated by parseHeader, and the decompressor checks every read and write.
+// validated by parseHeader, and the decompressors check every read and write.
 export function loadSegments(L: Layout, dst: usize): u64 {
-  const file = L.file;
-  let at: u32 = 0;
-  for (let i: u32 = 0; i < 3; i++) {
-    const mo = L.memOff(i), sz = L.size(i), st = L.stored(i), src = file + <usize>L.fileOff(i);
-    memory.fill(dst + <usize>at, 0, <usize>(mo - at));
-    if (L.compressed(i)) {
-      const n = lz4Decompress(src, st, dst + <usize>mo, sz);
-      if (n < 0) { bad(i); puts("does not decompress (damaged LZ4 block)"); emit(); return ModuleRefuseReason.decompress; }
-      if (<u32>n != sz) {
-        bad(i); puts("decompresses to "); putx(<u32>n); puts(" bytes, not the "); putx(sz); puts(" of the header: the file is damaged"); emit();
+  loadBegin(L, dst);
+  let r: i64;
+  do r = loadStep(L, 0xFFFFFFFF); while (r == LOAD_MORE);
+  return <u64>r;
+}
+
+// The same in steps, for an embedder that shows progress and can stop between them (a main module is over 100 MB):
+// loadBegin, then loadStep until it does not return LOAD_MORE. One load at a time: the state is this file's.
+export const LOAD_MORE: i64 = -1;
+let sDst: usize = 0, sSeg: u32 = 0, sPhase: u32 = 0, sAt: u32 = 0, sHashed: u32 = 0, sWork: u64 = 0;
+
+export function loadBegin(L: Layout, dst: usize): void { sDst = dst; sSeg = 0; sPhase = 0; sAt = 0; sHashed = 0; sWork = 0; }
+// The bytes a load decompresses and hashes in all, and how many of them are done
+export function loadWorkTotal(L: Layout): u64 {
+  let n: u64 = 0;
+  for (let i: u32 = 0; i < 3; i++) n += (L.compressed(i) ? <u64>L.size(i) : 0) + ((L.opts & OPT_VERIFY_HASH) && L.hashed(i) ? <u64>L.size(i) : 0);
+  return n;
+}
+export function loadWorkDone(): u64 { return sWork; }
+// About `budget` more bytes of work (a stored or LZ4 segment is done whole). LOAD_MORE, 0 when the image is complete,
+// or the reason for the refusal after logging a red line (the image is then not to be used).
+export function loadStep(L: Layout, budget: u32): i64 {
+  const file = L.file, dst = sDst;
+  let left: u64 = budget ? budget : 1;
+  while (sSeg < 3) {
+    const i = sSeg, mo = L.memOff(i), sz = L.size(i), st = L.stored(i), src = file + <usize>L.fileOff(i), out = dst + <usize>mo;
+    if (sPhase == 0) {
+      memory.fill(dst + <usize>sAt, 0, <usize>(mo - sAt));
+      sPhase = 2;
+      if (!L.compressed(i)) memory.copy(out, src, <usize>sz);
+      else if (L.flags & NSO_ZSTD) { zbicBegin(src, st, out, sz); sPhase = 1; }
+      else {
+        const n = lz4Decompress(src, st, out, sz);
+        if (n < 0) { bad(i); puts("does not decompress (damaged LZ4 block)"); emit(); return ModuleRefuseReason.decompress; }
+        if (<u32>n != sz) {
+          bad(i); puts("decompresses to "); putx(<u32>n); puts(" bytes, not the "); putx(sz); puts(" of the header: the file is damaged"); emit();
+          return ModuleRefuseReason.decompress;
+        }
+        sWork += sz; left = left > <u64>sz ? left - sz : 0;
+      }
+    }
+    if (sPhase == 1) {
+      if (!left) return LOAD_MORE;
+      const before = zbicProduced();
+      const r = zbicStep(<usize>(left > 0x7FFFFFFF ? 0x7FFFFFFF : left));
+      const made = <u64>(zbicProduced() - before);
+      sWork += made; left = left > made ? left - made : 0;
+      if (r < 0) { bad(i); puts("does not decompress (damaged ZBIC stream: "); puts(zbicWhy(r)); puts(")"); emit(); return ModuleRefuseReason.decompress; }
+      if (r > 0) return LOAD_MORE;
+      if (<u64>zbicProduced() != <u64>sz) {
+        bad(i); puts("decompresses to "); putx(<u64>zbicProduced()); puts(" bytes, not the "); putx(sz); puts(" of the header: the file is damaged"); emit();
         return ModuleRefuseReason.decompress;
       }
-    } else memory.copy(dst + <usize>mo, src, <usize>sz);
-    if ((L.opts & OPT_VERIFY_HASH) && L.hashed(i)) {
-      sha256(dst + <usize>mo, sz, DIGEST);
+      sPhase = 2;
+    }
+    if (sPhase == 2) {
+      if ((L.opts & OPT_VERIFY_HASH) && L.hashed(i)) { shaStart(); sHashed = 0; sPhase = 3; }
+      else sPhase = 4;
+    }
+    if (sPhase == 3) {
+      const full = sz & ~63;
+      if (sHashed < full) {
+        if (!left) return LOAD_MORE;
+        let n: u32 = full - sHashed;
+        if (<u64>n > left) n = <u32>((left + 63) & ~63);
+        shaBlocks(out + <usize>sHashed, n);
+        sHashed += n; sWork += n; left = left > <u64>n ? left - n : 0;
+        if (sHashed < full) return LOAD_MORE;
+      }
+      shaFinish(out + <usize>full, sz - full, sz, DIGEST);
+      sWork += sz - full;
       if (memory.compare(DIGEST, file + 0xA0 + (<usize>i << 5), 32) != 0) {
         bad(i); puts("does not match its SHA-256 in the header: the file is damaged"); emit(); return ModuleRefuseReason.hash;
       }
+      sPhase = 4;
     }
-    at = mo + sz;
+    sAt = mo + sz; sSeg++; sPhase = 0;
   }
-  memory.fill(dst + <usize>at, 0, <usize>(L.imageSize - at));
+  memory.fill(dst + <usize>sAt, 0, <usize>(L.imageSize - sAt));
   return 0;
 }

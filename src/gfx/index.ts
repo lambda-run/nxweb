@@ -2,7 +2,9 @@
 // lowering of submitted commands to the host stream the WebGPU replayer executes (src/glue/gfx_host.ts).
 // See README.md. Imports: env.log, env.gfx_exec, env.gfx_guest_call, env.gfx_proc_address; memory is imported
 // (the guest's linear memory: guest pointers are below 4 GB and index it directly).
-import { call, lookup, status, setApi, nameCopy, finishFenceLast } from "./dispatch";
+import { call, lookup, status, setApi, nameCopy, finishFenceLast, setNow } from "./dispatch";
+import { profileSet, profileBits } from "./profile";
+import { reportInit, reportLand, reportsFlush, reportsPending, reportStat, renderEnableState } from "./report";
 import { NVN_NFUNC, ABI } from "./gen/names";
 import { deviceInit, deviceLost, deviceRestored, deviceState, deviceLosses } from "./device";
 import { setHostCaps } from "./fmt";
@@ -12,12 +14,13 @@ import { libRegister, shaderInit, shaderPending, shaderKeyState } from "./shader
 import { arenaInit, ARENA_BYTES } from "./arena";
 import { pipelineDone, pipelineState, pipelineCount, pipelineInit } from "./pipeline";
 import { fenceDone, fenceSignal, fenceDonePtr, fenceLast, sampTablePtr, tablesInit } from "./tables";
-import { imageEvent, imageState } from "./window";
+import { imageEvent, imageState, presentInterval, presentCapSet } from "./window";
 import { syncFenceOf, syncWaitFence } from "./sync";
 import { hostFlush, hostExecs, hostInit } from "./hostops";
 import { hostSegsLent, cmdInit } from "./cmd";
 import { texLayout, texLevelOffset } from "./texlayout";
-import { texContentInit, texStat, deswizzle, contentState, benchSample, hashFull } from "./texcontent";
+import { texContentInit, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull } from "./texcontent";
+import { watchInit } from "./texwatch";
 export * from "../kit/exports";
 
 // Once, before anything else: `arena` = gfx_arena_bytes() bytes of linear memory for the module's tables (the embedder
@@ -27,7 +30,7 @@ export function gfx_arena_bytes(): u32 { return ARENA_BYTES; }
 export function gfx_init(arena: usize, bytes: u32): i32 {
   if (inited) return 1;
   if (!arenaInit(arena, bytes)) return 0;
-  tablesInit(); hostInit(); texContentInit(); cmdInit(); pipelineInit(); shaderInit(); lowerInit(); deviceInit();
+  tablesInit(); hostInit(); texContentInit(); cmdInit(); pipelineInit(); shaderInit(); lowerInit(); deviceInit(); reportInit(); watchInit();
   inited = true;
   return 1;
 }
@@ -101,6 +104,28 @@ export function gfx_tex_state(tex: usize): i32 { return contentState(load<u64>(t
 export function gfx_tex_layout(desc: usize, out: usize): void { texLayout(desc, out); }
 // The end of the module's static data (it starts at the --memoryBase of the build), and 512 bytes the embedder may use
 // to pass a record in (a reflection record for gfx_shader_register)
+// The game profile's switches (profile.ts: 1 render_cond, 2 tex_flush_upload, 4 tex_dirty_upload, 8 gpu_timestamps segment,
+// 16 present_interval display). Once, before the game's first NVN call
+export function gfx_set_profile(bits: u32): void { profileSet(bits); }
+export function gfx_profile(): u32 { return profileBits(); }
+// The guest clock in nanoseconds, for nvnDeviceGetCurrentTimestampInNanoseconds: the embedder sets it before that call
+export function gfx_set_now(ns: u64): void { setNow(ns); }
+// Counter reports (report.ts). The replayer: report `id` is done; the GPU start and end of its segment and the end of
+// its submission, guest nanoseconds. An embedder with no device: gfx_reports_flush(now) lands everything issued.
+// gfx_report_stat: 0 issued, 1 landed, 2 conditions false, 3 true, 4 unknown, 5 draws skipped, 6 clears skipped, 7 segment cuts
+export function gfx_report_land(id: u32, startNs: u64, endNs: u64, doneNs: u64): void { reportLand(id, startNs, endNs, doneNs); }
+export function gfx_reports_flush(nowNs: u64): void { reportsFlush(nowNs); }
+export function gfx_reports_pending(): u32 { return reportsPending(); }
+export function gfx_report_stat(i: i32): u32 { return reportStat(i); }
+// Textures the CPU keeps writing (texwatch.ts; profile keys tex_flush_upload, tex_dirty_upload): 0 textures taken back from the
+// GPU by a flush, 1 KB hashed by the scanner, 2 scans completed, 3 scans that found a rewrite, 4 textures published by a
+// flush, 5 textures registered, 6 bytes the scanner hashed in the last submission
+export function gfx_tex_watch_stat(i: i32): u32 { return texWatchStat(i); }
+// Frame pacing (window.ts): the vertical syncs a frame of the window stays on screen, for which the embedder holds the
+// next nvnWindowAcquireTexture; a present cap in frames a second (30, 60; 0 none) that replaces the game's interval
+export function gfx_present_interval(window: usize): i32 { return presentInterval(window); }
+export function gfx_set_present_cap(fps: i32): void { presentCapSet(fps); }
+export function gfx_render_enable_state(): i32 { return renderEnableState(); }   // gfx_render_enable: 0 Drawing, 1 Skipping
 export function gfx_static_end(): usize { return __heap_base; }
 const SCRATCH: usize = memory.data(512);
 export function gfx_scratch(): usize { return SCRATCH; }

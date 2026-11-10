@@ -13,7 +13,7 @@ stateDiagram-v2
     OnHold --> Idle: Cancel
 ```
 
-Machine id 27. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 28. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

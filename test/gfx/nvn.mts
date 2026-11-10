@@ -16,7 +16,7 @@ export const FILTER = { NEAREST: 0, LINEAR: 1 }, WRAP = { CLAMP_TO_EDGE: 7, REPE
 export const TARGET = { T2D: 1, T3D: 2, T2D_ARRAY: 4, T2D_MS: 5, CUBE: 8, CUBE_ARRAY: 9 };
 
 export interface Pool { obj: number; mem: number; size: number; used: number }
-export interface TextureOpts { w: number; h: number; format: number; levels?: number; target?: number; depth?: number; flags?: number; packaged?: number[]; samples?: number }
+export interface TextureOpts { w: number; h: number; format: number; levels?: number; target?: number; depth?: number; flags?: number; packaged?: number[]; samples?: number; pool?: Pool }
 
 export class Game {
   g: Guest;
@@ -78,10 +78,10 @@ export class Game {
     this.c("TextureBuilderSetLevels", [b, o.levels ?? 1]); this.c("TextureBuilderSetFlags", [b, o.flags ?? 0]); if (o.samples) this.c("TextureBuilderSetSamples", [b, o.samples]);
     if (o.packaged) this.c("TextureBuilderSetPackagedTextureLayout", [b, g.bytes(o.packaged)]);      // the 8 layout bytes of a texture file
     const size = this.c("TextureBuilderGetStorageSize", [b]), align = this.c("TextureBuilderGetStorageAlignment", [b]);
-    const off = (this.texStore.used + align - 1) & ~(align - 1);
-    this.texStore.used = off + size;
-    if (this.texStore.used > this.texStore.size) throw new Error("texture storage pool full");
-    this.c("TextureBuilderSetStorage", [b, this.texStore.obj, off]);
+    const store = o.pool ?? this.texStore, off = (store.used + align - 1) & ~(align - 1);
+    store.used = off + size;
+    if (store.used > store.size) throw new Error("texture storage pool full");
+    this.c("TextureBuilderSetStorage", [b, store.obj, off]);
     if (this.c("TextureInitialize", [t, b]) !== 1) throw new Error("TextureInitialize");
     return t;
   }

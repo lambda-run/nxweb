@@ -13,7 +13,7 @@ stateDiagram-v2
     note right of Answered: carries result (ok, cancel, noWindow)
 ```
 
-Machine id 35. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 36. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

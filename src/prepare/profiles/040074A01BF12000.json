@@ -22,19 +22,11 @@
   "modules": "main sdk",
   "romfs_marker": "System/Resource/ResourceSizeTable.Product.rsizetable.zs",
   "app_pool": "0x240000000",
-  "sys_resource": "0x0"
+  "sys_resource": "0x0",
+  "render_cond": "on",
+  "gpu_timestamps": "segment"
  },
  "needs": [
-  {
-   "key": "render_cond",
-   "value": "on",
-   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
-  },
-  {
-   "key": "gpu_timestamps",
-   "value": "segment",
-   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
-  },
   {
    "key": "address_space",
    "value": "heap 0x240000000 alias 0x10000000 stack 0x10000000",

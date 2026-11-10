@@ -17,6 +17,7 @@ interface X {
   npdm_version(): number; npdm_main_thread(): number; npdm_name_ptr(): number;
   nso_peek(ptr: number, len: number): number; nso_check(ptr: number, len: number): number; nso_parse(ptr: number, len: number): number; nso_build_id_ptr(): number;
   nso_image_size(): number; nso_text_size(): number; nso_bss(): number; nso_flags(): number;
+  nso_open_begin(ptr: number, len: number): number; nso_open_step(budget: number): number; nso_open_work_total(): number; nso_open_work_done(): number;
   cut_apply(file: number, len: number, list: number, listLen: number): number; cut_out_ptr(): number; cut_out_len(): number; cut_failed_index(): number; cut_applied(): number;
   match_run(file: number, len: number, list: number, listLen: number): number; match_image(image: number, len: number, textEnd: number): number; match_resolve(list: number, listLen: number): number;
   match_status_ptr(): number; match_status_len(): number; match_cuts_ptr(): number; match_cuts_len(): number; match_cut_count(): number; match_src_ptr(): number;
@@ -80,7 +81,31 @@ export class PrepWasm {
     this.u8(p, b.length).set(b);
     return p;
   }
-  private done(): void { this.x.prep_arena_reset(); }
+  // While a module is open (open() .. close()) the arena is kept: its file and its unpacked image are in it
+  private held: { file: Uint8Array; ptr: number } | null = null;
+  private done(): void { if (!this.held) this.x.prep_arena_reset(); }
+  private filePtr(file: Uint8Array): number { return this.held?.file === file ? this.held.ptr : this.put(file); }
+  // The whole module, as nsoCheck, but in steps of about `budget` bytes unpacked or hashed, with `tick` awaited
+  // between them (progress, a chance to draw, a Cancel: what it throws ends the open). A main module of system
+  // 22.0.0 on is ZBIC compressed and over 100 MB unpacked; in one call that is the page not answering for seconds.
+  // The module then stays open: nsoCheck, match and cut on this same `file` object use the image already unpacked
+  // and verified, until close() (always call it: nothing else is freed while a module is open).
+  async open(file: Uint8Array, tick?: (done: number, total: number) => Promise<void> | void, budget = 4 << 20): Promise<NsoInfo | { error: string }> {
+    this.close();
+    this.x.prep_error_clear();
+    try {
+      const ptr = this.put(file);
+      let r = this.x.nso_open_begin(ptr, file.length);
+      if (!r) {
+        const total = this.x.nso_open_work_total();
+        while ((r = this.x.nso_open_step(budget)) === -1) await tick?.(this.x.nso_open_work_done(), total);
+      }
+      if (r) return { error: this.lastError() };
+      this.held = { file, ptr };
+      return { buildId: hex(this.u8(this.x.nso_build_id_ptr(), 16)), imageSize: this.x.nso_image_size() >>> 0, textSize: this.x.nso_text_size() >>> 0, bss: this.x.nso_bss() >>> 0, flags: this.x.nso_flags() >>> 0 };
+    } finally { this.done(); }
+  }
+  close(): void { this.held = null; this.x.prep_arena_reset(); }
   // Up to 64 KB in one call; more in pieces through the module's fixed buffer, so that a file of any size is hashed
   // without lying in the module's memory
   sha256(b: Uint8Array): string {
@@ -115,7 +140,7 @@ export class PrepWasm {
   nsoCheck(file: Uint8Array): NsoInfo | { error: string } {
     try {
       this.x.prep_error_clear();
-      if (this.x.nso_check(this.put(file), file.length)) return { error: this.lastError() };
+      if (this.x.nso_check(this.filePtr(file), file.length)) return { error: this.lastError() };
       return { buildId: hex(this.u8(this.x.nso_build_id_ptr(), 16)), imageSize: this.x.nso_image_size() >>> 0, textSize: this.x.nso_text_size() >>> 0, bss: this.x.nso_bss() >>> 0, flags: this.x.nso_flags() >>> 0 };
     } finally { this.done(); }
   }
@@ -132,7 +157,7 @@ export class PrepWasm {
         if (o.length !== w.length || !o.length) return { error: `[RED] prepare: cut ${i} at 0x${cuts[i].off.toString(16)}: ${o.length} original bytes and ${w.length} new ones`, index: i, code: -2 };
         dv.setUint32(at, cuts[i].off, true); dv.setUint32(at + 4, o.length, true); list.set(o, at + 8); list.set(w, at + 8 + o.length); at += 8 + 2 * o.length;
       }
-      const f = this.put(file), l = this.put(list);
+      const f = this.filePtr(file), l = this.put(list);
       const r = this.x.cut_apply(f, file.length, l, list.length);
       if (r) return { error: this.lastError(), index: this.x.cut_failed_index(), code: r };
       return { bytes: this.u8(this.x.cut_out_ptr(), this.x.cut_out_len() >>> 0).slice(), applied: this.x.cut_applied() >>> 0 };
@@ -163,7 +188,7 @@ export class PrepWasm {
         }
       }
       const list = Uint8Array.from(parts.flat());
-      const f = this.put(file), l = this.put(list);
+      const f = textEnd === undefined ? this.filePtr(file) : this.put(file), l = this.put(list);
       let rc: number;
       if (textEnd === undefined) rc = this.x.match_run(f, file.length, l, list.length);
       else { this.x.match_image(f, file.length, textEnd); rc = this.x.match_resolve(l, list.length); }

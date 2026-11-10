@@ -23,15 +23,10 @@
   "romfs_marker": "Data/globalgamemanagers",
   "sys_resource": "0x1000000",
   "app_pool": "0x40000000",
-  "pad_layout": "full"
+  "pad_layout": "full",
+  "present_interval": "display"
  },
- "needs": [
-  {
-   "key": "present_interval",
-   "value": "display",
-   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps)."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",

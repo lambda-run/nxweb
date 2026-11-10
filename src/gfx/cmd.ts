@@ -365,3 +365,9 @@ export function downsample(c: usize, s: usize, sv: usize, d: usize, dv: usize): 
   if (d) { store<i32>(r, load<i32>(d, O.TEX_d + O.TD_width), O.P_COPY_T2T_dr + 12); store<i32>(r, load<i32>(d, O.TEX_d + O.TD_height), O.P_COPY_T2T_dr + 16); store<i32>(r, 1, O.P_COPY_T2T_dr + 20); }
   store<i32>(r, O.COPY_RESOLVE, O.P_COPY_T2T_flags);
 }
+// Counter reports and render enable (nxnative hle_nvn.c; replayed by report.ts). ReportCounter: { u64 type, u64 address };
+// ResetCounter: { u64 type }; OP_RENDER_COND: { i32 mode, i32 pad, u64 address }, mode 0 / 1 SetRenderEnableConditional
+// (render if equal / not equal), 2 / 3 SetRenderEnable(true / false)
+export function reportCounter(c: usize, type: i32, addr: u64): void { const r = rec(c, O.OP_REPORT_COUNTER, 16); if (r) { store<u64>(r, <u64><u32>type); store<u64>(r, addr, 8); } }
+export function resetCounter(c: usize, type: i32): void { const r = rec(c, O.OP_RESET_COUNTER, 8); if (r) store<u64>(r, <u64><u32>type); }
+export function renderCond(c: usize, mode: i32, addr: u64): void { const r = rec(c, O.OP_RENDER_COND, 16); if (r) { store<i32>(r, mode); store<u64>(r, addr, 8); } }

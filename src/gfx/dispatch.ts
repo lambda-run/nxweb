@@ -12,10 +12,12 @@ import { texLayout, texLevelOffset } from "./texlayout";
 import { progSetKeys } from "./shader";
 import { syncInitialize, syncFinalize, syncWait } from "./sync";
 import { fenceNew } from "./tables";
-import { windowInitialize, windowAcquire, windowPresent, windowGetCrop } from "./window";
+import { windowInitialize, windowAcquire, windowPresent, windowGetCrop, windowInterval } from "./window";
 import { submit, emitFence, passBreak, blendDefault, dsDefault } from "./lower";
 import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY, H_FENCE } from "./hostops";
 import { contentInit, noteFlush, regionCopy, writeTexels } from "./texcontent";
+import { profileHas, P_RENDER_COND } from "./profile";
+import { nsFromTicks } from "./report";
 
 // Device properties: values measured on Tegra X1 (nxnative g_devinfo). Items 0 and 1 are the API version (apiMajor /
 // apiMinor), 0x2E and 0x30 the GPU code version the shader chain translates (1.16)
@@ -119,6 +121,11 @@ function viewOffset(d: usize, layerSize: u64, v: usize): u64 {
   if (bits & 2) off += <u64>load<u16>(v, O.VIEW_min_layer) * layerSize;
   return off;
 }
+
+let condRed: u32 = 0;
+// The guest clock in nanoseconds as the embedder last gave it (gfx_set_now)
+let nowNs: u64 = 0;
+export function setNow(ns: u64): void { nowNs = ns; }
 
 export function call(fn: i32, a: usize): u64 {
   switch (fn) {
@@ -432,7 +439,7 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnWindowSetDebugLabel: return 0;
     case F.nvnWindowAcquireTexture: return windowAcquire(P(a, 0), P(a, 1), P(a, 2));
     case F.nvnWindowGetNativeWindow: return load<u64>(P(a, 0), O.WIN_native);
-    case F.nvnWindowGetPresentInterval: return <u64><u32>load<i32>(P(a, 0), O.WIN_interval);
+    case F.nvnWindowGetPresentInterval: return <u64><u32>windowInterval(P(a, 0));
     case F.nvnWindowSetPresentInterval: store<i32>(P(a, 0), I(a, 1), O.WIN_interval); return 0;
     case F.nvnWindowSetCrop: { const w = P(a, 0) + O.WIN_crop; store<i32>(w, I(a, 1)); store<i32>(w, I(a, 2), 4); store<i32>(w, I(a, 3), 8); store<i32>(w, I(a, 4), 12); return 0; }
     case F.nvnWindowGetCrop: windowGetCrop(P(a, 0), P(a, 1)); return 0;
@@ -593,6 +600,21 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferSetDepthClamp: C.depthClamp(P(a, 0), B(a, 1)); return 0;
     case F.nvnCommandBufferDownsample: C.downsample(P(a, 0), P(a, 1), 0, P(a, 2), 0); return 0;
     case F.nvnCommandBufferDownsampleTextureView: C.downsample(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4)); return 0;
+    // Counter reports, and render enable with the game profile's render_cond (report.ts). Without the key everything
+    // draws, as nxnative: a game that only saves GPU time with its conditions is right either way
+    case F.nvnCommandBufferReportCounter: C.reportCounter(P(a, 0), I(a, 1), X(a, 2)); return 0;
+    case F.nvnCommandBufferResetCounter: C.resetCounter(P(a, 0), I(a, 1)); return 0;
+    case F.nvnCommandBufferSetRenderEnable:
+      if (profileHas(P_RENDER_COND)) C.renderCond(P(a, 0), B(a, 1) ? 2 : 3, 0);
+      else if (!B(a, 1) && !(condRed & 1)) { condRed |= 1; L.redLine("SetRenderEnable(false): the host draws anyway (the game profile's render_cond is off)"); }
+      return 0;
+    case F.nvnCommandBufferSetRenderEnableConditional:
+      if (profileHas(P_RENDER_COND)) C.renderCond(P(a, 0), I(a, 1) & 1, X(a, 2));
+      else if (!(condRed & 2)) { condRed |= 2; L.redLine("SetRenderEnableConditional: the host draws anyway (the game profile's render_cond is off)"); }
+      return 0;
+    // A report's timestamp is in 614.4 MHz ticks on the guest clock; the embedder gives the clock (gfx_set_now) before the second call
+    case F.nvnDeviceGetTimestampInNanoseconds: return nsFromTicks(load<u64>(P(a, 1), 8));
+    case F.nvnDeviceGetCurrentTimestampInNanoseconds: return nowNs;
   }
   const st = status(fn);
   if (st == 2) return 0;                                   // empty by design (gen_names.mts NOPS)

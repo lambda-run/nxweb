@@ -24,6 +24,9 @@ export interface LoaderExports extends KitExports {
   ld_faults(): number; ld_arena_used(): number; ld_heap_base(): number;
   ld_sha256(ptr: number, len: number, out: number): void;
   ld_lz4(src: number, srcLen: number, dst: number, dstCap: number): number;
+  ld_zbic(src: number, srcLen: number, dst: number, dstCap: number): number;
+  ld_zbic_begin(src: number, srcLen: number, dst: number, dstCap: number): void; ld_zbic_step(budget: number): number; ld_zbic_produced(): number;
+  ld_zbic_stat(i: number): number; ld_zbic_stats_clear(): void; ld_xxh64(ptr: number, len: number): bigint;
 }
 
 // Must match src/loader/module.ts and src/loader/defs/module.json

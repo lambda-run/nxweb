@@ -134,6 +134,19 @@ export interface ProcessSettings {
   mainStackSize?: number;                                   // npdm.stackSize
   hle: { opmode?: number; perfBoost?: boolean; allocBigAlign?: boolean; gameEnv?: string; launchSpec?: string; displayVersion?: string };
   choice?: LayoutChoice;                                    // settingsFor(..., { mem64: "auto" }): which memory the layout is for, and its cost
+  gfx: GfxSettings;
+}
+// What the graphics glue takes from a profile (RtGfx's `profile` option). bits: src/gfx/profile.ts (gfx_set_profile)
+export interface GfxSettings { bits: number }
+export const GFX_PROFILE = { renderCond: 1, texFlush: 2, texDirty: 4, tsSegment: 8, presentDisplay: 16 };
+export function gfxSettingsFor(apply: ProfileApply = {}): GfxSettings {
+  let bits = 0;
+  if (apply.render_cond === "on") bits |= GFX_PROFILE.renderCond;
+  if (apply.tex_flush_upload === "on") bits |= GFX_PROFILE.texFlush;
+  if (apply.tex_dirty_upload === "on" && apply.tex_flush_upload === "on") bits |= GFX_PROFILE.texDirty;   // nxnative: needs tex_flush_upload
+  if (apply.gpu_timestamps === "segment") bits |= GFX_PROFILE.tsSegment;
+  if (apply.present_interval === "display") bits |= GFX_PROFILE.presentDisplay;
+  return { bits };
 }
 // apply: the profile's keys; space: its address_space record (bytes); npdm / displayVersion: from the hand-off
 // mem64: false (default) the layout for a 32-bit memory, as it always was; true the one for a 64-bit memory;
@@ -152,7 +165,7 @@ export function settingsFor(apply: ProfileApply = {}, o: { space?: { heap_region
   if (apply.game_env) hle.gameEnv = apply.game_env;
   if (apply.launch_param) hle.launchSpec = apply.launch_param;
   if (o.displayVersion) hle.displayVersion = o.displayVersion;
-  return { layout, mainStackSize: o.stackSize && o.stackSize >= 0x4000 ? o.stackSize : undefined, hle, choice };
+  return { layout, mainStackSize: o.stackSize && o.stackSize >= 0x4000 ? o.stackSize : undefined, hle, gfx: gfxSettingsFor(apply), choice };
 }
 // The kernel's cfg block (src/kernel/index.ts kernel_init) at p
 export function writeKernelCfg(rt: Pick<Runtime, "dv">, p: number, l: ProcessLayout): void {

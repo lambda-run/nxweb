@@ -22,6 +22,7 @@
     "loader:test": "node tools/modes.mjs test/loader/run.mts",
     "kernel:build": "node tools/asc64/abi.mjs src/kernel/index.ts build/kernel/kernel.wasm -O2 --runtime stub --initialMemory 1536 --64 --importMemory",
     "kernel:test": "node tools/modes.mjs test/kernel/run.mts",
+    "loader:zbic-bench": "node test/loader/zbic_bench.mts",
     "a64:browser": "npm run -s a64:build && python3 test/a64/guests/build_hi.py && esbuild test/a64/browser/worker.ts --bundle --format=iife --outfile=build/a64/browser/worker.js --log-level=warning && node test/a64/browser/run.ts",
     "gfx:names": "node src/gfx/host/gen_names.mts",
     "gfx:build": "node src/gfx/host/build.mts",

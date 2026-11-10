@@ -105,6 +105,8 @@ export function describeRecord(op: number, dv: DataView, p: number, ctx: Capture
     case 31: state.inPass++; return `  D dispatch pipeline ${dv.getUint32(p + 8, true)} groups ${i32s(dv, p + 12, 3)}`;
     case 32: return `B read back storage ${hex(u64(dv, p + 8))}+${dv.getUint32(p + 16, true)} into guest memory`;
   }
+  if (op === 33) return `Q report #${dv.getUint32(p + 8, true)}`;
+  if (op === 34) return "Q the reports so far land when this segment is done";
   return `? ${OPS[op] ?? `op ${op}`}`;
 }
 

@@ -35,19 +35,29 @@ function block(p: usize): void {
   store<u32>(H, load<u32>(H, 24) + g, 24); store<u32>(H, load<u32>(H, 28) + h, 28);
 }
 
-// The SHA-256 of [ptr, ptr + len), 32 bytes written at out
-export function sha256(ptr: usize, len: u32, out: usize): void {
+// In pieces, over bytes that lie in memory: shaStart(), shaBlocks() over whole 64-byte blocks in order, then shaFinish()
+// with the bytes after the last whole block and the length of everything
+export function shaStart(): void {
   store<u32>(H, 0x6a09e667); store<u32>(H, 0xbb67ae85, 4); store<u32>(H, 0x3c6ef372, 8); store<u32>(H, 0xa54ff53a, 12);
   store<u32>(H, 0x510e527f, 16); store<u32>(H, 0x9b05688c, 20); store<u32>(H, 0x1f83d9ab, 24); store<u32>(H, 0x5be0cd19, 28);
-  const full = len & ~63;
-  for (let i: u32 = 0; i < full; i += 64) block(ptr + <usize>i);
-  const rest = len - full;
+}
+export function shaBlocks(ptr: usize, bytes: u32): void {
+  for (let i: u32 = 0; i < bytes; i += 64) block(ptr + <usize>i);
+}
+export function shaFinish(restPtr: usize, rest: u32, len: u32, out: usize): void {
   memory.fill(TAIL, 0, 128);
-  memory.copy(TAIL, ptr + <usize>full, rest);
+  memory.copy(TAIL, restPtr, rest);
   store<u8>(TAIL + <usize>rest, 0x80);
   const blocks: usize = rest < 56 ? 1 : 2;
   store<u64>(TAIL + blocks * 64 - 8, bswap<u64>(<u64>len << 3));
   block(TAIL);
   if (blocks == 2) block(TAIL + 64);
   for (let i: usize = 0; i < 8; i++) store<u32>(out + (i << 2), bswap<u32>(load<u32>(H + (i << 2))));
+}
+// The SHA-256 of [ptr, ptr + len), 32 bytes written at out
+export function sha256(ptr: usize, len: u32, out: usize): void {
+  shaStart();
+  const full = len & ~63;
+  shaBlocks(ptr, full);
+  shaFinish(ptr + <usize>full, len - full, len, out);
 }

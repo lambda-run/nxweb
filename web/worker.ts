@@ -47,6 +47,8 @@ const requestDevice = async (): Promise<any> => {
   const desc = GfxHost.deviceDescriptor(adapter), d = await adapter.requestDevice(desc);
   gpuInfo = "WebGPU: " + (adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "adapter") +
     `; ${desc.requiredFeatures.length} features (${desc.requiredFeatures.join(", ") || "none"}); per stage: ${d.limits.maxUniformBuffersPerShaderStage} uniform buffers, ${d.limits.maxSampledTexturesPerShaderStage} textures, ${d.limits.maxStorageBuffersPerShaderStage} storage buffers`;
+  // where the times in a game's GPU counter reports come from (src/gfx/README.md, "Counter reports")
+  gpuInfo += "; GPU times: " + (d.features?.has?.("timestamp-query") ? "WebGPU timestamp queries" : "estimated on the CPU (this device has no timestamp-query)");
   return d;
 };
 async function init() {
@@ -107,7 +109,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   title = `nxweb report: ${o.name ?? files.map(f => f.name).join(" + ")}`;
   // a lost device: the replayer asks here for a new one (the page's test button destroys the device on purpose)
   gfx = new RtGfx(me, mods.gfx!, { device: device ?? undefined, canvas: device ? canvas : undefined, nextFrame: () => new Promise(res => (self as any).requestAnimationFrame(res)),
-    requestDevice: async () => { device = await requestDevice(); return device; } });
+    requestDevice: async () => { device = await requestDevice(); return device; }, profile: game?.gfx });
   // shaders: a library the user gave first, then translation in the page (stored by key and chain version)
   try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined }); }
   catch (e: any) { log("[RED] page: the shader library was refused: " + (e?.message ?? e)); shaderLookup = new RtShaders(gfx, { translator: shaderTranslator }); }

@@ -7,6 +7,7 @@ import * as O from "./obj";
 import { fenceLast } from "./tables";
 import { syncFence } from "./sync";
 import { present } from "./lower";
+import { profileHas, P_PRESENT_DISPLAY } from "./profile";
 
 let winSeq: u32 = 0;
 // @ts-ignore: decorator
@@ -57,3 +58,26 @@ export function windowGetCrop(w: usize, r: usize): void {
   store<i32>(r, 0); store<i32>(r, 0, 4);
   store<i32>(r, t ? load<i32>(t, O.TEX_d + O.TD_width) : 0, 8); store<i32>(r, t ? load<i32>(t, O.TEX_d + O.TD_height) : 0, 12);
 }
+
+// ---- the present interval the host decides (nxnative hle_nvn.c present_cfg, present_itv, window_interval) ----
+// On the Switch the next acquire is held for as many vertical syncs as the window's present interval, and games whose
+// logic counts frames rely on it. That is the default here too (nxnative's interval mode "game"). Two things replace
+// the game's interval:
+//   a present cap in frames a second (gfxPresentCap): the interval is 60 / cap whatever the game set. nxnative applies
+//     the profile's fps_target as that cap only while the host also writes it into the game's own frame limiter
+//     (hle_fpslock.c) or steps the game through its frame-step stubs, because a game presented at a rate it does not
+//     step by runs fast or slow. Neither is ported, so nothing sets the cap yet (docs/PORTING-STATUS.md);
+//   the profile's present_interval display: one frame a display tick, whatever the game set (a cut nxnative makes
+//     for games checked with it: their logic does not count frames).
+let presentCap: i32 = 0;
+export function presentCapSet(fps: i32): void { presentCap = fps == 30 || fps == 60 ? fps : 0; }
+// The vertical syncs (1/60 s) a frame of window w stays on screen, which the embedder holds the next acquire for
+export function presentInterval(w: usize): i32 {
+  if (presentCap) return 60 / presentCap;
+  if (profileHas(P_PRESENT_DISPLAY)) return 1;
+  const i = load<i32>(w, O.WIN_interval);
+  return i > 0 ? i : 1;
+}
+// nvnWindowGetPresentInterval: the game's own, except in display mode, where a game that paces itself by what it reads
+// back would hold itself to the interval it asked for (nxnative: Luigi's Mansion 3 slept a vsync per interval)
+export function windowInterval(w: usize): i32 { return profileHas(P_PRESENT_DISPLAY) ? presentInterval(w) : load<i32>(w, O.WIN_interval); }

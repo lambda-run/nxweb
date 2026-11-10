@@ -6,8 +6,8 @@ import { test, instantiate, file, readElf, eq, ok, rng, type Elf } from "./harne
 import { Loader, LoaderError, Info, ERR_ARG, ERR_STATE, ERR_REFUSED, type LoaderExports } from "../../src/loader/host/loader.mts";
 
 const PAGES = 64, END = PAGES << 16;                 // 4 MiB
-const D_ARENA = 0x40000, D_ARENA_LEN = 0x40000, D_STUBS = 0x80000, D_STUB_CAP = 64;
-const BAND_LO = 0x3F000, BAND_HI = D_STUBS + 4 * D_STUB_CAP, FILES_AT = 0x90000, MUT_AT = 0xA0000;
+const D_ARENA = 0x50000, D_ARENA_LEN = 0x40000, D_STUBS = 0x90000, D_STUB_CAP = 64;
+const BAND_LO = 0x4F000, BAND_HI = D_STUBS + 4 * D_STUB_CAP, FILES_AT = 0xA0000, MUT_AT = 0xB0000;
 const REGION = 0x100000, REGION_END = 0x3F0000, SDK_BASE = 0x110000, MAIN_BASE = 0x200000;
 const A5 = Buffer.alloc(REGION_END - REGION, 0xA5);
 
@@ -79,7 +79,7 @@ function attempt(r: Rig, bytes: Uint8Array, verify: boolean, atEnd: boolean): st
 }
 const summary = (r: Rig) => [...r.stats].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k}`).join(", ");
 
-const BASES = ["main.nso", "main_raw.nso", "main_part.nso", "sdk_raw.nso", "plugin.nro", "plugin_raw.nso"];
+const BASES = ["main.nso", "main_raw.nso", "main_part.nso", "sdk_raw.nso", "plugin.nro", "plugin_raw.nso", "main_zbic.nso", "main_zbicown.nso", "main_zbicpart.nso"];
 
 test("damage: the undamaged files load in this rig", () => {
   const r = rig();
@@ -89,7 +89,7 @@ test("damage: the undamaged files load in this rig", () => {
 test("damage: cut at every length, every file is refused", () => {
   const r = rig();
   let n = 0;
-  for (const name of ["main.nso", "main_raw.nso", "plugin.nro", "main_part.nso"]) {
+  for (const name of ["main.nso", "main_raw.nso", "plugin.nro", "main_part.nso", "main_zbic.nso"]) {
     const d = file(name);
     for (let len = 0; len < d.length; len++, n++) {
       const out = attempt(r, d.slice(0, len), true, true);
@@ -99,17 +99,19 @@ test("damage: cut at every length, every file is refused", () => {
   console.log(`     ${n} truncations: ${summary(r)}`);
 });
 
-for (const name of ["main.nso", "main_stored.nso"]) {
+for (const name of ["main.nso", "main_stored.nso", "main_zbic.nso", "main_zbicown.nso"]) {
   test(`damage: every single bit of ${name} flipped (hashes checked): a flip that changes a segment's bytes or a hash is always refused`, () => {
     const r = rig(), d = file(name), dv = new DataView(d.buffer, d.byteOffset, d.byteLength), elf = readElf("main.so");
     const segs = [0, 1, 2].map(i => ({ off: dv.getUint32(0x10 + 0x10 * i, true), stored: dv.getUint32(0x60 + 4 * i, true), size: dv.getUint32(0x18 + 0x10 * i, true) }));
     // An LZ4 block is not canonical: a flipped bit can give another block for the same bytes (a match at another distance
-    // into a run). Whether the bytes changed is decided by decompressing the damaged block on its own.
+    // into a run). Whether the bytes changed is decided by decompressing the damaged block on its own. The same holds
+    // for a ZBIC stream (an unused bit of a header, a match at another distance).
+    const zbic = name.includes("zbic");
     const sameBytes = (m: Uint8Array, i: number): boolean => {
-      if (name !== "main.nso") return false;
-      r.mem.set(m.subarray(segs[i].off, segs[i].off + segs[i].stored), 0xB0000);
-      const got = r.x.ld_lz4(0xB0000, segs[i].stored, 0xC0000, segs[i].size);
-      return got === segs[i].size && Buffer.compare(Buffer.from(r.mem.buffer, 0xC0000, got), elf.segs[i].bytes) === 0;
+      if (name === "main_stored.nso") return false;
+      r.mem.set(m.subarray(segs[i].off, segs[i].off + segs[i].stored), 0xC0000);
+      const got = zbic ? r.x.ld_zbic(0xC0000, segs[i].stored, 0xD0000, segs[i].size) : r.x.ld_lz4(0xC0000, segs[i].stored, 0xD0000, segs[i].size);
+      return got === segs[i].size && Buffer.compare(Buffer.from(r.mem.buffer, 0xD0000, got), elf.segs[i].bytes) === 0;
     };
     let n = 0, equivalent = 0;
     for (let byte = 0; byte < d.length; byte++) {
@@ -119,12 +121,13 @@ for (const name of ["main.nso", "main_stored.nso"]) {
         const out = attempt(r, m, true, (n & 1) === 0);
         if (seg >= 0) {
           if (sameBytes(m, seg)) { equivalent++; eq(out, "loaded", `bit ${bit} of segment byte 0x${byte.toString(16)}, which decompresses to the same bytes`); }
+          else if (zbic && byte < segs[seg].off + 4) eq(out, "refused: header", `bit ${bit} of the ZBIC magic of segment ${seg}`);
           else ok(out === "refused: hash" || out === "refused: decompress", `bit ${bit} of segment byte 0x${byte.toString(16)}: ${out}`);
         } else if (byte >= 0xA0 && byte < 0x100) eq(out, "refused: hash", `bit ${bit} of hash byte 0x${byte.toString(16)}`);
         else if (byte >= 0x40 && byte < 0x60) eq(out, "loaded", `bit ${bit} of the build id`);
       }
     }
-    console.log(`     ${n} bit flips: ${summary(r)}${equivalent ? ` (${equivalent} of the loads are flips in an LZ4 block that give the same bytes)` : ""}`);
+    console.log(`     ${n} bit flips: ${summary(r)}${equivalent ? ` (${equivalent} of the loads are flips in ${zbic ? "a ZBIC stream" : "an LZ4 block"} that give the same bytes)` : ""}`);
   });
 }
 

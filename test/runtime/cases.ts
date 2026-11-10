@@ -148,6 +148,11 @@ export function cases(env: Env): Case[] {
     ok(l.aliasSize >= 0x40000000 && l.heapSize === 0x8000000, `regions: heap ${hex(l.heapSize)}, alias ${hex(l.aliasSize)}`);
     eq(o.hle, { opmode: 0, perfBoost: true, allocBigAlign: true, gameEnv: "A=1 B=2", launchSpec: "lang8", displayVersion: "1.2.3" }, "the take-over table's configuration");
     eq([Object.keys(o.cutsKey), o.notes.length], [["hello"], 2], "modules with cuts, notes");
+    // the graphics layer's switches (src/gfx/profile.ts): none for this profile; each key its bit; tex_dirty_upload only with tex_flush_upload, as nxnative demands
+    const bits = (apply: Record<string, string>) => settingsFor(apply).gfx.bits;
+    eq([o.gfx.bits, bits({ render_cond: "on" }), bits({ tex_flush_upload: "on" }), bits({ tex_flush_upload: "on", tex_dirty_upload: "on" }), bits({ tex_dirty_upload: "on" }), bits({ gpu_timestamps: "segment" }), bits({ gpu_timestamps: "submission" }),
+      bits({ present_interval: "display" }), bits({ present_interval: "game", render_cond: "off" }), bits({ render_cond: "on", tex_flush_upload: "on", tex_dirty_upload: "on", gpu_timestamps: "segment", present_interval: "display" })],
+      [0, 1, 2, 6, 0, 8, 0, 16, 0, 31], "the profile's graphics keys as the recorder's bits");
     // the process: the kernel reports what the profile says; the cache key of the cut module differs from the uncut one's
     const keys: string[] = [];
     const store = { get: async (k: string) => { keys.push(k); return null; }, put: async () => { } };
@@ -186,6 +191,39 @@ export function cases(env: Env): Case[] {
     eq(rt.modules.map(m => rt.ld.state(m.handle)), ["Pinned", "Pinned"], "loader states after the init calls");
     noRed(rt);
     return rt.modules.map(m => `${m.name}: ${hex(m.base)} + ${hex(m.imageSize)}, DT_INIT ${hex(m.init)}, ${m.initArray.length} init_array entries`);
+  });
+
+  // ---- ZBIC: the segment compression of system 22.0.0 on (src/loader/zbic.ts) ----
+  test("zbic: programs whose segments are ZBIC compressed (NSO flag bit 7) load with their hashes checked and run as their LZ4 builds do; the committed file of the reference codec too; a damaged one is a load fault", () => {
+    const flags = (n: string) => new DataView(env.nso(n).buffer).getUint32(0x0C, true);
+    for (const n of ["hello_zbic", "two_main_zbic", "two_lib_zbic", "hello_zbicfix"]) eq(flags(n) & 0xB8, 0xB8, `${n}: flag bit 7 and three hashes`);
+    const lines: string[] = [];
+    for (const n of ["hello_zbic", "hello_zbicfix"]) {
+      const rt = boot([n]);
+      exited(rt.run(), 42, rt);
+      eq(rt.stdout(), "hello from an NSO\nx0=0 main thread handle=0x1001\n", `stdout of ${n}`);
+      noRed(rt);
+      lines.push(`${n}: ${env.nso(n).length} bytes (LZ4: ${env.nso("hello").length}), image ${hex(rt.modules[0].imageSize)}`);
+    }
+    const two = boot(["two_main_zbic", "two_lib_zbic"]);
+    exited(two.run(), 3, two);
+    eq(two.stdout(), TWO, "stdout of the two ZBIC modules");
+    noRed(two);
+    // one ZBIC module beside an LZ4 one
+    const mixed = boot(["two_main_zbic", "two_lib"]);
+    exited(mixed.run(), 3, mixed);
+    eq(mixed.stdout(), TWO, "stdout of a ZBIC module with an LZ4 one");
+    // every bit of one byte in the middle of each segment's stream: refused by the decoder or by the hash, never run
+    const good = env.nso("hello_zbicfix"), dv = new DataView(good.buffer, good.byteOffset, good.byteLength);
+    let n = 0;
+    for (let i = 0; i < 3; i++) for (let bit = 0; bit < 8; bit++, n++) {
+      const bad = good.slice(); bad[dv.getUint32(0x10 + 16 * i, true) + (dv.getUint32(0x60 + 4 * i, true) >> 1)] ^= 1 << bit;
+      const rt = new Runtime(env.mods);
+      ok(!rt.loadNso([{ name: "damaged", bytes: bad }]), `bit ${bit} of segment ${i} flipped: the module loaded`);
+      ok(rt.red.some(l => /segment does not (decompress \(damaged ZBIC stream: [^)]+\)|match its SHA-256 in the header)/.test(l)), `bit ${bit} of segment ${i}: ` + rt.red.join(" | "));
+    }
+    lines.push(`${n} single-bit flips of hello_zbicfix: every one a load fault with the loader's reason`);
+    return lines;
   });
 
   test("b two modules mapped high in the code region (0x16000000): the pc map reaches every code address, same output", () => {

@@ -16,6 +16,8 @@ const params = new URLSearchParams(location.search);
 // Test hook (test/prepare/browser.mts): ?hold=<stage>:<point> makes the run wait there for ever, so that the
 // page can be reloaded in the middle of a stage.
 const hold = params.get("hold");
+// Test hook: ?unpack=<bytes> makes the steps a code module is unpacked in that small (default 4 MB)
+const unpackStep = Number(params.get("unpack")) || undefined;
 const STAGE_TEXT: Record<StageName, string> = { detect: "Checking the files", index: "Building the file index", profile: "Finding this game's settings", code: "Preparing the code", shaders: "Shaders" };
 const STATE_TEXT: Record<string, string> = { pending: "waiting", running: "working…", done: "done", failed: "failed", cancelled: "cancelled" };
 const fmtBytes = (n: number) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(2) + " GB" : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + " MB" : n >= 1024 ? (n / 1024).toFixed(1) + " KB" : n + " B";
@@ -162,7 +164,7 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
   storeDir = "nxweb-prepare-" + tree.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
   if (!prep || prep.o.tree !== tree || (o.version !== undefined && prep.o.version !== o.version)) {
     prep = new Prepare({ wasm: new PrepWasm(await compiled(), log), tree, store: new OpfsStore(storeDir), profiles, onChange: draw, version: o.version,
-      at: p => p === hold ? new Promise<void>(() => {}) : undefined });
+      unpackStep, at: p => p === hold ? new Promise<void>(() => {}) : undefined });
   }
   (window as any).nxwebPrepare = prep;
   (window as any).nxwebLastRun = null;

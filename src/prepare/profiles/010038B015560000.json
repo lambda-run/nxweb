@@ -21,21 +21,12 @@
   "package": "v393216",
   "modules": "main sdk",
   "romfs_marker": "resources/release/master/system/ffto/fftpack.en.bin",
+  "tex_flush_upload": "on",
+  "tex_dirty_upload": "on",
   "app_pool": "0xCD500000",
   "mem_used": "0x4c00000"
  },
- "needs": [
-  {
-   "key": "tex_flush_upload",
-   "value": "on",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
-  },
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",

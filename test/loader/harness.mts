@@ -1,6 +1,6 @@
 // The loader's test harness: builds the test modules (clang, ld.lld, tools/elf2nso.py), reads their ELF files to
 // compute what the loader must produce, and gives out fresh instances of build/loader/loader.wasm.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT, WASM as WASM32 } from "../../src/loader/host/build.mts";
@@ -25,6 +25,15 @@ const CFLAGS = ["--target=aarch64-none-elf", "-fPIC", "-ffreestanding", "-nostdl
 const LDFLAGS = ["-shared", "-z", "max-page-size=4096", "-z", "norelro", "--build-id=sha1", "-T", join(SRC, "module.ld")];
 const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
 
+// Whether the reference ZBIC codec (the `zbic` Python package) is installed: with it the *_zbic.nso files are really
+// compressed by it and the differential tests run; without it they are written by elf2nso.py's own small compressor
+// (--zbic-own: raw literals, sequences with the predefined tables) and the rest of the format is tested on the
+// committed streams only (test/loader/zbic_fixtures.bin, test/loader/fixtures).
+export const ZBIC_REF = join(ROOT, "test", "loader", "zbic_ref.py");
+export const FIXTURES = join(ROOT, "test", "loader", "fixtures");
+let zbicPackage: boolean | undefined;
+export const haveZbic = (): boolean => zbicPackage ??= spawnSync("python3", [ZBIC_REF, "check"], { cwd: ROOT }).status === 0;
+
 export function buildModules(): void {
   mkdirSync(OUT, { recursive: true });
   const o = (n: string) => join(OUT, n);
@@ -43,6 +52,11 @@ export function buildModules(): void {
   nso("main.so", "main_part.nso", "--lz4=ro", "--no-hash");
   nso("main.so", "main_stored.nso");                        // stored, hashes checked
   nso("plugin.so", "plugin.nro", "--nro");
+  // ZBIC (NSO flag bit 7, system 22.0.0 on)
+  const how = haveZbic() ? [] : ["--zbic-own"];
+  for (const m of ["main", "sdk", "plugin"]) nso(m + ".so", m + "_zbic.nso", "--zbic", ...how);
+  nso("main.so", "main_zbicpart.nso", "--zbic=ro", "--no-hash", ...how);
+  nso("main.so", "main_zbicown.nso", "--zbic", "--zbic-own");          // elf2nso.py's own compressor whether the package is there or not
 }
 export const file = (name: string): Uint8Array => new Uint8Array(readFileSync(join(OUT, name)));
 

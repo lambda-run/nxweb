@@ -44,8 +44,8 @@ exefs/ and romfs/ directly in the folder count as base/
 | `../../web/prepare.html`, `prepare.ts`, `prepare_build.mts` | "Open a game": the page and its build, the frame at the top of the main page (`web/index.html`), whose Play hands over to the page's Worker |
 
 ```
-npm run prepare:test [-- <filter>]   # Node, 30 tests, about 25 s after the builds (the first run compiles 92 modules with unwind tables)
-npm run prepare:browser              # headless Chromium (Playwright), 13 tests: the page, a .nup and a folder, OPFS, a reload mid-stage, Play in a Worker
+npm run prepare:test [-- <filter>]   # Node, 32 tests, about 25 s after the builds (the first run compiles 92 modules with unwind tables)
+npm run prepare:browser              # headless Chromium (Playwright), 14 tests: the page, a .nup and a folder, OPFS, a reload mid-stage, Play in a Worker
 npm run web:shots                    # screenshots of the landing state and a verdict card into build/web-shots/
 npm run prepare:measure [-- <files>] # the directory device against a packed image, 50,000 files
 npm run prepare:profiles             # convert nxnative's profiles again (prepare:profiles:check: are they current)
@@ -270,6 +270,11 @@ the key.
 | `pad_layout` | a | 83 | which controls the game needs (simple / full / touch): a hint for on-screen controls |
 | `op_mode`, `perf_mode`, `alloc_big_align` | a | 8, 2, 5 | `hle_cfg` `CFG_OPMODE`, `CFG_PERF_BOOST`, `CFG_ALLOC_BIG_ALIGN` |
 | `launch_param`, `game_env` | a | 2, 1 | `hle_cfg_str` `STR_LAUNCH_SPEC`, `STR_GAME_ENV` |
+| `render_cond` | a | 10 | the recorder, `gfx_set_profile` bit 1: `SetRenderEnable(Conditional)` evaluated when a submission is lowered; a timestamp report writes counter 0 (`src/gfx/README.md`, "Counter reports and conditional rendering") |
+| `tex_flush_upload` | a | 12 | the recorder, `gfx_set_profile` bit 2: textures in pools the CPU writes are registered and a pool flush over one publishes it (`src/gfx/texwatch.ts`) |
+| `tex_dirty_upload` | a | 11 | the recorder, `gfx_set_profile` bit 4: registered textures are hashed in full by a scanner, 4 MB a submission, where nxnative tracks page writes (`src/gfx/texwatch.ts`) |
+| `gpu_timestamps` | a | 5 | the recorder, `gfx_set_profile` bit 8: a timestamp report takes the GPU start / end of the segment it lies in; the submission is cut every 64 draws at a target change (`src/gfx/README.md`, "Counter reports") |
+| `present_interval` | a | 8 | the recorder, `gfx_set_profile` bit 16, and the acquire: `display` = one frame a vsync whatever the game sets, which it also reads back (`src/gfx/README.md`, "Frame pacing") |
 | `game_args`, `shared_font`, `device_api` | a | 0 | documented keys no profile sets |
 | `ipa`, `app_category`, `zip_store` | b | 153 each | iOS packaging |
 | `mem_reserve`, `mem_alias`, `mem_stack` | b | 153 each | the Apple host's guest block; the regions they give are what the runtime's per-game layout starts from (see `address_space`) |
@@ -280,22 +285,16 @@ the key.
 | `jit_key_data`, `jit_out_code`, `jit_route` | b | 1 each | the nn::jit image an iPhone is served; nxweb translates at run time |
 | `address_space` (derived) | c | 14 | the runtime's layout rule answers "short" for the profile's regions (below) |
 | `fps_target` | c | 33 | `hle_fpslock.c`, FRAME_STEP stubs, the engine finders |
-| `tex_flush_upload` | c | 12 | textures filled in place and published by a pool flush (`hle_nvn.c` `ft_add`) |
-| `tex_dirty_upload` | c | 11 | write tracking of guest pages |
-| `render_cond` | c | 10 | conditional rendering in the replayer |
-| `present_interval` | c | 8 | presents re-paced to the display |
 | `fps_max` | c | 6 | 120 fps |
-| `gpu_timestamps` | c | 5 | timestamp reports per segment |
 | `tex_dyn_slots` | c | 4 | Ryujinx's fallback texture arrays in the shader chain |
 | `fps_hold`, `program_of`, `screen_aspect`, `shader_key_skip`, `snowdrop_pools`, `stdalloc_cap` | c | 2 each | frame holding; multi-program games; screen-shape stubs; masked shader keys; Snowdrop's pools; StandardAllocator cap |
 | `programs`, `render_base`, `ue_fps_cvar`, `ue_texture_pool` | c | 1 each | multi-program launcher; render scale stub; Unreal console variables |
 
-**Counts over the 153 profiles** ((profile, key) pairs): **a 1,489, b 1,432, c 119**. Keys known to the converter:
-a 20, b 20, c 19 (17, 18 and 19 of them set by some profile). **The most common class c keys** are all 19 (there are
-not 20): `fps_target` 33, `address_space` 14, `tex_flush_upload` 12, `tex_dirty_upload` 11, `render_cond` 10,
-`present_interval` 8, `fps_max` 6, `gpu_timestamps` 5, `tex_dyn_slots` 4, `fps_hold` 2, `program_of` 2,
-`screen_aspect` 2, `shader_key_skip` 2, `snowdrop_pools` 2, `stdalloc_cap` 2, `programs` 1, `render_base` 1,
-`ue_fps_cvar` 1, `ue_texture_pool` 1.
+**Counts over the 153 profiles** ((profile, key) pairs): **a 1,535, b 1,432, c 73**. Keys known to the converter: a 25,
+b 20, c 14 (22, 18 and 14 of them set by some profile). **The class c keys some profile sets** are these 14:
+`fps_target` 33, `address_space` 14, `fps_max` 6, `tex_dyn_slots` 4, `fps_hold` 2, `program_of` 2, `screen_aspect` 2,
+`shader_key_skip` 2, `snowdrop_pools` 2, `stdalloc_cap` 2, `programs` 1, `render_base` 1, `ue_fps_cvar` 1,
+`ue_texture_pool` 1.
 
 ### The address space: the runtime's verdict
 
@@ -440,7 +439,7 @@ task and mesh stages and `shader_key_skip` are not read here (reported per stage
 
 ## Verified
 
-`npm run prepare:test` (30 tests; the last seven are the container's and the verdict's, described below): SHA-256 against node:crypto; NPDM fields and 5 refusals; build IDs and damaged
+`npm run prepare:test` (32 tests; the last eight are the container's and the verdict's, described below; two are about ZBIC modules, the segment compression of system 22.0.0 on: a folder and a container whose modules are ZBIC compressed go through every stage and run, cut and uncut, a module opened in steps is unpacked once and freed by a Cancel, a damaged one stops Code with the loader's reason): SHA-256 against node:crypto; NPDM fields and 5 refusals; build IDs and damaged
 modules; **11 layout variants** and **24 malformed folders**, each with its reason; RomFS paths that cannot be;
 the entry-API tree with stand-in entries; the directory device against `mkromfs.py`'s reader; a cut applied (exit
 code 42 → 7 and changed read-only data, in the runtime) and refused (mismatch, out of range, malformed); **the whole
@@ -467,7 +466,7 @@ NACP reader); the hand-off message read back through the device with the cache b
 the comparison with nxnative's reader; the verdict for all 153 profiles (14 can't run for memory, each with its
 sentence), main's imports, and 15 kinds of files explained.
 
-`npm run prepare:browser` (13 tests, Chromium 153): **a `.nup` chosen through the page, Play, the guest runs in a
+`npm run prepare:browser` (14 tests, Chromium 153; one is the ZBIC folder and container prepared and played in the page, with the Code bar moving inside one module unpacked in steps of 256 bytes and a Cancel taken between two of them): **a `.nup` chosen through the page, Play, the guest runs in a
 Worker** reading its RomFS out of the container with `FileReaderSync` (frames decompressed and checked there); a
 `.nup` as a dropped file handle, continued after a reload from IndexedDB, and through `showOpenFilePicker`; the
 pickers refused (`SecurityError`), closed (`AbortError`) and missing; eight things that are not a game explained,
@@ -514,7 +513,11 @@ that starts the game in the runtime**, RomFS read with `FileReaderSync`; listing
 - Only Chromium was run. `OpfsStore` uses `createWritable`; the Resume button needs a storable directory handle
   (File System Access). **In Chromium 153 an OPFS directory handle read back from IndexedDB in an off-the-record
   context takes the browser down**: the browser test uses a profile directory for that reason.
-- ZBIC (zstd) NSOs are refused by the loader's reader, so by Code (`module`).
+- ZBIC NSOs (system 22.0.0 on) are unpacked by the loader's decoder (`src/loader/zbic.ts`); none of Nintendo's own
+  was through it yet. A module is unpacked and hashed in steps (`PrepWasm.open`, 4 MB each, about 20 ms for ZBIC)
+  with the Code bar moving inside the module and a Cancel taken between them, and function matching and the cuts
+  then use that image. What stays one call each: the function matching itself, the SHA-256 of the three segments
+  of a cut module, and the SHA-256 of an uncut module's file.
 - Multi-program games (`programs`): the program in the folder is prepared alone.
 
 ## Requests to the integration owner
