@@ -219,7 +219,9 @@ export class RtGfx implements HleGfx {
         if (this.opts.unpaced) done = this.lastPresentDone;
         else if (this.lastAcquireAt >= 0n) {
           slot = this.lastAcquireAt + period;
-          if (wall && this.opts.nextFrame) { if (now > slot + period) slot = now; done = this.displayFrame(slot - quarter); }
+          // a game that is already at or past its slot is not held for another display frame: it paces itself slower
+          // than the interval (an engine with its own 35 Hz step would lose up to a display frame each time)
+          if (wall && this.opts.nextFrame) { if (now >= slot) slot = now; else done = this.displayFrame(slot - quarter); }
           else { at = slot; if (!wall) done = this.lastPresentDone; }
         }
         if (!done && (at === undefined || at <= now)) { this.lastAcquireAt = now; return this.call(id, k.args); }
