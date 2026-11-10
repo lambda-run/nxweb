@@ -2,7 +2,7 @@
 // lowering of submitted commands to the host stream the WebGPU replayer executes (src/glue/gfx_host.ts).
 // See README.md. Imports: env.log, env.gfx_exec, env.gfx_guest_call, env.gfx_proc_address; memory is imported
 // (the guest's linear memory: guest pointers are below 4 GB and index it directly).
-import { call, lookup, status, setApi, nameCopy, finishFenceLast, setNow } from "./dispatch";
+import { call, lookup, status, setApi, setNvn2, setDevinfo2, nameCopy, finishFenceLast, setNow } from "./dispatch";
 import { profileSet, profileBits } from "./profile";
 import { reportInit, reportLand, reportsFlush, reportsPending, reportStat, renderEnableState } from "./report";
 import { NVN_NFUNC, ABI } from "./gen/names";
@@ -51,6 +51,8 @@ export function nvn_count(): i32 { return NVN_NFUNC; }
 // 0 unimplemented (logs `[RED] nvnXxx unimplemented` once, returns 0), 1 implemented, 2 empty by design
 export function nvn_status(fnId: i32): i32 { return status(fnId); }
 export function gfx_set_api(major: i32, minor: i32): void { setApi(major, minor); }
+export function gfx_set_nvn2(on: i32): void { setNvn2(on != 0); }
+export function gfx_set_devinfo2(item: u32, v: i32): void { setDevinfo2(item, v); }
 
 // The shader library: key = the 8 key bytes as two little-endian words, refl = reflection record (shader.ts)
 export function gfx_shader_register(keyLo: u32, keyHi: u32, refl: usize): i32 { return libRegister(<u64>keyLo | <u64>keyHi << 32, refl); }

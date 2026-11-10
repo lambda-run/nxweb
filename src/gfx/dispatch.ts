@@ -30,6 +30,22 @@ const NDEVINFO: u32 = 0x60;
 // The API version a game's own driver would report follows its SDK: 55.15 from SDK 11, 53.313 before. Games check it
 let apiMajor: i32 = 55, apiMinor: i32 = 15;
 export function setApi(major: i32, minor: i32): void { apiMajor = major; apiMinor = minor; }
+// The Switch 2's NVN2 (nxnative g_devinfo2, SDK 21.4.4's newest values): Ampere's limits; -1 (DEVINFO_RT) are items NVN2 reads from
+// the GPU's own description at run time, which keep the X1 value below 0x60 and answer 0 with a red line above it. The host
+// overrides the constants the game's own sdk holds for its driver's switch (gfx_set_devinfo2: the GPU code versions move with the SDK)
+const DEVINFO2: usize = memory.data<i32>([
+  231, 39, 14, 65536, 256, 8, 16, 4, 16, 32, 16, 4, 4, 4, 32, 32, 32, 256, 256, 4, 8, 512, 256, -1,
+  -1, 4096, 16384, 16, 1024, 1024, 64, 1024, 2147483647, 65535, 65535, 8, 1048576, 4096, 16, 4096, 1, 1, 1, -1, 16, -1,
+  201, 201, 20, 0, 1, 8, 8, 4, 32, -1, -1, 128, -1, 1, 4, -1, -1, -1, -1, -1, 1, 1,
+  1, 1, 5, 1, 1, 1, 1, 1, 1, 16, 2048, 32, 4096, 65536, 65536, 256, 16384, 262144, 4096, 1, 4, 2, 0, 4096, 16384,
+  4096, 128, 32, 65535, 1, -1, 256, 16, 65535, 65535, 256, 1, 16, 16, 16, 1, 1, 1, 256, 0, 16, 8, 16, 32,
+  31, 536870912, 16777216, 16777216, 1073741824, 32, 1, 64, -1, 1, 2147483647, 32, 32, 4194303, 512, 256, 32, 16383, -1, 8, 0,
+  0, 4, 256, 16, 0, 1, 31, 0, 64, 1, 58368, 24576, 0, 256, 262144, -1, -1, 0, 201, 14, 201, 20, 163840, 8,
+  4, 256, 256, 4, 65536, 201, 5, 1]);
+const NDEVINFO2: u32 = 0xAA;
+let nvn2 = false;
+export function setNvn2(on: bool): void { nvn2 = on; }
+export function setDevinfo2(item: u32, v: i32): void { if (item < NDEVINFO2) store<i32>(DEVINFO2 + (<usize>item << 2), v); }
 
 const UNIMPL_SEEN: usize = memory.data(1024);
 const TMP_L: usize = memory.data(40);
@@ -145,6 +161,13 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnDeviceGetProcAddress: return <u64>lookupAddress(P(a, 1));
     case F.nvnDeviceGetInteger: {
       const w = <u32>I(a, 1), out = P(a, 2);
+      if (nvn2 && w < NDEVINFO2 && (load<i32>(DEVINFO2 + (<usize>w << 2)) != -1 || w >= NDEVINFO)) {
+        const v = load<i32>(DEVINFO2 + (<usize>w << 2));
+        if (v == -1) { L.red("nvnDeviceGetInteger item 0x"); L.hex(w); L.str(": NVN2 reads it from the GPU at run time, not known here; returning 0"); L.end(); }
+        store<i32>(out, w == 0 ? apiMajor : w == 1 ? apiMinor : v == -1 ? 0 : v);
+        return 0;
+      }
+      if (w == 0x67) { store<i32>(out, 256); return 0; }   // shader code alignment in a pool (SDK 19); the host reads shaders by key
       if (w >= NDEVINFO) { L.red("nvnDeviceGetInteger unknown item 0x"); L.hex(w); L.str(", returning 0"); L.end(); store<i32>(out, 0); return 0; }
       store<i32>(out, w == 0 ? apiMajor : w == 1 ? apiMinor : load<i32>(DEVINFO + (<usize>w << 2)));
       return 0;

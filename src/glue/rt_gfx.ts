@@ -4,7 +4,7 @@
 // of returning at once or spinning. The WebGPU replayer (gfx_host.ts) runs in the same JavaScript context.
 // With no device (Node) the recorder runs against a null replayer: every NVN call and the lowering happen, nothing is
 // drawn, fences complete at once. See src/runtime/README.md, "Graphics".
-import { Runtime, type HostCpu, type HostResult } from "./rt_runtime.ts";
+import { Runtime, nvn2Items, type HostCpu, type HostResult } from "./rt_runtime.ts";
 import { GfxHost, type ShaderInfo, type Capture } from "./gfx_host.ts";
 import { range } from "./rt_layout.ts";
 import { instantiate } from "./wasm_abi.ts";
@@ -101,9 +101,17 @@ export class RtGfx implements HleGfx {
     if (this.apiSet) return;
     this.apiSet = true;
     const m = this.opts.sdkMajor ?? rt.sdkMajor;
-    const api = m > 0 && m <= 10 ? [53, 313] : [55, 15];
+    let api = m > 0 && m <= 10 ? [53, 313] : [55, 15], note = "";
+    if (rt.sdkOunce) {
+      // NVN2 (Switch 2): API 231, its minor and GPU code versions read from the driver compiled into the game's sdk
+      const items = rt.sdkModule ? nvn2Items(rt.u8(), rt.sdkModule) : new Map<number, number>();
+      this.x.gfx_set_nvn2(1);
+      for (const [i, v] of items) if (i > 1) this.x.gfx_set_devinfo2(i, v);
+      api = [231, items.get(1) ?? 39];
+      note = items.size ? `, Switch 2: ${items.size} of its driver's constants read from the sdk` : ", Switch 2: [RED] the sdk's nvnDeviceGetInteger switch was not found, the newest known values answer";
+    }
     this.x.gfx_set_api(api[0], api[1]);
-    rt.log(`nvn: device API ${api[0]}.${api[1]} (SDK ${m || "unknown"})`);
+    rt.log(`nvn: device API ${api[0]}.${api[1]} (SDK ${m || "unknown"}${note})`);
   }
   private registerNv(rt: Runtime): void {
     const nv = this.nv, mb = (n: bigint) => (Number(n) / 1048576).toFixed(2);
