@@ -7,6 +7,18 @@
 // With NX_MEM set, only that mode runs. The last line of each run is repeated at the end; the exit code is the worst.
 // Node options a runner needs (--expose-gc) go before the script: node tools/modes.mjs --expose-gc test/x/run.mts
 import { spawnSync } from "node:child_process";
+import { writeSync } from "node:fs";
+
+// Output goes out with blocking writes. When stdout is a pipe (CI), process.stdout.write hands the pipe 64 KiB and
+// queues the rest for the event loop, which the spawnSync of the next step blocks; process.exit then drops it:
+// everything after the first 64 KiB of a long run's output and the summary of the modes.
+function out(s) {
+  const b = Buffer.from(s);
+  for (let o = 0; o < b.length;) {
+    try { o += writeSync(1, b, o); } catch (e) { if (e.code !== "EAGAIN") throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
+  }
+}
+const say = (...a) => out(a.join(" ") + "\n");
 
 const argv = process.argv.slice(2), nodeArgs = [];
 while (argv.length && argv[0].startsWith("--")) nodeArgs.push(argv.shift());
@@ -15,13 +27,13 @@ const names = { "32": "memory32", "64": "memory64", "64hi": "memory64, the proce
 const summary = [];
 let worst = 0;
 for (const mode of modes) {
-  if (modes.length > 1) console.log(`\n--- ${names[mode] ?? mode} (NX_MEM=${mode}) ---`);
+  if (modes.length > 1) say(`\n--- ${names[mode] ?? mode} (NX_MEM=${mode}) ---`);
   const r = spawnSync(process.execPath, [...nodeArgs, ...argv], { env: { ...process.env, NX_MEM: mode }, stdio: ["inherit", "pipe", "inherit"], encoding: "utf8", maxBuffer: 1 << 30 });
-  process.stdout.write(r.stdout ?? "");
+  out(r.stdout ?? "");
   const last = (r.stdout ?? "").trimEnd().split("\n").pop() ?? "";
   const code = r.status ?? 1;
   summary.push(`[${mode}] ${code ? "FAILED (exit " + code + ") " : ""}${last}`);
   if (code > worst) worst = code;
 }
-if (modes.length > 1) { console.log("\n--- all modes ---"); for (const s of summary) console.log(s); }
+if (modes.length > 1) { say("\n--- all modes ---"); for (const s of summary) say(s); }
 process.exit(worst);
