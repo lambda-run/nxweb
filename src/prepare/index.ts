@@ -6,6 +6,7 @@ export * from "../kit/exports";
 import { Inst } from "../kit/machine";
 import { PREPARE, PrepareS, PrepareE } from "../kit/gen/tables";
 import { sha256 } from "../loader/sha256";
+import { shaBuf, shaBegin, shaUpdate, shaEnd } from "./sha_stream";
 import { alloc, arenaReset, arenaUsed, errorPtr, errorLen, errorClear } from "./base";
 import * as npdm from "./npdm";
 import * as cuts from "./cuts";
@@ -59,6 +60,11 @@ export function prep_error_ptr(): usize { return errorPtr(); }
 export function prep_error_len(): i32 { return errorLen(); }
 export function prep_error_clear(): void { errorClear(); }
 export function prep_sha256(ptr: usize, len: u32, out: usize): void { sha256(ptr, len, out); }
+// in pieces, for data that is not in this memory whole (sha_stream.ts): begin; fill the buffer and update; end
+export function prep_sha_buf(): usize { return shaBuf(); }
+export function prep_sha_begin(): void { shaBegin(); }
+export function prep_sha_update(len: u32): void { shaUpdate(len); }
+export function prep_sha_end(): usize { return shaEnd(); }
 
 // ---- main.npdm ----
 export function npdm_parse(ptr: usize, len: u32): i32 { return npdm.npdmParse(ptr, len); }

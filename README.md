@@ -23,12 +23,29 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 | File system (`src/fs`) | Working and attached: RomFS images, crash-safe saves on OPFS; 66 tests, 7 in the browser |
 | SDK take-overs (`src/hle`) | The names nxnative answers on the host (1,113 in scope: 985 implemented, 128 cut stubs for movies; `hle:test` 97 tests), attached to the runtime with one answer per name: controllers (several players, vibration), display layer, run-time modules; guests call a spread of them |
 | Audio (`src/audio`) | Working and attached: 118 names, the audio renderer as nxnative has it (the SDK's own renderer driven by the host; tested with stand-in SDKs); a guest plays a tone on a sample-exact silent sink and through an AudioWorklet, another two voices through the renderer; `audio:test` 97 tests, 11 in the browser |
-| Prepare (`src/prepare`) | A folder of extracted game files becomes a hand-off the page starts: 153 profiles converted from nxnative, code cuts applied; `prepare:test` 19 tests, 9 in the browser. No package is opened |
+| Prepare (`src/prepare`) | A NUP container (one `.nup` file, read in place) or a folder of extracted game files becomes a hand-off the page starts: 153 profiles converted from nxnative, code cuts applied, a verdict in plain words before the long stages; `prepare:test` 30 tests, 13 in the browser. No encrypted package (NSP / XCI) is opened |
 
 How the pieces fit: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What of nxnative is ported, cut or open:
 [docs/PORTING-STATUS.md](docs/PORTING-STATUS.md).
 
 Start with [docs/CONTRACT.md](docs/CONTRACT.md). Generated state diagrams are in [docs/machines](docs/machines).
+
+## Opening a game
+
+The page starts with one area, **Open a game**. Give it either of:
+
+- **a `.nup` file** ([NUP](https://github.com/a55uka/nup): one unencrypted file that holds the base game, its updates
+  and add-ons, as nxnative accepts it). Drop it on the page or press *Choose file*. It is read where it lies, a
+  piece at a time: a many-gigabyte file is neither copied nor loaded into memory.
+- **a folder of extracted game files** (nxnative's dump layout: `exefs/` and `romfs/`, or `base/`, `updates/<version>/`
+  and `dlc/`). Drop it or press *Choose folder*.
+
+The newest update is started unless you pick another. Before the long steps run, a card says in plain words whether
+the game *should start*, *might start* (no profile for it) or *can't run in a browser yet*, with the reason (for
+example the 14 profiled games that need more memory than a tab can address) and a *Try anyway* button. Anything else
+you drop (`.nsp`, `.xci`, `.nsz`, `.xcz`, a zip, a single code file) is named for what it is, with what to do about
+it: nxweb has no keys and opens no encrypted package; convert those to a `.nup` or a folder with the tool you dumped
+them with. No game? The demo buttons under the area run self-made test programs.
 
 ```
 npm install

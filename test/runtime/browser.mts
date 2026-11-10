@@ -91,6 +91,12 @@ try {
         const text = (id: string) => q.textContent("#" + id) as Promise<string>;
         const until = async (what: string, f: () => Promise<boolean>) => { for (let i = 0; i < 150; i++) { if (await f()) return; await new Promise(r => setTimeout(r, 100)); } throw new Error("timed out waiting for " + what + "; state " + await text("state") + ", log: " + (await text("log")).slice(-600)); };
         if (await text("state") !== "Empty") throw new Error("the page does not start in Empty: " + await text("state"));
+        // the first screen: one way in, the demos under it, the developer tables folded away (and remembered open)
+        if (await q.isVisible("#fps") || await q.isVisible("#machines") || !await q.isVisible("#demo") || !await q.frameLocator("#prepare").locator("#pickfile").isVisible()) throw new Error("the landing state: the developer details are open, or the way in is not shown");
+        if (await q.isVisible("#trouble")) throw new Error("the report button is shown before anything went wrong");
+        await q.click("#dev > summary");
+        await q.waitForFunction(() => localStorage.getItem("nxweb-dev-open") === "1", null, { timeout: 5000 }).catch(() => {});
+        if (!await q.isVisible("#fps") || await q.evaluate(() => localStorage.getItem("nxweb-dev-open")) !== "1") throw new Error("Details for developers did not open, or its state was not kept");
         if (!await q.evaluate("self.crossOriginIsolated")) throw new Error("the page is not cross-origin isolated");
         await q.click("#demo");
         await until("Running with 30 frames", async () => await text("state") === "Running" && Number((await text("frames")).split(",")[0]) >= 30);
@@ -132,6 +138,7 @@ try {
         if (onlyRed !== redAfterLoss.length) throw new Error(`"red lines only" shows ${onlyRed} lines of ${redAfterLoss.length}`);
         await q.uncheck("#onlyred");
         // ---- the report: one text block ----
+        if (!await q.isVisible("#trouble")) throw new Error("red lines, and no report button beside the picture");
         await q.click("#copyreport");
         await until("the report", async () => (await q.inputValue("#reporttext")).includes("machines (name: state now"));
         const report = await q.inputValue("#reporttext");

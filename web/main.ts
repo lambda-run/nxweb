@@ -45,7 +45,26 @@ function rows(table: HTMLTableElement, n: number): HTMLTableRowElement[] {
   while (body.rows.length > n) body.deleteRow(-1);
   return Array.from(body.rows);
 }
-let guardShown = "";
+let guardShown = "", running = false;
+// The keyboard reaches the game while the focus is in this page and not in a text field; it does not while it is in
+// the "Open a game" frame (where Play was pressed) or in the log's filter: then the hint over the picture says so.
+const screenBox = $("screen"), canvasEl = $("canvas") as HTMLCanvasElement;
+function focusHint(): void {
+  const a = document.activeElement;
+  $("focushint").hidden = !(running && (a instanceof HTMLIFrameElement || a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement || !document.hasFocus()));
+}
+for (const t of ["focusin", "focusout"]) document.addEventListener(t, () => setTimeout(focusHint, 0));
+for (const t of ["blur", "focus"]) addEventListener(t, () => setTimeout(focusHint, 0));
+screenBox.addEventListener("pointerdown", () => canvasEl.focus());
+$("fullscreen").onclick = async () => {
+  try { if (document.fullscreenElement) await document.exitFullscreen(); else { await screenBox.requestFullscreen(); canvasEl.focus(); } }
+  catch (e: any) { addLog([{ text: `page: fullscreen was refused here (${e?.message ?? e})`, kind: "" }]); }
+};
+document.addEventListener("fullscreenchange", () => { $("fullscreen").textContent = document.fullscreenElement ? "Leave fullscreen" : "Fullscreen"; });
+// "Details for developers": open or closed as it was left
+const dev = $("dev") as HTMLDetailsElement;
+try { dev.open = localStorage.getItem("nxweb-dev-open") === "1"; } catch { /* no storage here: closed */ }
+dev.addEventListener("toggle", () => { try { localStorage.setItem("nxweb-dev-open", dev.open ? "1" : "0"); } catch { /* not remembered */ } });
 worker.onmessage = ev => {
   const m = ev.data;
   if (audio.handle(m)) return;
@@ -68,6 +87,13 @@ worker.onmessage = ev => {
     $("options").textContent = m.options || "–";
     redCount = m.redTotal ?? 0;
     const rc = $("redcount"); rc.textContent = `${redCount} red`; rc.dataset.red = redCount ? "1" : "0";
+    // a red line or a fault: the report button beside the picture
+    $("trouble").hidden = !(redCount > 0 || m.stopKind === "fault");
+    const was = running;
+    running = m.state === "Running"; focusHint();
+    // a program that starts: its picture comes into view (a demo button is above it, a game's Play further up)
+    if (running && !was) $("player").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest" });
+    $("player").dataset.idle = m.state === "Empty" ? "1" : "0";   // the picture is small until there is one
     // the guard: what the next run gets, and why
     const g = m.guard, key = JSON.stringify(g);
     if (g && key !== guardShown) {
@@ -142,13 +168,15 @@ function showCapture(m: { text: string; images: { name: string; width: number; h
 }
 
 // ---- the report: one text block, to the clipboard and into the page ----
-$("copyreport").onclick = () => worker.postMessage({ type: "report", userAgent: navigator.userAgent });
+$("copyreport").onclick = $("copyreportdev").onclick = () => worker.postMessage({ type: "report", userAgent: navigator.userAgent });
 async function showReport(text: string) {
+  const box = $("reportbox") as HTMLDetailsElement;
   ($("reporttext") as HTMLTextAreaElement).value = text;
-  ($("reportbox") as HTMLDetailsElement).open = true;
-  let how = "shown below";
-  try { await navigator.clipboard.writeText(text); how = "copied to the clipboard and shown below"; } catch { /* no clipboard permission: the text is in the page */ }
-  $("reportnote").textContent = `report of ${text.split("\n").length} lines ${how}`;
+  box.hidden = false; $("trouble").hidden = false;
+  let copied = false;
+  try { await navigator.clipboard.writeText(text); copied = true; } catch { /* no clipboard permission (a sandboxed frame, or no gesture): the text is in the page */ }
+  box.open = !copied || dev.open;
+  $("reportnote").textContent = (copied ? `Copied (${text.split("\n").length} lines). Paste it where you report the problem.` : "This browser did not let the page copy by itself: the report is below, select it and copy.") + " It has no game data.";
 }
 
 // ---- a game folder: the prepare step (web/prepare.html, in the frame) hands over what it made; Play starts it here ----
@@ -157,9 +185,12 @@ const hookFrame = () => { try { frame.contentWindow?.addEventListener("nxweb:han
   const msg = (ev as CustomEvent).detail;
   addLog([{ text: `page: the prepare step handed over ${msg.name} (${msg.titleId}): ${msg.modules.length} code modules, ${msg.cuts.length} cuts applied`, kind: "" }]);
   worker.postMessage({ type: "handoff", msg });
-  $("state").scrollIntoView({ behavior: "smooth", block: "center" });
+  // the picture is what matters now, and the keyboard goes to it
+  $("player").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  canvasEl.focus({ preventScroll: true });
 }); } catch { /* the frame is not there */ } };
 frame.addEventListener("load", hookFrame);
+try { if (frame.contentDocument?.readyState === "complete" && (frame.contentWindow as any)?.nxwebPrepareReady) hookFrame(); } catch { /* not loaded yet */ }
 
 // ---- files ----
 let shaderLib: string | undefined, shaderNxsl: Uint8Array | undefined, rom: File | undefined;
@@ -179,10 +210,19 @@ async function take(list: FileList | File[]) {
 ($("files") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
 ($("shaders") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
 ($("rom") as HTMLInputElement).onchange = e => take((e.target as HTMLInputElement).files!);
+// A drop on the developers' box is module files for the Worker; a drop anywhere else on the page is a game (a .nup
+// file or a folder) for "Open a game", which also says what anything else is
 const drop = $("drop");
-for (const t of ["dragenter", "dragover"]) document.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); });
-for (const t of ["dragleave", "drop"]) document.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); });
-document.addEventListener("drop", e => { if (e.dataTransfer?.files.length) take(e.dataTransfer.files); });
+const onDevBox = (e: Event) => e.target instanceof Node && drop.contains(e.target);
+const gameFrame = () => { try { return frame.contentWindow as any; } catch { return null; } };
+for (const t of ["dragenter", "dragover"]) document.addEventListener(t, e => { e.preventDefault(); const d = onDevBox(e); drop.classList.toggle("over", d); gameFrame()?.nxwebDragOver?.(!d); });
+for (const t of ["dragleave", "drop"]) document.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); gameFrame()?.nxwebDragOver?.(false); });
+document.addEventListener("drop", e => {
+  if (onDevBox(e)) { if (e.dataTransfer?.files.length) void take(e.dataTransfer.files); return; }
+  const w = gameFrame();
+  if (w?.nxwebDrop) { w.nxwebDrop(e.dataTransfer); $("open").scrollIntoView({ block: "nearest" }); }
+  else if (e.dataTransfer?.files.length) void take(e.dataTransfer.files);
+});
 
 // ---- input: the keyboard is source 1; every controller is a source of its own, by a stable id ----
 const BTN: Record<string, number> = { A: 1, B: 2, X: 4, Y: 8, LS: 16, RS: 32, L: 64, R: 128, ZL: 256, ZR: 512, Plus: 1024, Minus: 2048, Left: 4096, Up: 8192, Right: 16384, Down: 32768 };

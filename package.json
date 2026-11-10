@@ -41,6 +41,7 @@
     "a64:extra": "npm run -s a64:build && node test/a64/extra_run.ts",
     "web:build": "node web/build.mts",
     "web": "node web/serve.mts",
+    "web:shots": "node web/shots.mts",
     "fs:build": "asc src/fs/index.ts -o build/fs/fs.wasm -O2 --runtime stub",
     "fs:test": "node test/fs/run.mts",
     "fs:browser": "node test/fs/browser.mts",
@@ -70,5 +71,8 @@
     "esbuild": "^0.28.2",
     "playwright": "1.63.0",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "fzstd": "^0.1.1"
   }
 }

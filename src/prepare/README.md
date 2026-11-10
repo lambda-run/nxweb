@@ -1,12 +1,13 @@
-# prepare: a folder of game files becomes what the runtime starts
+# prepare: a NUP container or a folder of game files becomes what the runtime starts
 
 nxnative packs a game with `scripts/build_ipa_from_nsp.py`: extract, pick the game's profile, rewrite the code
 modules, split and translate the shaders, package. nxweb does the part of that which still means something in a page,
 on the player's own files, uploading nothing.
 
-**Input in this round: a folder of files that are already extracted.** No NSP, XCI or NCA is opened, nothing is
-decrypted and no keys are read; the page says so, and a folder that holds packages is refused with that sentence.
-The layout is the one nxnative accepts for dump folders (its README, "From a folder of files"; `scripts/pack_dump.py`):
+**Input: a NUP container (one `.nup` file) or a folder of files that are already extracted.** No NSP, XCI or NCA is
+opened, nothing is decrypted and no keys are read; the page says what such a file is and what to do with it
+("NUP containers" and "The page" below). The folder layout is the one nxnative accepts for dump folders (its README,
+"From a folder of files"; `scripts/pack_dump.py`), and a container is presented to the stages as exactly that:
 
 ```
 base/exefs/        main, main.npdm, sdk, rtld, subsdk*      base/romfs/ is optional when an update has one
@@ -27,6 +28,9 @@ exefs/ and romfs/ directly in the folder count as base/
 | `defs/prepare.json` | The one machine (diagram: `docs/machines/prepare.md`) |
 | `host/prepare.ts` | `Prepare`: the pipeline, the manifest, the hand-off. No Node or DOM API |
 | `host/detect.ts` | What a folder holds, by nxnative's rules: pure functions of its listing |
+| `host/nup.ts`, `nup_node.ts` | A NUP container: `Nup` (the validated superblock and table of contents), `scanNup`, `NupTree` (the container as the folder the stages read), `NupReader` (file data by ranges, zstd frames, SHA-256 checks, the bounded cache), `packSource` (the same in the Worker); a `.nup` on disk under Node |
+| `host/verdict.ts` | `verdictFor` (should start / might start / can't run, with the reason), `failureSentence`, `explainFile` (what a dropped file is, from its name and first bytes): pure functions |
+| `sha_stream.ts` | SHA-256 over data that arrives in pieces (a fixed 64 KB buffer): a file of any size is hashed without lying in the module's memory |
 | `host/wasm.ts` | `PrepWasm`: the module behind a TypeScript face |
 | `host/tree.ts`, `tree_node.ts` | The folder: `HandleTree` (directory picker, dropped handle, OPFS), `EntryTree` (`webkitGetAsEntry`), `FileListTree` (`<input webkitdirectory>`), `MemTree`, `NodeTree` |
 | `host/store.ts`, `store_node.ts` | Where the manifest and outputs live: `OpfsStore`, `MemStore`, `NodeStore` |
@@ -36,11 +40,13 @@ exefs/ and romfs/ directly in the folder count as base/
 | `../../tools/prepare/convert_profiles.py` | nxnative's `dm/games` and patch files into the above |
 | `../../tools/prepare/layout_verdict.mts` | The runtime's layout rule (`src/glue/rt_process.ts`) over the profiles' memory keys, for the converter |
 | `../../tools/prepare/gen_match_writes.py`, `match_reference.py` | The register-write table measured from Capstone; nxnative's own `nso_match.py` on an image, for the tests |
-| `../../web/prepare.html`, `prepare.ts`, `prepare_build.mts` | The page and its build: a frame of the main page (`web/index.html`), whose Play hands over to the page's Worker |
+| `../../tools/prepare/nup_reference.py` | nxnative's own `pack_nup.py` on a container, for the tests |
+| `../../web/prepare.html`, `prepare.ts`, `prepare_build.mts` | "Open a game": the page and its build, the frame at the top of the main page (`web/index.html`), whose Play hands over to the page's Worker |
 
 ```
-npm run prepare:test [-- <filter>]   # Node, 23 tests, about 10 s after the builds (the first run compiles 92 modules with unwind tables)
-npm run prepare:browser              # headless Chromium (Playwright): the page, OPFS, a reload mid-stage, Play in a Worker
+npm run prepare:test [-- <filter>]   # Node, 30 tests, about 25 s after the builds (the first run compiles 92 modules with unwind tables)
+npm run prepare:browser              # headless Chromium (Playwright), 13 tests: the page, a .nup and a folder, OPFS, a reload mid-stage, Play in a Worker
+npm run web:shots                    # screenshots of the landing state and a verdict card into build/web-shots/
 npm run prepare:measure [-- <files>] # the directory device against a packed image, 50,000 files
 npm run prepare:profiles             # convert nxnative's profiles again (prepare:profiles:check: are they current)
 npm run prepare:writes               # measure the register-write table from Capstone again (prepare:writes:check)
@@ -64,7 +70,7 @@ The page draws from `snapshot()` only; the log lines are for people.
 |---|---|---|---|
 | Detect | the layout, the asked version, name / size / time of every file outside a `romfs/` | reads `main.npdm` and the first 0x100 bytes of each exefs file | layout kind, title ID, versions, the chosen version and its roots, NPDM facts, every NSO with its build ID in load order, DLC with index |
 | Index | name / size / time of every file and directory of the chosen `romfs/` and of each DLC's | builds RomFS tables in the module, stores `rom.tables`, `rom.index`, `aoc<i>.*` | per tree: files, directories, bytes, image size, the tables' SHA-256 |
-| Profile | title ID, version, module build IDs, NPDM facts, the profile's JSON, the SDK cuts that match and the rules for every game's modules of these names, the RomFS tables' hash | selects the profile, the modules to load, the cuts, the function-matched rules for modules no registered cut names | found / by title or build / provisional, registered build or not, `apply`, `needs`, load list, cuts, `match`, `space` and `layout` (the address-space verdict), warnings |
+| Profile | title ID, version, module build IDs, NPDM facts, a container's control data, the profile's JSON, the SDK cuts that match and the rules for every game's modules of these names, the RomFS tables' hash | selects the profile, the modules to load, the cuts, the function-matched rules for modules no registered cut names; reads `main` once for the graphics interface it imports | found / by title or build / provisional, registered build or not, `apply`, `needs`, load list, cuts, `match`, `space` and `layout` (the address-space verdict), `pool`, `graphics` (`nvn` / `vulkan` / `gl` / `unknown`, by nxnative's rule: `nvnBootstrapLoader`, Vulkan functions, EGL), warnings |
 | Code | name / size / time and build ID of each module to load, the cuts, the rules | reads each module whole, checks it (segments unpacked, SHA-256), places function-matched cuts, applies cuts, stores a cut module as `code/<name>.nso` | per module: from the folder or the store, size, SHA-256, cuts; `matched` (each patch: where, or why not), `matchCuts` |
 | Shaders | chain version, store name, title ID | nothing ahead (see Shaders) | `{ mode: "on-demand", chain, store }` |
 
@@ -84,7 +90,7 @@ in hex, as nxnative's profiles write it).
 `manifest.json` in the store (OPFS directory `nxweb-prepare-<folder name>`; a directory under Node):
 
 ```json
-{ "format": 2, "folder": "MyGame", "machine": "Ready", "reason": "",
+{ "format": 3, "folder": "MyGame", "machine": "Ready", "reason": "",
   "stages": { "detect": { "state": "done", "input": "<sha256>", "output": { ... }, "ms": 12 },
               "index": { ... }, "profile": { ... }, "code": { ... }, "shaders": { ... } } }
 ```
@@ -120,6 +126,11 @@ interface HandOff {
   message(): Promise<HandOffMessage>     // the same as plain data and Blobs, for postMessage to the Worker
 }
 ```
+
+A message's `rom` and `aoc` images carry one Blob per file for a folder; for a container they carry `nup` instead
+(the user's one File and each file's extent, codec and SHA-256), and `storageFromMessage(msg, saves, { sha256, log })`
+checks the files with the hash function it is given (`PrepWasm.sha256`: the page's Worker loads `wasm/prepare.wasm`
+for it).
 
 In the Worker: `storageFromMessage(msg, new OpfsStorage(msg.saveId))` gives the `FsStorage` for `RtFs`; modules are
 `msg.modules[i].file` (Blobs: the user's Files, or the cut modules in OPFS). The page fires
@@ -158,6 +169,76 @@ builder here) finds in the dumped virtual image exactly the entries, sizes and S
 
 **Updates and DLC.** The chosen version's `romfs/` is the game's RomFS, whole. Each DLC's `romfs/` is its own device,
 handed out for `FS_KIND.AOC` at the DLC's index.
+
+## NUP containers
+
+A `.nup` ([SPEC v1](https://github.com/a55uka/nup)) is one unencrypted file: a superblock, a table of contents with
+its SHA-256, and packages (base, updates by version, add-ons by title ID), each an `exefs/` and a `romfs/` tree whose
+files are stored raw or as one zstd frame, each with a SHA-256, and a meta block that may hold the NACP and icons.
+`host/nup.ts` reads it as nxnative's `scripts/pack_nup.py` does, check for check and with its sentences: the magic
+and format version, the header size and flags, the file's length against the header's ("copied or downloaded
+partly?"), the regions, the table's hash, every record's bounds, the reserved package fields, the codecs, the name
+pool, the folder slots; then `scan`'s rules (one base at most, no update of version 0 or twice, a DLC with a
+`romfs/` and once, and "no base game" in its two forms: no base record with every update marked standalone, or a
+base record with no files). Beyond nxnative: a folder reached twice in a walk is refused (a loop would not end), and
+names that are no path component are refused in `romfs/` as in `exefs/`.
+
+**To the stages a container is a dump folder** (`NupTree` is a `PrepTree`): `base/`, `updates/<version>/`,
+`dlc/<title ID>/0/romfs/`. An update without `romfs/` lists the base game's under its own (nxnative `romfs_of`). So
+Detect, Index, Profile and Code are the folder's code, unchanged: the newest update by default, `version` picks
+another, a DLC is an add-on content device at its index, program IDs are read from the NPDMs. `addon_update` and
+`system` packages are named in the notes and not used, as in nxnative.
+
+**Nothing is read whole.** Opening reads the superblock and the table of contents (0x50 bytes a file). After that a
+raw file is a range of the user's File (`Blob.slice`), and a zstd file is decompressed when it is first read
+([fzstd](https://github.com/101arrowz/fzstd), MIT, pure JavaScript, bundled). Held in memory: a small cache (32 MB
+in all, files up to 4 MB, least recently used out first) and the one last file larger than that. In the Worker the
+reads are synchronous (`FileReaderSync`), so an fs call never parks.
+
+**Identity and checks.** A file's "modification time" in the listing is 48 bits of its SHA-256 from the table of
+contents (which the table's own hash covers), so the stages' input hashes follow the content the container
+declares: a second run on the same container reads 0 bytes of file data to decide that all five stages are kept
+(tested), and a container whose file changed runs the stage that depends on it. File *data* is checked against its
+SHA-256 the first time all of it is in hand: every zstd file (its frame is decompressed whole), every raw file up
+to 8 MB (read whole on first use), and a larger raw file when one read asks for all of it (the code modules are
+read so by Code). A mismatch, a short frame or a frame of another size fails the read with nxnative's sentence
+("does not match its size or SHA-256 (damaged file)"): `Failed(read)` in a stage, a red line and an I/O error for
+the game. The hash is the module's (`sha_stream.ts`, fed 64 KB at a time).
+
+**Control data.** A package's NACP gives the name and display version (the first non-empty language; the
+deflate-compressed title area of newer SDKs is inflated where the platform has `DecompressionStream`), its icon
+record or localized icons the picture. With no base game they come from the application record (nxnative
+`control`). The profile's name and display version win when there is a profile.
+
+**Checked against nxnative itself** (test "the NUP reader against nxnative's own", when the checkout and a zstd
+module for its Python are there: `pip install backports.zstd` before Python 3.14; otherwise it prints SKIPPED): for
+synthetic containers written by the test (the writer of nxnative's `test_nsp_nup.py`, ported to
+`test/prepare/nup_synth.mts`), the packages, every file's path, size and bytes (by SHA-256 of what each reader
+gives), the folders and the meta records are equal, and the damaged ones are refused by both with the same sentence.
+
+## The page
+
+`web/prepare.html` is "Open a game", alone or as the frame at the top of `web/index.html`:
+
+- **Getting a game in**: drop a `.nup` or a folder on the page (the main page passes a drop anywhere on it to the
+  frame), *Choose file* (`showOpenFilePicker`), *Choose folder* (`showDirectoryPicker`). Where a picker is missing
+  or throws anything but `AbortError` (a sandboxed or cross-origin frame refuses both with `SecurityError`), the
+  button clicks its `<input type=file>` / `<input webkitdirectory>` by itself. A handle (File System Access) is kept
+  in IndexedDB and offered as *Continue with <name>* after a reload, with the permission asked again; a File from
+  an input or a plain drop cannot be kept, so it is chosen again. A folder that holds exactly one `.nup` opens it.
+- **What is not a game** is named from its first bytes and extension (`explainFile`): encrypted packages (`.nsp`,
+  `.xci`, `.nsz`, `.xcz`, `.nca`), a single NSO or NRO, a zip or another archive, an nxnative `RomFS.img`, a RomFS
+  image, an empty or unknown file, a `.nup` that is damaged, cut short, or an update without its game.
+- **The verdict card** appears when Detect is done (name, icon, version, a version picker) and gets its verdict when
+  Profile is, before Code: *Should start* / *Might start: no profile for this game, running with defaults* /
+  *Can't run in a browser yet* with one sentence (`verdictFor`): the address-space verdict ("This game needs about
+  9 GB of memory. A browser tab can give it 4 GB." for the 11 profiles with a 9 GB pool, the reserved address space
+  for the other 3), a `main` that imports OpenGL or Vulkan and not NVN, a multi-program game; the other class c
+  `needs` and unconverted patch kinds are listed under it as what may be wrong. The technical lines are behind a
+  disclosure. Play is *Try anyway* on a can't-run verdict: the report of a failed attempt is useful.
+- **Progress**: a row per stage with a plain label, its state, a bar (bytes for Code, trees for Index), its counts,
+  its time, Cancel, and Redo. A failure is a sentence (`failureSentence`, by the machine's reason) over the
+  technical line.
 
 ## Profiles
 
@@ -359,7 +440,7 @@ task and mesh stages and `shader_key_skip` are not read here (reported per stage
 
 ## Verified
 
-`npm run prepare:test` (23 tests): SHA-256 against node:crypto; NPDM fields and 5 refusals; build IDs and damaged
+`npm run prepare:test` (30 tests; the last seven are the container's and the verdict's, described below): SHA-256 against node:crypto; NPDM fields and 5 refusals; build IDs and damaged
 modules; **11 layout variants** and **24 malformed folders**, each with its reason; RomFS paths that cannot be;
 the entry-API tree with stand-in entries; the directory device against `mkromfs.py`'s reader; a cut applied (exit
 code 42 → 7 and changed read-only data, in the runtime) and refused (mismatch, out of range, malformed); **the whole
@@ -373,7 +454,24 @@ several functions, several implementations, overlap, damaged unwind data, 400 mu
 write table against nxnative and Capstone, and the pipeline (a patch placed by its function, the game exits with
 7 instead of 42); **the converter on a synthetic nxnative tree** (patch files it cannot evaluate, `--strict`).
 
-`npm run prepare:browser` (9 tests, Chromium 153): the page through `showDirectoryPicker` (replaced by a function
+Containers (`test/prepare/nup_tests.mts`): the listing and bytes of a synthetic container with raw and zstd files
+(open reads the superblock and table only; of a 9 MB raw file only the range asked for is read); **44 damaged or
+malformed containers**, each refused with its reason (bad magic, format version, a truncated and a grown file, the
+table's hash, records out of bounds, reserved fields, codecs, a folder that holds itself, `scan`'s refusals, ExeFS
+names), and a changed byte of a raw file and of a zstd frame found when the file is read, also through the pipeline
+(`Failed(read)`); **the whole pipeline on a container** (a profile by title ID with a registered cut; the guest
+reads its RomFS out of the container and runs with the cut; version 0; the DLC device; all five stages kept on a
+second run with 0 bytes read; a changed file runs Index); the variants (an update without `romfs/`, standalone
+updates, a base record with no files, a partial update, other package kinds, a foreign DLC, a 32-bit program, the
+NACP reader); the hand-off message read back through the device with the cache bounded (62 MB read, 35 MB peak);
+the comparison with nxnative's reader; the verdict for all 153 profiles (14 can't run for memory, each with its
+sentence), main's imports, and 15 kinds of files explained.
+
+`npm run prepare:browser` (13 tests, Chromium 153): **a `.nup` chosen through the page, Play, the guest runs in a
+Worker** reading its RomFS out of the container with `FileReaderSync` (frames decompressed and checked there); a
+`.nup` as a dropped file handle, continued after a reload from IndexedDB, and through `showOpenFilePicker`; the
+pickers refused (`SecurityError`), closed (`AbortError`) and missing; eight things that are not a game explained,
+a folder with one `.nup`, and the can't-run verdict with *Try anyway*; and, as before: the page through `showDirectoryPicker` (replaced by a function
 that returns an OPFS directory: headless Chromium has no dialog; everything after the call is real), a dropped
 directory handle, `<input webkitdirectory>` with a real folder; the manifest in OPFS; **a reload in the middle of
 Code and of Index, resumed from the handle kept in IndexedDB**; cancel; redo; **Play: the message posted to a Worker
@@ -383,8 +481,20 @@ that starts the game in the runtime**, RomFS read with `FileReaderSync`; listing
 
 ## Gaps
 
-- **No containers, no keys**: NSP / XCI / NCA / NUP are not opened. No NACP either (a dump folder has none): the
-  name is the profile's, or the NPDM's.
+- **No encrypted containers, no keys**: NSP / XCI / NCA are not opened (the page says what they are). A dump folder
+  has no NACP: its name is the profile's, or the NPDM's.
+- NUP: a file is decompressed in one piece, so a file stored compressed must fit one `Uint8Array` with its
+  compressed bytes beside it (about 2 GB decompressed is the engine's limit; a few hundred MB is what a phone
+  gives); a raw file has no such limit. A raw file over 8 MB that the game reads in pieces is never checked
+  against its SHA-256 (only a read of all of it is). The table of contents is read whole (0x50 bytes a file, at
+  most 1 GB). zstd frames with a dictionary are not supported by fzstd (the format has none). Parsing and
+  decompression run on the thread that asks: the page's main thread during prepare, the Worker during play; a
+  large module's decompression blocks the page for its duration. The container reader is TypeScript (as
+  `detect.ts`), not AssemblyScript; the hash is the module's. `addon_update` and `system` packages are not used.
+- The graphics interface is read from `main`'s imports only: a game whose drawing code is in another module or an
+  NRO reads as "not known" and gets no verdict from it. No game was tried: OpenGL and Vulkan games are recognised
+  by the names nxnative looks for.
+- The verdict is a prediction from profiles and files; "should start" has not been observed for any game.
 - No game was prepared: every folder in the tests is synthetic (the runtime's test guests as modules).
 - `FRAME_STEP`, `MATCH_FRAME_STEP`, the nine finders: not ported (above; `docs/PORTING-STATUS.md`, "Frame-step
   stubs"). `MATCH_CUTS` is, but no rule has been matched on a game module, and a function with an instruction the

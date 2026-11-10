@@ -55,7 +55,9 @@ export function detectLayout(l: TreeListing): Layout {
 function explain(l: TreeListing, files: Set<string>, dirs: Set<string>, base: VersionDir | null, updates: VersionDir[]): string {
   const expected = "expected base/exefs/main.npdm with a RomFS in base/romfs or updates/<version>/romfs, or exefs/ and romfs/ directly in the folder, or updates/<version>/ with exefs and romfs";
   if (!l.files.length) return `the folder is empty; ${expected}`;
-  const packed = l.files.filter(f => /\.(nsp|xci|nca|nsz|xcz|nup)$/i.test(f.path));
+  const nups = l.files.filter(f => /\.nup$/i.test(f.path));
+  if (nups.length) return `the folder holds ${nups.length === 1 ? "a NUP container" : nups.length + " NUP containers"} (${nups.slice(0, 3).map(f => f.path).join(", ")}${nups.length > 3 ? ", ..." : ""}) and no extracted game: choose the .nup file itself`;
+  const packed = l.files.filter(f => /\.(nsp|xci|nca|nsz|xcz)$/i.test(f.path));
   if (packed.length) return `the folder holds game packages (${packed.slice(0, 3).map(f => f.path).join(", ")}${packed.length > 3 ? ", ..." : ""}): packages are not opened here (no NSP / XCI / NCA decryption, no keys); extract the game first. Then: ${expected}`;
   if (files.has("main.npdm")) return `this is an exefs folder (main.npdm is directly in it): pick the folder above it, the one that holds exefs/ and romfs/`;
   if (base && !base.hasRom) return `${base.root}exefs is there but no RomFS: neither ${base.root}romfs nor an updates/<version>/romfs`;

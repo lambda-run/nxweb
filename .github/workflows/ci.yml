@@ -26,7 +26,7 @@ jobs:
           python-version: "3.12"
       - name: clang, lld and the llvm tools (aarch64 target)
         run: sudo apt-get update && sudo apt-get install -y clang lld llvm
-      - run: pip install unicorn capstone
+      - run: pip install unicorn capstone backports.zstd
       - run: npm ci
       - name: nxnative (reference checkout; the tests that need it skip without it)
         run: (git init -q "$NXNATIVE" && git -C "$NXNATIVE" fetch -q --depth 1 https://github.com/seedds/nxnative "$(cat NXNATIVE_REF)" && git -C "$NXNATIVE" checkout -q FETCH_HEAD) || echo "::warning::nxnative could not be fetched at the pinned commit; the tests that need it are skipped"
@@ -53,7 +53,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y clang lld llvm
-      - run: pip install unicorn capstone
+      - run: pip install unicorn capstone backports.zstd
       - run: npm ci
       - run: npm run a64:fuzz
 
@@ -71,7 +71,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y clang lld llvm
-      - run: pip install unicorn capstone
+      - run: pip install unicorn capstone backports.zstd
       - run: npm ci
       # The tests launch Playwright's full Chromium build (channel "chromium", new headless mode) with the flags
       # that give WebGPU a software adapter (--enable-unsafe-webgpu --use-vulkan=swiftshader ..., set by the test

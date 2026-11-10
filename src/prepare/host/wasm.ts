@@ -12,7 +12,7 @@ interface X {
   prep_reset(): void; prep_state(): number; prep_reason(): number; prep_start(): number; prep_stage_end(skipped: number): number;
   prep_fail(reason: number): number; prep_cancel(): number; prep_count(i: number): number; prep_count_set(i: number, v: number): void; prep_count_add(i: number, v: number): void;
   prep_alloc(len: number): number; prep_arena_reset(): void; prep_arena_used(): number; prep_error_ptr(): number; prep_error_len(): number; prep_error_clear(): void;
-  prep_sha256(ptr: number, len: number, out: number): void;
+  prep_sha256(ptr: number, len: number, out: number): void; prep_sha_buf(): number; prep_sha_begin(): void; prep_sha_update(len: number): void; prep_sha_end(): number;
   npdm_parse(ptr: number, len: number): number; npdm_program_id(): bigint; npdm_sys_resource(): number; npdm_flags(): number; npdm_stack_size(): number;
   npdm_version(): number; npdm_main_thread(): number; npdm_name_ptr(): number;
   nso_peek(ptr: number, len: number): number; nso_check(ptr: number, len: number): number; nso_parse(ptr: number, len: number): number; nso_build_id_ptr(): number;
@@ -81,7 +81,15 @@ export class PrepWasm {
     return p;
   }
   private done(): void { this.x.prep_arena_reset(); }
+  // Up to 64 KB in one call; more in pieces through the module's fixed buffer, so that a file of any size is hashed
+  // without lying in the module's memory
   sha256(b: Uint8Array): string {
+    if (b.length > 65536) {
+      this.x.prep_sha_begin();
+      const buf = this.x.prep_sha_buf() >>> 0;
+      for (let at = 0; at < b.length; at += 65536) { const n = Math.min(65536, b.length - at); this.u8(buf, n).set(b.subarray(at, at + n)); this.x.prep_sha_update(n); }
+      return hex(this.u8(this.x.prep_sha_end() >>> 0, 32));
+    }
     try { const p = this.put(b), o = this.x.prep_alloc(32) >>> 0; this.x.prep_sha256(p, b.length, o); return hex(this.u8(o, 32)); }
     finally { this.done(); }
   }

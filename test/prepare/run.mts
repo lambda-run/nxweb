@@ -28,6 +28,7 @@ import { Runtime } from "../../src/glue/rt_runtime.ts";
 import { RtFs } from "../../src/glue/rt_fs.ts";
 import { loadDefs } from "../../src/kit/host/defs.mts";
 import * as rth from "../runtime/harness.mts";
+import { nupTests } from "./nup_tests.mts";
 import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, synthTree, lsRows, python, bnsh, unwindModules, matchImage, withImport, A64, MATCH_TEXT_END, type Files } from "./synth.mts";
 
 process.chdir(ROOT);
@@ -95,9 +96,9 @@ function profileFor(nso: Uint8Array, titleId: string, cuts: Cut[], more: Partial
 }
 
 // =================================================================================================== bytes
-test("sha256 of the module equals node:crypto's, for sizes around the block boundaries", () => {
+test("sha256 of the module equals node:crypto's, for sizes around the block boundaries, in one call and in pieces (over 64 KB)", () => {
   const w = newWasm();
-  for (const n of [0, 1, 55, 56, 63, 64, 65, 119, 120, 1000, 100_003]) { const b = blob(n, n + 1); assert.equal(w.sha256(b), createHash("sha256").update(b).digest("hex"), `${n} bytes`); }
+  for (const n of [0, 1, 55, 56, 63, 64, 65, 119, 120, 1000, 65_535, 65_536, 65_537, 65_591, 65_592, 100_003, 131_072, 131_135, 1_000_001]) { const b = blob(n, n + 1); assert.equal(w.sha256(b), createHash("sha256").update(b).digest("hex"), `${n} bytes`); }
 });
 
 test("main.npdm: program ID, system resource, 64-bit flag, stack size; files that are not an NPDM are refused with their reason", () => {
@@ -988,6 +989,9 @@ test("the profile converter on a synthetic nxnative tree: a patch file that impo
   // the prepare step shows a skipped patch file for what it is
   return [`5 synthetic profiles, 4 patch files and 2 shared files: 4 not evaluated (a missing module twice, a missing builtin, an assertion), exit 0; --strict exits 1`, r.out.trim().split("\n").filter(l => /not evaluated|patches\.py:/.test(l)).join(" | ")];
 });
+
+// =================================================================================================== NUP containers, the verdict
+nupTests({ test, newWasm, APP, APP_HEX, play, fsgFirst, imageOffsets, profileFor });
 
 // =================================================================================================== run
 const only = process.argv[2];
