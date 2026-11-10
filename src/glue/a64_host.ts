@@ -89,7 +89,7 @@ const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
 const num = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;   // a wasm64 export's usize result
-export const A64_CACHE_VERSION = 4;   // bump when the translator's output changes
+export const A64_CACHE_VERSION = 5;   // bump when the translator's output changes; test/a64/cache_stamp.mts fails when src/a64 changed without a bump
 
 export class A64Host {
   static readonly TRAMPOLINE = 0;
