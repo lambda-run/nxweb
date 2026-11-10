@@ -638,6 +638,10 @@ export function emitTrap(fn: u32, pc: u64, arg: u32): void {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Shared memory: the word that serialises 16-byte compare-and-swaps (CASP of two X registers), which wasm cannot do
+// as one atomic operation. It lies in this module's part of the memory, the same address in every instance.
+export let pairLock: usize = 0;
+export function initPairLock(): void { pairLock = balloc(16); }
 export function resetLocals(): void { nLoc = 0; }
 export function initEmit(): void {
   fbBase = balloc(FB_CAP);

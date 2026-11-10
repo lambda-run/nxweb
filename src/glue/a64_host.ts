@@ -108,6 +108,7 @@ export class A64Host {
   maxModuleBytes = 0;
   cacheHits = 0;          // units instantiated from the translation cache
   readonly mem64: boolean;
+  coreModule!: WebAssembly.Module;   // the core module, compiled: another thread on the same shared memory instantiates its own (its own CPU state)
   private tr: any;
   private l1Bytes = L1_BYTES;   // the pc map's first level
   private span = GB4;           // the guest addresses it covers
@@ -163,6 +164,7 @@ export class A64Host {
     this.table = new WebAssembly.Table({ element: "anyfunc", initial: 2 });
     const coreLen = this.tr.buildCore();
     const coreMod = new WebAssembly.Module(this.u8().slice(num(this.tr.outPtr()), num(this.tr.outPtr()) + coreLen));
+    this.coreModule = coreMod;
     const onTranslate = opts.onTranslate ?? ((pc: bigint) => this.translateUnit([pc])[0]);
     const coreX = new WebAssembly.Instance(coreMod, {
       env: { memory: this.memory, table: this.table, translate: onTranslate },

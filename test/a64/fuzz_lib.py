@@ -151,8 +151,9 @@ class Enc:
     fp:    (input lane type, output lane type) for NaN-tolerant compare: 0, 16, 32 or 64
     cpu:   "a57" (the default: the first Switch's core) or "max" (Unicorn's model with every extension; the classes
            of the ARMv8.1+ instructions a Switch 2 title uses)
-    post:  callable(case, pre_state, post_state): adjust what Unicorn answered where the translator's contract
-           differs on purpose (PACGA: the documented keyless function)
+    post:  callable(case, pre_state, post_state, mem_before, mem_after) -> None or the corrected memory window:
+           adjust what Unicorn answered where the translator's contract differs on purpose (PACGA: the documented
+           keyless function) or where this Unicorn is wrong (LDSMAX / LDSMIN below 64 bits)
     """
 
     def __init__(self, name, pat, fix=None, filt=None, base=None, small=(), setup=None, fp=(0, 0), weight=1.0, cpu="a57", post=None):
@@ -329,7 +330,9 @@ def generate_class(cls, ncases, seed, path):
         if res2 is None:
             raise RuntimeError("class %s: unstable case" % cls.name)
         if getattr(cls, "post", None):
-            cls.post(c, st, res2[0])
+            m2 = cls.post(c, st, res2[0], win_init, res2[1])
+            if m2 is not None:
+                res2 = (res2[0], bytes(m2))
         final.append((c, st, res2))
     with open(path, "wb") as f:
         name = cls.name.encode()

@@ -9,7 +9,7 @@ import {
   EV_R, EV_W, EV_WB, EV_RELOAD, evBuf, nEv, insPos, insKind, insMI, insMV, nIns, fbBase, overflow,
   rollback, blkPc, succ0, succ1, nBlk, setNBlk, setCurBlk, term, setTerm, gotoPc, emitTrap,
   fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, balloc, ballocEnd, mk, beginFunction, FB_CAP, optChunk, fnLimit,
-  M64, optMaxPages,
+  M64, optMaxPages, initPairLock,
 } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
@@ -42,6 +42,7 @@ export function init(): void {
   metaPtr = balloc(16 + 4096 * 9);
   sidePtr = balloc(<usize>SIDE_CAP * 8);
   recPtr = balloc(<usize>REC_CAP * 8);
+  initPairLock();
 }
 export function sideBuf(): usize { return sidePtr; }
 // end of everything this module keeps in the shared memory (static data + buffers)
@@ -185,27 +186,29 @@ function translateInsn(pc: u64, insn: u32): void {
     i64c(<i64>pc); gset(G_PC);
     if (optPrecise >= 2) writeback();
   }
-  if ((op0 & 14) == 8) ok = trDpImm(pc, insn);
-  else if ((op0 & 14) == 10) ok = trBranchSys(pc, insn);
-  else if ((op0 & 5) == 4) ok = (insn & (1 << 26)) ? trLoadStoreVec(pc, insn) : trLoadStoreInt(pc, insn);
-  else if ((op0 & 7) == 5) ok = trDpReg(pc, insn);
-  else if ((op0 & 7) == 7) ok = trFp(pc, insn);
+  ok = decode(pc, insn);
   if (!ok) { rollback(p, e, i); emitTrap(F_UNIMPL, pc, insn); }
 }
+// The decoder: emits the translation of one instruction, or answers false for a word outside the implemented set
+// (the caller rolls back what was emitted). The one place that decides; `translateInsn` and `probe` both ask it.
+function decode(pc: u64, insn: u32): bool {
+  let op0 = (insn >> 25) & 15;
+  if ((op0 & 14) == 8) return trDpImm(pc, insn);
+  if ((op0 & 14) == 10) return trBranchSys(pc, insn);
+  if ((op0 & 5) == 4) return (insn & (1 << 26)) ? trLoadStoreVec(pc, insn) : trLoadStoreInt(pc, insn);
+  if ((op0 & 7) == 5) return trDpReg(pc, insn);
+  if ((op0 & 7) == 7) return trFp(pc, insn);
+  return false;
+}
 
-// is this instruction word translatable? (coverage tooling)
+// Is this instruction word translatable? The word goes through the decoder as if it were being translated (into a
+// scratch function at a pc outside every code range) and what was emitted is thrown away. The static scan
+// (scan.ts) and the coverage tooling ask this.
 export function probe(insn: u32): i32 {
   beginFunction(); setNBlk(1); setCurBlk(0); succ0[0] = -1; succ1[0] = -1;
   let pc: u64 = 0x10000;
   noRange(); setWin(pc);
-  let ok = false;
-  let op0 = (insn >> 25) & 15;
-  if ((op0 & 14) == 8) ok = trDpImm(pc, insn);
-  else if ((op0 & 14) == 10) ok = trBranchSys(pc, insn);
-  else if ((op0 & 5) == 4) ok = (insn & (1 << 26)) ? trLoadStoreVec(pc, insn) : trLoadStoreInt(pc, insn);
-  else if ((op0 & 7) == 5) ok = trDpReg(pc, insn);
-  else if ((op0 & 7) == 7) ok = trFp(pc, insn);
-  return ok ? 1 : 0;
+  return decode(pc, insn) ? 1 : 0;
 }
 
 // analysis state

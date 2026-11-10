@@ -298,8 +298,18 @@ RETAB; the reference for such an image is Unicorn's `max` model (sidecar `"cpu":
 are disabled. `npm run a64:bytes` digests those images on lines of their own, after the lines of the images built
 for the first Switch's core, which a change that only adds instructions must leave as they were.
 
+`test/a64/lse_threads.ts` (in `a64:extra` and `a64:guests`, memory32 and memory64): four Node worker threads run
+`test/a64/guests/mt/lse_worker.c` (compiler output: LDADD, CAS, LDUMAX, LDSMIN, SWP as a spin lock, LDSET, LDCLR,
+LDEOR, a 128-bit CASP counter) on one shared memory, 200,000 rounds each; eleven totals must be exact and at least
+one compare-and-swap must have been retried (the threads really overlapped). Each thread instantiates the core
+module (`host.coreModule`), the helpers and the units' bytes with a table of its own at the same indices.
+
 Classes of the ARMv8.1+ instructions (`test/a64/fuzz_classes_v8x.py`) run on Unicorn's `max` model, the others on
-the Cortex-A57 model as before. Pointer authentication is compared bit for bit: with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB
+the Cortex-A57 model as before. LSE: CAS and CASP cases run after a load of the compare value (so that the exchange
+happens) or of one half of it; every base is 16-byte aligned, so the classes also run with `--shared`. Unicorn 2.1
+(QEMU 5.0) compares LDSMAX/LDSMIN of 8, 16 and 32 bits as 64-bit numbers (the zero-extended memory value against the
+whole register), which is not the architecture (`SInt(data) > SInt(value)` at the access size): for those cases
+the expected memory is computed by the class (`_smaxmin_post`), the rest of the state is Unicorn's. Pointer authentication is compared bit for bit: with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB
 clear, which is the model's reset state, QEMU's PACIx/AUTIx/PACDx/AUTDx, the hint forms, the authenticating branches,
 returns and loads are the identity too. XPACI/XPACD/XPACLRI strip whatever the enable bits say, so they are given
 canonical pointers (the only ones an identity signer produces). PACGA traps in the model (it has no EL3 to enable
@@ -357,12 +367,23 @@ state still coming from Unicorn.
   `br x30`); LDRAA/LDRAB load from base + simm10 * 8, with or without writeback; PACGA is the keyless function of the
   contract. Function discovery ends a path at RETAA/RETAB/BRAA.., and `addCode` takes a `pacibsp` after any return as
   a function entry.
+- LSE atomics (ARMv8.1): CAS/CASA/CASL/CASAL (b, h, w, x), CASP/CASPA/CASPL/CASPAL (w and x pairs),
+  SWP, LDADD, LDCLR, LDEOR, LDSET, LDSMAX, LDSMIN, LDUMAX, LDUMIN in every size and ordering form (plain, A, L, AL),
+  including Rt = 31 (the STADD.. aliases). RCPC: LDAPR (b, h, w, x); RCPC2: LDAPUR*/LDAPURS*/STLUR*.
+  *Unshared memory* (one host thread, one guest instruction at a time): a load, the computation and a store.
+  *Shared memory*: wasm atomic instructions: `atomic.rmw.add/and/or/xor/xchg` (LDCLR is `and` with the complement),
+  `atomic.rmw.cmpxchg` for CAS, a load + `cmpxchg` loop for the four min / max forms (wasm has no such instruction),
+  one 64-bit `cmpxchg` for a CASP of two W registers, and for a CASP of two X registers (16 bytes, more than a wasm
+  atomic instruction takes) a spin lock word in the translator's part of the memory around atomic loads and stores:
+  such CASPs never interleave, so a pair is never half exchanged (the loads are done once before the lock is taken,
+  so an address that traps does so without holding it). LDAPR/LDAPUR/STLUR are atomic loads / stores like LDAR/STLR.
+  As for the exclusives, an atomic access on a shared memory traps when its address is not aligned to its size.
 
 ## Known gaps
 
 Not translated (compile to `unimpl`, reported only if executed):
 - Half-precision arithmetic (fp16 is not on the Switch CPU), FCVTXN, FJCVTZS, vector FCVT*/SCVTF on halves.
-- LSE atomics (CAS, LDADD, SWP, ...; not on the Switch CPU), ERETAA/ERETAB (EL1),
+- ERETAA/ERETAB (EL1), LSE128,
   MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, SHA-512/SHA-3/SM3/SM4, any system register not
   listed above.
 
@@ -373,6 +394,9 @@ Behavioural differences:
   relaxed-simd madd is fused (x64 with FMA3, arm64). With `fma` off the translator emits unfused code.
 - Unshared memory: exclusives are compare-and-store, fine for one thread at a time. Shared: see above
   (STXP 64-bit pair not atomic as a pair; atomic forms trap on misaligned addresses, where ARM's LDAR/STLR do not).
+  A 16-byte CASP is atomic against other 16-byte CASPs (the pair lock), not against an STXP pair or two single-word
+  atomics on the same words. The helpers' scratch blocks (`hlp.vop`) are static data of the one memory: threads of
+  several Workers must not run them at the same time (the runtime runs every guest thread in one Worker).
 - After a wasm trap the registers cached in locals are lost unless `preciseFaults: 2` is on; the fault pc is exact
   either way. The stack-frame format is V8's (Node, Chromium); other engines get `undefined` from `faultFromError`.
 - No self-modifying-code detection: the embedder calls `removeCode`/`addCode` (or `invalidate()`) when code changes.
