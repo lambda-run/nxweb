@@ -2,7 +2,8 @@
 // loop, host-function dispatch and fault capture. No Node APIs: the same file runs under Node and in a browser Worker.
 // Policy lives in the AssemblyScript modules (scheduling and waits: src/kernel; lifecycle, clock arithmetic, fault
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
-import { A64Host, type A64CacheStore } from "./a64_host.ts";
+import { A64Host, makeMemory64, MEM64_MAX_PAGES, type A64CacheStore, type Memory64 } from "./a64_host.ts";
+import { instantiate } from "./wasm_abi.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
 import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, STAGING, range } from "./rt_layout.ts";
 import { SPACE, writeKernelCfg, type ProcessLayout } from "./rt_process.ts";
@@ -21,7 +22,11 @@ export interface RuntimeOptions {
   nsPerUnit?: number;                 // deterministic clock: ns per budget unit (default 100)
   mainStackSize?: number;             // default 1 MB
   codeBase?: number;                  // where the modules are mapped from (default 0x0800_0000)
-  reserve4g?: boolean;                // allocate the whole 4 GB at once instead of growing on demand (default false)
+  reserve4g?: boolean;                // allocate the whole 4 GB at once instead of growing on demand (default false; memory32 only)
+  // The linear memory is a 64-bit one (up to 16 GB) and `mods` is the wasm64 set (rt64.wasm, kernel64.wasm, ...,
+  // translator64.wasm, helpers64.wasm): for a process whose layout does not fit below 4 GB (rt_process.ts
+  // layoutFor(want, { mem64: true })), or to place any process anywhere in 16 GB. Default false.
+  mem64?: boolean;
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
   // Guest loads and stores below GUARD_BASE (the host area but the two ranges the guest is handed pointers into:
@@ -120,7 +125,7 @@ export interface HostFunctionDef {
 const ACT_CONTINUE = 0, ACT_SWITCH = 1;
 const FOREVER = 0xFFFF_FFFF_FFFF_FFFFn;
 export const FOREVER_NS = FOREVER;
-const PC_YIELD = BigInt(GUEST.pcYield), PC_EXIT = BigInt(GUEST.pcExit), PC_SPECIAL = 0xFFFF_FF00n, M32 = 0xFFFF_FFFFn;
+const PC_YIELD = BigInt(GUEST.pcYield), PC_EXIT = BigInt(GUEST.pcExit), PC_SPECIAL = 0xFFFF_FF00n, PC_SPECIAL_END = 0xFFFF_FFFFn, M32 = 0xFFFF_FFFFn;
 const PC_CALLBACK = 0xFFFF_FFD0n;   // x30 of a guest function a host function calls: its return ends the nested run
 const START_NAME = "<rt.start>";
 // (module (import "env" "host_call" (func)) (func (export "f") call 0)): the table entry every stub pc maps to
@@ -131,12 +136,13 @@ const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0,
 // call) or at all (a v128 global has no value in JavaScript).
 //   args_x(ptr)    x0..x7 to ptr              args_xd(ptr)   and the low 64 bits of v0..v7 to ptr + 64
 //   set_d0(bits)   v0 = { bits, 0 }
-function regsModule(): Uint8Array {
+// m64: the memory is a 64-bit one, the pointer an i64
+function regsModule(m64: boolean): Uint8Array {
   const str = (t: string) => [t.length, ...Array.from(t, c => c.charCodeAt(0))];
   const leb = (v: number) => { const n: number[] = []; do { let b = v & 0x7F; v >>>= 7; if (v) b |= 0x80; n.push(b); } while (v); return n; };
   const sec = (id: number, body: number[]) => [id, ...leb(body.length), ...body];
   const types = [2, 0x60, 1, 0x7F, 0, 0x60, 1, 0x7E, 0];                       // (i32)->(), (i64)->()
-  const imports: number[] = [17, ...str("env"), ...str("memory"), 2, 0, 0];
+  const imports: number[] = [17, ...str("env"), ...str("memory"), 2, m64 ? 4 : 0, 0];
   for (let i = 0; i < 8; i++) imports.push(...str("core"), ...str("x" + i), 3, 0x7E, 1);
   for (let i = 0; i < 8; i++) imports.push(...str("core"), ...str("v" + i), 3, 0x7B, 1);
   const fx: number[] = [], fd: number[] = [];
@@ -145,16 +151,20 @@ function regsModule(): Uint8Array {
   const body = (code: number[]) => [...leb(code.length + 2), 0, ...code, 0x0B];
   const setd = [0xFD, 0x0C, ...new Array(16).fill(0), 0x20, 0, 0xFD, 0x1E, 0, 0x24, 8];
   return new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0,
-    ...sec(1, types), ...sec(2, imports), ...sec(3, [3, 0, 0, 1]),
+    ...sec(1, types), ...sec(2, imports), ...sec(3, [3, m64 ? 1 : 0, m64 ? 1 : 0, 1]),
     ...sec(7, [3, ...str("args_x"), 0, 0, ...str("args_xd"), 0, 1, ...str("set_d0"), 0, 2]),
     ...sec(10, [3, ...body(fx), ...body([...fx, ...fd]), ...body(setd)])]);
 }
 const hex = (v: number | bigint) => "0x" + v.toString(16);
+const pageUp = (v: number) => Math.ceil(v / 0x1000) * 0x1000;   // an address or a size up to a page (no 32-bit operator: docs/CONTRACT.md "Addresses")
 const toHex = (b: Uint8Array) => Array.from(b, v => v.toString(16).padStart(2, "0")).join("");
 const dec = new TextDecoder();
 
 export class Runtime {
   readonly memory: WebAssembly.Memory;
+  readonly mem64: boolean;            // the memory is a 64-bit one (RuntimeOptions.mem64)
+  private m64: Memory64 | null = null;
+  private addrEnd: bigint;            // one past the highest address the memory can ever have: 4 GB, or 16 GB
   readonly k: any;                    // kernel exports (kernel_*)
   readonly r: any;                    // runtime core exports (rt_*)
   readonly ld: Loader;
@@ -219,23 +229,29 @@ export class Runtime {
     if (opts.codeBase !== undefined) this.nextBase = opts.codeBase;
     // One memory for everything. It starts as the host area and grows on demand (the kernel grows it for the heap,
     // stacks and thread-local slots; ensure() for images), up to the 4 GB a wasm32 memory can have.
-    this.memory = new WebAssembly.Memory({ initial: this.opts.reserve4g ? 65536 : HOST_END >>> 16, maximum: 65536 });
-    const log = (ptr: number, len: number) => this.log(this.str(ptr >>> 0, len));
+    // (memory64: up to the 16 GB the engines give a 64-bit memory; made by a64_host.ts makeMemory64)
+    const m64 = this.mem64 = !!opts.mem64;
+    if (m64) { this.m64 = makeMemory64({ initial: HOST_END / 65536, maximum: MEM64_MAX_PAGES }); this.memory = this.m64.memory; }
+    else this.memory = new WebAssembly.Memory({ initial: this.opts.reserve4g ? 65536 : HOST_END / 65536, maximum: 65536 });
+    this.addrEnd = m64 ? BigInt(MEM64_MAX_PAGES) * 65536n : 0x1_0000_0000n;
+    // addresses are numbers on this side of every module (wasm_abi.ts)
+    const log = (ptr: number, len: number) => this.log(this.str(ptr, len));
     const env = {
-      memory: this.memory, log,
-      debug_string: (ptr: number, len: number) => { this.out.push(this.u8().slice(ptr >>> 0, (ptr >>> 0) + len)); },
+      memory: this.memory, log, ...(this.m64 ? this.m64.imports() : {}),
+      debug_string: (ptr: number, len: number) => { this.out.push(this.u8().slice(ptr, ptr + len)); },
       abort: () => { throw new Error("abort in an AssemblyScript module"); },
     };
-    this.r = new WebAssembly.Instance(mods.rt, { env }).exports;
-    const lx = new WebAssembly.Instance(mods.loader, { env }).exports as unknown as LoaderExports;
-    this.k = new WebAssembly.Instance(mods.kernel, { env }).exports;
+    this.env = env;
+    this.r = instantiate(mods.rt, { env }, { mem64: m64, name: "rt.wasm" });
+    const lx = instantiate<LoaderExports>(mods.loader, { env }, { mem64: m64, name: "loader.wasm" });
+    this.k = instantiate(mods.kernel, { env }, { mem64: m64, name: "kernel.wasm" });
     this.r.rt_init();
     this.checkLayout(lx);
     this.r.rt_clock_init(this.opts.clock === "wall" ? 1 : 0, BigInt(this.opts.nsPerUnit));
     const arena = range("loader arena");
     this.ld = new Loader(lx, { arena: arena.lo, arenaLen: arena.hi - arena.lo, stubBase: STUBS.base, stubCap: STUBS.cap });
     if (opts.layout) {
-      const p = (this.r.rt_scratch_ptr() >>> 0) + 2048;
+      const p = this.r.rt_scratch_ptr() + 2048;
       writeKernelCfg(this, p, opts.layout);
       if (this.k.kernel_init(p) !== 0) throw new Error("runtime: kernel_init refused the process layout: " + this.red.join("; "));
       this.stackRegion = opts.layout.stackBase;
@@ -248,7 +264,9 @@ export class Runtime {
     } else if (this.k.kernel_init(0) !== 0) throw new Error("runtime: kernel_init refused the default layout");
 
     this.a64 = new A64Host(mods.translator, mods.helpers, {
-      memory: this.memory, layout: A64,
+      memory: this.memory, mem64: m64,
+      // the entry bitmap covers the first 256 MB of the code region, wherever the layout puts it
+      layout: opts.layout && opts.layout.codeBase !== A64.codeRegionLo ? { ...A64, codeRegionLo: opts.layout.codeBase } : A64,
       maxInsns: opts.maxInsns, maxFuncs: opts.maxFuncs, depthLimit: opts.depthLimit, tailCalls: opts.tailCalls, fma: opts.fma, nanFix: opts.nanFix,
       cntYield: true, preciseFaults: opts.preciseFaults, guardBase: (opts.guard ?? GUARD_DEFAULT) ? GUARD_BASE : 0,
       onTranslate: (pc: bigint) => this.onTranslate(pc),
@@ -270,11 +288,18 @@ export class Runtime {
     this.a64.fillPcMap(STUBS.base, STUBS.cap, this.thunk);
     const g: Record<string, unknown> = {};
     for (let i = 0; i < 8; i++) { g["x" + i] = this.core["x" + i]; g["v" + i] = this.core["v" + i]; }
-    this.regs = new WebAssembly.Instance(new WebAssembly.Module(regsModule() as BufferSource), { env: { memory: this.memory }, core: g } as WebAssembly.Imports).exports as unknown as Runtime["regs"];
-    this.argsPtr = this.r.rt_nvn_args(this.r.rt_ctx_scratch()) >>> 0;
+    const regs = new WebAssembly.Instance(new WebAssembly.Module(regsModule(m64) as BufferSource), { env: { memory: this.memory }, core: g } as WebAssembly.Imports).exports as any;
+    this.regs = !m64 ? regs : { args_x: (p: number) => regs.args_x(BigInt(p)), args_xd: (p: number) => regs.args_xd(BigInt(p)), set_d0: regs.set_d0 };
+    this.argsPtr = this.r.rt_nvn_args(this.r.rt_ctx_scratch());
   }
   private regs!: { args_x(ptr: number): void; args_xd(ptr: number): void; set_d0(bits: bigint): void };
   private argsPtr = 0;
+  // What every AssemblyScript module on this memory imports as "env" (the memory, the log, and on a 64-bit memory the
+  // two functions tools/asc64 puts in place of memory.size / memory.grow): for the glue of the attached parts
+  readonly env: Record<string, unknown>;
+  // A guest register as an index into the memory. memory32: wrapped to 32 bits (docs/CONTRACT.md); memory64: the
+  // whole value (an address beyond the memory traps or is refused where it is used)
+  addr(v: bigint): number { return this.mem64 ? Number(BigInt.asUintN(64, v)) : Number(v & M32); }
 
   get guarded(): boolean { return this.opts.guard ?? GUARD_DEFAULT; }
   // ---- memory ----
@@ -287,15 +312,15 @@ export class Runtime {
   ensure(end: number): void {
     const have = this.memory.buffer.byteLength;
     if (end <= have) return;
-    try { this.memory.grow(Math.ceil((end - have) / 65536)); }
+    try { const n = Math.ceil((end - have) / 65536); if (this.m64) { if (this.m64.grow(n) < 0) throw new RangeError("memory.grow"); } else this.memory.grow(n); }
     catch { throw new Error(`the linear memory cannot grow from ${have} to ${end} bytes (the host has no memory for it)`); }
     this.stats.grows++;
   }
   private checkLayout(lx: LoaderExports): void {
-    const p = this.r.rt_scratch_ptr() >>> 0, dv = this.dv();
+    const p = this.r.rt_scratch_ptr(), dv = this.dv();
     RANGES.forEach((g, i) => { dv.setBigUint64(p + 16 * i, BigInt(g.lo), true); dv.setBigUint64(p + 16 * i + 8, BigInt(g.hi), true); });
     let bad = this.r.rt_ranges_check(p, RANGES.length, BigInt(HOST_END));
-    const ends: Record<string, number> = { rt: this.r.rt_static_end() >>> 0, loader: lx.ld_heap_base() >>> 0, kernel: this.k.kernel_static_end() >>> 0 };
+    const ends: Record<string, number> = { rt: this.r.rt_static_end(), loader: lx.ld_heap_base(), kernel: this.k.kernel_static_end() };
     RANGES.forEach((g, i) => { if (g.module && ends[g.module] !== undefined) bad |= this.r.rt_static_check(i, BigInt(g.lo), BigInt(g.hi), BigInt(ends[g.module])); });
     if (bad) throw new Error("runtime: the shared memory layout is not sound: " + this.red.join("; "));
   }
@@ -366,7 +391,7 @@ export class Runtime {
       // start contract: dependencies' init functions first (load order), the main module's last, then the entry
       for (const m of [...set.modules.slice(1), set.modules[0]]) { if (m.init) this.initQueue.push(m.init); this.initQueue.push(...m.initArray); }
       this.entry = set.entry;
-      const stack = this.stackRegion, size = (this.opts.mainStackSize + 0xFFF) & ~0xFFF;
+      const stack = this.stackRegion, size = pageUp(this.opts.mainStackSize);
       if (!this.k.kernel_map_stack(BigInt(stack), BigInt(size))) throw new Error("the kernel refused the main thread's stack");
       this.mainStackTop = stack + size;
       this.mainThread = this.k.kernel_create_main_thread(BigInt(this.ld.stubAddr(startId)), BigInt(this.mainStackTop));
@@ -383,8 +408,8 @@ export class Runtime {
   // instructions, and what the loader knows to be function entries (function symbols, init and fini functions,
   // relocation targets in the text) is passed along, so that those functions are translated with their neighbours.
   private addModuleCode(m: ModuleInfo): void {
-    const st = range("file staging"), out = (this.nextFile + 3) & ~3;
-    const entries = this.ld.codeEntries(m.handle, out, (st.hi - out) >>> 2);
+    const st = range("file staging"), out = Math.ceil(this.nextFile / 4) * 4;
+    const entries = this.ld.codeEntries(m.handle, out, Math.floor((st.hi - out) / 4));
     this.a64.addCode(m.base, m.imageSize, { text: { lo: m.text.addr, hi: m.text.addr + m.text.size }, entries });
     this.text.push({ lo: m.text.addr, hi: m.text.addr + m.text.size, handle: m.handle });
     const cuts = this.opts.cutsKey?.[m.name];
@@ -427,8 +452,8 @@ export class Runtime {
     if (ptr + bytes.length > fixed.hi) {
       ptr = this.hostAlloc(bytes.length);
       if (!ptr) throw new Error(`file ${name}: ${bytes.length} bytes fit neither the file staging range (${fixed.hi - was} bytes free) nor the code region (${Math.max(0, this.codeEnd - base)} bytes free)`);
-      undo = () => { if (this.nextBase === ptr + ((bytes.length + 0xFFF) & ~0xFFF) + 0x1000) this.nextBase = base; this.u8().fill(0, ptr, ptr + bytes.length); };
-    } else this.nextFile = (ptr + bytes.length + 0xFFF) & ~0xFFF;
+      undo = () => { if (this.nextBase === ptr + pageUp(bytes.length) + 0x1000) this.nextBase = base; this.u8().fill(0, ptr, ptr + bytes.length); };
+    } else this.nextFile = pageUp(ptr + bytes.length);
     this.u8().set(bytes, ptr);
     return { name, ptr, len: bytes.length, undo };
   }
@@ -438,7 +463,7 @@ export class Runtime {
     if (at + n > st.hi) throw new Error(`runtime: ${n} bytes to hash do not fit the file staging range`);
     let o = at;
     for (const p of parts) { if (p.buffer === this.memory.buffer) this.u8().copyWithin(o, p.byteOffset, p.byteOffset + p.length); else this.u8().set(p, o); o += p.length; }
-    const out = (this.r.rt_scratch_ptr() >>> 0) + 3400;
+    const out = this.r.rt_scratch_ptr() + 3400;
     this.ld.x.ld_sha256(at, n, out);
     return this.u8().slice(out, out + 32);
   }
@@ -459,7 +484,7 @@ export class Runtime {
   private ticked(now: bigint): void { this.k.kernel_tick(now); for (const fn of this.tickHooks) fn(now); }
   private nextDeadline(now: bigint): bigint { let d = FOREVER; for (const fn of this.deadlineFns) { const v = fn(now); if (v < d) d = v; } return d; }
   private sha256(ptr: number, len: number): string {
-    const out = (this.r.rt_scratch_ptr() >>> 0) + 3400;
+    const out = this.r.rt_scratch_ptr() + 3400;
     this.ld.x.ld_sha256(ptr, len, out);
     return toHex(this.u8().subarray(out, out + 32));
   }
@@ -563,7 +588,7 @@ export class Runtime {
   loadFlat(image: Uint8Array, side: { base: number; entry: number; stack_top: number; bss_end?: number }): boolean {
     if (!this.r.rt_load_begin()) throw new Error("runtime: a process was loaded already");
     try {
-      const base = side.base, top = (Math.max(side.stack_top, side.bss_end ?? 0, base + image.length) + 0xFFF) & ~0xFFF;
+      const base = side.base, top = pageUp(Math.max(side.stack_top, side.bss_end ?? 0, base + image.length));
       this.ensure(top);
       this.u8().set(image, base);
       if (this.k.kernel_module_add(BigInt(base), BigInt(top - base), 0n, 0n) < 0) throw new Error("the kernel refused the flat image");
@@ -573,7 +598,7 @@ export class Runtime {
       this.flat = true;
       this.mainThread = this.k.kernel_create_main_thread(BigInt(side.entry), BigInt(side.stack_top));
       if (!this.mainThread) throw new Error("the kernel could not create the main thread");
-      const ctx = this.k.kernel_thread_ctx(this.k.kernel_thread_index(this.mainThread)) >>> 0, dv = this.dv();
+      const ctx = this.k.kernel_thread_ctx(this.k.kernel_thread_index(this.mainThread)), dv = this.dv();
       dv.setBigUint64(ctx + 8, 0n, true); dv.setBigUint64(ctx + 0x118, 0n, true); dv.setBigUint64(ctx + 0x120, 0n, true);
     } catch (e) {
       this.faultNow(FAULT.load, e instanceof Error ? e.message : String(e));
@@ -630,15 +655,15 @@ export class Runtime {
   }
   private faultNow(kind: number, detail: string, aux = 0n, ctx = 0, exact = true): void {
     const cap = this.r.rt_scratch_cap(), bytes = new TextEncoder().encode(detail).subarray(0, cap);
-    this.u8().set(bytes, this.r.rt_scratch_ptr() >>> 0);
+    this.u8().set(bytes, this.r.rt_scratch_ptr());
     const index = ctx ? this.k.kernel_thread_of_ctx(ctx) : -1;
     const handle = index >= 0 ? this.dv().getUint32((this.threadInfo(index)) + 28, true) : 0;
     this.r.rt_fault(kind, handle, index, index >= 0 ? ctx : 0, exact ? 1 : 0, aux, bytes.length);
-    const f = this.r.rt_fault_ptr() >>> 0, dv = this.dv();
+    const f = this.r.rt_fault_ptr(), dv = this.dv();
     this.stop = { kind: "fault", code: 0, fault: { kind: FAULT_NAMES[kind], thread: handle, threadIndex: index, pc: dv.getBigUint64(f + 8, true), aux, detail } };
   }
   private threadInfo(index: number): number {
-    const p = (this.r.rt_scratch_ptr() >>> 0) + 2048;
+    const p = this.r.rt_scratch_ptr() + 2048;
     this.k.kernel_thread_info(index, p);
     return p;
   }
@@ -647,9 +672,9 @@ export class Runtime {
   private inText(pc: number): boolean { for (const t of this.text) if (pc >= t.lo && pc < t.hi) return true; return false; }
   // the index-0 trampoline: a pc with no entry in the pc map
   private onTranslate(pc: bigint): number {
-    const p = Number(pc & M32);
-    if (pc <= M32 && p >= STUBS.base && p < HOST_END) return this.thunk;
-    if (pc > M32 || (p & 3) || !this.inText(p)) {
+    const p = pc < this.addrEnd ? Number(pc) : -1;   // -1: no address of this memory
+    if (p >= STUBS.base && p < HOST_END) return this.thunk;
+    if (p < 0 || p % 4 || !this.inText(p)) {
       this.fault(FAULT.jump, `${hex(pc)} is not in the text of a loaded module (called or returned to from near x30=${hex(this.core.x30.value)})`, pc);
       return A64Host.STOP;
     }
@@ -696,11 +721,11 @@ export class Runtime {
       jump: (pc) => act({ kind: "jump", pc: BigInt(pc) }),
       never: () => act({ kind: "never" }),
       // JavaScript cannot write a v128 global: the state goes through a context block
-      setD: (i, bits) => { if (i === 0) { rt.regs.set_d0(BigInt.asIntN(64, bits)); return; } const s = rt.r.rt_ctx_scratch() >>> 0; c.save_ctx(s); const dv = rt.dv(); dv.setBigUint64(s + 0x130 + 16 * i, BigInt.asUintN(64, bits), true); dv.setBigUint64(s + 0x138 + 16 * i, 0n, true); c.load_ctx(s); },
+      setD: (i, bits) => { if (i === 0) { rt.regs.set_d0(BigInt.asIntN(64, bits)); return; } const s = rt.r.rt_ctx_scratch(); c.save_ctx(s); const dv = rt.dv(); dv.setBigUint64(s + 0x130 + 16 * i, BigInt.asUintN(64, bits), true); dv.setBigUint64(s + 0x138 + 16 * i, 0n, true); c.load_ctx(s); },
       block: (event, timeout, resume) => act({ kind: "block", event, timeout, resume }),
       call: (fn, ...args) => rt.guestCall(BigInt(fn), args),
       now: () => rt.nowNs(),
-      stackArg: i => rt.dv().getBigUint64(Number((c.sp.value as bigint) & M32) + 8 * i, true),
+      stackArg: i => rt.dv().getBigUint64(rt.addr(c.sp.value as bigint) + 8 * i, true),
       args: () => { rt.regs.args_xd(rt.argsPtr); return rt.argsPtr; },
       argsX: () => { rt.regs.args_x(rt.argsPtr); return rt.argsPtr; },
       waitFor: (done, at, resume, deadline) => {
@@ -715,7 +740,7 @@ export class Runtime {
   }
   // The thunk: pc is a stub address, registers are written back, x30 is where the guest wants to continue
   private hostCall(): void {
-    const c = this.core, pc = Number((c.pc.value as bigint) & M32), id = (pc - STUBS.base) >>> 2;
+    const c = this.core, pc = Number(c.pc.value as bigint), id = (pc - STUBS.base) >>> 2;   // a stub's pc: in the host area
     this.stats.hostCalls++;
     const t0 = performance.now();
     const cpu = this.cpuApi();
@@ -760,7 +785,7 @@ export class Runtime {
     const thread = this.dv().getUint32(this.threadInfo(index) + 28, true);
     let ev = this.threadEvent.get(index);
     if (ev && ev.thread !== thread) { this.k.kernel_handle_close(ev.r); this.k.kernel_handle_close(ev.w); ev = undefined; }
-    if (!ev) { const p = (this.r.rt_scratch_ptr() >>> 0) + 3072; const r = this.k.kernel_event_new(p); ev = { r, w: this.dv().getUint32(p, true), thread }; this.threadEvent.set(index, ev); }
+    if (!ev) { const p = this.r.rt_scratch_ptr() + 3072; const r = this.k.kernel_event_new(p); ev = { r, w: this.dv().getUint32(p, true), thread }; this.threadEvent.set(index, ev); }
     return ev;
   }
   // Signals the waits whose outside thing has happened and whose time has come. Returns the earliest time of a wait
@@ -811,7 +836,7 @@ export class Runtime {
   // Zeroed memory the guest can address, for the life of the process (a take-over's work buffers): pages of the
   // code region above the modules. 0 when the region is full.
   hostAlloc(size: number): number {
-    const n = (size + 0xFFF) & ~0xFFF, base = this.nextBase;
+    const n = pageUp(size), base = this.nextBase;
     if (base + n > this.codeEnd) return 0;
     this.nextBase = base + n + 0x1000;
     this.ensure(base + n);
@@ -822,14 +847,14 @@ export class Runtime {
   // (and text for the jump check); the second is data. Blocks that were freed are handed out again by size.
   private jitFreeList: { addr: number; size: number }[] = [];
   private jitBlock(size: number): number {
-    const n = (size + 0xFFF) & ~0xFFF, i = this.jitFreeList.findIndex(b => b.size === n);
+    const n = pageUp(size), i = this.jitFreeList.findIndex(b => b.size === n);
     if (i >= 0) { const b = this.jitFreeList.splice(i, 1)[0]; this.u8().fill(0, b.addr, b.addr + n); return b.addr; }
     return this.hostAlloc(n);
   }
   jitAlloc(rxSize: number, roSize: number): { rx: bigint; ro: bigint } | null {
     const rx = this.jitBlock(rxSize), ro = roSize ? this.jitBlock(roSize) : 0;
     if (!rx || (roSize && !ro)) { this.log(`[RED] runtime: no code memory for a JIT environment (${rxSize} + ${roSize} bytes)`); return null; }
-    const n = (rxSize + 0xFFF) & ~0xFFF;
+    const n = pageUp(rxSize);
     this.a64.addCode(rx, n);
     this.text.push({ lo: rx, hi: rx + n, handle: -2 });
     return { rx: BigInt(rx), ro: BigInt(ro) };
@@ -844,8 +869,8 @@ export class Runtime {
   }
   jitFree(rx: number, rxSize: number, ro: number, roSize: number): void {
     const t = this.text.find(t => t.handle === -2 && t.lo === rx);
-    if (t) { this.a64.removeCode(t.lo, t.hi - t.lo); this.text = this.text.filter(x => x !== t); this.jitFreeList.push({ addr: rx, size: (rxSize + 0xFFF) & ~0xFFF }); }
-    if (ro && roSize) this.jitFreeList.push({ addr: ro, size: (roSize + 0xFFF) & ~0xFFF });
+    if (t) { this.a64.removeCode(t.lo, t.hi - t.lo); this.text = this.text.filter(x => x !== t); this.jitFreeList.push({ addr: rx, size: pageUp(rxSize) }); }
+    if (ro && roSize) this.jitFreeList.push({ addr: ro, size: pageUp(roSize) });
   }
   // Something to release when the process is disposed of (graphics objects, storage handles)
   onDispose(fn: () => void): void { this.disposers.push(fn); }
@@ -892,7 +917,7 @@ export class Runtime {
     for (let i = 0; i < args.length && i < 8; i++) c["x" + i].value = BigInt.asUintN(64, BigInt(args[i]));
     if (args.length > 8) {
       const sp = (sp0 - BigInt(8 * (args.length - 8))) & ~15n, dv = this.dv();
-      for (let i = 8; i < args.length; i++) dv.setBigUint64(Number(sp & M32) + 8 * (i - 8), BigInt.asUintN(64, BigInt(args[i])), true);
+      for (let i = 8; i < args.length; i++) dv.setBigUint64(this.addr(sp) + 8 * (i - 8), BigInt.asUintN(64, BigInt(args[i])), true);
       c.sp.value = sp;
     }
     c.x30.value = PC_CALLBACK; c.pc.value = fn;
@@ -909,7 +934,7 @@ export class Runtime {
       const pc: bigint = c.pc.value;
       if (pc === PC_CALLBACK) break;
       if (pc === PC_YIELD) { this.fault(FAULT.host, `a guest callback at ${hex(fn)} blocked or gave up its core inside a host function`, fn, false); throw new GuestCallAbort(); }
-      if (pc >= PC_SPECIAL) { this.fault(FAULT.jump, `${hex(pc)} reached inside a guest callback at ${hex(fn)}`, pc); throw new GuestCallAbort(); }
+      if (pc >= PC_SPECIAL && pc <= PC_SPECIAL_END) { this.fault(FAULT.jump, `${hex(pc)} reached inside a guest callback at ${hex(fn)}`, pc); throw new GuestCallAbort(); }
       if (c.budget.value < 0) {   // the callback is not preempted: account the slice and give it another
         const now: bigint = this.opts.clock === "wall" ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value);
         if (this.opts.clock === "wall") r.rt_clock_slice_end(c.budget.value);
@@ -934,7 +959,7 @@ export class Runtime {
       }
       // block: WaitSynchronization on the event, made on the thread's behalf, with pc at the stub so that the woken
       // thread enters hostCall() again and finds its resume
-      const ctx = this.cur, slot = this.r.rt_wait_slot(this.curIndex) >>> 0;
+      const ctx = this.cur, slot = this.r.rt_wait_slot(this.curIndex);
       c.pc.value = BigInt(stubPc);
       c.save_ctx(ctx);
       const dv = this.dv();
@@ -994,7 +1019,7 @@ export class Runtime {
           if (ext.next > now) { const room = (ext.next - now + BigInt(this.opts.nsPerUnit) - 1n) / BigInt(this.opts.nsPerUnit); if (room < BigInt(budget)) budget = Number(room); }
         }
       }
-      const ctx: number = k.kernel_schedule() >>> 0;
+      const ctx: number = k.kernel_schedule();
       if (!ctx) {
         if (k.kernel_stop_reason()) { this.finish(); break; }
         // every thread waits: time moves to the next deadline
@@ -1059,7 +1084,7 @@ export class Runtime {
         if (this.curIndex === k.kernel_thread_index(this.mainThread) && this.finiStep(ctx)) { k.kernel_preempt(ctx); continue; }
         k.kernel_thread_returned(ctx); if (k.kernel_stop_reason()) { this.finish(); break; } continue;
       }
-      if (pc >= PC_SPECIAL) { this.faultNow(FAULT.jump, `${hex(pc)} is a reserved pc value`, pc, ctx); break; }
+      if (pc >= PC_SPECIAL && pc <= PC_SPECIAL_END) { this.faultNow(FAULT.jump, `${hex(pc)} is a reserved pc value`, pc, ctx); break; }
       if (!this.stackOk(ctx)) break;
       if (c.budget.value < 0) k.kernel_preempt(ctx);
     }
@@ -1113,12 +1138,12 @@ export class Runtime {
   }
   // At the end of a slice: the stack pointer must be in mapped memory (linear memory has no guard pages)
   private stackOk(ctx: number): boolean {
-    const sp64: bigint = this.core.sp.value, sp = Number(sp64 & M32), ok = this.spOk.get(this.curIndex);
-    if (sp64 <= M32 && ok && sp > ok.lo && sp <= ok.hi) return true;
-    const q = this.r.rt_query_ptr() >>> 0;
+    const sp64: bigint = BigInt.asUintN(64, this.core.sp.value), inSpace = sp64 < this.addrEnd, sp = inSpace ? Number(sp64) : 0, ok = this.spOk.get(this.curIndex);
+    if (inSpace && ok && sp > ok.lo && sp <= ok.hi) return true;
+    const q = this.r.rt_query_ptr();
     this.k.kernel_query_memory(sp64 - 1n, q);
     const dv = this.dv(), lo = Number(dv.getBigUint64(q, true)), size = Number(dv.getBigUint64(q + 8, true)), state = dv.getUint32(q + 16, true);
-    if (sp64 > M32 || state === 0) {
+    if (!inSpace || state === 0) {
       this.faultNow(FAULT.stack, `sp=${hex(sp64)} is in unmapped memory (free range ${hex(lo)}..${hex(lo + size)})`, sp64, ctx);
       return false;
     }

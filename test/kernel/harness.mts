@@ -1,21 +1,29 @@
 // The kernel's test harness: fresh instances of build/kernel/kernel.wasm (its own memory is the guest memory) and a
 // scripted guest: each test says which thread makes which SVC, the harness puts the arguments in that thread's
 // context block, calls kernel_svc and reads the results back. No translator is involved.
-import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { loadDefs, KIT_DIR, type MachineDef } from "../../src/kit/host/defs.mts";
 import { writeStamp } from "../../src/kit/host/stamp.mts";
 import { readMachines, readTrace, formatRecord, type KitExports, type WasmMachine } from "../../src/kit/host/reader.mts";
+import { buildPair } from "../../tools/asc64/abi.mjs";
+import { instantiate } from "../../src/glue/wasm_abi.ts";
+import { makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 
 export const ROOT = join(KIT_DIR, "..", "..");
-export const WASM = join(ROOT, "build", "kernel", "kernel.wasm");
+// NX_MEM: "32" (default) the kernel built for a 32-bit memory, with a memory of its own; "64" the wasm64 build on a
+// 64-bit memory (made here and imported); "64hi" the same with the whole test layout 6 GB up, so that an address the
+// kernel truncated to 32 bits would land on untouched pages 4 GB lower.
+export const MODE = process.env.NX_MEM ?? "32";
+export const M64 = MODE !== "32";
+export const HI = MODE === "64hi" ? 0x1_8000_0000 : 0;
+export const WASM = join(ROOT, "build", "kernel", M64 ? "kernel64.wasm" : "kernel.wasm");
 
 export function build(): void {
   mkdirSync(dirname(WASM), { recursive: true });
-  execFileSync(process.execPath, [join(ROOT, "node_modules", "assemblyscript", "bin", "asc.js"), "src/kernel/index.ts", "-o", WASM,
-    "--runtime", "stub", "-O2", "--initialMemory", "1536"], { cwd: ROOT, stdio: "inherit" });
-  writeStamp(WASM);
+  const args = ["--runtime", "stub", "-O2", "--initialMemory", "1536"];
+  buildPair("src/kernel/index.ts", join("build", "kernel", "kernel.wasm"), args, { args64: [...args, "--importMemory"] });
+  writeStamp(join(ROOT, "build", "kernel", "kernel.wasm")); writeStamp(join(ROOT, "build", "kernel", "kernel64.wasm"));
 }
 
 export interface KernelExports extends KitExports {
@@ -50,6 +58,8 @@ export interface KernelExports extends KitExports {
   kernel_thread_info(index: number, out: number): number;
   kernel_count(what: number): bigint;
   kernel_alias_page_state(addr: bigint): number;
+  kernel_alias_arena(base: number, size: number): number;
+  kernel_alias_leaves(what: number): number;
   kernel_check(): number;
 }
 
@@ -66,17 +76,18 @@ export const ACT = { CONTINUE: 0, SWITCH: 1, STOP: 2 };
 export const WAITERS = 0x40000000, CUR_THREAD = 0xFFFF8000, P = 0x1000;
 
 // The test layout: everything below 96 MB, with a hole between the thread-local region and the heap
+// (NX_MEM=64hi: the same, HI higher)
 export const L = {
-  code: 0x01000000, codeSize: 0x00800000,
-  tls: 0x01800000, tlsSize: 0x00100000,
-  heap: 0x02000000, heapSize: 0x01000000,
-  stack: 0x03000000, stackSize: 0x01100000,
-  alias: 0x04200000, aliasSize: 0x01800000,
+  code: HI + 0x01000000, codeSize: 0x00800000,
+  tls: HI + 0x01800000, tlsSize: 0x00100000,
+  heap: HI + 0x02000000, heapSize: 0x01000000,
+  stack: HI + 0x03000000, stackSize: 0x01100000,
+  alias: HI + 0x04200000, aliasSize: 0x01800000,
   pool: 0x03000000, used: 0x00400000,
 };
 export const END = L.alias + L.aliasSize;
-export const DATA = 0x01400000;   // scratch guest memory for the tests' lock words and buffers (inside the code region)
-const CFG = 0x017FF000;           // where the harness writes kernel_init's block
+export const DATA = HI + 0x01400000;   // scratch guest memory for the tests' lock words and buffers (inside the code region)
+export const CFG = HI + 0x017FF000;    // where the harness writes kernel_init's block
 
 export interface Options { pool?: number; used?: number; sysResource?: number; flags?: number; programId?: bigint; processId?: number; defaults?: boolean; main?: boolean }
 type Arg = number | bigint;
@@ -114,12 +125,16 @@ export class Kernel {
 
   constructor(o: Options = {}) {
     module ??= new WebAssembly.Module(readFileSync(WASM));
-    const inst = new WebAssembly.Instance(module, { env: {
-      log: (p: number, n: number) => { this.logs.push(Buffer.from(this.x.memory.buffer, p >>> 0, n).toString("utf8")); },
-      debug_string: (p: number, n: number) => { this.out.push(Buffer.from(this.x.memory.buffer, p >>> 0, n).toString("latin1")); },
+    // addresses are numbers on this side in every mode (src/glue/wasm_abi.ts)
+    const mem = M64 ? makeMemory64({ initial: 1536, maximum: MEM64_MAX_PAGES }) : null;
+    const bytes = (p: number, n: number) => new Uint8Array(this.x.memory.buffer).slice(p, p + n);
+    this.x = instantiate<KernelExports>(module, { env: {
+      ...(mem ? { memory: mem.memory, ...mem.imports() } : {}),
+      log: (p: number, n: number) => { this.logs.push(Buffer.from(bytes(p, n)).toString("utf8")); },
+      debug_string: (p: number, n: number) => { this.out.push(Buffer.from(bytes(p, n)).toString("latin1")); },
       abort: () => { throw new Error("abort"); },
-    } });
-    this.x = inst.exports as unknown as KernelExports;
+    } }, { mem64: M64, name: "kernel.wasm" });
+    if (mem && HI) mem.grow(Math.ceil((CFG + 0x1000) / 65536) - mem.pages());   // the harness writes its blocks up there before the kernel commits anything
     this.x.kit_cover_enable(1);
     live.push(this);
     if (this.x.kernel_static_end() > L.code) throw new Error("the kernel's static memory reaches into the test layout");

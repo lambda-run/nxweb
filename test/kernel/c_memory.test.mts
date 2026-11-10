@@ -5,7 +5,7 @@
 // region and pool limits). Not ported, because they test the Apple host's page protection and files: concurrency,
 // lazy_commit, dirty_integration, failures, release_fallback, file_rule, file_sweep, guest_helper, module_back_patch.
 import assert from "node:assert/strict";
-import { test, Kernel, R, L, END, P, def } from "./harness.mts";
+import { test, Kernel, R, L, END, P, def, CFG, M64 } from "./harness.mts";
 
 const BAD = R.BAD_MEMORY;
 const PS = Object.fromEntries(def("alias_page").states.map((s, i) => [s, i])) as Record<string, number>;
@@ -286,13 +286,16 @@ test("layout: GetInfo reports the regions; the default layout below 4 GB; invali
     const x = new Kernel({ main: false });
     const v = [L.code, L.codeSize, L.tls, L.tlsSize, L.heap, L.heapSize, L.stack, L.stackSize, L.alias, L.aliasSize, L.pool, L.used, 0, 0, 0, 0].map(BigInt);
     change(v);
-    const cfg = 0x017FE000; v.forEach((n, i) => x.dv.setBigUint64(cfg + 8 * i, n, true));
+    const cfg = CFG - 0x1000; v.forEach((n, i) => x.dv.setBigUint64(cfg + 8 * i, n, true));
     assert.equal(x.x.kernel_init(cfg), code);
+    if (!code) { assert.deepEqual(x.red, []); return; }
     assert.equal(x.red.length, 1); assert.ok(x.red[0].startsWith("[RED] kernel: invalid address-space layout"));
   };
   bad(v => { v[4] += 0x800n; }, 1);                      // not page-aligned
   bad(v => { v[5] = 0n; }, 2);                           // empty
-  bad(v => { v[9] = 0x100000000n; }, 2);                 // past 0xFFFF0000
+  bad(v => { v[9] = M64 ? 0x400000000n : 0x100000000n; }, 2);   // past 0xFFFF0000 (a 64-bit memory: past 0x3_FFFF_0000)
   bad(v => { v[6] = v[4] + 0x1000n; }, 3);               // the stack region inside the heap region
-  bad(v => { v[8] = 0x10000000n; v[9] = 0xE0001000n; }, 4);   // an alias region over 3.5 GB
+  // an alias region over 3.5 GB: more than the static leaves of the page table cover, which is all a 32-bit memory
+  // has; a 64-bit memory takes it (leaves beyond them come from kernel_alias_arena)
+  bad(v => { v[8] = 0x10000000n; v[9] = 0xE0001000n; }, M64 ? 0 : 4);
 });

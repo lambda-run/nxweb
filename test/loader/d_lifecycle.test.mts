@@ -1,5 +1,5 @@
 // The module lifecycle: an NRO loaded at run time, unloaded and loaded again; what each state allows; where a module may be mapped.
-import { test, fresh, file, readElf, expectedImage, pristineImage, eq, ok, same, hex, ARENA, STUBS, GUEST, MEM_BYTES, R_ABS64, R_JUMP_SLOT, type Box, type World } from "./harness.mts";
+import { test, fresh, file, readElf, expectedImage, pristineImage, eq, ok, same, hex, ARENA, STUBS, GUEST, MEM_BYTES, HI, R_ABS64, R_JUMP_SLOT, type Box, type World } from "./harness.mts";
 import { loadSet, checkImages, addHost, newWorld, symAddr, slotOf } from "./c_load.test.mts";
 import { Info, LoaderError, ERR_ARG, ERR_STATE, ERR_REFUSED, HOST_UNRESOLVED } from "../../src/loader/host/loader.mts";
 import { readTrace, formatRecord, readMachines } from "../../src/kit/host/reader.mts";
@@ -172,12 +172,12 @@ test("map: the base must be a free, page-aligned range of linear memory", () => 
     ["address 0", 0, "not a page-aligned range"],
     ["inside the loader's static memory", 0x1000, "not a page-aligned range"],
     ["runs past the end of memory", MEM_BYTES - size + 0x1000, "not a page-aligned range"],
-    ["beyond memory", 0xFFFF_0000, "not a page-aligned range"],
+    ["beyond memory", HI + 0xFFFF_0000, "not a page-aligned range"],
     ["over the arena", ARENA + 0x8000, "overlaps"],
     ["ending in the arena", ARENA, "overlaps"],
     ["over the stub region", STUBS, "overlaps"],
-    ["over its own file", fm.ptr & ~0xFFF, "overlaps"],
-    ["over another module's file", fs.ptr & ~0xFFF, "overlaps"],
+    ["over its own file", Math.floor(fm.ptr / 0x1000) * 0x1000, "overlaps"],
+    ["over another module's file", Math.floor(fs.ptr / 0x1000) * 0x1000, "overlaps"],
     ["over a mapped module", GUEST, "overlaps"],
     ["over the end of a mapped module", GUEST + sdkSize - 0x1000, "overlaps"],
     ["ending inside a mapped module", GUEST - size + 0x1000, "overlaps"],

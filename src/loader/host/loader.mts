@@ -1,5 +1,7 @@
 // Embedder side of the loader (Node or browser, no Node APIs): a typed wrapper over the ld_* exports of a module
 // built from src/loader/index.ts. See ../README.md.
+// The exports are those of src/glue/wasm_abi.ts instantiate(): an address is a number here, never negative, in the
+// build for a 32-bit memory and in the one for a 64-bit memory alike.
 import type { KitExports } from "../../kit/host/reader.mts";
 
 export interface LoaderExports extends KitExports {
@@ -80,7 +82,7 @@ export class Loader {
 
   private get u8(): Uint8Array { return new Uint8Array(this.x.memory.buffer); }
   private get dv(): DataView { return new DataView(this.x.memory.buffer); }
-  error(): string { return this.dec.decode(this.u8.subarray(this.x.ld_error_ptr() >>> 0, (this.x.ld_error_ptr() >>> 0) + this.x.ld_error_len())); }
+  error(): string { return this.dec.decode(this.u8.subarray(this.x.ld_error_ptr(), this.x.ld_error_ptr() + this.x.ld_error_len())); }
   private check(rc: number): number {
     if (rc < 0) throw new LoaderError(rc, this.error() || `loader error ${rc}`);
     return rc;
@@ -91,13 +93,13 @@ export class Loader {
     this.u8.set(b, this.scratch);
     return [this.scratch, b.length];
   }
-  private str(ptr: number, len: number): string { return this.dec.decode(this.u8.subarray(ptr >>> 0, (ptr >>> 0) + len)); }
+  private str(ptr: number, len: number): string { return this.dec.decode(this.u8.subarray(ptr, ptr + len)); }
 
   // ---- host functions ----
   // The host implements `name`. forced: it wins over every module's definition; otherwise it only fills imports no
   // module defines. Returns the host function id; its stub is at stubAddr(id).
   hostAdd(name: string, forced: boolean): number { return this.check(this.x.ld_host_add(...this.name(name), forced ? HOST_FORCE : HOST_HLE)); }
-  stubAddr(id: number): number { return this.x.ld_stub_addr(id) >>> 0; }
+  stubAddr(id: number): number { return this.x.ld_stub_addr(id); }
   // The host function id of a guest address, or -1 when it is not a stub
   stubId(addr: number | bigint): number { return this.x.ld_stub_id(BigInt(addr)); }
   hostFind(name: string): number { return this.x.ld_host_find(...this.name(name)); }
@@ -127,7 +129,7 @@ export class Loader {
   pin(h: number): void { this.check(this.x.ld_pin(h)); }
   unload(h: number): void { this.check(this.x.ld_unload(h)); }
   state(h: number): State { return STATES[this.x.ld_state(h)]; }
-  get(h: number, what: number): number { return this.x.ld_get(h, what) >>> 0; }
+  get(h: number, what: number): number { return this.x.ld_get(h, what); }
 
   info(h: number): ModuleInfo {
     const g = (w: number) => this.get(h, w), base = g(Info.Base), dv = this.dv;
@@ -164,9 +166,10 @@ export class Loader {
 
   // The function entries the loader knows of a relocated module (function symbols, init / fini functions, relative
   // relocations into the text), for the translator's addCode({ entries }). out/cap: free linear memory for the list.
-  codeEntries(h: number, out: number, cap: number): Uint32Array {
-    const n = this.check(this.x.ld_code_entries(h, out, cap));
-    return new Uint32Array(this.x.memory.buffer, out, Math.min(n, cap)).slice();
+  // The loader writes image offsets (u32: an image is below 4 GB whatever its address); these are guest addresses.
+  codeEntries(h: number, out: number, cap: number): Float64Array {
+    const n = this.check(this.x.ld_code_entries(h, out, cap)), base = this.get(h, Info.Base);
+    return Float64Array.from(new Uint32Array(this.x.memory.buffer, out, Math.min(n, cap)), off => base + off);
   }
 
   // Load a set of modules as at process start: parse all, map all in the given order (the symbol lookup order; on the

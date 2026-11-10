@@ -49,8 +49,9 @@ const HAVE_INIT: u32 = 1, HAVE_FINI: u32 = 2, HAVE_HASH: u32 = 4, HAVE_GNU_HASH:
 @unmanaged
 class Mod extends Layout {
   inst0: u64; inst1: u64;   // the kit instance (16 bytes)
+  base: usize;              // guest address of the image (anywhere in linear memory), valid from Mapped on
+  symh: usize;              // the export table (in the arena): symhCap slots of u32 symbol index, 0 = empty (open addressing on fnv)
   index: u32;               // the handle
-  base: u32;                // guest address of the image, valid from Mapped on
   have: u32;
   mod0: u32; dyn: u32;      // image offsets, as everything below
   bssStart: u32; bssEnd: u32;   // what MOD0 says (not used for mapping: the header's bss size is)
@@ -59,7 +60,7 @@ class Mod extends Layout {
   init: u32; fini: u32;
   initArray: u32; initArrayN: u32; finiArray: u32; finiArrayN: u32;
   hash: u32; gnuHash: u32;
-  symh: u32; symhCap: u32;  // the export table: symhCap slots of u32 symbol index, 0 = empty (open addressing on fnv)
+  symhCap: u32;
   mapSeq: u32; relocSeq: u32; loads: u32;
   nRelative: u32; nRelr: u32; nAbs: u32; nGlob: u32; nJump: u32; nUnsupported: u32; nWeak0: u32;
   nameLen: u32;
@@ -80,11 +81,11 @@ class Mod extends Layout {
 }
 
 // ---- global state (reset by init) ----
-const MODS: usize = memory.data(16384);     // MAX_MODULES pointers to records
+const MODS: usize = memory.data(32768);     // MAX_MODULES pointers to records (8 bytes each: a usize in either build)
 const LOADED: usize = memory.data(16384);   // the handles of the mapped modules, in the order they were mapped: the lookup order
 let nMods: u32 = 0, nLoaded: u32 = 0, seq: u32 = 0;
 let arena: usize = 0, arenaTop: usize = 0, arenaEnd: usize = 0;
-let stubBase: u32 = 0, stubCap: u32 = 0;
+let stubBase: usize = 0, stubCap: u32 = 0;
 let hostEnt: usize = 0, hostIdx: usize = 0, hostMask: u32 = 0, hostCount: u32 = 0, stubOverflow: u32 = 0;
 let faults: u32 = 0;   // checked accessors that were asked for something outside an image: stays 0 unless this file has a bug
 let ready: bool = false;
@@ -104,16 +105,16 @@ function alloc(n: u64): usize {
 export function arenaUsed(): u32 { return <u32>(arenaTop - arena); }
 
 // @ts-ignore: decorator
-@inline function modAt(h: u32): Mod { return changetype<Mod>(load<u32>(MODS + (<usize>h << 2))); }
+@inline function modAt(h: u32): Mod { return changetype<Mod>(load<usize>(MODS + (<usize>h << 3))); }
 function modOf(h: i32): Mod {
-  if (!ready || <u32>h >= nMods) { context(0, 0); red(); puts("no module with handle "); putu(<u64><u32>h); emit(); return changetype<Mod>(0); }
+  if (!ready || <u32>h >= nMods) { context(0, 0); red(); puts("no module with handle "); putu(<u64><u32>h); emit(); return changetype<Mod>(<usize>0); }
   const m = modAt(<u32>h);
   context(m.namePtr, m.nameLen);
   return m;
 }
 
 // ---- host function table and the stub region ----
-// Entry (32 bytes): +0 name pointer, +4 name length, +8 name hash, +12 references, +16 handle of the first module that
+// Entry (32 bytes): +0 name (offset in the arena), +4 name length, +8 name hash, +12 references, +16 handle of the first module that
 // referred to it (-1 none), +20 kind, +24 mark (scratch for unresolved()). Entry i owns the 4 bytes at stubBase + 4 * i.
 const HOST_REC: usize = 32;
 // @ts-ignore: decorator
@@ -121,13 +122,13 @@ const HOST_REC: usize = 32;
 
 // Set up the loader: everything before is forgotten. [arenaPtr, +arenaLen) is the loader's working memory;
 // [stubBase_, +4 * stubCap_) is the host stub region, a guest address range no module may be mapped over.
-export function init(arenaPtr: u32, arenaLen: u32, stubBase_: u32, stubCap_: u32): i32 {
+export function init(arenaPtr: usize, arenaLen: usize, stubBase_: usize, stubCap_: u32): i32 {
   ready = false; context(0, 0);
-  if (!arenaPtr || <usize>arenaPtr < __heap_base || !inMemory(arenaPtr, arenaLen)) { red(); puts("init: the arena is not free linear memory"); emit(); return ERR_ARG; }
-  if ((stubBase_ & 3) || <usize>stubBase_ < __heap_base || !inMemory(stubBase_, <u64>stubCap_ * 4) || overlaps(arenaPtr, arenaLen, stubBase_, <u64>stubCap_ * 4)) {
+  if (!arenaPtr || arenaPtr < __heap_base || arenaLen > 0xFFFFFFFF || !inMemory(arenaPtr, arenaLen)) { red(); puts("init: the arena is not free linear memory"); emit(); return ERR_ARG; }
+  if ((stubBase_ & 3) || stubBase_ < __heap_base || !inMemory(stubBase_, <u64>stubCap_ * 4) || overlaps(arenaPtr, arenaLen, stubBase_, <u64>stubCap_ * 4)) {
     red(); puts("init: the stub region is not free linear memory on a 4-byte boundary"); emit(); return ERR_ARG;
   }
-  arena = arenaPtr; arenaTop = arena; arenaEnd = arena + <usize>arenaLen;
+  arena = arenaPtr; arenaTop = arena; arenaEnd = arena + arenaLen;
   stubBase = stubBase_; stubCap = stubCap_;
   nMods = 0; nLoaded = 0; seq = 0; hostCount = 0; stubOverflow = 0; faults = 0;
   let cap: u32 = 16;
@@ -145,7 +146,7 @@ function hostFind(name: usize, len: u32, h: u32): i32 {
     const v = load<u32>(hostIdx + (<usize>j << 2));
     if (!v) return -1;
     const r = hostRec(v - 1);
-    if (load<u32>(r, 8) == h && load<u32>(r, 4) == len && bytesEqual(<usize>load<u32>(r), name, len)) return <i32>(v - 1);
+    if (load<u32>(r, 8) == h && load<u32>(r, 4) == len && bytesEqual(arena + <usize>load<u32>(r), name, len)) return <i32>(v - 1);
   }
   return -1;
 }
@@ -157,20 +158,20 @@ function hostInsert(name: usize, len: u32, h: u32, kind: u32): i32 {
   if (!copy) return -1;
   memory.copy(copy, name, len);
   const id = hostCount++, r = hostRec(id);
-  store<u32>(r, <u32>copy); store<u32>(r, len, 4); store<u32>(r, h, 8); store<u32>(r, 0, 12);
+  store<u32>(r, <u32>(copy - arena)); store<u32>(r, len, 4); store<u32>(r, h, 8); store<u32>(r, 0, 12);
   store<i32>(r, -1, 16); store<u32>(r, kind, 20); store<u32>(r, 0, 24);
   let j = h & hostMask;
   while (load<u32>(hostIdx + (<usize>j << 2))) j = (j + 1) & hostMask;
   store<u32>(hostIdx + (<usize>j << 2), id + 1);
   // The stub's 4 bytes: UDF #id, a permanently undefined instruction. The embedder dispatches on the address (stubId);
   // if the translator ever compiles this word, it reports unimpl(pc = the stub, insn = the id) when executed.
-  store<u32>(<usize>stubBase + (<usize>id << 2), id & 0xFFFF);
+  store<u32>(stubBase + (<usize>id << 2), id & 0xFFFF);
   return <i32>id;
 }
 
 // The host implements `name`: kind HOST_FORCE or HOST_HLE. Returns the host function id (the stub is at stubAddr(id)),
 // or ERR_ARG for a duplicate or a bad name, ERR_NOMEM when the stub region or the arena is full.
-export function hostAdd(name: u32, len: u32, kind: u32): i32 {
+export function hostAdd(name: usize, len: u32, kind: u32): i32 {
   context(0, 0);
   if (!ready || !len || len > 4096 || !inMemory(name, len) || kind > HOST_FORCE) { red(); puts("host function: bad name or kind"); emit(); return ERR_ARG; }
   const h = fnv(name, len);
@@ -181,18 +182,18 @@ export function hostAdd(name: u32, len: u32, kind: u32): i32 {
 }
 export function hostCountOf(): u32 { return hostCount; }
 export function hostKind(id: u32): i32 { return id < hostCount ? <i32>load<u32>(hostRec(id), 20) : -1; }
-export function hostNamePtr(id: u32): u32 { return id < hostCount ? load<u32>(hostRec(id)) : 0; }
+export function hostNamePtr(id: u32): usize { return id < hostCount ? arena + <usize>load<u32>(hostRec(id)) : 0; }
 export function hostNameLen(id: u32): u32 { return id < hostCount ? load<u32>(hostRec(id), 4) : 0; }
 export function hostRefs(id: u32): u32 { return id < hostCount ? load<u32>(hostRec(id), 12) : 0; }
 export function hostFirstModule(id: u32): i32 { return id < hostCount ? load<i32>(hostRec(id), 16) : -1; }
-export function hostLookup(name: u32, len: u32): i32 { return ready && inMemory(name, len) ? hostFind(name, len, fnv(name, len)) : -1; }
-export function stubRegionBase(): u32 { return stubBase; }
+export function hostLookup(name: usize, len: u32): i32 { return ready && inMemory(name, len) ? hostFind(name, len, fnv(name, len)) : -1; }
+export function stubRegionBase(): usize { return stubBase; }
 export function stubRegionCap(): u32 { return stubCap; }
 // Guest address of host function id's stub (0 for an id that does not exist), and back (-1 for an address that is no stub)
-export function stubAddr(id: u32): u32 { return id < hostCount ? stubBase + (id << 2) : 0; }
+export function stubAddr(id: u32): usize { return id < hostCount ? stubBase + (<usize>id << 2) : 0; }
 export function stubId(addr: u64): i32 {
-  if (addr < <u64>stubBase || ((addr - stubBase) & 3)) return -1;
-  const id = (addr - stubBase) >> 2;
+  if (addr < <u64>stubBase || ((addr - <u64>stubBase) & 3)) return -1;
+  const id = (addr - <u64>stubBase) >> 2;
   return id < <u64>hostCount ? <i32>id : -1;
 }
 
@@ -217,7 +218,7 @@ export function checkForced(): u32 {
     const r = hostRec(id);
     if (load<u32>(r, 20) != HOST_FORCE) continue;
     if (load<u32>(r, 12)) { hit++; continue; }
-    if (strictForced) { red(); puts("forced take-over entry with no reference at all: "); putn(<usize>load<u32>(r), load<u32>(r, 4)); emit(); }
+    if (strictForced) { red(); puts("forced take-over entry with no reference at all: "); putn(arena + <usize>load<u32>(r), load<u32>(r, 4)); emit(); }
     n++;
   }
   if (n && !strictForced) { info(); puts("force: "); putu(hit); puts(" entries hit, "); putu(n); puts(" not referenced by this game"); emit(); }
@@ -227,11 +228,11 @@ export function checkForced(): u32 {
 // ---- checked access to an image (offsets from the module's base) ----
 // @ts-ignore: decorator
 @inline function inImage(m: Mod, off: u64, n: u64): bool { return off <= <u64>m.imageSize && n <= <u64>m.imageSize - off; }
-function rd8(m: Mod, off: u64): u32 { if (!inImage(m, off, 1)) { faults++; return 0; } return load<u8>(<usize>m.base + <usize>off); }
-function rd16(m: Mod, off: u64): u32 { if (!inImage(m, off, 2)) { faults++; return 0; } return load<u16>(<usize>m.base + <usize>off); }
-function rd32(m: Mod, off: u64): u32 { if (!inImage(m, off, 4)) { faults++; return 0; } return load<u32>(<usize>m.base + <usize>off); }
-function rd64(m: Mod, off: u64): u64 { if (!inImage(m, off, 8)) { faults++; return 0; } return load<u64>(<usize>m.base + <usize>off); }
-function wr64(m: Mod, off: u64, v: u64): void { if (!inImage(m, off, 8)) { faults++; return; } store<u64>(<usize>m.base + <usize>off, v); }
+function rd8(m: Mod, off: u64): u32 { if (!inImage(m, off, 1)) { faults++; return 0; } return load<u8>(m.base + <usize>off); }
+function rd16(m: Mod, off: u64): u32 { if (!inImage(m, off, 2)) { faults++; return 0; } return load<u16>(m.base + <usize>off); }
+function rd32(m: Mod, off: u64): u32 { if (!inImage(m, off, 4)) { faults++; return 0; } return load<u32>(m.base + <usize>off); }
+function rd64(m: Mod, off: u64): u64 { if (!inImage(m, off, 8)) { faults++; return 0; } return load<u64>(m.base + <usize>off); }
+function wr64(m: Mod, off: u64, v: u64): void { if (!inImage(m, off, 8)) { faults++; return; } store<u64>(m.base + <usize>off, v); }
 
 // ---- symbols ----
 // @ts-ignore: decorator
@@ -253,7 +254,7 @@ function symName(m: Mod, i: u32): bool {
   const start = <u64>m.strtab + <u64>rd32(m, symOff(m, i));
   const end = <u64>m.strEnd;
   if (start >= end) return false;
-  const p = <usize>m.base + <usize>start, cap = <usize>(end - start);
+  const p = m.base + <usize>start, cap = <usize>(end - start);
   for (let n: usize = 0; n < cap; n++) {
     if (!load<u8>(p + n)) { nmPtr = p; nmLen = <u32>n; return true; }
   }
@@ -275,9 +276,9 @@ function buildSymhash(m: Mod): bool {
   if (!m.symh || m.symhCap != cap) {
     const p = alloc(<u64>cap * 4);
     if (!p) return false;
-    m.symh = <u32>p; m.symhCap = cap;
-  } else memory.fill(<usize>m.symh, 0, <usize>cap * 4);
-  const mask = cap - 1, tab = <usize>m.symh;
+    m.symh = p; m.symhCap = cap;
+  } else memory.fill(m.symh, 0, <usize>cap * 4);
+  const mask = cap - 1, tab = m.symh;
   for (let i: u32 = 1; i < m.nsym; i++) {
     if (!exported(m, i) || !symName(m, i) || !nmLen) continue;
     const name = nmPtr, len = nmLen;
@@ -293,7 +294,7 @@ function buildSymhash(m: Mod): bool {
 // Index of the exported symbol `name` of m, or 0. Every candidate is checked again: the guest may have written to the tables.
 function moduleSym(m: Mod, name: usize, len: u32, h: u32): u32 {
   if (!m.symh) return 0;
-  const mask = m.symhCap - 1, tab = <usize>m.symh;
+  const mask = m.symhCap - 1, tab = m.symh;
   for (let j = h & mask, tries: u32 = 0; tries < m.symhCap; j = (j + 1) & mask, tries++) {
     const v = load<u32>(tab + (<usize>j << 2));
     if (!v) return 0;
@@ -571,7 +572,7 @@ function refuse(m: Mod, reason: u64): i32 {
 // A new module from the file [file, file + len), which must stay where it is, unchanged, until the module is pinned or
 // refused: it is what every map reads. Returns the module's handle, or ERR_ARG / ERR_NOMEM when no record was made.
 // The header is validated here; a file that fails is in state Refused (the handle is still returned: ask state()).
-export function parse(file: u32, len: u32, opts: u32): i32 {
+export function parse(file: usize, len: u32, opts: u32): i32 {
   context(0, 0);
   if (!ready) { red(); puts("parse before init"); emit(); return ERR_ARG; }
   if (!file || !inMemory(file, len)) { red(); puts("parse: the file is not in linear memory"); emit(); return ERR_ARG; }
@@ -579,7 +580,7 @@ export function parse(file: u32, len: u32, opts: u32): i32 {
   const p = alloc(offsetof<Mod>());
   if (!p) { red(); puts("parse: the arena is full"); emit(); return ERR_NOMEM; }
   const m = changetype<Mod>(p), h = nMods++;
-  store<u32>(MODS + (<usize>h << 2), <u32>p);
+  store<usize>(MODS + (<usize>h << 3), p);
   m.index = h;
   // default name: "module<h>"
   const nm = m.namePtr;
@@ -599,7 +600,7 @@ export function parse(file: u32, len: u32, opts: u32): i32 {
 }
 
 // The module's name in the log (at most 32 bytes are kept)
-export function setName(h: i32, name: u32, len: u32): i32 {
+export function setName(h: i32, name: usize, len: u32): i32 {
   const m = modOf(h);
   if (!changetype<usize>(m) || !inMemory(name, len)) return ERR_ARG;
   if (len > 32) len = 32;
@@ -611,12 +612,12 @@ export function setName(h: i32, name: u32, len: u32): i32 {
 // Map the module at guest address base: Parsed -> Mapped, or again Unloaded -> Mapped. The whole image is written from
 // the file (so a reload restores the data) and the bss is zero. The module joins the symbol lookups, last in the order.
 // ERR_ARG (nothing changed) when base is not a free, page-aligned range of linear memory for the image.
-export function map(h: i32, base: u32): i32 {
+export function map(h: i32, base: usize): i32 {
   const m = modOf(h);
   if (!changetype<usize>(m)) return ERR_ARG;
   if (!m.inst.can(ModuleE.Map)) { m.inst.step(ModuleE.Map); return ERR_STATE; }
   const size = <u64>m.imageSize;
-  if (<u64>base % PAGE || <usize>base < __heap_base || !inMemory(base, size)) {
+  if (<u64>base % PAGE || base < __heap_base || !inMemory(base, size)) {
     red(); puts("map: base "); putx(base); puts(" is not a page-aligned range of "); putx(size); puts(" bytes in linear memory ("); putx(memBytes()); puts(" bytes)"); emit();
     return ERR_ARG;
   }
@@ -709,7 +710,7 @@ export function state(h: i32): i32 { return ready && <u32>h < nMods ? <i32>modAt
 // Guest address of the first exported symbol `name` in the mapped modules, in load order; 0 when there is none
 // (lookupModule() then gives -1, otherwise the handle of the module that defines it). The host table is not consulted.
 let lookupMod: i32 = -1;
-export function lookup(name: u32, len: u32): u64 {
+export function lookup(name: usize, len: u32): u64 {
   lookupMod = -1;
   if (!ready || !inMemory(name, len) || !loadedSym(name, len, fnv(name, len))) return 0;
   lookupMod = foundMod;
@@ -717,7 +718,7 @@ export function lookup(name: u32, len: u32): u64 {
 }
 export function lookupModule(): i32 { return lookupMod; }
 // The same in one module (any mapped state)
-export function lookupIn(h: i32, name: u32, len: u32): u64 {
+export function lookupIn(h: i32, name: usize, len: u32): u64 {
   lookupMod = -1;
   if (!ready || <u32>h >= nMods || !inMemory(name, len)) return 0;
   const m = modAt(<u32>h);
@@ -731,7 +732,7 @@ export function lookupIn(h: i32, name: u32, len: u32): u64 {
 // The imports of module h that are bound to an unresolved stub right now: their host function ids (each once) are
 // written as u32 to out, at most cap; returns how many there are.
 let markSerial: u32 = 0;
-export function unresolved(h: i32, out: u32, cap: u32): i32 {
+export function unresolved(h: i32, out: usize, cap: u32): i32 {
   const m = modOf(h);
   if (!changetype<usize>(m) || !inMemory(out, <u64>cap * 4)) return ERR_ARG;
   if (!m.relocated) return 0;
@@ -747,7 +748,7 @@ export function unresolved(h: i32, out: u32, cap: u32): i32 {
       const r = hostRec(<u32>id);
       if (load<u32>(r, 20) != HOST_UNRESOLVED || load<u32>(r, 24) == mark) continue;
       store<u32>(r, mark, 24);
-      if (count < cap) store<u32>(<usize>out + (<usize>count << 2), <u32>id);
+      if (count < cap) store<u32>(out + (<usize>count << 2), <u32>id);
       count++;
     }
   }
@@ -756,9 +757,9 @@ export function unresolved(h: i32, out: u32, cap: u32): i32 {
 
 // The function entries the loader knows of a relocated module, for a translator: defined dynamic symbols of type
 // FUNC, DT_INIT / DT_FINI, the init and fini arrays, and every relative relocation (RELA and RELR) whose value points
-// into the text. Guest addresses (u32, 4-byte aligned, inside the text; not deduplicated) are written to out, at most
-// cap; returns how many there are.
-export function codeEntries(h: i32, out: u32, cap: u32): i32 {
+// into the text. Their offsets from the module's base (u32: an image is below 4 GB whatever its address; 4-byte aligned,
+// inside the text; not deduplicated) are written to out, at most cap; returns how many there are.
+export function codeEntries(h: i32, out: usize, cap: u32): i32 {
   const m = modOf(h);
   if (!changetype<usize>(m) || !inMemory(out, <u64>cap * 4)) return ERR_ARG;
   if (!m.relocated) return 0;
@@ -781,7 +782,7 @@ export function codeEntries(h: i32, out: u32, cap: u32): i32 {
       else { if (!(m.have & (i ? HAVE_FINI : HAVE_INIT))) continue; v = base + <u64>(i ? m.fini : m.init); }
       for (let b: u64 = 0; ; b++) {
         if (bits) { bits >>= 1; if (!bits) break; if (!(bits & 1)) continue; v = rd64(m, where + b * 8); }
-        if (v >= lo && v < hi && !(v & 3)) { if (count < cap) store<u32>(<usize>out + (<usize>count << 2), <u32>v); count++; }
+        if (v >= lo && v < hi && !(v & 3)) { if (count < cap) store<u32>(out + (<usize>count << 2), <u32>(v - base)); count++; }
         if (!bits) break;
       }
       if (pass == 2 && (rd64(m, <u64>m.relr + i * 8) & 1) && started) where += 63 * 8;
@@ -817,7 +818,7 @@ export namespace Info {
   export const Mod0BssStart: u32 = 37; export const Mod0BssEnd: u32 = 38;   // image offsets, as MOD0 has them
 }
 
-export function get(h: i32, what: u32): u32 {
+export function get(h: i32, what: u32): usize {
   if (!ready || <u32>h >= nMods) return 0;
   const m = modAt(<u32>h), on = m.mapped, b = m.base;
   switch (what) {
@@ -830,16 +831,16 @@ export function get(h: i32, what: u32): u32 {
     case Info.DataOff: return m.mo2; case Info.DataSize: return m.sz2;
     case Info.BssSize: return m.bss;
     case Info.Flags: return m.flags;
-    case Info.BuildIdPtr: return <u32>m.buildIdPtr();
+    case Info.BuildIdPtr: return m.buildIdPtr();
     case Info.Mod0: return on ? b + m.mod0 : 0;
     case Info.Dynamic: return on ? b + m.dyn : 0;
     case Info.Init: return on && (m.have & HAVE_INIT) ? b + m.init : 0;
     case Info.Fini: return on && (m.have & HAVE_FINI) ? b + m.fini : 0;
     case Info.InitArray: return on && m.initArrayN ? b + m.initArray : 0;
-    case Info.InitArrayCount: return on ? m.initArrayN : 0;
+    case Info.InitArrayCount: return on ? <usize>m.initArrayN : 0;
     case Info.FiniArray: return on && m.finiArrayN ? b + m.finiArray : 0;
-    case Info.FiniArrayCount: return on ? m.finiArrayN : 0;
-    case Info.SymbolCount: return on ? m.nsym : 0;
+    case Info.FiniArrayCount: return on ? <usize>m.finiArrayN : 0;
+    case Info.SymbolCount: return on ? <usize>m.nsym : 0;
     case Info.HasHash: return on && (m.have & HAVE_HASH) ? 1 : 0;
     case Info.HasGnuHash: return on && (m.have & HAVE_GNU_HASH) ? 1 : 0;
     case Info.HasRelr: return on && (m.have & HAVE_RELR) ? 1 : 0;
@@ -847,10 +848,10 @@ export function get(h: i32, what: u32): u32 {
     case Info.RelGlobDat: return m.nGlob; case Info.RelJumpSlot: return m.nJump; case Info.RelUnsupported: return m.nUnsupported;
     case Info.RelWeakZero: return m.nWeak0;
     case Info.Loads: return m.loads;
-    case Info.RefuseReason: return m.state == ModuleS.Refused ? <u32>m.inst.data : 0;
-    case Info.NamePtr: return <u32>m.namePtr; case Info.NameLen: return m.nameLen;
+    case Info.RefuseReason: return m.state == ModuleS.Refused ? <usize><u32>m.inst.data : 0;
+    case Info.NamePtr: return m.namePtr; case Info.NameLen: return m.nameLen;
     case Info.FilePtr: return m.file;
-    case Info.Mod0BssStart: return on ? m.bssStart : 0; case Info.Mod0BssEnd: return on ? m.bssEnd : 0;
+    case Info.Mod0BssStart: return on ? <usize>m.bssStart : 0; case Info.Mod0BssEnd: return on ? <usize>m.bssEnd : 0;
   }
   return 0;
 }

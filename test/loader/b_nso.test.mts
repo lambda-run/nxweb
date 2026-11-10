@@ -1,5 +1,5 @@
 // NSO and NRO files: the segments as mapped, and the refusal of every header fault nso.ts checks for.
-import { test, fresh, file, readElf, pristineImage, eq, ok, same, type Box } from "./harness.mts";
+import { test, fresh, file, readElf, pristineImage, eq, ok, same, GUEST, MEM_BYTES, HI, type Box } from "./harness.mts";
 import { LoaderError, Info, KIND_NSO, KIND_NRO } from "../../src/loader/host/loader.mts";
 
 // Parse and map one file; the outcome is the state, and the reason and red line when it was refused
@@ -18,7 +18,7 @@ for (const [variant, what] of [["main.nso", "LZ4 with a matcher, hashes checked"
   test(`nso: ${variant} (${what}) maps to the ELF's segments, bss zero`, () => {
     const b = fresh(), elf = readElf(variant.split(/[_.]/)[0] + ".so");
     // dirty the place first: gaps and bss must be written, not assumed
-    new Uint8Array(b.x.memory.buffer).fill(0xCC, 0x0800_0000, 0x0800_0000 + elf.imageSize + 0x2000);
+    new Uint8Array(b.x.memory.buffer).fill(0xCC, GUEST, GUEST + elf.imageSize + 0x2000);
     const r = tryLoad(b, file(variant));
     eq(r.state, "Mapped", `state (${r.error})`);
     const i = b.ld.info(r.handle);
@@ -109,7 +109,7 @@ for (const [name, from, edit, reason, text] of faults) {
     eq(b.x.ld_faults(), 0, "faults");
     // refused is final: the kit refuses everything after
     const before = b.x.kit_refused_total();
-    eq(b.x.ld_map(r.handle, 0x0800_0000), -2, "map of a refused module");
+    eq(b.x.ld_map(r.handle, GUEST), -2, "map of a refused module");
     eq(b.x.ld_relocate(r.handle), -2, "relocate of a refused module");
     eq(b.x.kit_refused_total(), before + 2, "the kit counted both");
     ok(b.red().some(l => /kit: module#\d+ refused Map in Refused/.test(l)), "the kit's red line");
@@ -129,10 +129,10 @@ test("hashes: a module with a wrong hash loads when checking is off or its check
 
 test("parse: a file that is not in linear memory makes no record", () => {
   const b = fresh();
-  eq(b.x.ld_parse(0x08FF_FF00, 0x200, 1), -1, "runs past the end of memory");
+  eq(b.x.ld_parse(MEM_BYTES - 0x100, 0x200, 1), -1, "runs past the end of memory");
   eq(b.x.ld_parse(0, 0x200, 1), -1, "null");
   eq(b.x.ld_module_count(), 0, "no record");
   ok(b.ld.error().includes("not in linear memory"), b.ld.error());
-  try { b.ld.parse({ name: "x", ptr: 0xFFFF_FF00, len: 0x1000 }); throw new Error("no exception"); }
+  try { b.ld.parse({ name: "x", ptr: HI + 0xFFFF_FF00, len: 0x1000 }); throw new Error("no exception"); }
   catch (e) { ok(e instanceof LoaderError && e.code === -1, String(e)); }
 });
