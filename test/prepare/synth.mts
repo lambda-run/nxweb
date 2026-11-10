@@ -108,7 +108,7 @@ export function unwindModules(levels = ["O2", "Os"]): UnwindModule[] {
   const quiet = (cmd: string, args: string[]) => { try { execFileSync(cmd, args, { cwd: ROOT, stdio: "ignore" }); return true; } catch { return false; } };
   const nvn = join(process.env.NXNATIVE_NVN_INCLUDE ?? join(process.env.NXNATIVE ?? "/home/user/nxnative", "dm", "gfx", "nvn", "include"));
   const sources = [["rt", join(ROOT, "test", "runtime", "src")], ["a64", join(ROOT, "test", "guests", "src")]].flatMap(([tag, d]) =>
-    existsSync(d) ? readdirSync(d).filter(f => f.endsWith(".c")).sort().map(f => ({ name: `${tag}_${f.slice(0, -2)}`, src: join(d, f) })) : []);
+    existsSync(d) ? readdirSync(d).filter(f => f.endsWith(".c") && f !== "large.c" /* a 72 MB image: nothing more to fingerprint */).sort().map(f => ({ name: `${tag}_${f.slice(0, -2)}`, src: join(d, f) })) : []);
   const out: UnwindModule[] = [];
   for (const level of levels) for (const s of sources) {
     const base = join(dir, `${s.name}.${level}`), nso = base + ".nso";
