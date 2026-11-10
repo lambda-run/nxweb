@@ -11,6 +11,8 @@ import { fetchProfiles } from "../src/prepare/host/profiles.ts";
 import { Prepare, STAGES, type StageName, type Snapshot, type DetectOut, type ProfileOut, type CodeOut, type IndexOut, type HandOffMessage, type PrepResult } from "../src/prepare/host/prepare.ts";
 import { verdictFor, failureSentence, explainFile, type Verdict } from "../src/prepare/host/verdict.ts";
 import { A64Scanner, scanHeadline, scanLines } from "../src/glue/a64_scan.ts";
+import { pagePrewarm } from "./prepare_shaders.ts";
+import type { PrewarmOut } from "../src/prepare/host/shader_prewarm.ts";
 
 const $ = (id: string) => document.getElementById(id)!;
 const params = new URLSearchParams(location.search);
@@ -77,6 +79,7 @@ function stageLine(s: StageName, snap: Snapshot): string {
     if (s === "detect") return `${c.files} files seen`;
     if (s === "index") return `${c.romFiles} files, ${c.romDirs} directories (${c.done} of ${c.total} trees)`;
     if (s === "code") return `module ${c.done} of ${c.total}, ${fmtBytes(c.bytesDone)} of ${fmtBytes(c.bytesTotal)}, ${c.cuts} cuts`;
+    if (s === "shaders" && c.total > 0) return `file ${c.done} of ${c.total}, ${fmtBytes(c.bytesDone)} of ${fmtBytes(c.bytesTotal)}; ${c.shFound} stages found, ${c.shTranslated} translated, ${c.shFailed} failed`;
     return "";
   }
   if (rec.state === "failed") return esc(rec.error ?? "");
@@ -88,12 +91,25 @@ function stageLine(s: StageName, snap: Snapshot): string {
     const k = o as CodeOut, head = k.scan ? scanHeadline(k.scan) : "";
     return `${k.modules.map(m => m.name).join(", ")}; ${k.cuts} cuts applied` + (head ? `<br><b id="scanline" class="warn">${esc(head)}</b>` : "");
   }
-  return "translated on demand in the page and cached; nothing to do ahead";
+  return shadersLine(o.prewarm as PrewarmOut | null);
+}
+// the Shaders stage's scan: what was found and translated ahead, what failed and why, what was not read
+function shadersLine(p: PrewarmOut | null): string {
+  if (!p) return "translated on demand in the page and cached; nothing to do ahead";
+  const kinds = Object.entries(p.containers).filter(([, n]) => n).map(([k, n]) => `${n} ${k.toUpperCase()}`).join(", ");
+  const list = (rs: PrewarmOut["failures"]) => rs.map(r => `${esc(r.reason)} (${r.count})`).join("; ");
+  let t = `${p.found} shader stages found in ${p.files} files${kinds ? ` (${kinds})` : ""}`;
+  t += p.chain ? `; ${p.translated} translated, ${p.cached} already cached, ${p.failed} failed` : `; not translated ahead: this build has no in-page translator (web:build makes it)`;
+  if (p.failures.length) t += `<br><b class="warn" id="shaderfail">failed: ${list(p.failures)}</b>`;
+  if (p.unreadable.length) t += `<br>unreadable: ${list(p.unreadable)}`;
+  if (p.notRead.length) t += `<br><span id="shadernotread">not read: ${list(p.notRead)}</span>`;
+  return t;
 }
 // how far a running stage is, 0..1, or -1 when it has no measure
 function fraction(s: StageName, c: Counts): number {
   if (s === "code" && c.bytesTotal > 0) return Math.min(1, c.bytesDone / c.bytesTotal);
   if (s === "index" && c.total > 0) return Math.min(1, c.done / c.total);
+  if (s === "shaders" && c.bytesTotal > 0) return Math.min(1, c.bytesDone / c.bytesTotal);
   return -1;
 }
 function drawVerdict(snap: Snapshot): void {
@@ -186,7 +202,7 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
   storeDir = "nxweb-prepare-" + tree.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
   if (!prep || prep.o.tree !== tree || (o.version !== undefined && prep.o.version !== o.version)) {
     prep = new Prepare({ wasm: new PrepWasm(await compiled(), log), tree, store: new OpfsStore(storeDir), profiles, onChange: draw, version: o.version,
-      unpackStep, at: p => p === hold ? new Promise<void>(() => {}) : undefined, scanner: await scanner() });
+      unpackStep, at: p => p === hold ? new Promise<void>(() => {}) : undefined, scanner: await scanner(), shaders: await pagePrewarm(tree, await compiled()) });
   }
   (window as any).nxwebPrepare = prep;
   (window as any).nxwebLastRun = null;
@@ -329,7 +345,7 @@ $("play").addEventListener("click", async () => {
   } catch (e) { const msg = String(e instanceof Error ? e.message : e); log("[RED] prepare: " + msg); $("handoff").textContent = "could not start: " + msg; }
 });
 
-draw({ state: "Idle", reason: "", error: "", counts: { done: 0, total: 0, bytesDone: 0, bytesTotal: 0, files: 0, modules: 0, cuts: 0, romFiles: 0, romDirs: 0, aoc: 0, skipped: 0, ran: 0 },
+draw({ state: "Idle", reason: "", error: "", counts: { done: 0, total: 0, bytesDone: 0, bytesTotal: 0, files: 0, modules: 0, cuts: 0, romFiles: 0, romDirs: 0, aoc: 0, skipped: 0, ran: 0, shFound: 0, shTranslated: 0, shFailed: 0 },
   stages: { detect: "pending", index: "pending", profile: "pending", code: "pending", shaders: "pending" }, manifest: Prepare.blank("") });
 void remembered().then(h => { if (h) showResume(h.name); });
 if (!(window as any).showDirectoryPicker) $("pick").title = "This browser has no folder picker: the file input is used";

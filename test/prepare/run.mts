@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, utimesSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { zstdCompressSync } from "node:zlib";
 import { join } from "node:path";
 import { ROOT, WASM, build } from "../../src/prepare/host/build.mts";
 import { PrepWasm, STATES, REASONS, type Cut, type MatchRule, type MatchResult } from "../../src/prepare/host/wasm.ts";
@@ -32,7 +33,10 @@ import { loadDefs } from "../../src/kit/host/defs.mts";
 import * as rth from "../runtime/harness.mts";
 import { nupTests } from "./nup_tests.mts";
 import { A64Scanner, scanHeadline, scanLines } from "../../src/glue/a64_scan.ts";
-import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, synthTree, lsRows, python, bnsh, unwindModules, matchImage, withImport, A64, MATCH_TEXT_END, type Files } from "./synth.mts";
+import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, synthTree, lsRows, python, bnsh, unwindModules, matchImage, withImport, A64, MATCH_TEXT_END, sarc, yaz0 as yaz0Of, glslc, type Files } from "./synth.mts";
+import { scanFile, yaz0 } from "../../src/prepare/host/shader_scan.ts";
+import { prewarm, threadSource, PrewarmCancelled, reasonOf, type ShaderPrewarm, type PrewarmOut } from "../../src/prepare/host/shader_prewarm.ts";
+import type { ShaderTranslator, ShaderStore, Translated } from "../../src/glue/rt_shaders.ts";
 
 process.chdir(ROOT);
 try {
@@ -56,9 +60,9 @@ class Kill extends Error {}
 
 // One prepare over a real directory and a store that outlives it
 interface Run { prep: Prepare; lines: string[]; tree: NodeTree; store: NodeStore }
-function prepare(dir: string, o: { profiles?: ProfileSource; version?: number; at?: (p: string) => void | Promise<void>; store?: string; scanner?: { scan: A64Scanner; key: string } } = {}): Run {
-  const lines: string[] = [], tree = new NodeTree(dir), store = new NodeStore(o.store ?? dir + ".store");
-  return { prep: new Prepare({ wasm: newWasm(lines), tree, store, profiles: o.profiles ?? noProfiles, version: o.version, at: o.at, scanner: o.scanner }), lines, tree, store };
+function prepare(dir: string, o: { profiles?: ProfileSource; version?: number; at?: (p: string) => void | Promise<void>; store?: string; scanner?: { scan: A64Scanner; key: string }; shaders?: (tree: NodeTree, w: PrepWasm) => ShaderPrewarm } = {}): Run {
+  const lines: string[] = [], tree = new NodeTree(dir), store = new NodeStore(o.store ?? dir + ".store"), wasm = newWasm(lines);
+  return { prep: new Prepare({ wasm, tree, store, profiles: o.profiles ?? noProfiles, version: o.version, at: o.at, scanner: o.scanner, shaders: o.shaders?.(tree, wasm) }), lines, tree, store };
 }
 const freshStore = (dir: string) => rmSync(dir + ".store", { recursive: true, force: true });
 function game(name: string, files: Files, dirs: string[] = []): string { const d = writeTree(dirOf(name), files, dirs); freshStore(d); return d; }
@@ -725,6 +729,152 @@ test("the BNSH container scan (the one container format of shader_split.py porte
   for (let i = 0; i < 300; i++) { const m = one.slice(); let v = i * 2654435761 >>> 0; for (let k = 0; k < 6; k++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; m[0x60 + (v >>> 8) % (m.length - 0x60)] = v >>> 24; } w.bnsh(m); }   // no trap on 300 mutations
   assert.deepEqual(w.bnsh(new Uint8Array(7)).stages, []);
   return [`2 containers, 8 stages, keys ${key(vs)} (vs), ${key(ps)}, ${key(ps2)} (ps): the keys tools/shaders/maxwell_asm.py computes`];
+});
+
+// =================================================================================================== Shaders stage
+// The programs tools/shaders/maxwell_asm.py assembles (the BNSH test's), and the key the shader chain computes
+function maxwell() {
+  const mx = join(SCRATCH, "maxwell");
+  if (!existsSync(join(mx, "corpus.json"))) execFileSync("python3", [join(ROOT, "tools", "shaders", "maxwell_asm.py"), mx], { stdio: "ignore" });
+  const load = (n: string) => ({ control: new Uint8Array(readFileSync(join(mx, n + ".ctl"))), code: new Uint8Array(readFileSync(join(mx, n + ".code"))) });
+  return { vs: load("vs_quad_ubo"), ps: load("ps_tex_tint"), ps2: load("ps_ops"), corpus: readFileSync(join(mx, "corpus.json"), "utf8") };
+}
+const chainKey = (s: { control: Uint8Array; code: Uint8Array }) => createHash("sha256").update(s.control.subarray(0, 0x880)).update(s.code).digest("hex").slice(0, 16);
+// A stand-in for the in-page translator (src/glue/rt_shaders.ts workerTranslator): the keys in `bad` fail with a
+// message the way xlate_wasm's do; a compute stage translates (the runtime then refuses it)
+function fakeTranslator(bad: Map<string, string> = new Map(), o: { hang?: boolean; seen?: string[] } = {}): ShaderTranslator {
+  return { chain: SHADER_CHAIN, translate: async b => {
+    o.seen?.push(b.key);
+    if (o.hang) return new Promise<Translated>(() => {});
+    if (bad.has(b.key)) throw new Error(bad.get(b.key)!.replace("<key>", b.key));
+    const stage = (new DataView(b.code.buffer, b.code.byteOffset).getUint32(0, true) === 0x12345679) ? "compute" : "graphics";
+    return { wgsl: `// ${b.key}`, reflection: { stage, extra: [] } };
+  }, close() {} };
+}
+const memStore = (): ShaderStore & { m: Map<string, Translated> } => { const m = new Map<string, Translated>(); return { m, async get(id) { return m.get(id) ?? null; }, async put(id, t) { m.set(id, t); } }; };
+
+test("the Shaders stage's scan (shader_scan.ts, after shader_split.py): BNSH loose, in SARC, in Yaz0, in zstd, in zstd in SARC in Yaz0, GLSLC outputs of one and of two stages; the chain's keys; damaged wrappers reported; unread kinds named", () => {
+  const { vs, ps, ps2, corpus } = maxwell(), w = newWasm();
+  const one = bnsh([[{ stage: 0, ...vs }, { stage: 4, ...ps }]]), two = bnsh([[{ stage: 0, ...vs }, { stage: 4, ...ps2 }]]);
+  const keys = (b: Uint8Array, module = false) => scanFile(w, "f", b, { module }).stages.map(s => `${s.stage}:${s.key}`);
+  const kv = `vs:${chainKey(vs)}`, kp = `ps:${chainKey(ps)}`, kp2 = `ps:${chainKey(ps2)}`;
+  for (const k of [chainKey(vs), chainKey(ps), chainKey(ps2)]) assert.ok(corpus.includes(k), `key ${k} is not the chain's`);
+  // the test's own Yaz0 writer against the reader: literals and back-references
+  const plain = new Uint8Array(5000); for (let i = 0; i < plain.length; i++) plain[i] = i % 97 < 40 ? 7 : i * 31;
+  assert.deepEqual(yaz0(yaz0Of(plain)), plain);
+  assert.deepEqual(keys(one), [kv, kp]);
+  assert.deepEqual(keys(sarc({ "a/one.bnsh": one, "b/two.bnsh": two, "c.txt": ascii("nothing") })), [kv, kp, kp2]);
+  assert.deepEqual(keys(yaz0Of(one)), [kv, kp]);
+  assert.deepEqual(keys(new Uint8Array(zstdCompressSync(one))), [kv, kp]);
+  const nested = yaz0Of(sarc({ "x.zs": new Uint8Array(zstdCompressSync(sarc({ "deep/two.bnsh": two }))), "one.bnsh": one }));
+  const r = scanFile(w, "Shader/all.szs", nested);
+  assert.deepEqual(r.stages.map(s => `${s.stage}:${s.key}`), [kp2.replace("ps", "vs").replace(chainKey(ps2), chainKey(vs)), kp2, kp]);   // vs once: the same key from two places is one stage
+  assert.deepEqual(r.containers, { bnsh: 2, glslc: 0, sarc: 2, yaz0: 1, zstd: 1 });
+  assert.ok(r.stages[0].where.startsWith("Shader/all.szs/x.zs/deep/two.bnsh#BNSH@0x0#var0"), r.stages[0].where);
+  assert.deepEqual(r.stages[1].code, ps2.code);
+  // GLSLC: one stage per output (in main's data), two compiled together (by the section headers)
+  const g = new Uint8Array(0x300 + 2 * 0x1000); g.fill(0x33); g.set(glslc([vs]), 0x300); g.set(glslc([ps2]), 0x300 + 0x1000);
+  assert.deepEqual(keys(g), [kv, kp2]);
+  assert.deepEqual(keys(glslc([vs, ps])), [kv, kp]);
+  assert.deepEqual(keys(glslc([ps, ps2])), [], "two pixel stages in one program are not one program");
+  assert.deepEqual(scanFile(w, "f", g).containers.glslc, 2);
+  // a code module: its segments are unpacked and searched; the test guest holds no shaders
+  const m = scanFile(w, "exefs/main", guest("fsg"), { module: true });
+  assert.deepEqual([m.stages.length, m.unreadable], [0, []]);
+  const notNso = scanFile(w, "exefs/main", new Uint8Array(64), { module: true });
+  assert.deepEqual(notNso.unreadable.map(u => u.reason), ["the module cannot be unpacked"]);
+  // damaged wrappers: reported, the rest of the file still read
+  const badSarc = sarc({ "one.bnsh": one }); new DataView(badSarc.buffer).setUint32(0x14 + 12 + 12, 0xFFFFFF, true);
+  const reasons = (b: Uint8Array) => scanFile(w, "f", b).unreadable.map(u => u.reason);
+  assert.match(reasons(badSarc)[0], /SARC member 0 at …\.\.… of the data lies outside its … bytes/);
+  assert.match(reasons(yaz0Of(one).subarray(0, 200))[0], /the Yaz0 stream ends/);
+  const zs = new Uint8Array(zstdCompressSync(one)); assert.equal(reasons(zs.subarray(0, zs.length >> 1)).length, 1);
+  const bad = sarc({ "ok.bnsh": one, "broken.szs": yaz0Of(two).subarray(0, 100) });
+  assert.deepEqual([keys(bad), reasons(bad).length], [[kv, kp], 1]);
+  const nvn2 = vs.control.slice(); nvn2[4] = 0xC9;
+  assert.deepEqual(reasons(sarc({ "n.bnsh": bnsh([[{ stage: 0, control: nvn2, code: vs.code }]]) })), ["BNSH: NVN2 control section (not read)"]);
+  // a SARC whose members overlap a thousand times does not expand without bound
+  const bomb = sarc({ a: one }), bd = new DataView(bomb.buffer); bd.setUint16(0x14 + 6, 1000, true);
+  assert.ok(scanFile(w, "f", bomb).unreadable.length >= 1);
+  // the kinds shader_split.py reads and this scan does not: named, and nothing found in them
+  const nr = (b: Uint8Array) => scanFile(w, "f", b).notRead;
+  assert.deepEqual(nr(new Uint8Array([...ascii("BAHS"), ...new Uint8Array(60)])), ["BAHS (agl / gsys shader archives)"]);
+  assert.deepEqual(nr(new Uint8Array([...ascii("UnityFS\0"), ...new Uint8Array(60)])), ["Unity bundles"]);
+  assert.deepEqual(nr(new Uint8Array([0x1F, 0x8B, 0x08, 0, 0, 0])), ["gzip"]);
+  assert.deepEqual(nr(blob(4096, 3)), []);
+  for (let i = 0; i < 200; i++) { const x = nested.slice(); let v = i * 2654435761 >>> 0; for (let k = 0; k < 4; k++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; x[16 + (v >>> 8) % (x.length - 16)] = v >>> 24; } scanFile(w, "f", x); }   // no throw on 200 mutations
+  return [`BNSH loose/SARC/Yaz0/zstd/nested and GLSLC (one and two stages) give the chain's keys ${chainKey(vs)}, ${chainKey(ps)}, ${chainKey(ps2)}`];
+});
+
+test("the Shaders stage's translation ahead (shader_prewarm.ts): each key once to the translator, into the store under <key>/<chain>; failures grouped by the translator's reason; a second run is all store hits; Cancel ends it at once", async () => {
+  const { vs, ps, ps2 } = maxwell(), w = newWasm();
+  const cs = { control: vs.control.slice(), code: vs.code.slice() }; new DataView(cs.code.buffer).setUint32(0, 0x12345679, true);
+  new DataView(cs.control.buffer).setUint32(0x704, cs.code.length, true);
+  const files: Record<string, Uint8Array> = {
+    "romfs/a.bnsh": bnsh([[{ stage: 0, ...vs }, { stage: 4, ...ps }]]),
+    "romfs/b.szs": yaz0Of(sarc({ "b.bnsh": bnsh([[{ stage: 0, ...vs }, { stage: 4, ...ps2 }]]) })),
+    "romfs/c.bnsh": bnsh([[{ stage: 5, ...cs }]]),
+    "romfs/d.bars": new Uint8Array([...ascii("BAHS"), ...new Uint8Array(60)]),
+  };
+  const list = Object.entries(files).map(([path, d]) => ({ path, size: d.length, module: false }));
+  const read = async (p: string) => files[p];
+  const bad = new Map([[chainKey(ps2), "xlate_wasm: unsupported instruction TXQ.B in <key> (exit 3)"]]);
+  const store = memStore(), seen: string[] = [], progress: number[] = [];
+  const pw: ShaderPrewarm = { key: "t", source: threadSource(w, read), translators: () => [fakeTranslator(bad, { seen }), fakeTranslator(bad, { seen })], store };
+  const out = await prewarm(pw, list, { cancelled: () => false, progress: p => progress.push(p.filesDone) });
+  assert.deepEqual(seen.sort(), [chainKey(vs), chainKey(ps), chainKey(ps2), chainKey(cs)].sort());
+  assert.deepEqual([out.found, out.translated, out.cached, out.failed, out.untranslated, out.files], [4, 3, 0, 2, 0, 4]);
+  assert.deepEqual(out.byStage, { vs: 1, ps: 2, cs: 1 });
+  assert.deepEqual(out.failures.map(f => [f.reason, f.count]).sort(), [["a compute stage, which src/gfx does not run", 1], ["xlate_wasm: unsupported instruction TXQ.B in <key>", 1]]);
+  assert.deepEqual(out.notRead, [{ reason: "BAHS (agl / gsys shader archives)", count: 1, examples: ["romfs/d.bars"] }]);
+  assert.deepEqual([...store.m.keys()].sort(), [chainKey(vs), chainKey(ps), chainKey(cs)].map(k => `${k}/${SHADER_CHAIN}`).sort());
+  assert.equal(SHADER_CHAIN, RT_SHADER_CHAIN);
+  assert.equal(progress.at(-1), 4);
+  // again: what is stored is not translated twice
+  seen.length = 0;
+  const again = await prewarm(pw, list, { cancelled: () => false, progress: () => {} });
+  assert.deepEqual([again.translated, again.cached, again.failed, seen], [0, 3, 2, [chainKey(ps2)]]);
+  // no translator in this build: found and counted, nothing stored
+  const scanOnly = await prewarm({ ...pw, translators: null, store: memStore() }, list, { cancelled: () => false, progress: () => {} });
+  assert.deepEqual([scanOnly.chain, scanOnly.found, scanOnly.untranslated, scanOnly.translated], [null, 4, 4, 0]);
+  // Cancel while the translator is busy
+  let stop = false; const t0 = performance.now();
+  const p = prewarm({ ...pw, store: memStore(), translators: () => [fakeTranslator(bad, { hang: true })] }, list, { cancelled: () => stop, progress: () => {} });
+  setTimeout(() => { stop = true; }, 30);
+  await assert.rejects(p, PrewarmCancelled);
+  assert.ok(performance.now() - t0 < 1000);
+  assert.equal(reasonOf("failed at /w/in/0123456789abcdef.ctl for 0123456789abcdef (exit -1)"), "failed at <file> for <key>");
+  return [`4 stages found (vs, 2 ps, cs), 3 translated and stored, 2 failed by reason; again: 3 store hits; scan only; Cancel in ${(performance.now() - t0).toFixed(0)} ms`];
+});
+
+test("the Shaders stage in the prepare: main and the RomFS scanned, counts in the hand-off, the stage kept by its hash, redone when a file changes; a kill in it resumes", async () => {
+  const { vs, ps } = maxwell();
+  const files = version({ programId: APP, rom: { "Shader/gfx.szs": yaz0Of(sarc({ "gfx.bnsh": bnsh([[{ stage: 0, ...vs }, { stage: 4, ...ps }]]) })), "data/blob.bin": blob(), "x.bars": new Uint8Array([...ascii("BAHS"), ...new Uint8Array(60)]) } });
+  const dir = game("shaders-prewarm", files), store = memStore(), seen: string[] = [];
+  const shaders = (tree: NodeTree, w: PrepWasm): ShaderPrewarm => ({ key: "node", source: threadSource(w, (p, n) => tree.read(p, 0, n)), translators: () => [fakeTranslator(new Map(), { seen })], store });
+  const dead = prepare(dir, { shaders, at: p => { if (p === "shaders:work") throw new Kill(); } });
+  await assert.rejects(dead.prep.run(), Kill); dead.tree.close();
+  const a = prepare(dir, { shaders });
+  const res = await a.prep.run();
+  assert.deepEqual([res.state, res.ran], ["Ready", ["shaders"]]);
+  const h = await a.prep.handoff(), p = h.shaders.prewarm as PrewarmOut;
+  assert.deepEqual([h.shaders.mode, h.shaders.chain, p.files, p.found, p.translated, p.failed, p.notRead.map(n => n.reason)], ["on-demand", SHADER_CHAIN, 4, 2, 2, 0, ["BAHS (agl / gsys shader archives)"]]);
+  assert.deepEqual([a.prep.w.count("shFound"), a.prep.w.count("shTranslated"), a.prep.w.count("shFailed")], [2, 2, 0]);
+  assert.equal(store.m.size, 2);
+  a.tree.close();
+  const b = prepare(dir, { shaders });
+  assert.deepEqual((await b.prep.run()).skipped, [...STAGES]); b.tree.close();
+  writeFileSync(join(dir, "romfs", "data", "more.bnsh"), bnsh([[{ stage: 0, ...vs }]]));
+  seen.length = 0;
+  const c = prepare(dir, { shaders });
+  const rc = await c.prep.run();
+  assert.ok(rc.ran.includes("shaders"));
+  assert.deepEqual([(c.prep.out("shaders") as any).prewarm.cached, seen], [2, []]);
+  c.tree.close();
+  // without a prewarm the stage is what it was
+  const d = prepare(game("shaders-none", files));
+  await d.prep.run(); assert.deepEqual((await d.prep.handoff()).shaders, { mode: "on-demand", chain: SHADER_CHAIN, store: "nxweb-shaders", prewarm: null }); d.tree.close();
+  return [`a kill at shaders:work resumed; 2 stages translated and stored, kept by hash, a new file redoes the stage with 2 store hits`];
 });
 
 // =================================================================================================== function-matched cuts
