@@ -61,6 +61,7 @@ KEYS = {
     "device_api":     ("a", "the NVN API version nvnDeviceGetInteger reports (an SDK version fact; no profile sets it, the SDK version decides)", ""),
     "pad_layout":     ("a", "input setting: which controls the game needs (simple / full / touch), a hint for the page's on-screen controls", ""),
     "render_cond":    ("a", "gfx_set_profile bit 1 (src/gfx/report.ts): SetRenderEnable / SetRenderEnableConditional evaluated when a submission is lowered, a timestamp report's counter field 0", ""),
+    "gpu_timestamps": ("a", "gfx_set_profile bit 8 (src/gfx/report.ts): a timestamp report takes the GPU start / end of the segment it lies in (WebGPU timestamp queries where the device has them, else times estimated on the CPU)", ""),
     "tex_flush_upload": ("a", "gfx_set_profile bit 2 (src/gfx/texwatch.ts): textures in pools the CPU writes are registered; a pool flush over one publishes it (full check at its next use, also of a texture the GPU wrote)", ""),
     "tex_dirty_upload": ("a", "gfx_set_profile bit 4 (src/gfx/texwatch.ts): registered textures are hashed in full by a scanner, 4 MB a submission, in place of nxnative's page write tracking", ""),
     # ---- b: Apple / Metal / rewriter / offline chain, dropped ----
@@ -94,7 +95,6 @@ KEYS = {
     "render_base":    ("c", "render-scale stub (FRAME_STEP)", "The render scale setting is not available."),
     "screen_aspect":  ("c", "screen-shape stubs (FRAME_STEP)", "Only 16:9 output: the game's taller-screen mode is not available."),
     "tex_dyn_slots":  ("c", "shader chain fallback arrays", "Shaders that index textures by a handle computed at run time are not supported."),
-    "gpu_timestamps": ("c", "nvn_mtl.m timestamp reports per segment", "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."),
     "shader_key_skip": ("c", "hle_nvn.c keys_hash", "Shader keys do not mask the control-section bytes this engine varies: every variant is translated separately (slow first use)."),
     "stdalloc_cap":   ("c", "hle_svc.c StandardAllocator gate", "The cap on nn::mem::StandardAllocator's address space is not applied: the game may run out of address space."),
     "snowdrop_pools": ("c", "snowdrop_pools.py (a rewrite found by code)", "Snowdrop's page pools are not resized: the engine reserves 12 GB of address space, which a 4 GB memory cannot give."),

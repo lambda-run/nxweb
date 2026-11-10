@@ -269,6 +269,38 @@ for it**, like a read-back. An embedder with no device calls `gfx_reports_flush(
 `nvnDeviceGetCurrentTimestampInNanoseconds` answers what the embedder last gave `gfx_set_now` (the runtime gives the
 guest clock before the call).
 
+**Which time a report takes** (profile key `gpu_timestamps`; nxnative `nvn_mtl.m rep_ticks`). On the hardware a
+report is written when the GPU reaches it, so two reports of one submission bracket the GPU work between them. A
+host that writes them all when the submission is done gives them one time, and a game that measures its GPU time
+as their difference reads 0 (nxnative: Breath of the Wild's frame-interval controller and dynamic resolution).
+
+| `gpu_timestamps` | A report's timestamp |
+|---|---|
+| `submission` (the default) | when the submission's last segment was done: one time for all its reports |
+| `segment` | `TIMESTAMP_TOP`: the GPU start of the segment the report lies in; any other type: its GPU end |
+
+A **segment** is what the replayer hands to the GPU in one piece (one `queue.submit`). In `segment` mode the
+lowering cuts a submission the way nxnative's `sub_cut` does: at a render target change, once 64 draws were made
+since the last cut (`H_FLUSH`; nxnative cuts for every game, to keep the GPU busy while it translates; here only for
+this key, so other games' streams are what they were). All reports of a submission still land together, when its
+last segment is done, so a game that waits for the fence reads them together.
+
+Where a segment's times come from (`GfxHost.timestampSource`, shown on the page's Graphics row as "GPU times"):
+
+| Source | Start of a segment | End of a segment |
+|---|---|---|
+| `gpu`: the WebGPU feature `timestamp-query` (asked for when the adapter has it) | the stamp at the start of its first render pass | the stamp at the end of its last render pass |
+| `cpu`: no such feature, or a segment with no render pass, or `timestampQuery: false` | when it was handed over, or when the segment before it was done if that was later | when the GPU reported it done (`onSubmittedWorkDone`) |
+
+The GPU's clock has no known relation to the guest clock (WebGPU has no paired sample, as Metal has), so the stamps
+of a submission are placed on the guest clock by taking the last segment's end as the moment its completion was
+reported: differences between reports of one submission are the GPU's own, their absolute place is late by the
+event loop's delay. Browsers quantise timestamp queries (100 µs in Chromium unless a developer flag is set). The
+`cpu` estimate depends on when the browser runs completion callbacks: it is an upper bound of each segment's end
+and is as coarse as the event loop (a frame, when the page is busy). One submission's reports all take one source.
+Compute passes are not stamped. Measured in the scene (SwiftShader, `timestamp-query`): a frame of 71 draws reads
+5.8 ms of GPU time, 5.7 ms of it in the first segment's 70 draws.
+
 **Conditional rendering** (profile key `render_cond`; nxnative `nvn_mtl.m OP_RENDER_COND`, `rc_value`). Without the
 key `SetRenderEnable(false)` and `SetRenderEnableConditional` record nothing and say once, red, that the host draws
 anyway: a game that only saves GPU time with them is right either way. With the key each becomes an `OP_RENDER_COND`

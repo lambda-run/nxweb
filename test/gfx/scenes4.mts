@@ -141,4 +141,68 @@ export const scenes4: Scene[] = [
       t.eq(e.g.red(), ["[RED] SetRenderEnableConditional: the host draws anyway (the game profile's render_cond is off)"], "the red line that says so"); t.eq(stats(e).slice(2, 7), [0, 0, 0, 0, 0], "nothing evaluated");
     }
   } })),
+
+  // A frame as a game that times its GPU work records it: TIMESTAMP_TOP first, 70 draws into an offscreen target, a
+  // TIMESTAMP, the window as target with 3 more draws, a TIMESTAMP at the end. The replayer's clock moves 1 ms at each
+  // reading, and it reads it once when it hands a segment to the GPU and once when the GPU reports the segment done
+  ...[true, false].map((segment): Scene => ({ name: `gpu_timestamps ${segment ? "segment: the submission is cut at the target change after 64 draws, TIMESTAMP_TOP takes the GPU start of its segment and the others the end of theirs" : "submission (the default): one time for every report of the submission, so a game reads a GPU time of 0"} (times estimated on the CPU, a clock the scene steps)`,
+    host: { now: stepClock, timestampQuery: false }, async run(e, t) {
+    const G = e.G, x = e.g.x, prog = await uboProgram(e), off = G.texture({ w: 64, h: 64, format: FMT.RGBA8 });
+    if (segment) x.gfx_set_profile(PROFILE.TS_SEGMENT);
+    const full = ubo(e, FULL), green = ubo(e, [0, 1, 0, 1]), rec = G.put(new Uint8Array(64)), T0 = 10_000_000_000n, ms = (n: number) => nticks(T0 + BigInt(n) * 1_000_000n);
+    t.eq(e.host.timestampSource, "cpu", "this replayer was told not to use timestamp queries");
+    stepping = T0;
+    const img = await frame(e, (cmd, target) => {
+      G.c("CommandBufferReportCounter", [cmd, COUNTER.TIMESTAMP_TOP, rec]);
+      e.frame(cmd, off, prog); G.clear(cmd, [0, 0, 0, 1]); bindUbos(e, cmd, full, green);
+      for (let k = 0; k < 70; k++) e.drawQuad(cmd);
+      G.c("CommandBufferReportCounter", [cmd, COUNTER.TIMESTAMP, rec + 16]);
+      e.frame(cmd, target, prog); G.clear(cmd, [0, 0, 0, 1]); bindUbos(e, cmd, full, green);
+      for (let k = 0; k < 3; k++) e.drawQuad(cmd);
+      G.c("CommandBufferReportCounter", [cmd, COUNTER.TIMESTAMP, rec + 32]);
+    });
+    await e.settle();
+    t.rect(img, 0, 0, 64, 64, GREEN, "the frame");
+    const got = [0, 16, 32].map(o => u64(e, rec + o + 8)), gpuMs = (got[2] - got[0]) * 625 / 384 / 1e6;
+    if (segment) {
+      // readings: 1 the first segment handed over, 2 the second (the present of a scene has no canvas and hands
+      // nothing over); then done: 3, 4. The second segment starts when the first is done (3), not when it was handed over (2)
+      t.eq(got, [ms(1), ms(3), ms(4)], "TIMESTAMP_TOP: the start of the first segment; the report after the 70 draws: its end; the last: the end of the second");
+      t.eq([x.gfx_report_stat(7), Math.round(gpuMs * 1e6) / 1e6], [1, 3], "one cut; the game reads 3 ms of GPU time for its frame");
+    } else {
+      // readings: 1 the submission handed over; then done: 2
+      t.eq(got, [ms(2), ms(2), ms(2)], "every report: when the submission was done");
+      t.eq([x.gfx_report_stat(7), gpuMs], [0, 0], "no cut; the game reads 0");
+    }
+    t.eq([0, 16, 32].map(o => u64(e, rec + o)), got, "the counter field of a timestamp report is the time too (no render_cond)");
+    t.eq([x.gfx_report_stat(0), x.gfx_report_stat(1), e.host.reportsGpuTimed], [3, 3, 0], "three reports, landed, none from GPU stamps"); t.noRed(e);
+  } })),
+  { name: "gpu_timestamps segment with WebGPU timestamp queries (where the device has them): the reports are in order, the last is the moment the GPU was done, and the first lies the frame's GPU time before it", host: { now: clock }, async run(e, t) {
+    const G = e.G, x = e.g.x, prog = await uboProgram(e), off = G.texture({ w: 64, h: 64, format: FMT.RGBA8 });
+    x.gfx_set_profile(PROFILE.TS_SEGMENT);
+    const full = ubo(e, FULL), green = ubo(e, [0, 1, 0, 1]), rec = G.put(new Uint8Array(64));
+    fake = 20_000_000_000n;
+    const has = !!e.host.device.features?.has?.("timestamp-query");
+    t.eq(e.host.timestampSource, has ? "gpu" : "cpu", "the source follows the device's features");
+    for (let f = 0; f < 3; f++) {
+      await frame(e, (cmd, target) => {
+        G.c("CommandBufferReportCounter", [cmd, COUNTER.TIMESTAMP_TOP, rec]);
+        e.frame(cmd, off, prog); G.clear(cmd, [0, 0, 0, 1]); bindUbos(e, cmd, full, green);
+        for (let k = 0; k < 70; k++) e.drawQuad(cmd);
+        G.c("CommandBufferReportCounter", [cmd, COUNTER.TIMESTAMP, rec + 16]);
+        e.frame(cmd, target, prog); G.clear(cmd, [0, 0, 0, 1]); bindUbos(e, cmd, full, green); e.drawQuad(cmd);
+        G.c("CommandBufferReportCounter", [cmd, COUNTER.TIMESTAMP, rec + 32]);
+      });
+      await e.settle();
+      const got = [0, 16, 32].map(o => u64(e, rec + o + 8)), ns = (v: number) => v * 625 / 384;
+      t.ok(got[0] <= got[1] && got[1] <= got[2], `frame ${f}: in order (${got})`);
+      t.eq(got[2], nticks(fake), "the last report's segment ended when the GPU reported the work done: the guest clock then");
+      const gpuMs = (ns(got[2]) - ns(got[0])) / 1e6, firstMs = (ns(got[1]) - ns(got[0])) / 1e6;
+      t.ok(gpuMs >= 0 && gpuMs < 5000, `a GPU time of ${gpuMs} ms`);
+      if (f === 2) console.log(has ? `timestamp-query: the frame's GPU time reads ${gpuMs.toFixed(2)} ms, its first segment (70 draws) ${firstMs.toFixed(2)} ms; ${e.host.reportsGpuTimed} of 9 reports took the GPU's stamps` : "SKIPPED: this device has no timestamp-query; the reports took the CPU's estimate");
+      fake += 16_666_667n;
+    }
+    if (has) t.eq(e.host.reportsGpuTimed, 9, "every report took the GPU's stamps");
+    t.eq(x.gfx_report_stat(7), 3, "one cut a frame"); t.noRed(e);
+  } },
 ];

@@ -304,7 +304,7 @@
   "010056B015FE8000": {
    "name": "NieR:Automata The End of YoRHa Edition",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 8
   },
   "010057D006492000": {
@@ -472,7 +472,7 @@
   "01007EF00011E000": {
    "name": "The Legend of Zelda: Breath of the Wild",
    "builds": 1,
-   "needs": 4,
+   "needs": 3,
    "cuts": 7
   },
   "010086A022444000": {
@@ -688,7 +688,7 @@
   "0100B8E016F76000": {
    "name": "NieR:Automata The End of YoRHa Edition",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 8
   },
   "0100B99019412000": {
@@ -874,13 +874,13 @@
   "0400486024DEC000": {
    "name": "The Legend of Zelda: Ocarina of Time",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 0
   },
   "040074A01BF12000": {
    "name": "Donkey Kong Bananza",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "040077201BE50000": {

@@ -273,6 +273,7 @@ the key.
 | `render_cond` | a | 10 | the recorder, `gfx_set_profile` bit 1: `SetRenderEnable(Conditional)` evaluated when a submission is lowered; a timestamp report writes counter 0 (`src/gfx/README.md`, "Counter reports and conditional rendering") |
 | `tex_flush_upload` | a | 12 | the recorder, `gfx_set_profile` bit 2: textures in pools the CPU writes are registered and a pool flush over one publishes it (`src/gfx/texwatch.ts`) |
 | `tex_dirty_upload` | a | 11 | the recorder, `gfx_set_profile` bit 4: registered textures are hashed in full by a scanner, 4 MB a submission, where nxnative tracks page writes (`src/gfx/texwatch.ts`) |
+| `gpu_timestamps` | a | 5 | the recorder, `gfx_set_profile` bit 8: a timestamp report takes the GPU start / end of the segment it lies in; the submission is cut every 64 draws at a target change (`src/gfx/README.md`, "Counter reports") |
 | `game_args`, `shared_font`, `device_api` | a | 0 | documented keys no profile sets |
 | `ipa`, `app_category`, `zip_store` | b | 153 each | iOS packaging |
 | `mem_reserve`, `mem_alias`, `mem_stack` | b | 153 each | the Apple host's guest block; the regions they give are what the runtime's per-game layout starts from (see `address_space`) |
@@ -285,16 +286,15 @@ the key.
 | `fps_target` | c | 33 | `hle_fpslock.c`, FRAME_STEP stubs, the engine finders |
 | `present_interval` | c | 8 | presents re-paced to the display |
 | `fps_max` | c | 6 | 120 fps |
-| `gpu_timestamps` | c | 5 | timestamp reports per segment |
 | `tex_dyn_slots` | c | 4 | Ryujinx's fallback texture arrays in the shader chain |
 | `fps_hold`, `program_of`, `screen_aspect`, `shader_key_skip`, `snowdrop_pools`, `stdalloc_cap` | c | 2 each | frame holding; multi-program games; screen-shape stubs; masked shader keys; Snowdrop's pools; StandardAllocator cap |
 | `programs`, `render_base`, `ue_fps_cvar`, `ue_texture_pool` | c | 1 each | multi-program launcher; render scale stub; Unreal console variables |
 
-**Counts over the 153 profiles** ((profile, key) pairs): **a 1,522, b 1,432, c 86**. Keys known to the converter: a 23,
-b 20, c 16 (20, 18 and 16 of them set by some profile). **The class c keys some profile sets** are these 16:
-`fps_target` 33, `address_space` 14, `present_interval` 8, `fps_max` 6, `gpu_timestamps` 5, `tex_dyn_slots` 4,
-`fps_hold` 2, `program_of` 2, `screen_aspect` 2, `shader_key_skip` 2, `snowdrop_pools` 2, `stdalloc_cap` 2, `programs`
-1, `render_base` 1, `ue_fps_cvar` 1, `ue_texture_pool` 1.
+**Counts over the 153 profiles** ((profile, key) pairs): **a 1,527, b 1,432, c 81**. Keys known to the converter: a 24,
+b 20, c 15 (21, 18 and 15 of them set by some profile). **The class c keys some profile sets** are these 15:
+`fps_target` 33, `address_space` 14, `present_interval` 8, `fps_max` 6, `tex_dyn_slots` 4, `fps_hold` 2, `program_of`
+2, `screen_aspect` 2, `shader_key_skip` 2, `snowdrop_pools` 2, `stdalloc_cap` 2, `programs` 1, `render_base` 1,
+`ue_fps_cvar` 1, `ue_texture_pool` 1.
 
 ### The address space: the runtime's verdict
 

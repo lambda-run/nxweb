@@ -663,14 +663,17 @@ export class GfxHost {
     if (!this.reportsCommit) return;
     this.reportsCommit = false;
     const group = this.reportsOpen.splice(0);
-    if (group.length) this.readbacks.push(s.done.then(() => { if (gen === this.gen && !this.disposed) this.reportsLand(group, s); }));
+    if (group.length) this.readbacks.push(Promise.all([...new Set(group.map(r => r.seg.done)), s.done]).then(() => { if (gen === this.gen && !this.disposed) this.reportsLand(group, s); }));
   }
+  reportsGpuTimed = 0;        // reports that took the GPU's own stamps (the others: the CPU's estimate)
   private reportsLand(group: { id: number; seg: Seg }[], last: Seg): void {
+    // The GPU's own times, placed on the guest clock by the last segment's end: only when every segment of the
+    // group has them (one report by the GPU's clock and the next by the CPU's estimate would not compare)
+    const gpu = last.gpu1 > 0n && group.every(r => r.seg.gpu0 > 0n && r.seg.gpu1 >= r.seg.gpu0 && last.gpu1 >= r.seg.gpu1);
     for (const r of group) {
       const g = r.seg;
       let start = g.startAt || last.startAt, end = g.doneAt || last.doneAt;
-      // the GPU's own times of the segment, placed on the guest clock by the last segment's end
-      if (g.gpu1 > 0n && last.gpu1 >= g.gpu1 && g.gpu1 >= g.gpu0 && g.gpu0 > 0n) { start = last.doneAt - (last.gpu1 - g.gpu0); end = last.doneAt - (last.gpu1 - g.gpu1); }
+      if (gpu) { start = last.doneAt - (last.gpu1 - g.gpu0); end = last.doneAt - (last.gpu1 - g.gpu1); this.reportsGpuTimed++; }
       this.x.gfx_report_land(r.id, BigInt.asUintN(64, start), BigInt.asUintN(64, end), last.doneAt);
     }
     this.dropUploads();       // guest memory changed

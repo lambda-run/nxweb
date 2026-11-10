@@ -511,19 +511,19 @@
   }
  },
  "pairs_per_class": {
-  "a": 1522,
+  "a": 1527,
   "b": 1432,
-  "c": 86
+  "c": 81
  },
  "keys_per_class": {
-  "a": 23,
+  "a": 24,
   "b": 20,
-  "c": 16
+  "c": 15
  },
  "keys_set_per_class": {
-  "a": 20,
+  "a": 21,
   "b": 18,
-  "c": 16
+  "c": 15
  },
  "top_c": [
   {
@@ -541,10 +541,6 @@
   {
    "key": "fps_max",
    "profiles": 6
-  },
-  {
-   "key": "gpu_timestamps",
-   "profiles": 5
   },
   {
    "key": "tex_dyn_slots",
@@ -717,6 +713,12 @@
    "note": "gfx_set_profile bit 1 (src/gfx/report.ts): SetRenderEnable / SetRenderEnableConditional evaluated when a submission is lowered, a timestamp report's counter field 0",
    "what": "",
    "profiles": 10
+  },
+  "gpu_timestamps": {
+   "class": "a",
+   "note": "gfx_set_profile bit 8 (src/gfx/report.ts): a timestamp report takes the GPU start / end of the segment it lies in (WebGPU timestamp queries where the device has them, else times estimated on the CPU)",
+   "what": "",
+   "profiles": 5
   },
   "tex_flush_upload": {
    "class": "a",
@@ -903,12 +905,6 @@
    "note": "shader chain fallback arrays",
    "what": "Shaders that index textures by a handle computed at run time are not supported.",
    "profiles": 4
-  },
-  "gpu_timestamps": {
-   "class": "c",
-   "note": "nvn_mtl.m timestamp reports per segment",
-   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution.",
-   "profiles": 5
   },
   "shader_key_skip": {
    "class": "c",

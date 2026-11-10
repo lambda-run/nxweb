@@ -47,6 +47,8 @@ const requestDevice = async (): Promise<any> => {
   const desc = GfxHost.deviceDescriptor(adapter), d = await adapter.requestDevice(desc);
   gpuInfo = "WebGPU: " + (adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "adapter") +
     `; ${desc.requiredFeatures.length} features (${desc.requiredFeatures.join(", ") || "none"}); per stage: ${d.limits.maxUniformBuffersPerShaderStage} uniform buffers, ${d.limits.maxSampledTexturesPerShaderStage} textures, ${d.limits.maxStorageBuffersPerShaderStage} storage buffers`;
+  // where the times in a game's GPU counter reports come from (src/gfx/README.md, "Counter reports")
+  gpuInfo += "; GPU times: " + (d.features?.has?.("timestamp-query") ? "WebGPU timestamp queries" : "estimated on the CPU (this device has no timestamp-query)");
   return d;
 };
 async function init() {
