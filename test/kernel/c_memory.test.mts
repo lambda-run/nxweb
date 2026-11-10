@@ -294,5 +294,5 @@ test("layout: GetInfo reports the regions; the default layout below 4 GB; invali
   bad(v => { v[5] = 0n; }, 2);                           // empty
   bad(v => { v[9] = 0x100000000n; }, 2);                 // past 0xFFFF0000
   bad(v => { v[6] = v[4] + 0x1000n; }, 3);               // the stack region inside the heap region
-  bad(v => { v[8] = 0x10000000n; v[9] = 0x80001000n; }, 4);   // an alias region over 2 GB
+  bad(v => { v[8] = 0x10000000n; v[9] = 0xE0001000n; }, 4);   // an alias region over 3.5 GB
 });

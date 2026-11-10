@@ -8,6 +8,8 @@ import { RtGfx } from "../../src/glue/rt_gfx.ts";
 import { RtFs } from "../../src/glue/rt_fs.ts";
 import { RtAudio } from "../../src/glue/rt_audio.ts";
 import { MemStorage } from "../../src/glue/fs_host.ts";
+import { layoutFor, settingsFor, SPACE } from "../../src/glue/rt_process.ts";
+import { handoffOptions } from "../../src/glue/rt_handoff.ts";
 import type { HleHost } from "../../src/glue/hle_host.ts";
 
 export interface CorpusGuest { name: string; side: any; image: Uint8Array; expected: Uint8Array }
@@ -18,6 +20,8 @@ export interface Env {
   corpus: CorpusGuest[];                // test/guests/out
   rssMb?: () => number;                 // resident memory of the process, when the host can tell
   haveGfxGuests?: boolean;              // cube.nso and cube2.nso were built (they need nxnative's nvn.h)
+  // nxnative's game profiles as src/prepare converted them (Node: src/prepare/profiles/*.json), for the address-space survey
+  profiles?: () => { id: string; apply: Record<string, string>; space: { heap_region: number; alias_region: number; stack_region: number } }[];
   guardRounds?: number;                 // rounds of the guard's cost measurement (default 7; RT_GUARD_ROUNDS for a measurement run)
 }
 export interface Case { name: string; fn: () => string[] }   // returns lines to print under the test; throws on failure
@@ -82,6 +86,69 @@ export function cases(env: Env): Case[] {
     eq(rt.red.length, 5, "one red line each");
     ok(rt.red[0].includes("overlaps the range before it"), rt.red[0]);
     return rt.red;
+  });
+
+  // ---- the address space per game ----
+  test("layout per game: the heap / alias / stack split is chosen from the game's profile (reserved address space against what the pool lets it commit); processes run on a heap-heavy and an alias-heavy layout", () => {
+    const GB = 2 ** 30, gb = (v: number) => (v / GB).toFixed(2);
+    const lines: string[] = [];
+    // (1) the two big classes of nxnative's profiles, and one that cannot fit
+    const heapy = layoutFor({ heap: 3.25 * GB, alias: 0.25 * GB, stack: 0.25 * GB }), aliasy = layoutFor({ heap: 0.125 * GB, alias: 4.375 * GB, stack: 0.25 * GB, sysResource: 0x800000 });
+    const big = layoutFor({ heap: 9 * GB, alias: 0.25 * GB, stack: 0.25 * GB, appPool: 0x240000000 });
+    eq([heapy.fit, aliasy.fit, big.fit], ["pool", "pool", "short"], "how the three fit");
+    ok(heapy.heapSize >= 0xCD500000 - 0x04000000 && heapy.aliasSize >= 0.25 * GB, `heap-heavy: heap ${gb(heapy.heapSize)} GB must hold pool - used, alias ${gb(heapy.aliasSize)}`);
+    ok(aliasy.aliasSize >= 0xCD500000, `alias-heavy: the alias region (${gb(aliasy.aliasSize)} GB) must hold the whole pool`);
+    for (const l of [heapy, aliasy, big, layoutFor()]) ok(l.heapBase === SPACE.lo && l.stackBase === l.heapBase + l.heapSize && l.aliasBase === l.stackBase + l.stackSize && l.aliasBase + l.aliasSize <= SPACE.hi, "regions in order, inside the space");
+    eq(layoutFor().fit, "profile", "the default sizes fit as they are");
+    for (const [name, layout] of [["heap-heavy", heapy], ["alias-heavy", aliasy], ["9 GB pool", big]] as const) {
+      const rt = boot(["heap"], { layout });
+      const r = rt.run();
+      exited(r, 0, rt);
+      ok(rt.stdout().split("\n").length > 3, "the heap guest printed its memory walk: " + rt.stdout());
+      eq(rt.red.filter(l => !/^\[RED\] runtime: the profile reserves/.test(l)), [], name + ": red lines");
+      eq(rt.red.length, layout.fit === "short" ? 1 : 0, name + ": one red line exactly when the pool cannot fit");
+      lines.push(`${name}: heap ${gb(layout.heapSize)} GB at ${hex(layout.heapBase)}, stack region ${gb(layout.stackSize)} at ${hex(layout.stackBase)}, alias ${gb(layout.aliasSize)} at ${hex(layout.aliasBase)} (${layout.fit}); the heap guest runs on it`);
+    }
+    // (2) every profile nxnative has
+    const profiles = env.profiles?.();
+    if (!profiles) { lines.push("the profile survey needs src/prepare/profiles (Node): SKIPPED here"); return lines; }
+    const n = { profile: 0, pool: 0, short: 0 }, fixed = { fits: 0 }, shortIds: string[] = [];
+    for (const p of profiles) {
+      const s = settingsFor(p.apply, { space: p.space });
+      n[s.layout.fit]++;
+      if (s.layout.fit === "short") shortIds.push(`${p.id} (pool ${gb(s.layout.appPool)}+ GB, heap ${gb(p.space.heap_region)}, alias ${gb(p.space.alias_region)})`);
+      if (p.space.heap_region <= 0x60000000 && p.space.alias_region <= 0x77FF0000) fixed.fits++;
+    }
+    lines.push(`${profiles.length} profiles: with the fixed map (heap 1.5 GB, alias 1.87 GB) ${fixed.fits} have room for what they reserve; with the split chosen per game ${n.profile} fit as reserved, ${n.pool} more fit everything their pool lets them commit, ${n.short} cannot (pool larger than the address space)`,
+      `cannot fit in a 32-bit memory: ${shortIds.join("; ") || "none"}`);
+    eq(n.profile + n.pool + n.short, profiles.length, "every profile classified");
+    return lines;
+  });
+
+  test("hand-off: a prepared game's profile becomes the process's options (layout, kernel settings, stack, the take-over table's configuration), and a module's applied cuts are part of its translation cache key", () => {
+    const msg = { titleId: "0100AAAA0000B000", programId: "0100AAAA0000B000", name: "Synthetic", displayVersion: "1.2.3",
+      profile: { id: "0100AAAA0000B000", provisional: false, apply: { app_pool: "0x40000000", mem_used: "0x8000000", sys_resource: "0x800000", mem_map_limit: "on", op_mode: "handheld", perf_mode: "boost", alloc_big_align: "on", game_env: "A=1 B=2", launch_param: "lang8" },
+        needs: [{ key: "address_space", value: "heap 0x8000000 alias 0x118000000", what: "" }, { key: "fps_target", value: "60", what: "a frame-step patch" }] },
+      npdm: { stackSize: 0x200000 }, modules: [{ name: "hello", buildId: "", cuts: 2 }, { name: "sdk", buildId: "", cuts: 0 }],
+      cuts: [{ module: "hello", offset: 0x100, size: 4 }, { module: "hello", offset: 0x200, size: 8 }] };
+    const o = handoffOptions(msg), l = o.layout;
+    eq([l.fit, l.appPool, l.memUsed, l.sysResource, l.flags, l.programId.toString(16), o.mainStackSize], ["pool", 0x40000000, 0x8000000, 0x800000, 1, "100aaaa0000b000", 0x200000], "layout fit, pool, used, system resource, flags, program id, stack size");
+    ok(l.aliasSize >= 0x40000000 && l.heapSize === 0x8000000, `regions: heap ${hex(l.heapSize)}, alias ${hex(l.aliasSize)}`);
+    eq(o.hle, { opmode: 0, perfBoost: true, allocBigAlign: true, gameEnv: "A=1 B=2", launchSpec: "lang8", displayVersion: "1.2.3" }, "the take-over table's configuration");
+    eq([Object.keys(o.cutsKey), o.notes.length], [["hello"], 2], "modules with cuts, notes");
+    // the process: the kernel reports what the profile says; the cache key of the cut module differs from the uncut one's
+    const keys: string[] = [];
+    const store = { get: async (k: string) => { keys.push(k); return null; }, put: async () => { } };
+    const rt = boot(["hello"], { layout: o.layout, mainStackSize: o.mainStackSize, cutsKey: o.cutsKey, cache: store });
+    void rt.cacheLoad();
+    const plain = boot(["hello"], { cache: store }); void plain.cacheLoad();
+    ok(keys.length === 2 && keys[0] !== keys[1] && keys[0].includes("+cuts" + o.cutsKey.hello) && !keys[1].includes("+cuts"), "cache keys: " + keys.join(" | "));
+    exited(rt.run(), 42, rt);
+    const q = rt.r.rt_query_ptr() >>> 0;
+    rt.k.kernel_query_memory(BigInt(l.stackBase), q);
+    eq([Number(rt.dv().getBigUint64(q, true)), Number(rt.dv().getBigUint64(q + 8, true))], [l.stackBase, 0x200000], "the main stack: at the layout's stack region, the NPDM's size");
+    noRed(rt);
+    return [`layout ${l.fit}: heap ${hex(l.heapSize)}, alias ${hex(l.aliasSize)} at ${hex(l.aliasBase)}, pool ${hex(l.appPool)}; stack ${hex(o.mainStackSize!)}; cache key ${keys[0].slice(0, 20)}...${keys[0].slice(keys[0].indexOf("+cuts"))}`, ...o.notes];
   });
 
   // ---- (a) ----

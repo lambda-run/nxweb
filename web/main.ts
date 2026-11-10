@@ -151,6 +151,16 @@ async function showReport(text: string) {
   $("reportnote").textContent = `report of ${text.split("\n").length} lines ${how}`;
 }
 
+// ---- a game folder: the prepare step (web/prepare.html, in the frame) hands over what it made; Play starts it here ----
+const frame = $("prepare") as HTMLIFrameElement;
+const hookFrame = () => { try { frame.contentWindow?.addEventListener("nxweb:handoff", ev => {
+  const msg = (ev as CustomEvent).detail;
+  addLog([{ text: `page: the prepare step handed over ${msg.name} (${msg.titleId}): ${msg.modules.length} code modules, ${msg.cuts.length} cuts applied`, kind: "" }]);
+  worker.postMessage({ type: "handoff", msg });
+  $("state").scrollIntoView({ behavior: "smooth", block: "center" });
+}); } catch { /* the frame is not there */ } };
+frame.addEventListener("load", hookFrame);
+
 // ---- files ----
 let shaderLib: string | undefined, shaderNxsl: Uint8Array | undefined, rom: File | undefined;
 async function take(list: FileList | File[]) {

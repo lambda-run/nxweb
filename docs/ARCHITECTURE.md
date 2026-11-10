@@ -13,13 +13,14 @@ The rules every area shares are in `docs/CONTRACT.md`.
 | Translator | `src/a64`, `src/glue/a64_host.ts` | ARM64 → WebAssembly, a unit (wasm module) per 64 KB chunk of functions, on demand; CPU state in wasm globals of one core module; a two-level pc map in memory |
 | Loader | `src/loader` | NSO / NRO into guest memory, relocation, binding against other modules and host functions (stubs) |
 | Kernel | `src/kernel` | Horizon's SVCs for one process: threads on four virtual cores, locks, condition variables, events, memory, the guest clock. Never blocks, never reads a clock |
-| Runtime | `src/runtime`, `src/glue/rt_*.ts` | One guest process: the one memory, the run loop, host-call dispatch, faults, the process machine; attaches everything below |
+| Runtime | `src/runtime`, `src/glue/rt_*.ts` | One guest process: the one memory, the run loop, host-call dispatch (one answer per name), faults, the process machine; attaches everything below. The address space is laid out per game from its profile (`rt_process.ts`) |
+| Prepare | `src/prepare`, `tools/prepare`, `web/prepare*` | A folder of extracted game files becomes what the runtime starts: detect, index, profile (nxnative's 153 game profiles converted), code cuts, a RomFS device over the folder; one machine, a manifest in OPFS, a hand-off message |
 | Graphics | `src/gfx`, `src/glue/gfx_host.ts` | NVN: a recorder (AssemblyScript) lowers submitted commands to a host stream, a replayer (TypeScript) makes the WebGPU calls |
 | Shaders | `tools/shaders`, `src/shaders`, `src/glue/rt_shaders.ts` | Maxwell shader binaries → SPIR-V (Ryujinx's translator) → a SPIR-V pass → WGSL (naga); offline into a library, or in the page in a Worker |
 | File system | `src/fs`, `src/glue/fs_*.ts`, `rt_fs.ts` | nn::fs on RomFS images and transactional save containers (OPFS) |
-| SDK take-overs | `src/hle`, `src/glue/hle_*.ts`, `rt_hle.ts`, `rt_ro.ts` | The SDK functions nxnative answers on the host, by mangled name: nn::oe, time, account, network (offline), libc pass-through, nn::vi, nn::hid, nn::ro |
-| Audio | `src/audio` | nn::audio (another area; not attached to the runtime yet) |
-| Page | `web/` | Main thread: controls, canvas, input. Worker: everything above and the run loop |
+| SDK take-overs | `src/hle`, `src/glue/hle_*.ts`, `rt_input.ts` | The SDK functions nxnative answers on the host, by mangled name: nn::oe, time, account, network (offline), libc pass-through, nn::vi, nn::hid (controllers, touch, motion, vibration), nn::ro, nn::jit; movies and video codecs as cut stubs |
+| Audio | `src/audio`, `src/glue/audio_*.ts`, `rt_audio.ts` | nn::audio and nn::codec: AudioOut with a sample-exact silent sink, a mixer and resampler feeding an AudioWorklet, the Opus decoder manager; attached to the runtime (118 names) |
+| Page | `web/` | Main thread: controls, canvas, keyboard and controllers, the AudioContext, the prepare frame, the machines / modules / log / report panels. Worker: everything above and the run loop |
 
 ## The memory map
 
@@ -27,20 +28,25 @@ One `WebAssembly.Memory` (wasm32, up to 4 GB). A guest address is an offset into
 
 ```
 0x0000_0000  host area (128 MB): one range per module, from src/glue/rt_layout.ts
-               null guard | rt | loader + arena | kernel | gfx + arena | file staging | hle | fs + arena
-               | a64 translator, helpers, entry bits, pc map | host stubs (65536 x 4 bytes, directly below the code)
+               null guard | rt | loader + arena | kernel | gfx + arena | file staging | fs + arena
+               | a64 translator, helpers, entry bits, pc map
+0x07DC_0000    GUARD_BASE: below it a guest load or store traps (the guard, on by default)
+               | hle | audio   (the guest is handed pointers into these two) | host stubs (65536 x 4 bytes)
 0x0800_0000  code region (252 MB): module images, a free page between them; host allocations above them
 0x17C0_0000  thread-local region: 0x3000 per thread (TLR, thread object, TLS block)
-0x1800_0000  heap (svcSetHeapSize), up to 1.5 GB
-0x7800_0000  stack region: the main thread's stack first; MapMemory destinations
-0x8800_0000  alias region (MapPhysicalMemory), to 0xFFFF_0000
+0x1800_0000  heap (svcSetHeapSize) | stack region (the main thread's stack first; MapMemory destinations)
+             | alias region (MapPhysicalMemory), to 0xFFFF_0000. Default: 1.5 GB | 256 MB | 1.87 GB; for a prepared
+             game the split comes from its profile (heap up to 3.15 GB, or alias up to 3.44 GB)
 0xFFFF_FF00  special pc values (0xFFFF_FFF0 return to host, 0xFFFF_FFE0 yield)
 ```
 
 Every AssemblyScript module is built with `--importMemory --memoryBase <its range>` and has no heap; the runtime
-checks at start that the table tiles the host area and each module's static data ends inside its range. With the
-`guard` option guest loads and stores are compiled so that an address below 0x0800_0000 traps, which keeps guest
-bugs out of host state (about 6 % slower, so off by default). The memory starts at 128 MB and grows on demand.
+checks at start that the table tiles the host area and each module's static data ends inside its range. Guest
+loads and stores are compiled so that an address below `GUARD_BASE` traps, which keeps guest bugs out of host state
+and makes a null pointer a fault at its instruction (the guard: 1 to 3 % of run time measured alone, on by default;
+`guard: false` for measurements). The memory starts at 128 MB and grows on demand. 139 of nxnative's 153 game
+profiles fit this 32-bit address space with the split chosen per game; the rest would need a 64-bit memory
+(`src/runtime/README.md`, "The address space per game", with the measurements and the recommendation).
 
 ## The life of a guest call, from translated code to WebGPU and back
 
@@ -54,8 +60,9 @@ Take `nvnQueueSubmitCommands(queue, 1, &handle)` in a game's render thread.
    the function table, a 52-byte module whose only function calls the import `host_call`.
 3. **Dispatch** (`Runtime.hostCall`). The id is `(pc - stubBase) / 4`; the handler is the one registered under the
    loader's name for that id. It gets a `HostCpu`: registers, guest memory, `block`, `waitFor`, `call`, `never`.
-4. **NVN recorder.** `RtGfx`'s handler copies x0..x7 and d0..d7 into an argument block (`rt_nvn_args`) and calls
-   `nvn_call(id, args)` in `gfx.wasm`. For a submit, `lower.ts` walks the command records the game recorded into
+4. **NVN recorder.** `RtGfx`'s handler has x0..x7 (and d0..d7 for the few functions `nvn_abi` says take floats)
+   copied into an argument block by a small helper module on the CPU-state globals and calls `nvn_call(id, args)` in
+   `gfx.wasm`. For a submit, `lower.ts` walks the command records the game recorded into
    its own command memory, runs the render pass machine and the pipeline cache, and writes a flat host stream.
 5. **Replayer.** The recorder calls its import `gfx_exec(ptr, len)`; `GfxHost.exec` reads the stream from linear
    memory and makes the WebGPU calls: buffer uploads (hashed, cached), bind groups, passes, draws, `queue.submit`.
@@ -78,6 +85,7 @@ and either loads the context back (continue) or unwinds (the thread waits, or a 
 const rt = new Runtime(mods, { log: console.log });
 rt.register({ name: "_ZN2nn3foo3BarEi", forced: true,           // forced: wins over a module's own definition
   fn: cpu => { const x = cpu.w(0); /* ... */ return 0; } });    // the result goes to x0 (cpu.setD(0, bits) for d0)
+                                                                // a name has one answer: a second register() throws
 rt.loadNso(files);                                              // register before loading
 ```
 
@@ -104,11 +112,13 @@ the glue only routes. A test guest declares the import with an asm label and the
 
 ```
 npm install; pip install unicorn capstone        # clang with the aarch64 target and ld.lld are needed too
-npm test             # the fast tier: kit, loader, kernel, a64 guest programs (4 configurations), runtime under Node
+npm test             # the fast tier: kit, loader, kernel, a64 guest programs (4 configurations), runtime under Node, prepare
 npm run fs:test      # file system; npm run hle:test: take-over table; npm run shaders:test; npm run audio:test
 npm run a64:fuzz     # instruction fuzz against Unicorn (338,000 cases; minutes)
 npm run rt:browser   # the runtime's cases in headless Chromium: WebGPU pixels, the page, OPFS, in-page shaders
 npm run a64:browser  # the translator's gates in Chromium;  npm run fs:browser;  npm run gfx:test (42 scenes)
+npm run audio:browser; npm run prepare:browser         # the real AudioWorklet; the prepare page with OPFS
+npm run rt:guard;  npm run a64:mem64                   # measurements: the guard's cost; memory64's addressing form
 npm run web          # the page, http://localhost:8080
 ```
 

@@ -219,6 +219,7 @@ export class A64Host {
     for (const r of this.ranges.filter(r => r.lo < hi && lo < r.hi)) this.dropTranslations(r.lo, r.hi);
     this.ranges = this.ranges.filter(r => !(r.lo < hi && lo < r.hi));
   }
+  private freeSlots: { base: number; len: number }[] = [];   // table ranges of units that were dropped whole
   private dropTranslations(lo: number, hi: number): void {
     this.clearPcMap(lo, hi);
     for (let k = this.units.length - 1; k >= 0; k--) {
@@ -230,7 +231,13 @@ export class A64Host {
         const pc = u.pcs[i];
         if (pc !== 0xFFFFFFFF && pc >= lo && pc < hi) { this.table.set(u.tableBase + i, null); if (this.byFunc.get(pc) === u) this.byFunc.delete(pc); }
       }
-      if (inside === n) this.units.splice(k, 1);
+      if (inside === n) {
+        // the whole unit is gone: its table slots are free for the next unit (a module loaded and unloaded again
+        // and again used to grow the table by its units every time)
+        this.units.splice(k, 1);
+        for (let i = 0; i < u.pcs.length; i++) this.table.set(u.tableBase + i, null);
+        this.freeSlots.push({ base: u.tableBase, len: u.pcs.length });
+      }
     }
     for (const pc of [...this.cache.keys()]) if (pc >= lo && pc < hi) this.cache.delete(pc);
   }
@@ -286,8 +293,16 @@ export class A64Host {
   }
 
   private install(bytes: Uint8Array, pcs: Uint32Array, side: Uint32Array, insns: number, cached: boolean): A64Unit {
-    const base = this.table.length;
-    this.table.grow(pcs.length);
+    // a range of table slots a dropped unit left (a module that was unloaded), else new slots at the end
+    let base = -1;
+    for (let k = 0; k < this.freeSlots.length; k++) {
+      const f = this.freeSlots[k];
+      if (f.len < pcs.length) continue;
+      base = f.base;
+      if (f.len === pcs.length) this.freeSlots.splice(k, 1); else { f.base += pcs.length; f.len -= pcs.length; }
+      break;
+    }
+    if (base < 0) { base = this.table.length; this.table.grow(pcs.length); }
     const mod = new WebAssembly.Module(bytes as unknown as BufferSource);
     new WebAssembly.Instance(mod, {
       ...this.unitImports,

@@ -32,6 +32,8 @@ Result svcBreak(u64 reason, u64 a, u64 b);
 Result svcOutputDebugString(const char *s, u64 len);
 Result svcGetInfo(u64 *out, u32 id0, Handle h, u64 id1);
 Result svcCreateEvent(Handle *writable, Handle *readable);
+Result svcMapMemory(void *dst, void *src, u64 size);
+Result svcUnmapMemory(void *dst, void *src, u64 size);
 
 // ---- output: a line is built in a buffer and written with one SVC ----
 typedef struct { char b[240]; u32 n; } Line;

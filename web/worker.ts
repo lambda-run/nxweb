@@ -17,6 +17,8 @@ import { OpfsStorage } from "../src/glue/fs_dev_opfs.ts";
 import { attachHle } from "../src/glue/hle_rt.ts";
 import type { HleHost } from "../src/glue/hle_host.ts";
 import { OUT_S } from "../src/glue/audio_host.ts";
+import { handoffOptions, type HandoffOptions } from "../src/glue/rt_handoff.ts";
+import { storageFromMessage, type HandOffMessage } from "../src/prepare/host/prepare.ts";
 import { moduleRows, takeovers, machineRows, refusedTotal, reportText, type KitPart, type ModuleRow, type TakeoverSummary } from "../src/glue/rt_report.ts";
 
 const post = (m: any, t: Transferable[] = []) => (self as any).postMessage(m, t);
@@ -75,17 +77,21 @@ async function storageFor(main: Uint8Array, rom: Blob | undefined): Promise<FsSt
     return mem;
   }
 }
-interface LoadOptions { nxsl?: Uint8Array; rom?: Blob; hooks?: (me: Runtime) => void; name?: string }
+interface LoadOptions { nxsl?: Uint8Array; rom?: Blob; hooks?: (me: Runtime) => void; name?: string; game?: HandoffOptions; storage?: FsStorage }
 async function load(files: { name: string; bytes: Uint8Array }[], shaders: [string, any][], r: number | undefined, o: LoadOptions = {}) {
   await ready;
   if (!mods) return;
   // the process before this one ends here: its threads, its translated code and its graphics objects are released
   if (rt) { await endProcess(rt); await runDone; }
   ratio = r; stdoutSeen = 0; last = undefined;
-  const storage = await storageFor(files[0].bytes, o.rom);
-  const guard = guardNow = guardWanted;
-  const me = rt = new Runtime(mods, { clock: "wall", guard, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined });
-  optionsNote = `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}`;
+  const storage = o.storage ?? await storageFor(files[0].bytes, o.rom);
+  const guard = guardNow = guardWanted, game = o.game;
+  // a prepared game: its address space, kernel settings and stack from its profile and NPDM (rt_handoff.ts)
+  const me = rt = new Runtime(mods, { clock: "wall", guard, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
+    layout: game?.layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
+  optionsNote = `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
+    (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");
+  for (const n of game?.notes ?? []) log("page: " + n);
   faultSeen = false;
   title = `nxweb report: ${o.name ?? files.map(f => f.name).join(" + ")}`;
   // a lost device: the replayer asks here for a new one (the page's test button destroys the device on purpose)
@@ -98,7 +104,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   // controller applet's prompt is a dialog of the page, vibration goes to the player's controller; the input box, the
   // web view, shared fonts and native images have no page side yet (the table answers as nxnative does windowless)
   const myInput: { v?: RtInput } = {};
-  hle = attachHle(me, mods.hle!, { config: { opmode: 1 }, gfx, front: {
+  hle = attachHle(me, mods.hle!, { config: { opmode: 1, ...game?.hle }, gfx, front: {
     ctrlPrompt: (min, max, answer) => { ctrlAnswer = answer; post({ type: "ctrlPrompt", min, max }); return true; },
     vibration: s => { const source = myInput.v?.sourceOf(s.player) ?? 0; if (source) post({ type: "vibration", source, low: Math.max(s.motors[0].amplitudeLow, s.motors[1].amplitudeLow), high: Math.max(s.motors[0].amplitudeHigh, s.motors[1].amplitudeHigh) }); },
   } });
@@ -107,7 +113,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   const g = gfx, inp = input;
   g.onPresentQueued(f => inp.frame(f));
   audio = new RtAudio(me, mods.audio!, { hle, send: (m, t) => post(m, t ?? []) });
-  fsys = new RtFs(me, mods.fs!, storage);
+  fsys = new RtFs(me, mods.fs!, storage, game ? { programId: game.programId } : undefined);
   for (const [key, info] of shaders) if (gfx.registerShader(key, info) < 0) log(`[RED] page: shader ${key} was not accepted`);
   o.hooks?.(me);
   // which transitions each machine takes in this process (the machines table)
@@ -256,7 +262,18 @@ self.onmessage = async (ev: MessageEvent) => {
       let shaders: [string, any][] = [];
       if (m.shaders) { try { shaders = Object.entries(JSON.parse(m.shaders)); } catch (e: any) { log("[RED] page: the shader library is not JSON: " + e.message); } }
       await load(m.files, shaders, undefined, { nxsl: m.nxsl, rom: m.rom, hooks: me => me.register({ name: "demo_frames", fn: () => 0 }) });
-    } else if (m.type === "pause") rt?.requestPause();
+    } else if (m.type === "handoff") {
+      // the prepare step's hand-off: code modules as Blobs (cuts applied), the RomFS and add-on contents as devices
+      // over the folder's files, saves in OPFS under the hand-off's name
+      const msg = m.msg as HandOffMessage, files: { name: string; bytes: Uint8Array }[] = [];
+      for (const mod of msg.modules) files.push({ name: mod.name, bytes: new Uint8Array(await mod.file.arrayBuffer()) });
+      let saves: FsStorage;
+      try { const st = new OpfsStorage(msg.saveId); await st.preopen(FS_KIND.SAVE); await st.preopen(FS_KIND.DEVICE_SAVE); saves = st; fsNote = `saves in OPFS under ${msg.saveId}, RomFS of ${msg.rom?.files.length ?? 0} files from the folder, ${msg.aoc.length} add-on contents`; }
+      catch (e: any) { saves = new MemStorage(); fsNote = `no OPFS here (${e?.message ?? e}): saves are kept in memory`; }
+      await load(files, [], undefined, { name: `${msg.name} (${msg.titleId}, ${msg.displayVersion ?? "v" + msg.version})`, game: handoffOptions(msg), storage: storageFromMessage(msg, saves),
+        hooks: me => me.register({ name: "demo_frames", fn: () => 0 }) });
+    }
+    else if (m.type === "pause") rt?.requestPause();
     else if (m.type === "resume") { if (rt && rt.state === "Paused") go(rt); }
     else if (m.type === "stop") { if (rt) { remember(rt); await endProcess(rt); } status(); }
     else if (m.type === "input") {

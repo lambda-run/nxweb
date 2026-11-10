@@ -22,7 +22,7 @@ const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: ROOT
 // name -> source file and extra compiler flags
 export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
   hello: ["hello.c"], two_main: ["two_main.c"], two_lib: ["two_lib.c"], threads: ["threads.c"], race: ["race.c"], heap: ["heap.c"],
-  host_main: ["host_main.c"], host_lib: ["host_lib.c"], argsg: ["argsg.c"], pads: ["pads.c"], tone: ["tone.c"],
+  host_main: ["host_main.c"], host_lib: ["host_lib.c"], argsg: ["argsg.c"], pads: ["pads.c"], tone: ["tone.c"], stress_threads: ["stress_threads.c"], stress_mem: ["stress_mem.c"], stress_ro: ["stress_ro.c"],
   fsg: ["fsg.c"], hleg: ["hleg.c"], ro_main: ["ro_main.c"], fini: ["fini.c"], clock: ["clock.c"], fault_null: ["fault.c", "-DMODE=6"], fault_host: ["fault.c", "-DMODE=7"],
   fault_jump: ["fault.c", "-DMODE=1"], fault_undef: ["fault.c", "-DMODE=2"], fault_load: ["fault.c", "-DMODE=3"], fault_stack: ["fault.c", "-DMODE=4"], break: ["fault.c", "-DMODE=5"],
 };
@@ -31,7 +31,7 @@ export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
 // (NXNATIVE_NVN_INCLUDE overrides the directory). Without it they are not built and their tests are skipped.
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 export const NVN_INCLUDE = process.env.NXNATIVE_NVN_INCLUDE ?? join(NXNATIVE, "dm", "gfx", "nvn", "include");
-export const GFX_MODULES: Record<string, [src: string, ...flags: string[]]> = { cube: ["cube.c"], cube2: ["cube2.c"], mx: ["mx.c"], mx_bad: ["mx.c", "-DBAD"], syncg: ["syncg.c"] };
+export const GFX_MODULES: Record<string, [src: string, ...flags: string[]]> = { cube: ["cube.c"], cube2: ["cube2.c"], mx: ["mx.c"], mx_bad: ["mx.c", "-DBAD"], syncg: ["syncg.c"], stress_gfx: ["stress_gfx.c"] };
 // The hand-assembled Maxwell programs of tools/shaders (python only), as C arrays for the mx guests, and their keys
 export const MAXWELL = join(OUT, "maxwell");
 export function maxwellBlobs(): void {
@@ -126,6 +126,7 @@ export function loadEnv(): MoreEnv {
     nso: name => new Uint8Array(readFileSync(join(GUESTS, name + ".nso"))),
     file: name => new Uint8Array(readFileSync(join(GUESTS, name))),
     haveGfxGuests: haveNvn(),
+    profiles: () => readdirSync(join(ROOT, "src", "prepare", "profiles")).filter(f => /^[0-9A-Fa-f]{16}\.json$/.test(f)).map(f => { const p = JSON.parse(readFileSync(join(ROOT, "src", "prepare", "profiles", f), "utf8")); return { id: p.title_id, apply: p.apply, space: p.address_space }; }),
     guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : undefined,
     corpus,
     rssMb: () => process.memoryUsage().rss / 1e6,

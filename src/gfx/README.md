@@ -23,7 +23,7 @@ game ──nvn_call──▶ dispatch.ts ─▶ cmd.ts ── records ──▶ 
 | `pipeline.ts` | Pipeline key and cache (render and compute). `shader.ts`: shader keys, library, reflection record. `sync.ts`, `window.ts`, `tables.ts`, `texlayout.ts` (nxnative `nvn_tex.c`), `sha256.ts`, `arena.ts`, `log.ts`. |
 | `texcontent.ts`, `fmt.ts`, `astc.ts` | Texture content from guest memory; format classes, sRGB twins and conversions of formats WebGPU lacks; the ASTC decoder. |
 | `device.ts` | The host device as a machine: loss and recovery. |
-| `defs/*.json` | The seven machines: `gfx_cmdbuf`, `gfx_pass`, `gfx_pipeline`, `gfx_image`, `gfx_sync`, `gfx_texture`, `gfx_device` (diagrams in `docs/machines/`). |
+| `defs/*.json` | The eight machines: `gfx_cmdbuf`, `gfx_pass`, `gfx_pipeline`, `gfx_image`, `gfx_sync`, `gfx_texture`, `gfx_device`, `gfx_shader` (diagrams in `docs/machines/`). |
 | `src/glue/gfx_host.ts`, `gfx_formats.ts`, `gfx_capture.ts` | The replayer, its format table, and the frame capture's text and PNG writer. |
 | `names.txt`, `host/gen_names.mts`, `gen/names.ts` | The 743 NVN names (nxnative `names.txt`) and the generated lookup table. |
 
@@ -70,6 +70,14 @@ game ──nvn_call──▶ dispatch.ts ─▶ cmd.ts ── records ──▶ 
   to call; the embedder supplies `requestDevice` (or calls `host.restore(device)`).
 - Shader library: `host.registerShader(keyHex, info)`, `info` = the shader chain's reflection record plus `wgsl`
   (below). Frame capture: `host.captureFrame()` (below).
+- **A key's state** (machine `gfx_shader`: Unknown, Pending, Failed, Ready): `host.shaderPending(keyHex, "pending" |
+  "failed" | "forget")` (`gfx_shader_pending`) tells the recorder that the embedder is fetching or translating a key,
+  or could not get it and has said so itself: its draws are then skipped without the recorder's "not in the shader
+  map" line. Registering a key that is registered already replaces its record and requests every pipeline built from
+  it again (`gfx_pipeline` Reset; the replayer drops its pipeline and module, and a completion of the old one is ignored).
+- **`host.dispose()`** destroys every texture and buffer the replayer made (it keeps the set itself: all are created
+  through `newTexture` / `newBuffer`), drops pipelines, bind groups and modules, resolves whoever waits on a fence and
+  ignores completions still under way. `host.liveObjects` is the count. Nothing may be executed afterwards.
 
 ## Records: where they match nxnative and where they depart
 
@@ -397,7 +405,8 @@ Downsample(TextureView).
 
 ## Requests to other owners
 
-- **Runtime** (`rt_gfx.ts`): `adapter.requestDevice(GfxHost.deviceDescriptor(adapter))`; `host.onFence` / `onImage` /
+- **Runtime**: all answered in `rt_gfx.ts` this round (src/runtime/README.md "Graphics"). The list was:
+  `adapter.requestDevice(GfxHost.deviceDescriptor(adapter))`; `host.onFence` / `onImage` /
   `host.fence(n)` in place of the wrapped `gfx_fence_signal` (and `host.signalFence` from the null replayer);
   `gfx_wait_fence()` and the timeout-0 call for `nvnSyncWait`; `gfx_finish_fence()` for `nvnQueueFinish`;
   `nvn_abi_table()` to skip d0..d7 and to copy `args + 64` back for the four float results; `requestDevice` for

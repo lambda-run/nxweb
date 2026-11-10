@@ -30,6 +30,8 @@
     "rt:build": "node src/runtime/host/build.mts",
     "rt:test": "node --expose-gc test/runtime/run.mts",
     "rt:browser": "node test/runtime/browser.mts",
+    "rt:guard": "node test/runtime/guard_bench.mts",
+    "a64:mem64": "node --experimental-wasm-memory64 test/a64/mem64_bench.mts",
     "shaders:naga": "cargo build --release --target wasm32-unknown-unknown --manifest-path tools/shaders/naga_wasm/Cargo.toml --target-dir build/shaders/naga_target && cp build/shaders/naga_target/wasm32-unknown-unknown/release/nx_naga.wasm build/shaders/nx_naga.wasm",
     "shaders:asm": "python3 tools/shaders/maxwell_asm.py build/shaders/maxwell",
     "shaders:xlate": "python3 tools/shaders/xlate.py build/shaders/maxwell/corpus.json build/shaders/maxwell/spv",

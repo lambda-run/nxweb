@@ -50,6 +50,7 @@ step("a64:guests", () => {
   return { ok: ran && real.length === 0 && (r.code === 0 || expected.length > 0), note };
 });
 step("rt:test", () => { const r = npm("rt:test"); return { ok: r.code === 0, note: last(r.out, /^rt:test/) }; });
+step("prepare:test", () => { const r = npm("prepare:test"); return { ok: r.code === 0, note: last(r.out, /^prepare:test/) }; });
 
 console.log("\n===== summary =====");
 for (const s of steps) console.log(`${s.ok ? "ok  " : "[RED] FAIL"} ${s.name.padEnd(12)} ${(s.ms / 1000).toFixed(1).padStart(6)} s  ${s.note}`);

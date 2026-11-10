@@ -37,6 +37,7 @@ jobs:
       - run: npm test
       - run: npm run fs:test
       - run: npm run hle:test
+      - run: npm run audio:test
 
   fuzz:
     name: a64 instruction fuzz against Unicorn
@@ -82,6 +83,7 @@ jobs:
       - name: the guest corpus (test/guests/out is not in the repository)
         run: npm run guests:build
       - run: npm run a64:browser
+      - run: npm run prepare:browser
       - run: npm run rt:browser
       - run: npm run fs:browser
       - run: npm run gfx:test

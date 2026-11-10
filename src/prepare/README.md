@@ -33,7 +33,7 @@ exefs/ and romfs/ directly in the folder count as base/
 | `host/profiles.ts`, `profiles_node.ts` | Access to the converted profiles |
 | `profiles/*.json` | Generated: one file per game, `_sdk.json`, `index.json`, `report.json` (`tools/prepare/convert_profiles.py`) |
 | `../../tools/prepare/convert_profiles.py` | nxnative's `dm/games` and patch files into the above |
-| `../../web/prepare.html`, `prepare.ts`, `prepare_build.mts` | The page (separate for now, linked from nothing) and its build |
+| `../../web/prepare.html`, `prepare.ts`, `prepare_build.mts` | The page and its build: a frame of the main page (`web/index.html`), whose Play hands over to the page's Worker |
 
 ```
 npm run prepare:test [-- <filter>]   # Node, 19 tests, about 3 s after the builds
@@ -317,6 +317,13 @@ that starts the game in the runtime**, RomFS read with `FileReaderSync`; listing
 - Multi-program games (`programs`): the program in the folder is prepared alone.
 
 ## Requests to the integration owner
+
+Answered in the integration round (src/runtime/README.md, "The address space per game" and "The page"): 1 (the
+main page takes `nxweb:handoff` from this page in a frame and its Worker builds the process: `web/worker.ts`,
+`src/glue/rt_handoff.ts`; `npm run web` builds and serves both), 2 (`settingsFor`: the kernel's cfg block, the
+take-over table's configuration, the stack size), 3 (`cutsKey`: a hash of a module's applied cuts in its cache key),
+4 (the layout is chosen per game: 139 of 153 profiles fit, 14 do not; memory64 measured and not recommended now), 5,
+6 (`prepare:test` in `npm test`, `prepare:browser` in the CI browser job, rows in the docs). Open: 7.
 
 1. **Take the hand-off**: listen for `nxweb:handoff` (or call `prepare.handoff()`), post the message to the Worker,
    `storageFromMessage(msg, new OpfsStorage(msg.saveId))`, `loadNso` the module Blobs. `web/build.mts` can call

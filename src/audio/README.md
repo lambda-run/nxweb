@@ -333,35 +333,39 @@ counts as a gesture): the context stays suspended, the output is `SilentStarting
 per second on the silent sink with nothing mixed; a real click, `Live` 21 ms later, 1.97 s of clean tone.
 `build/audio/tone.wav` is the first run's recording.
 
-These tests run in real time. Of four full runs on the development machine (4 cores, other test suites running
-beside them) three passed 10 of 10 and one 9 of 10: in the gesture case the device ran dry for 512 frames right
-after going Live (headless Chromium's device takes 512 frames every 10.7 ms, so the 40 ms lead is 29 ms at its
-lowest, and the Worker's 4 ms timer came more than that late). In three more runs of that case alone, one failed on
-an underrun of the test's own guest (20 ms in flight, a timer 20 ms late) while the output was on the silent sink.
-The runner therefore runs a failed case once more and prints both outcomes (`SECOND ATTEMPT, the first failed: ...`,
-and a count in the summary; `AUDIO_BROWSER_RETRIES=0` turns it off).
+**The case that failed once in a few runs, and why.** The gesture case used to fail about one start in six with the
+device running dry for 256 or 512 frames right after going Live. It was put down to a Worker timer that came more
+than the ring's lead late. Measured (the test's Worker now records every gap of 12 ms or more between two ticks and
+the ring header around each change of `underrun` or `live`): in the failing runs **no tick was late**, and the whole
+underrun happened inside the one tick that took the output Live (`[wr, rd, underrun, callbacks, live]` before
+`[0, 0, 0, 1, 0]`, after `[1920, 128, 256, 4, 1]`). The cause was the module's: `pump()` stored the ring's `live`
+word (which tells the worklet that an empty ring is an underrun) *before* it wrote the 40 ms lead. The output goes
+Live because the device has just called back, that is while the device's first burst of callbacks is still running on
+the audio thread; the callbacks of that burst that fell between the two stores found `live` = 1 and an empty ring.
+Fixed in `mix.ts` (the lead and `wr` first, then `live`; `live` is 0 whenever the device is not reported running)
+and in `audio_device.ts` for the `sab` transport (the same order when copying). After the fix: 14 runs of the case,
+no device underrun. One of the 14 failed on the *other* thing the old note mentions, an underrun of the test's own
+guest while on the silent sink, with two timer gaps of 21 and 29 ms recorded: that one is the test's (its guest is
+driven by the Worker's 4 ms timer and keeps 20 ms in flight), so the case now allows as many output underruns as
+timers came 15 ms or more late and says so in its line; the device must still never run dry. The runner's second
+attempt stays as a net for a machine that is busy (`AUDIO_BROWSER_RETRIES=0` turns it off).
 
 `npm run kit:test`: the three machines' tables (every transition, every refusal) in `test/audio/audio.machine.test.mts`.
 
-## Attaching to the runtime (not done here: these are the runtime owner's)
+## Attached to the runtime (`src/glue/rt_audio.ts`; src/runtime/README.md "Audio")
 
-1. Two ranges of the process memory: static data (1 MB is ample; `asc --importMemory --zeroFilledMemory --memoryBase`)
-   and the arena (16 MB covers two Opus managers of 255 and 160 I/O buffers; a game without them needs a few hundred
-   KB). On a shared memory add `--sharedMemory --enable threads`.
-2. `audio_lookup(name)` for the names a module imports or defines; a hit is a forced take-over (nxnative's
-   `HLE_FORCE`: it wins over the SDK's own definition) whose handler fills the
-   argument block (x0..x7, v0..v7, x8, x30), calls `audio_tick(guest ns, host ns)` and `audio_call`, and writes x0,
-   x1 or v0 back as the result says. A float result needs v0 written back, which the runtime does not do yet.
-3. `audio_tick` at the end of every slice; slices and idle jumps end at `audio_next_deadline()` on the deterministic
-   clock (as for the `at` of an outside wait); `audio_set_catchup_limit` on the wall clock.
-4. `audio_event_bind`: nn::os system events (nxnative `hle_bind_system_event`) belong to the nn::os take-overs.
-5. The page hosts `AudioDeviceMain` and passes `{ audio }` messages both ways.
-6. The module is single threaded: with guest cores on several Workers its entries need one lock.
+All six points are done: the "audio static" range (above the guard, because `GetAudioOutName` hands out a pointer
+into it) and a host-allocated arena; the 118 names as forced take-overs with x0, x0 / x1 or v0 written back;
+`audio_tick` at slice ends and `audio_next_deadline()` as a deadline of the run loop, the catch-up limit on the wall
+clock; `audio_event_bind` through the take-over table's SystemEvents; the page hosting `AudioDeviceMain`
+(`close` was added: a process that ends closes its context, a second `open` replaces the first); one thread.
+Tested with a translated guest (`test/runtime/src/tone.c`): Node on the silent sink with exact release times,
+Chromium on the real worklet.
 
 ## Gaps
 
 - The audio renderer's SDK-driving half is not implemented (above); nothing of the renderer was run with an SDK.
-- Nothing here was run with a game or with the runtime: the guest in every test is the test.
+- Nothing here was run with a game; with the runtime one self-made guest (AudioOut with an event) has.
 - Opus with a real SDK decoder is untested; multi-stream Opus has no decoder of ours behind it (SDK forwards only).
 - One device for all outputs: a stall or a loss moves every Live output to the silent sink at once. Frames that were
   in the ring at that moment (up to the lead) are played when the device comes back, before the new ones.

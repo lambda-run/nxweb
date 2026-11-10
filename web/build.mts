@@ -6,6 +6,7 @@ import { copyFileSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync } 
 import { join } from "node:path";
 import { ROOT, OUT, GUESTS, SHADER_OUT, build, buildModules, loadEnv, haveNvn, shaderArtifacts } from "../test/runtime/harness.mts";
 import { bootGfx } from "../test/runtime/gfx_cases.ts";
+import { buildPreparePage } from "./prepare_build.mts";
 
 export const WEB = join(ROOT, "build", "web");
 export async function buildWeb(): Promise<void> {
@@ -13,6 +14,7 @@ export async function buildWeb(): Promise<void> {
   mkdirSync(join(WEB, "wasm"), { recursive: true }); mkdirSync(join(WEB, "demo"), { recursive: true });
   for (const entry of ["main", "worker"]) buildSync({ entryPoints: [`web/${entry}.ts`], bundle: true, format: "iife", outfile: `build/web/${entry}.js`, logLevel: "warning", absWorkingDir: ROOT });
   copyFileSync(join(ROOT, "web", "index.html"), join(WEB, "index.html"));
+  buildPreparePage();   // the game-folder intake (web/prepare.html) is a frame of the page
   buildSync({ entryPoints: ["src/glue/rt_shader_worker.ts"], bundle: true, format: "esm", outfile: "build/web/shader_worker.js", logLevel: "warning", absWorkingDir: ROOT });
   for (const n of ["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"]) copyFileSync(join(OUT, n + ".wasm"), join(WEB, "wasm", n + ".wasm"));
   copyFileSync(join(GUESTS, "tone.nso"), join(WEB, "demo", "tone.nso"));   // the audio demo

@@ -41,9 +41,9 @@ let nshare: i32 = 0;
 export const MAX_MODULES: i32 = 64;
 const MODS: usize = memory.data(2048);     // MAX_MODULES * 32: base, size, ro offset, data offset
 let nmod: i32 = 0;
-// One kit instance per alias page: 16 bytes each, room for a 2 GB alias region
-const MAX_ALIAS_PAGES: u64 = 524288;
-const PAGES: usize = memory.data(8388608);
+// One kit instance per alias page: 16 bytes each, room for a 3.5 GB alias region
+const MAX_ALIAS_PAGES: u64 = 917504;   // 3.5 GB: a game that maps everything in the alias region (per-game layouts, src/glue/rt_process.ts)
+const PAGES: usize = memory.data(14680064);   // MAX_ALIAS_PAGES * 16
 
 // @ts-ignore: decorator
 @inline function page(i: u64): Inst { return Inst.at(PAGES + (<usize>i << 4)); }
@@ -62,7 +62,7 @@ export function tlsSlotAddr(i: u32): u64 { return tlsBase + PAGE + <u64>i * TLS_
 export const E_LAYOUT_ALIGN: i32 = 1;     // a base or size is not a multiple of 4 KiB
 export const E_LAYOUT_RANGE: i32 = 2;     // a region is empty or reaches past 0xFFFF0000
 export const E_LAYOUT_OVERLAP: i32 = 3;   // two regions overlap
-export const E_LAYOUT_ALIAS: i32 = 4;     // the alias region is larger than 2 GB
+export const E_LAYOUT_ALIAS: i32 = 4;     // the alias region is larger than 3.5 GB
 
 const REG: usize = memory.data(80);
 function regionsOk(): i32 {

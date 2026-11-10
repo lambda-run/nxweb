@@ -288,6 +288,7 @@ static NVNprogram g_cube_prog; static NVNbufferAddress g_cube_vb, g_cube_ib, g_c
 static NVNtexture g_cube_tex; static NVNsampler g_cube_samp; static NVNtextureHandle g_cube_handle;
 static const float g_bg[4] = { 0.05f, 0.07f, 0.12f, 1.0f };
 static void cube_texture_init(void);
+static u8 *g_cube_storage; static u64 g_cube_storage_size;   // the cube texture's block-linear storage in the pool
 static void cube_init(void) {
   static const signed char faces[6][3][3] = { {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}}, {{0,1,0},{1,0,0},{0,0,-1}}, {{0,-1,0},{1,0,0},{0,0,1}}, {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}} };
   static const signed char corner[4][2] = { {-1,-1}, {1,-1}, {-1,1}, {1,1} };
@@ -322,6 +323,7 @@ static void cube_texture_init(void) {
     }
   }
   nvnMemoryPoolFlushMappedRange(&g_texstore.obj, storage - g_texstore.mem, size);
+  g_cube_storage = storage; g_cube_storage_size = size;
   NVNsamplerBuilder sb;
   nvnSamplerBuilderSetDevice(&sb, &g_dev); nvnSamplerBuilderSetDefaults(&sb);
   nvnSamplerBuilderSetMinMagFilter(&sb, NVN_MIN_FILTER_NEAREST, NVN_MAG_FILTER_NEAREST);

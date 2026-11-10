@@ -12,17 +12,18 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 
 | Area | State (from the tests' own summary lines) |
 |---|---|
-| State machine kit (`src/kit`) | Working: 38 machines, `kit:test` 95 tests, 362 of 362 transitions exercised |
+| State machine kit (`src/kit`) | Working: 40 machines, `kit:test` 98 tests, 396 of 396 transitions exercised |
 | ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs (61 images) |
 | ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), 75 test images pass in four configurations in Node and in Chromium; translation cache; an option that makes guest accesses to host memory trap |
 | Module loader (`src/loader`) | Working, 68 tests (no real game file tried) |
 | Kernel core (`src/kernel`) | Working, 63 tests |
-| Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 39 end-to-end tests under Node, 46 in Chromium: multi-threaded NSO modules, run-time modules (NRO), faults with exact pcs, restart without reload |
+| Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 50 end-to-end tests under Node, 60 in Chromium: multi-threaded NSO modules, run-time modules (NRO), faults with exact pcs (host memory guarded by default), restart without reload, a per-game address-space layout, a robustness sweep (64 threads for 30 s of guest time, 500 module reloads, 2000 frames) |
 | NVN on WebGPU (`src/gfx`) | Working for 333 of 743 NVN functions (14 Node tests, 42 browser scenes); a translated guest draws through it in the page |
 | Shaders (`tools/shaders`, `src/shaders`) | Chain works on hand-assembled Maxwell programs, offline and in the page (translated in a Worker, cached); no game shader has been through it |
 | File system (`src/fs`) | Working and attached: RomFS images, crash-safe saves on OPFS; 66 tests, 7 in the browser |
-| SDK take-overs (`src/hle`) | The names nxnative answers on the host (768 verified, more being added by its owner; `hle:test` 97 tests), attached to the runtime; a guest calls a spread of them |
-| Audio (`src/audio`) | In progress, not attached |
+| SDK take-overs (`src/hle`) | The names nxnative answers on the host (1,113 in scope: 985 implemented, 128 cut stubs for movies; `hle:test` 97 tests), attached to the runtime with one answer per name: controllers (several players, vibration), display layer, run-time modules; guests call a spread of them |
+| Audio (`src/audio`) | Working and attached: 118 names (6 red stubs: the audio renderer); a guest plays a tone on a sample-exact silent sink and through an AudioWorklet; `audio:test` 55 tests, 10 in the browser |
+| Prepare (`src/prepare`) | A folder of extracted game files becomes a hand-off the page starts: 153 profiles converted from nxnative, code cuts applied; `prepare:test` 19 tests, 9 in the browser. No package is opened |
 
 How the pieces fit: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What of nxnative is ported, cut or open:
 [docs/PORTING-STATUS.md](docs/PORTING-STATUS.md).

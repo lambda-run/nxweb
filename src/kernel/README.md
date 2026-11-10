@@ -78,8 +78,8 @@ Guest addresses index the linear memory. Five regions, set by `kernel_init`; the
 | alias | 0x8800_0000 + 0x77FF_0000 (1.875 GB) | 2 / 3 | MapPhysicalMemory; ends at 0xFFFF_0000, below the special pc values |
 
 Order heap, stack, alias as in nxnative. ASLR size (13) = code base to alias end. Pool 0xCD50_0000, used memory
-0x0400_0000 (nxnative's `app_pool` / `mem_used` defaults). The alias region is at most 2 GB (one 16-byte kit instance
-per page, 8 MB static). The kernel grows the memory (`memory.grow`) when a heap, map or thread-local slot needs it.
+0x0400_0000 (nxnative's `app_pool` / `mem_used` defaults). The alias region is at most 3.5 GB (one 16-byte kit instance
+per page, 14 MB static: a game that maps everything there gets nearly the whole 32-bit space, src/glue/rt_process.ts). The kernel grows the memory (`memory.grow`) when a heap, map or thread-local slot needs it.
 
 ## Verified (`npm run kernel:test`: 63 tests, 86/86 transitions taken by the kernel itself)
 

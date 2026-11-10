@@ -36,6 +36,8 @@ FN svcQueryMemory                  // (MemoryInfo *info, u32 *pageinfo, u64 addr
     ldr     x2, [sp], #16
     str     w1, [x2]
     ret
+PLAIN svcMapMemory, 0x04           // (dst, src, size)
+PLAIN svcUnmapMemory, 0x05
 PLAIN svcExitProcess, 0x07
 OUT32 svcCreateThread, 0x08        // (Handle *out, entry, arg, stack_top, prio, core)
 PLAIN svcStartThread, 0x09

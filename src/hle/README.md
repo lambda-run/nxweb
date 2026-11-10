@@ -25,7 +25,7 @@ the movie and video codec names as stubs (cut). Not here: file system, graphics,
 | `defs/*.json` | Fifteen machines (kit); diagrams in `docs/machines/` |
 | `host/build.mts` | `npm run hle:build`; `hleBuildShared(out, base)` for the runtime's shared memory |
 | `src/glue/hle_host.ts` | `HleHost`: one instance of the module and its outside as one interface, `HleEnv` |
-| `src/glue/hle_rt.ts` | `attachHle(rt, module, options)`: the table registered with a `Runtime`. Type-checked, **not run** (see Gaps) |
+| `src/glue/hle_rt.ts` | `attachHle(rt, module, options)`: the table registered with a `Runtime` (run by `test/runtime` and the page) |
 
 ```
 npm run hle:names     # inventory, status, gen/table.ts and the table in this file, from nxnative's sources
@@ -466,18 +466,22 @@ clocks as variables, guest functions as JavaScript functions at made-up addresse
 
 ## Gaps
 
-- `src/glue/hle_rt.ts` is run by the runtime's tests (`test/runtime/more_cases.ts` "hle", guest `hleg.c`: 22 names
-  across oe, time, account, nifm, socket and libc, in Node and Chromium) and by the page. Requests 1, 2, 4, 5, 6 and
-  7 above are answered (`src/runtime/README.md`, "The SDK take-over table"). Still without a page side: the input
-  box, the web view, shared fonts, native images.
+- Requests 1 to 11 above are answered (`src/runtime/README.md`, "The SDK take-over table", "Modules at run time",
+  "Input"): `rt_hle.ts` and `rt_ro.ts` are gone and `Runtime.register` refuses a second answer for a name; input
+  arrives through `RtInput` (keyboard, controllers by source id, scripted steps); nn::ro runs a guest's NRO through
+  `Runtime.loadModule` (three rounds, and 500 in the robustness sweep); `stackArg`, thirteen-argument guest calls and
+  code memory for nn::jit are there; the controller prompt, vibration and nn::vi's present side are connected.
+  What is still approximated: a module asked for "alone" is linked like any other (red once), `viLayer` / `viCrop`
+  are noted and not applied to the present.
+- The table's static data sits above the runtime's guard (`GUARD_BASE`): the guest is handed pointers into it
+  (SystemEvent objects the SDK fills, `localtime`'s `struct tm`, language lists).
+- Guests have called: 22 names of oe, time, account, nifm, socket and libc (`hleg.c`), nn::vi's four window calls and
+  the npad reads (`cube.c`), nn::ro (`ro_main.c`, `stress_ro.c`), four npads with the controller applet and vibration
+  (`pads.c`), `localtime` (`tone.c`). `nn::jit` has run against a fake plugin made of JavaScript functions only.
 - Out of scope and not in the module's table: file system, graphics (`dm/gfx` but `hle_vi.c`), audio and its codecs,
   cheats, glslc (the status table lists them). Movies and video codecs are in the table as cut stubs.
-- Controllers, `nn::vi`, `nn::ro` and `nn::jit` are tested through `HleHost` with a fake outside only: no guest has
-  called them, `hle_rt.ts` does not pass their new imports yet (requests 7 to 11), and the page still registers
-  `rt_hle.ts` over the table. `nn::jit` in particular has run against a fake plugin made of JavaScript functions,
-  never against a real one.
 - The Gamepad API gives no gyro: live motion needs a source the embedder finds (DeviceMotion for the console's own
   sensors, WebHID for a controller's); without one the sensors lie flat and shake by the shake bit.
 - No game has run against this: every result is nxnative's C read and re-expressed, checked by tests written from the
   same C, not by an SDK.
-- The web view, the input box, vsync, fonts and blank native images are imports with no browser implementation here.
+- The web view, the input box, fonts and blank native images are imports with no browser implementation here.

@@ -126,7 +126,7 @@ export function intCases(env: IntEnv, gpu: Gpu | undefined): IntCase[] {
     const w = toneBoot({ clock: "wall" }, 60), t0 = performance.now(), r = await w.rt.runAsync(), ms = performance.now() - t0;
     eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "wall clock: how it ended");
     // a host timer that comes late lets two buffers come back in one tick: one signal for both (a signal an entry that released something)
-    ok(/^tone: 60 buffers came back in \d+ wake-ups/.test(w.rt.stdout().split("\n")[2]) && w.signals.length <= 60 && w.signals.length >= 20, `wall clock: ${w.rt.stdout().split("\n")[2]}; ${w.signals.length} signals`);
+    ok(/^tone: 60 buffers came back in \d+ wake-ups/.test(w.rt.stdout().split("\n")[3]) && w.signals.length <= 60 && w.signals.length >= 20, `wall clock: ${w.rt.stdout().split("\n")[3]}; ${w.signals.length} signals`);
     ok(ms > 280 && ms < 2000, `wall clock: 60 buffers of 5 ms took ${ms.toFixed(0)} ms`);
     lines.push(`wall clock: 60 buffers in ${ms.toFixed(0)} ms (300 ms of audio) with ${w.signals.length} signals, run loop busy ${w.rt.stats.runMs.toFixed(0)} ms`);
     return lines;
@@ -167,7 +167,7 @@ export function intCases(env: IntEnv, gpu: Gpu | undefined): IntCase[] {
       eq(t.rt.red.filter(notForce), [], "red lines");
       return [`transport ${dev.transport}, context at ${d.sampleRate} Hz (${d.context}); output states ${states.join(" -> ")}`,
         `${sounding.toFixed(2)} s of ${core.freq.toFixed(2)} Hz, amplitude ${core.amp.toFixed(4)}, ${core.snr.toFixed(1)} dB against a fitted sine, ${core.gaps} gaps, device underrun ${d.underrun} frames in ${d.callbacks} callbacks` + (late ? ` [the run loop came back ${worstTick.toFixed(0)} ms late once: gap checks waived]` : ""),
-        `${t.signals.length} buffers came back, ${t.audio.stats.ticks} ticks, the longest time between two ${worstTick.toFixed(1)} ms; ${t.rt.stdout().split("\n")[2]}`];
+        `${t.signals.length} buffers came back, ${t.audio.stats.ticks} ticks, the longest time between two ${worstTick.toFixed(1)} ms; ${t.rt.stdout().split("\n")[3]}`];
     } finally { page.onMessage(null); if (!t.rt.disposed) { t.rt.kill(); if (!t.rt.disposed) t.rt.dispose(); } }
   });
 
@@ -233,6 +233,81 @@ export function intCases(env: IntEnv, gpu: Gpu | undefined): IntCase[] {
     ok(red.every(l => /device lost|the GPU device was lost/.test(l)), "no other red line: " + red.join(" | "));
     plain.p.rt.dispose(); hit.p.rt.dispose();
     return [`30 frames, the device destroyed at frame 12: ${hit.p.gfx.stats.deviceLosses} loss, ${hit.p.gfx.stats.deviceRestores} restore, last frame's pixel hash ${hash(hit.px)} = ${hash(plain.px)} without a loss`, ...red];
+  });
+  // ---- robustness: long runs, the same seed twice, nothing growing ----
+  interface Mark { round: number; memory: number; handles: number; events: number; maps: number; threadRecords: number; table: number; units: number; pcmap: number; loaderArena: number; modules: number; gpu: number }
+  const mark = (rt: Runtime, round: number, gfx?: GfxProcess["gfx"]): Mark => ({ round, memory: rt.memory.buffer.byteLength, handles: Number(rt.k.kernel_count(0)), events: Number(rt.k.kernel_count(3)), maps: Number(rt.k.kernel_count(4)),
+    threadRecords: Number(rt.k.kernel_count(2)), table: rt.a64.table.length, units: rt.a64.units.length, pcmap: rt.a64.pcMapBytes, loaderArena: rt.ld.x.ld_arena_used() >>> 0, modules: rt.modules.length, gpu: gfx?.live ? gfx.host.liveObjects : 0 });
+  const grown = (a: Mark, b: Mark, allow: (keyof Mark)[] = []) => (Object.keys(a) as (keyof Mark)[]).filter(k => k !== "round" && !allow.includes(k) && b[k] > a[k]).map(k => `${k} ${a[k]} -> ${b[k]}`);
+  const stress = async (file: string, o: RuntimeOptions, hooks: Record<string, number>, extra?: (rt: Runtime) => void) => {
+    const rt = new Runtime(env.mods, o), marks: Mark[] = [];
+    attachHle(rt, env.mods.hle!, { config: { opmode: 1 } });
+    for (const [name, v] of Object.entries(hooks)) rt.register({ name, fn: () => v });
+    rt.register({ name: "stress_mark", fn: cpu => { marks.push(mark(rt, cpu.w(0))); } });
+    extra?.(rt);
+    ok(rt.loadNso([{ name: file, bytes: env.nso(file) }]), "load failed: " + rt.red.join(" | "));
+    const t0 = performance.now(), r = await rt.runAsync();
+    eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], `${file}: how it ended: ` + rt.red.slice(-3).join(" | ") + rt.stdout());
+    return { rt, marks, ms: performance.now() - t0, end: mark(rt, -1), fingerprint: `${rt.stats.slices}/${rt.stats.svcs}/${rt.units}/${rt.guestNs()}` };
+  };
+  if (env.mods.hle) test("robust threads: 64 threads contend on four mutexes and two condition variables with timeouts, sleep and exit, wave after wave for 30 s of guest time; the same seed gives the same output, another seed another; no handle or thread record is left", async () => {
+    const run = (seed: number) => stress("stress_threads", {}, { stress_seed: seed, stress_ms: 30000 });
+    const a = await run(12345), b = await run(12345), c = await run(777);
+    eq(b.rt.stdout(), a.rt.stdout(), "the same seed again: output");
+    eq(b.fingerprint, a.fingerprint, "the same seed again: slices/SVCs/units/guest ns");
+    ok(c.rt.stdout() !== a.rt.stdout(), "another seed gives another run");
+    ok(/lock words 0x0 0x0 0x0 0x0 ; guest ms 30\d\d\d$/.test(a.rt.stdout().split("\n")[1]), "every lock free at the end, 30 s passed: " + a.rt.stdout().split("\n")[1]);
+    eq([a.end.threadRecords, a.end.maps], [1, 1], "thread records and mappings at the end (the main thread and its stack)");
+    ok(a.end.handles <= 2, `handles in use at the end: ${a.end.handles}`);
+    eq(a.rt.red.filter(notForce), [], "red lines");
+    return [...a.rt.stdout().trim().split("\n"), `${a.rt.stats.slices} slices, ${a.rt.stats.svcs} SVCs in ${a.ms.toFixed(0)} ms; identical on a second run (${a.fingerprint}); seed 777: ${c.rt.stdout().split("\n")[0].slice(0, 60)}...`,
+      `at the end: ${a.end.handles} handle(s), ${a.end.threadRecords} thread record, memory ${(a.end.memory / 2 ** 20).toFixed(0)} MiB of address space`];
+  });
+  if (env.mods.hle) test("robust memory: 3000 rounds of SetHeapSize (4 to 32 MB) and MapMemory / UnmapMemory of heap pages into the stack region while another thread reads and writes the heap; deterministic; no mapping, handle or memory growth", async () => {
+    const run = (seed: number) => stress("stress_mem", {}, { stress_seed: seed, stress_rounds: 3000 });
+    const a = await run(99), b = await run(99), c = await run(100);
+    eq(b.rt.stdout(), a.rt.stdout(), "the same seed again"); eq(b.fingerprint, a.fingerprint, "the same seed again: fingerprint");
+    ok(c.rt.stdout() !== a.rt.stdout(), "another seed gives another run");
+    ok(/^rounds 3000, mapped and unmapped 3000, failures 0, checksum 0x[0-9a-f]+; the other thread: \d+ touches, 0 wrong$/.test(a.rt.stdout().trim()), a.rt.stdout());
+    eq(grown(a.marks[0], a.marks[1]), [], "between round 300 and the last: nothing grew");
+    eq([a.end.maps, Number(a.rt.k.kernel_count(5))], [1, 0x800000], "mappings left (the main stack), heap size at the end");
+    eq(a.rt.red.filter(notForce), [], "red lines");
+    return [a.rt.stdout().trim(), `${a.rt.stats.svcs} SVCs in ${a.ms.toFixed(0)} ms; memory ${(a.end.memory / 2 ** 20).toFixed(0)} MiB of address space at round 300 and at the end, ${a.end.handles} handles, 1 mapping (the main stack); identical on a second run`];
+  });
+  if (env.mods.hle) test("robust modules: an NRO loaded through nn::ro, called and unloaded 500 times; deterministic; the function table, the pc map, the loader's arena and the memory do not grow from round 50 on", async () => {
+    const nro = (rt: Runtime) => rt.register({ name: "test_nro", fn: cpu => { const b = env.file("plug.nro"); cpu.write(cpu.x(0), b); return b.length; } });
+    const a = await stress("stress_ro", {}, { stress_rounds: 500 }, nro), b = await stress("stress_ro", {}, { stress_rounds: 500 }, nro);
+    eq(b.rt.stdout(), a.rt.stdout(), "a second run"); eq(b.fingerprint, a.fingerprint, "a second run: fingerprint");
+    ok(/^(  plug: (init function|fini function, counter \d+)\n)*loaded and unloaded 500 times, 0 failures, checksum 0x[0-9a-f]+\n$/.test(a.rt.stdout()), a.rt.stdout().slice(-200));
+    eq(grown(a.marks[0], a.marks[1]), [], "between round 50 and the last: nothing grew");
+    eq([a.rt.stats.moduleLoads, a.rt.stats.moduleUnloads, a.end.modules, a.rt.a64.codeRanges().length], [500, 500, 1, 1], "loads, unloads, modules and code ranges left");
+    eq(a.rt.red.filter(notForce), [], "red lines");
+    const m = a.marks[1];
+    return [a.rt.stdout().trim().split("\n").at(-1)!, `${a.ms.toFixed(0)} ms; at round 50 and at the end: function table ${m.table} slots, ${m.units} units, pc map ${m.pcmap} bytes, loader arena ${m.loaderArena} bytes, memory ${(m.memory / 2 ** 20).toFixed(0)} MiB; ${a.rt.a64.translatedFuncs} functions translated in all`];
+  });
+  if (env.haveGfxGuests && env.mods.gfx && env.mods.hle) test(`robust frames (${gpu ? "WebGPU" : "null replayer"}): 2000 frames with the texture rewritten in pool memory every fourth frame and the present interval changing every 100; deterministic guest clock and (on a device) pixels; no growth in GPU objects, handles or memory`, async () => {
+    const run = async () => {
+      const marks: Mark[] = [];
+      const p = await bootGfx(env, [{ name: "stress_gfx", bytes: env.nso("stress_gfx") }], { frames: 2000, gpu, setup: q => q.rt.register({ name: "stress_mark", fn: cpu => { marks.push(mark(q.rt, cpu.w(0), q.gfx)); } }) });
+      const t0 = performance.now(), r = await p.rt.runAsync();
+      eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "how it ended: " + p.rt.red.slice(-3).join(" | ") + p.rt.stdout());
+      let px = "";
+      if (gpu) { await gpu.device.queue.onSubmittedWorkDone(); const img = await p.gfx.host.readTexture(p.gfx.host.lastPresented); let h = 0x811c9dc5; for (const v of img.data as Uint8Array) { h ^= v; h = Math.imul(h, 0x01000193); } px = (h >>> 0).toString(16); }
+      const out = { p, marks, ms: performance.now() - t0, px, fp: `${p.rt.stats.slices}/${p.rt.stats.svcs}/${p.rt.units}/${p.rt.guestNs()}/${p.gfx.stats.nvnCalls}`, uploads: p.gfx.x.gfx_stat(8) >>> 0 };
+      if (gpu) p.rt.dispose();
+      return out;
+    };
+    const a = await run(), b = await run();
+    // intervals 1, 2, 3 in turn for 100 frames each: 2000 frames are 3900 refreshes of 16.67 ms less the first, 64.98 s of guest time
+    ok(/^frames 2000, texture updates 500, present interval changes 20, guest ms 6498\d$/.test(a.p.rt.stdout().trim()), a.p.rt.stdout());
+    eq(b.p.rt.stdout(), a.p.rt.stdout(), "a second run: output");
+    if (gpu) eq(b.px, a.px, "a second run: the last frame's pixels"); else eq(b.fp, a.fp, "a second run: slices/SVCs/units/guest ns/NVN calls");
+    ok(a.uploads >= 500, `texture uploads from pool memory: ${a.uploads} for 500 rewrites`);
+    eq(grown(a.marks[0], a.marks[1]), [], "between frame 200 and the last: nothing grew");
+    eq(a.p.rt.red.filter(notForce), [], "red lines");
+    const m = a.marks[1];
+    return [a.p.rt.stdout().trim(), `${a.ms.toFixed(0)} ms (${(2000000 / a.ms).toFixed(0)} frames/s unpaced by real time); ${a.uploads} texture uploads; at frame 200 and at the end: ${m.gpu} GPU textures and buffers alive, ${m.handles} handles, memory ${(m.memory / 2 ** 20).toFixed(0)} MiB; ` +
+      (gpu ? `last frame's pixel hash ${a.px} twice` : `identical on a second run (${a.fp})`)];
   });
   return list;
 }

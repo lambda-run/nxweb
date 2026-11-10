@@ -11,16 +11,20 @@ linear memory, loads NSO files, and runs guest threads in a loop that the kernel
 | `src/runtime/index.ts` | Runtime core (AssemblyScript, in the shared memory): the `process` machine, the fault report, the deterministic clock's arithmetic, the range-table check |
 | `src/runtime/defs/process.json` | The process lifecycle (diagram: `docs/machines/process.md`) |
 | `src/glue/rt_gfx.ts` | NVN attached to a process: recorder instance, NVN stubs, the waits on the GPU, frame pacing, release of GPU objects |
-| `src/glue/rt_hle.ts` | nn::vi and nn::hid take-overs, the input state (live and scripted) |
-| `src/glue/rt_ro.ts` | nn::ro (run-time modules) over `Runtime.loadModule` / `unloadModule` |
+| `src/glue/rt_input.ts` | The embedder's input sources (keyboard, controllers by source id, scripted steps) merged and published to the take-over table (`hle.input`) |
+| `src/glue/rt_audio.ts` | nn::audio (`src/audio`) attached: take-overs to `audio_call`, ticks and deadlines, SystemEvents, the device's runtime side |
+| `src/glue/rt_process.ts`, `rt_handoff.ts` | A process's address-space layout and settings from the game's profile; the prepare step's hand-off as process options |
+| `src/glue/rt_report.ts` | What the page shows of a process: modules, take-overs, the kit's machines, the bug report text |
 | `src/glue/rt_shaders.ts`, `rt_shader_worker.ts` | Shader lookup: library, store, in-page translation in a Worker |
 | `src/glue/rt_fs.ts` | The file system (`src/fs`) attached: nn::fs names to `fs_call`, parking on pending / retry |
-| `src/glue/hle_rt.ts` | The SDK take-over table (`src/hle`) attached (its owner's file; run by this area's tests) |
+| `src/glue/hle_rt.ts` | The SDK take-over table (`src/hle`) attached: nn::oe, time, account, network, libc, and now nn::vi, nn::hid, nn::ro and nn::jit (one answer per name) |
 | `src/runtime/host/build.mts` | `npm run rt:build`: `build/runtime/{rt,kernel,loader,gfx,fs,hle,translator,helpers}.wasm`, each with a kit stamp |
 | `test/runtime/cases.ts` | The end-to-end tests, shared by Node (`run.mts`) and the browser Worker (`web/worker.ts`, `browser.mts`) |
 | `test/runtime/more_cases.ts` | The cases that wait for something: translation cache, restart, file system, take-over table, shaders |
 | `test/runtime/src/` | The test modules (C and assembly), built into NSOs by `harness.mts` |
 | `test/runtime/gfx_cases.ts` | The graphics tests (null replayer under Node, WebGPU and pixel readback in the browser) |
+| `test/runtime/int_cases.ts` | Controllers, audio, the NVN waits, device loss, the robustness sweep |
+| `test/runtime/guard_bench.mts` | `npm run rt:guard`: the guard's cost measured alone, with paired statistics |
 | `test/runtime/all.mts` | The root `npm test` |
 | `web/` | The page: `index.html`, `main.ts` (page), `worker.ts` (runtime), `build.mts`, `serve.mts` |
 
@@ -46,20 +50,21 @@ anything runs):
 | rt static | 0x0001_0000 | 0x0010_0000 | `src/runtime` static data: process machine, fault record, clock, scratch, kit trace |
 | loader static | 0x0010_0000 | 0x0020_0000 | `src/loader` static data |
 | loader arena | 0x0020_0000 | 0x0080_0000 | module records, export tables, names (`ld_init`) |
-| kernel static | 0x0080_0000 | 0x0120_0000 | `src/kernel` static data (8.5 MiB used) |
-| gfx static | 0x0120_0000 | 0x0130_0000 | `src/gfx` static data |
-| gfx arena | 0x0130_0000 | 0x0330_0000 | `gfx_init(arena, gfx_arena_bytes())` |
-| file staging | 0x0330_0000 | 0x04A0_0000 | NSO / NRO file bytes, which the loader needs in memory until a module is pinned (23 MB); its free tail is scratch for hashing and entry lists |
-| hle static | 0x04A0_0000 | 0x04B0_0000 | `src/hle` static data (about 350 KB) |
-| fs static | 0x04B0_0000 | 0x04C0_0000 | `src/fs` static data (about 400 KB) |
-| fs arena | 0x04C0_0000 | 0x0530_0000 | `fs_init`: RomFS tables of the mounted images, save trees (7 MB) |
-| a64 translator | 0x0530_0000 | 0x0630_0000 | the translator's static data and buffers (15.4 MB) |
-| a64 helpers | 0x0630_0000 | 0x0631_0000 | the helpers' static data |
-| a64 entry bits | 0x0631_0000 | 0x06B1_0000 | one bit per instruction of the 256 MB code region |
-| pc map | 0x06B1_0000 | 0x07FC_0000 | two-level pc map: first level (256 KB), zero leaf, then a 64 KB leaf per touched 64 KB of code |
+| kernel static | 0x0080_0000 | 0x0180_0000 | `src/kernel` static data; 14 MB of it is one kit instance per alias page (an alias region of up to 3.5 GB) |
+| gfx static | 0x0180_0000 | 0x0190_0000 | `src/gfx` static data |
+| gfx arena | 0x0190_0000 | 0x0390_0000 | `gfx_init(arena, gfx_arena_bytes())` |
+| file staging | 0x0390_0000 | 0x0490_0000 | NSO / NRO file bytes, which the loader needs in memory until a module is pinned (16 MB); its free tail is scratch for hashing and entry lists |
+| fs static | 0x0490_0000 | 0x04A0_0000 | `src/fs` static data |
+| fs arena | 0x04A0_0000 | 0x0510_0000 | `fs_init`: RomFS tables of the mounted images, save trees (7 MB) |
+| a64 translator | 0x0510_0000 | 0x0610_0000 | the translator's static data and buffers |
+| a64 helpers | 0x0610_0000 | 0x0611_0000 | the helpers' static data |
+| a64 entry bits | 0x0611_0000 | 0x0691_0000 | one bit per instruction of the 256 MB code region |
+| pc map | 0x0691_0000 | 0x07DC_0000 | two-level pc map: first level (256 KB), zero leaf, then a 64 KB leaf per touched 64 KB of code |
+| **hle static** | 0x07DC_0000 | 0x07EC_0000 | `src/hle` static data. **`GUARD_BASE`: from here on the guest may read and write** |
+| audio static | 0x07EC_0000 | 0x07FC_0000 | `src/audio` static data and the device ring; its 16 MB arena is host-allocated (`hostAlloc`) at the first nn::audio call |
 | host stubs | 0x07FC_0000 | 0x0800_0000 | the loader's stub region: 65536 stubs of 4 bytes |
 | code | 0x0800_0000 | | modules, mapped one after the other with a free page between them; above them `hostAlloc` pages |
-| stack | 0x7800_0000 | 0x7810_0000 | the main thread's stack (1 MB by default), the first mapping of the kernel's stack region |
+| heap, stack region, alias region | 0x1800_0000 | 0xFFFF_0000 | per process: the default (heap 1.5 GB, stack region 256 MB at 0x7800_0000, alias 1.87 GB) or the split chosen from the game's profile ("The address space per game") |
 
 How each module gets its place: `asc --importMemory --zeroFilledMemory --memoryBase <range.lo>` (`host/build.mts`;
 the translator and helpers through `src/a64/host/build.mts`, which `npm run a64:build` runs too: the bases come from
@@ -89,26 +94,99 @@ What is not free: `kernel_init` initializes one kit instance per alias page, 8 M
 **Not `shared`.** The memory is not a SharedArrayBuffer: the translator has shared builds
 (`translator.shared.wasm`, atomics for exclusives) but the runtime runs every guest thread in one Worker.
 
-### Memory safety of the host area (`guard: true`, off by default)
+### Memory safety of the host area (the guard: on by default)
 
-Linear memory has no page protection, so a guest write below 0x0800_0000 lands in the kernel's, the loader's or the
-translator's state and a null read returns zero. With `new Runtime(mods, { guard: true })` (translator option
-`guardBase` = 0x0800_0000) every guest load and store is biased: the address is computed as
-`wrap(addr) - guardBase` and the memory instruction carries the constant offset `guardBase`. WebAssembly computes
-the effective address without wrapping, so an address below the guard lands at 4 GB or above and the access traps,
-at the cost of one subtraction and no branch (DC ZVA does a one-byte guarded load first). The trap is an ordinary
-`trap` fault whose pc is exact, and the line says what it most likely was (see "Process lifecycle and faults").
+Linear memory has no page protection, so a guest write below 0x0800_0000 would land in the kernel's, the loader's or
+the translator's state and a null read would return zero. With the guard (translator option `guardBase` =
+`GUARD_BASE`, 0x07DC_0000) every guest load and store is biased: the address is computed as `wrap(addr) - guardBase`
+and the memory instruction carries the constant offset `guardBase`. WebAssembly computes the effective address
+without wrapping, so an address below the guard lands at 4 GB or above and the access traps, at the cost of one
+subtraction and no branch (DC ZVA does a one-byte guarded load first). The trap is an ordinary `trap` fault whose pc
+is exact, and the line says what it most likely was (see "Process lifecycle and faults").
 
-Cost, measured on the 61-image corpus (160.1 M guest instructions, run time without translation, guard on against
-off, 7 interleaved rounds per run, on a machine other jobs were using): Node 22, six runs: +5.6 / +2.6 / +6.8 /
-+8.6 / +5.7 % by the minimum of the rounds and +3.4 / +5.8 / +2.0 / +9.9 / +10.5 % by the median (means: about
-+5.9 % and +6.3 %); Chromium 153, one run: +5.3 % (minimum), +6.2 % (median). That is not under the 5 % the task
-set for making it the default, so it is an option, off by default: a debugging aid for a wild pointer, at about
-6 %. `rt:test` measures it again on every run ("guard: what the trap ... costs"). The cache key contains the
-setting.
+**What the guard leaves open on purpose.** The take-over table and the audio module hand the guest pointers into
+their own static data, as nxnative's host does in its one address space: SystemEvent objects that the SDK's own
+`CreateSystemEvent` fills (guest code writing them), `localtime`'s `struct tm`, language lists, the audio device's
+name. Their two ranges are therefore the last ones before the stub region and the guard ends below them
+(`rt_layout.ts`). `tone.c` reads `GetAudioOutName` and `localtime` under the guard; found while deciding the default:
+with the guard at 0x0800_0000 those reads were faults.
 
-Not protected even with it: writes into a module's text or read-only data, guest memory another thread owns, and
-host functions (they are host code: `cpu.write` goes anywhere).
+**The decision (the 5 % rule: default when the cost is under 5 %).** Measured alone on the development machine
+(nothing else running; `npm run rt:guard`: the 61-image corpus, 160.1 M guest instructions, run time without
+translation, guard on against off as pairs run back to back in alternating order):
+
+| | rounds | cost |
+|---|---|---|
+| Node 22, run 1 | 6 x 9 | 2.9 % by the means of the runs (single runs by their minima: -5.9 .. +9.6 %) |
+| Node 22, run 2 | 80 pairs | **1.63 % +- 1.07** (mean of the paired differences and its standard error; 95 %: -0.5 .. 3.7 %); median 0.4 %; total time +1.0 % |
+| Chromium 153 | 30 pairs | **0.63 % +- 2.88**; by the minima 1.8 %; total time -0.9 % |
+
+A single run of seven rounds scatters by +-6 % (Node) to +-9 % (Chromium, where one such run gave +12 % and the next
+measurement of 30 rounds 0.6 %): the earlier figures of about 6 % were inside that noise and taken on a machine other
+jobs were using. The cost is 1 to 3 %, under 5 %: **the guard is the default** (`GUARD_DEFAULT` in `rt_runtime.ts`;
+`guard: false` is for measurements). `rt:test` still measures it on every run ("guard: what the trap ... costs",
+seven rounds, with the paired statistics). The cache key contains the setting. The page has a box that turns it off
+for the next run; were it off, a run that ends in a fault turns it on for the next one and the page says so.
+
+Not protected even with it: writes into a module's text or read-only data, guest memory another thread owns, the
+two host ranges above `GUARD_BASE`, and host functions (they are host code: `cpu.write` goes anywhere).
+
+## The address space per game (`rt_process.ts`)
+
+`new Runtime(mods, { layout })`: the kernel's cfg block is written from a `ProcessLayout` instead of `kernel_init(0)`.
+`settingsFor(profile.apply, { space, stackSize, displayVersion })` makes one from a game's profile (`src/prepare`):
+`app_pool`, `mem_used`, `sys_resource`, the program id and `mem_map_limit` go to the kernel, `op_mode`, `perf_mode`,
+`alloc_big_align`, `game_env`, `launch_param` and the display version to the take-over table's configuration,
+`npdm.stackSize` to `mainStackSize`. `handoffOptions(message)` (`rt_handoff.ts`) does it for the prepare step's
+hand-off and adds per module a hash of its applied cuts, which is part of the translation cache key
+(`<build id>+cuts<hash>@<address>/<options>`: a cut module keeps its build id).
+
+**Reserved against committed.** A profile's `mem_reserve` / `mem_alias` / `mem_stack` are address space
+(`hle_svc.c`: the heap region is `RESERVE - alias - stack - 256 MB`; on the Mac the alias region is at least a
+Switch's 64 GB). What a game can commit in heap and alias region together is bounded by the pool the kernel reports:
+`APP_POOL`, the Switch's 3285 MiB (0xCD500000) in 124 of the 153 profiles, 1 GB in 13, 9 GB in 11 (Switch 2 titles),
+less `mem_used` and the modules. A wasm32 memory has 3.62 GB between 0x1800_0000 and 0xFFFF_0000 for heap, stack
+region and alias region. So the split is chosen per game (`layoutFor`):
+
+| Profiles' reserve (heap / alias GB) | Count | With the fixed map | With the split per game |
+|---|---|---|---|
+| 3.25 / 0.25 (and 2.5 to 3.0 / 0.25): the 4 GB layout, a heap-heavy game | 79 | no | heap = pool - used (3.15 GB, all `SetHeapSize` can reach), stack region 64 MB, alias as reserved: fits |
+| 0.125 / 4.375 (and 3.1 to 4.25): a system resource, everything mapped in the alias region | 56 | no | alias = 3.44 GB of the 4.38 reserved, which is more than the pool: fits what can be committed, with less spare address space |
+| small ones (up to 1.5 / 1.87) | 4 | yes | as reserved |
+| heap and alias both large (1.25 to 2.1 / 2.4 to 5.25) | 3 | no | **short**: which region the game fills is not known without running it |
+| a 9 GB pool (heap 4.75 to 9 / alias up to 64) | 11 | no | **short**: the pool itself exceeds 32 bits |
+
+(The rows give the typical case of each class; a profile with a 1 GB pool or a smaller reserve fits as reserved.)
+By the test (`layout per game`, which runs `settingsFor` over all 153 profiles): fixed map 4 of 153 have room for
+what they reserve; per game **44 fit as reserved, 95 more fit everything their pool lets them commit, 14 cannot**
+(listed by title id in the test's output). "Fits" is arithmetic on the profiles: no game has run. A `short` process
+gets what there is and one red line. The kernel's alias page table was raised from 2 GB to 3.5 GB (14 MB of the
+kernel's static range, taken from file staging, which is 16 MB now).
+
+**memory64, for the 14.** Measured and found:
+
+- *Engine limits.* Chromium 153 makes a memory64 `WebAssembly.Memory` with a maximum of 16 GB and grows it to 16 GB
+  of address space; 32 GB is refused ("above the upper bound 262144" pages). Node 22 (V8 12.4) compiles a memory64
+  module only with `--experimental-wasm-memory64` and its JS API has no `address: "i64"`. 16 GB holds a 9 GB pool with
+  a per-game split; not nxnative's 64 GB alias reserve.
+- *Speed of the addressing form* (`npm run a64:mem64`: a hand-assembled loop of load + add + store, memory32 with
+  `i32.wrap_i64` against an i64 address on a memory64, V8 12.4): **+2.6 % by the medians, +4.4 % by the minima** in
+  the cache (the bounds check that guard pages give for free on memory32); -9 % (noise or better, not worse) on a
+  64 MB window where memory misses dominate. An estimate for the translator: 3 to 5 % on tight code, since about
+  a third of its instructions are loads and stores; the guest gate itself was not run on memory64.
+- *What it takes in the translator*: drop the `i32.wrap_i64` before each access and the wrap contract ("a 64-bit
+  guest address is wrapped to 32 bits"), i64 memory operands, a 64-bit pc map index, the guard as an i64 subtraction.
+  Bounded.
+- *What it takes everywhere else*, and this is the cost: the kernel, the loader, the take-over table, graphics, the
+  file system and audio are AssemblyScript modules on the **same** memory, and they take guest pointers as `usize`.
+  AssemblyScript has no memory64 target; a wasm32 module cannot import an i64 memory. Either all six are moved to
+  wasm64 (not available), or the guest gets a second memory (multi-memory) and every host module reaches guest data
+  through imports or copies, which is a redesign of every take-over.
+
+Recommendation: **not now.** The per-game layout brings 139 of 153 profiles inside wasm32 at no run-time cost; the
+14 that remain are 11 Switch 2 titles and 3 whose split needs a run to decide. memory64 becomes worth its redesign
+only when a Switch 2 title is the goal, and should then be done as a second (guest-only) memory behind the kernel's
+`commit`, after AssemblyScript or the host modules' pointer handling can address it.
 
 ## Start contract (test modules)
 
@@ -229,6 +307,7 @@ const rt = new Runtime(mods, { log: console.log });
 rt.register({ name: "nnosAllocateMemory", forced: true,        // forced: wins over every module's own definition
   fn: cpu => { const size = cpu.x(0); /* ... */ return address; } });   // the return value goes to x0
 rt.register({ name: "nnsocketSend", fn: cpu => 0 });            // not forced: fills an import no module defines
+// One answer per name: registering a name twice throws. A test that replaces an answer says so: rt.override(def)
 rt.loadNso(files);   // register before loading: binding happens when the loader relocates
 rt.run();
 ```
@@ -247,13 +326,18 @@ runs its init functions with `cpu.call` and then `activateModule`. `rt.unloadMod
 units leave the function table, their pc-map entries are cleared), `ld.unload` (what pointed into it is bound
 again), `kernel_module_remove`. Its address range stays reserved.
 
-`registerRo(rt)` puts nn::ro over this, after nxnative `hle_ro.c`: `Initialize`, `Finalize`, `GetBufferSize` (the
-NRO header's bss size; 0x816 for an image without NRO0), `LoadModule` (both signatures; the `nn::ro::Module` is
-filled as the SDK fills it, init = DT_INIT, or the init_array when there is none), `UnloadModule` (fini, then
-unload), `LookupSymbol`, `LookupModuleSymbol` (a name the module does not define fails quietly, as on Horizon),
-`RegisterModuleInfo` (an NRR registers nothing here), `UnregisterModuleInfo`. Departure: nxnative finds an NRO it
-rewrote offline by the image's hash; here the image the game passes is loaded as it is. Init and fini run as guest
-callbacks, so they must not block.
+nn::ro is the take-over table's (`src/hle/ro.ts`, 10 names): `hle_rt.ts` maps its imports to these calls. `roLoad` =
+`loadModule` on the image bytes copied out of guest memory (the token is the image's base), `roCalls` = DT_INIT, or
+the init_array when there is none (fini: DT_FINI, or the fini array backwards), `roActivate` = `activateModule`,
+`roUnload` = `unloadModule`, `roLookupIn` = `ld.lookupIn`. Init and fini run as guest callbacks, so they must not
+block. A module asked for "alone" (a JIT plugin) is relocated like any other, with one red line: the loader has no
+such mode. The glue's own `rt_ro.ts` is gone.
+
+**Code the guest writes (`nn::jit`).** `rt.jitAlloc(rxSize, roSize)` gives two host-allocated blocks; the first is
+a code range of the translator. `rt.jitCodeWritten(rx, offset, size)` drops what was translated from the block (all
+of it: a unit may span the written range), `rt.jitFree` returns both to a free list by size. Tested with a guest
+that writes `mov w0, #n; ret` three times and calls it (`argsg.c`); `nn::jit` itself has only run against the
+table's fake plugin.
 
 ## Translation cache
 
@@ -308,14 +392,43 @@ The storage's handles are closed when the process is disposed of (an OPFS access
 
 ## The SDK take-over table (`hle_rt.ts`)
 
-`attachHle(rt, mods.hle, { config, front })` registers the 766 names of `src/hle` (708 forced). What this area
-added for it: the "hle static" range and the build; `cpu.setD`, `cpu.never()`; `rt.onHandleClosed` (svc CloseHandle
-is told to the table); `rt.requestExit(code)` (the table's exit request ends the process through the process
-machine's Exit: 0 for a host shutdown or a program handing over, 1 for an abort); `rt.hostAlloc`;
-`rt.expectOutsideEvents()` and a wake on every event signal; the loader's summary line for unreferenced forced names;
-`registerHid(rt, input, { handheld })` follows the table's operation mode. Front end stand-ins: vsync events tick at
-every present (the page); the input box answers "no window", the web view "no web view", shared fonts are not
-loaded and native images are 0: the table's own windowless answers, each in the log.
+`attachHle(rt, mods.hle, { config, front, gfx })` registers the names of `src/hle` (1,049 forced, 64 weak; with graphics, the file system and audio attached the
+loader's summary for the cube demo is `force: 13 entries hit, 1228 not referenced by this game`). **One answer per name**:
+`Runtime.register` throws on a second registration of a name ("the later one wins" let `rt_hle.ts` put 13 older
+TypeScript functions with a state of their own over the table's nn::vi and nn::hid); `rt_hle.ts` and `rt_ro.ts` are
+removed, and the test attaches graphics, the table, the file system and audio to one process to show that no name
+has two answers. What the table gets from the runtime:
+
+- `stackArg(i)` = `[sp + 8 i]` of the calling thread (`HostCpu.stackArg` too), and `guestCall` with more than eight
+  arguments: the ninth and later go on the guest stack below sp, 16-byte aligned, for the time of the call (tested
+  with twelve and thirteen arguments, `argsg.c`).
+- nn::ro and nn::jit: see "Modules at run time".
+- `HleFront`: `ctrlPrompt(min, max, answer)` (the controller applet waits on its event until the front end answers;
+  the page shows a dialog), `vibration(state)` (the page plays it on the player's controller through the Gamepad
+  API's `vibrationActuator`, where there is one), `joyMouseWanted`.
+- `gfx` (an `HleGfx`, which `RtGfx` is): `viLayer`, `viCrop`, `viFrameCount`, `viPresentProgress`, `viPresentedNs`,
+  and at every present `host.viFrameQueued(frames)` and a tick of every vsync event handed out.
+- SystemEvents for other areas: `hle_event_bind` runs the SDK's own `CreateSystemEvent` on the calling guest thread;
+  a guest call is allowed whenever a host function is running (`rt.inHostCall`), so audio binds its events through it.
+
+Earlier: the "hle static" range and the build; `cpu.setD`, `cpu.never()`; `rt.onHandleClosed`; `rt.requestExit`;
+`rt.hostAlloc`; `rt.expectOutsideEvents()`. Still windowless: the input box, the web view, shared fonts, native images.
+
+## Audio (`rt_audio.ts`)
+
+`new RtAudio(rt, mods.audio, { hle, send })` before loading. The module (`build/runtime/audio.wasm`, static data in
+"audio static") is instantiated in the process's memory; its arena is 16 MB from `hostAlloc`, taken at the first
+nn::audio call. Its 118 names are forced take-overs: the handler copies the argument block (x0..x7, d0..d7), adds x8
+and the call site, ticks the module with both clocks and calls `audio_call`; x0, x0 and x1, or v0 (`setD`) is
+written back as the result says. `Runtime.onTick` calls `audio_tick` at every slice end and idle jump, and
+`Runtime.addDeadline` makes `audio_next_deadline()` (turned into host time by `kernel_host_time_of`) a deadline of
+the run loop: on the deterministic clock a slice's budget is cut to end there and an idle guest's time stops there, so
+a silent sink releases its buffer at exactly that guest time; on the wall clock the idle loop wakes then, the
+catch-up limit is 100 ms, and while an output plays on a device the loop wakes every 4 ms to feed the ring.
+`audio_event_bind` of a guest SystemEvent goes to the take-over table (`sysevent.ts`); the module's own events are
+bare kernel events. The page hosts `AudioDeviceMain` and passes `{ audio }` messages both ways; the context is made
+at the first nn::audio call of a process, closed when the process is disposed of, and starts on the first user
+gesture (`AudioDeviceMain` listens itself; the click that starts a program is one).
 
 ## Stopping and starting again
 
@@ -343,10 +456,25 @@ drawn, fences and window images complete at once (Node tests, instruction counts
   globals) and the runtime core copies x0..x7 and the low 64 bits of v0..v7 into the argument block (`rt_nvn_args`).
 - **Recorder imports.** `gfx_exec` → the replayer; `gfx_guest_call` → `Runtime.guestCall` (the command-memory
   callback runs guest code on the calling thread); `gfx_proc_address(id)` → the stub of that id.
-- **Three calls wait on the GPU** and park the calling guest thread (`cpu.waitFor`, below):
-  `nvnSyncWait(sync, timeout ≠ 0)` when the recorder says the fence is not done: until the replayer's
-  `gfx_fence_signal` for that fence (the replayer's exports are wrapped so the glue hears it), then the call is made
-  again; `nvnQueueFinish`: until `queue.onSubmittedWorkDone()`; `nvnWindowAcquireTexture`: frame pacing, see below.
+- **The device** is requested with `GfxHost.deviceDescriptor(adapter)` (every feature the replayer can use, the
+  adapter's per-stage limits), and `requestDevice` is passed on for a lost device: the replayer asks for a new one,
+  uploads textures again from guest memory and requests the pipelines again (tested: the cube demo's device destroyed
+  at frame 12 of 30 ends with the pixels of a run without a loss; the page has a button that does it).
+- **Three calls wait on the GPU** and park the calling guest thread (`cpu.waitFor`, below), on the replayer's own
+  promises (`host.fence(n)`; nothing is wrapped, the null replayer calls `host.signalFence` / `imageEvent`):
+  `nvnSyncWait` parks when the recorder says so through `gfx_wait_fence()`: timeout 0 never parks; a finite timeout
+  parks with a deadline of that many nanoseconds, and when the timer wins the call is made again with timeout 0
+  (wall clock; on the deterministic clock guest time stands still while the GPU works, so a timeout cannot run
+  out); `~0` and anything from 2^62 on has no timer. `nvnQueueFinish` parks on `host.fence(gfx_finish_fence())`:
+  submitted work done and every read-back landed. `nvnWindowAcquireTexture`: frame pacing, see below.
+- **Arguments.** `nvn_abi_table()` is read once: a function that takes no float (326 of 332) gets only x0..x7
+  (`cpu.argsX()`), one that does gets d0..d7 too, and the four float results are copied from `args + 64` to d0. The
+  registers are marshalled by a 300-byte helper module on the core's globals (`args_x`, `args_xd`, `set_d0`) instead
+  of a full `save_ctx` per call.
+- **Shaders.** A key that is being fetched or has failed is told to the recorder (`GfxHost.shaderPending`, machine
+  `gfx_shader`), which then does not report it missing: the text filter on its red line is gone. A key registered
+  again has its pipelines requested again. `GfxHost.dispose()` destroys what the replayer made (the patch of the
+  device's `createTexture` / `createBuffer` is gone). `gfx.captureFrame()` is the page's F9 and button.
 - **Frame pacing.** An acquire after the first waits for the next display frame. Wall clock: the embedder's
   `nextFrame()` (the Worker's `requestAnimationFrame`), else a timer `interval` × 16.67 ms after the previous
   acquire. Deterministic clock: exactly `interval` refreshes of guest time after the previous acquire, and not before
@@ -373,36 +501,46 @@ still returns to the event loop. Result: with the same program and budget the sl
 clock and pixels are identical from run to run (tested), in Chromium as under Node's null replayer (the two differ
 from each other by one slice per parked wait).
 
-## Input and the window (`rt_hle.ts`)
+## Input (`rt_input.ts`)
 
-- `registerVi`: `nn::vi::Initialize`, `OpenDefaultDisplay`, `CreateLayer`, `GetNativeWindow` (opaque tokens; NVN
-  only stores the native window). nxnative takes over none of these: it runs the SDK's own nn::vi against its vi
-  service. Without an SDK the take-over has to be at this level.
-- `registerHid(rt, input)`: `InitializeNpad`, `SetSupportedNpadStyleSet`, `SetSupportedNpadIdType`,
-  `GetNpadStyleSet`, `GetNpadState` and `GetNpadStates` for full-key and handheld, after nxnative `hle_hid.c`: the
-  40-byte state, one player, docked (the pad is npad No1 with style FullKey; a handheld read gets a state with no
-  attributes), supported ids and styles respected, stick direction bits 16..23 past 0x4000, histories filled with
-  the current state under consecutive sampling numbers.
-- `RtInput`: `set(pad)` from the embedder (the page sends keyboard and Gamepad API state when it changes; a press
-  shorter than a read interval is latched), and `script("frame:key[+key][~frames],...")`, nxnative's DM_KEYS idea
-  with frames (presents) as the time base so that it is deterministic; sticks as `L<x>/<y>` in hundredths.
+`new RtInput(hle)`: every source's state goes to the take-over table as a snapshot (`hle.input(player, snapshot)`);
+the players, the npads, the press latch and the input hold are the table's. `set(KEYBOARD, pad)` is the keyboard;
+`set(sourceId, pad)` a controller, which takes a player slot by its stable id (`hle.padSlot`: the same controller
+gets its player back after a reconnect; `set(id, null)` when it leaves); `script("frame:key[+key][~frames],...")`
+are scripted steps in frames (presents), deterministic, sticks as `L<x>/<y>` in hundredths. Player 1 is the keyboard,
+the script and the controller in slot 0 merged (buttons ORed, each stick axis the more deflected one); the others
+are players 2 to 8. `sourceOf(player)` says where a player's vibration goes. Tested with a guest that reads four
+npads while the test connects, removes and reconnects controllers (`pads.c`).
 
 ## The page (`web/`)
 
-`npm run web` → http://localhost:8080. Main thread: controls, canvas (handed to the Worker), keyboard and gamepad.
-Worker: the runtime with graphics, the take-over table, the file system, the shader lookup and `runAsync()`. The
-demo button runs `cube.nso`, built from `test/runtime/src` by `npm run web:build`. Files can be picked or dropped:
-NSO files (the one named `main` first), a shader library (`.nxsl`; the older JSON shape `{ "<key>": { stage, wgsl,
-... } }` still registers directly), a RomFS image (`.romfs`, `.img`, `.istorage`: the rom device, a standard RomFS;
-nxnative's own packer writes `DMROMFS1`, which `src/fs` does not read). Saves go to the Origin Private File System
-under `saves-<first 8 bytes of the main module's id>` (the program id is in the NPDM, which the page does not read).
-Translated code is cached in the Cache API (`cacheLoad` at the start, `cacheSave` five seconds in and at a stop).
-When `build/shaders` holds the in-page translator, `web:build` copies it beside the page and missing shader keys
-are translated in a Worker. The state badge is the `process` machine's state (`rt_state`), the reason beside
-`Stopped` is the data that state carries; no log text is parsed. Stop is the machine's `Kill` event, after which
-everything the process held is released. The log shows every line, red ones in red, guest output in green.
-"Guest instructions per second" is budget units × a ratio measured for the demo at build time; for other modules
-only budget units are shown.
+`npm run web` → http://localhost:8080. Main thread: controls, canvas (handed to the Worker), keyboard and
+controllers, the audio context, dialogs. Worker: the runtime with graphics, the take-over table, audio, the file
+system, the shader lookup and `runAsync()`.
+
+- **Programs.** A game folder goes through the prepare step (`web/prepare.html`, a frame of the page: pick the
+  folder, the stages with their state and counts, Play); its hand-off (`nxweb:handoff`) is posted to the Worker,
+  which builds the process from it (`handoffOptions`: layout and settings from the profile, saves in OPFS under the
+  hand-off's name, the RomFS and add-on contents as devices over the folder's files). Two built-in demos (the cube;
+  a 440 Hz tone through nn::audio), built from `test/runtime/src`. NSO files, a shader library and a RomFS image can
+  still be picked or dropped directly.
+- **State.** The badge is the `process` machine's state (`rt_state`), the reason beside `Stopped` the data it
+  carries. **Machines**: a table of the kit's machines this process has stepped (transitions taken of each table,
+  the newest step from the trace rings, which modules stepped it), with the state now for the ones the page can ask
+  from a module's exports: process, oe_focus, audio_out, gfx_device, guest_clock, hle_exit, input_hold, ctrl_prompt,
+  pad_slot. **Modules**: build id, base, sizes, unresolved imports by name; take-overs hit against not referenced.
+- **Log.** Every line, red ones in red and counted, guest output in green; a text filter and "red lines only".
+  **Copy report** makes one text block (the machines' states, modules, counters, the adapter, the translator's
+  options key, the fault's lines, the last 200 log lines) with nothing from guest memory: the guest's own output
+  lines are left out. It goes to the clipboard and into the page.
+- **Input.** The keyboard is player 1; every controller the Gamepad API reports is a source of its own (its id and
+  index hashed) and a player of its own; vibration is played on the player's controller (`vibrationActuator`), a
+  held state every 400 ms. The controller applet's prompt is a dialog (OK / Close).
+- **Graphics.** F9 or the button captures a frame: the pass text and the target images. A test button destroys the
+  GPU device under the running process.
+- **The guard** is on; a box turns it off for the next run (measurements).
+- Translated code is cached in the Cache API; saves live in OPFS. "Guest instructions per second" is budget units ×
+  a ratio measured for the demo at build time; for other modules only budget units are shown.
 
 ## Process lifecycle and faults
 
@@ -427,7 +565,51 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 | `load` | the loader or the kernel refused a file | none |
 | `host` | an exception in glue or in a host function | last written back |
 
-## Verified (`npm run rt:test`: 39 tests under Node; `npm run rt:browser`: 46 in Chromium)
+## Verified (`npm run rt:test`: 50 tests under Node; `npm run rt:browser`: 60 in Chromium)
+
+New in the integration round (`test/runtime/int_cases.ts` and the cases named):
+
+- One answer per name: a second `register` throws, `override` replaces, an override of nothing is refused; the table,
+  graphics, the file system and audio attach to one process, and attaching the table twice throws.
+- Arguments: a host function reads four stack arguments; the host calls a guest function with thirteen; generated
+  code is translated again after each `jitCodeWritten`, and freed code memory is handed out again.
+- Run-time modules through the table's nn::ro (the earlier case, now on `attachHle`).
+- Controllers: keyboard and three controllers by source id over six steps (join, leave, a newcomer taking player 1,
+  the first one back as player 3), the controller applet's prompt as a wait answered by the front end, vibration to
+  player 2's controller.
+- Audio, no device: 400 buffers of 5 ms driven by the buffer-released SystemEvent (bound by the guest's own
+  `CreateSystemEvent` through the table): every release exactly 5,000,000 ns of guest time after the one before, with
+  budgets 100000 and 50, identical slices, units and clock on a second run; pointers into host static data read under
+  the guard; the wall clock (60 buffers in 0.30 s). Audio in Chromium: the same guest with the page's AudioContext and
+  AudioWorklet (`sab` transport): about 3 s of 440 Hz at amplitude 0.5 reach the device, fitted sine above 60 dB, no
+  gap, no device underrun (waived, and said, when the run loop came back more than 25 ms late).
+- The NVN waits with a "GPU" the test holds back (wall clock): SyncWait never fenced 2, timeout 0 2, 30 ms timeout 2
+  after 30 ms, a fence met 15 ms into a 5 s wait 1, again 0, infinite 1, QueueFinish returning when its fence
+  completed: 3 parked, 1 timed out; float arguments and results by the ABI table. The same guest on WebGPU.
+- Device loss (Chromium): see Graphics.
+- Robustness, each twice with the same seed (identical output, slices, SVCs, units, guest clock) and once with
+  another (different): 64 threads on four mutexes and two condition variables with timeouts, sleeps and exits, 968
+  waves (60,984 threads) in 30.0 s of guest time, 1.36 M SVCs, every lock word 0 and one handle left; 3000 rounds
+  of SetHeapSize and MapMemory / UnmapMemory with a second thread on the heap, 0 wrong reads, no growth between
+  round 300 and the end; an NRO loaded, called and unloaded 500 times with the function table, the pc map, the
+  loader's arena and the memory level from round 50 on; 2000 frames with 500 texture rewrites in pool memory and 20
+  present-interval changes (64.98 s of guest time; in Chromium the same pixels twice and a level count of GPU objects).
+- The address space per game and the hand-off's options: see "The address space per game".
+- The page (Chromium with the default autoplay policy): the earlier walk, then the machines table (process Running,
+  gfx_device Live), the modules table, the guard note, a frame capture by F9 (pass text, a decoded 480-pixel-wide
+  image), the device destroyed and restored while running (red lines only about the loss, the red count, the filter,
+  "red only"), the report's contents, the audio demo going Live from its click and ending by itself, and a game
+  folder through the prepare frame (Ready, Play, the process running on the profile's layout and reading its RomFS).
+
+Found by these (and fixed): `HostCpu.x()` handed out negative BigInts for registers with bit 63 set (a wasm i64
+global reads signed), so `nvnSyncWait(sync, ~0)` had a deadline in the past; the function table grew by a module's
+units at every reload (12 slots a round: slots of dropped units are reused now); the kernel's alias page table was a
+literal 8 MB beside a constant that said how many pages it holds; an option passed as `undefined` replaced its
+default (`mainStackSize: undefined` made the main stack's mapping fail); the audio module raised the ring's `live`
+word before the lead was in the ring (see src/audio/README.md); pointers into host static data were unreadable under
+the guard.
+
+Earlier:
 
 - The range table and each module's static end; a broken table is refused.
 - (a) hello: output, x0 and x1 at entry, exit code by return.
@@ -534,9 +716,19 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
 
 ## Gaps
 
-- **No memory protection by default.** A guest write below 0x0800_0000 overwrites host state and a null pointer
-  reads zeroes unless the process runs with `guard: true` (about 6 % slower; see Memory). Text and read-only data
-  are writable either way; an address at or above 4 GB wraps (contract).
+- **Memory protection is the guard only**: the host area below 0x07DC_0000 traps; the take-over table's and the
+  audio module's static data above it do not, text and read-only data are writable, an address at or above 4 GB
+  wraps (contract). A host function that hands the guest a pointer into another module's static data (graphics, the
+  file system) would fault under the guard: none is known.
+- **Address space**: 14 of nxnative's 153 profiles do not fit a 32-bit memory (see "The address space per game");
+  "fits" for the other 139 is arithmetic, no game has run. A profile's `mem_reserve`-style keys beyond the split,
+  frame-step patches and the other "needs" of a profile are listed by the page and not applied.
+- **nn::jit** has not run with a real plugin; a module asked for "alone" is linked like any other (red once).
+- **Audio**: the audio renderer's SDK-driving half is not there (src/audio/README.md); on the wall clock a host
+  timer that comes late lets two buffers come back in one tick. One device context per process, made at the first
+  nn::audio call.
+- **Controllers**: no motion source (the Gamepad API has none), no touch from the page yet, Joy-Con pairs are not
+  told apart from pads.
 - **Stack overflow is found late**: at the end of the slice, when sp is already in unmapped memory (the test ends
   3.6 MB below the stack). A stack that borders mapped memory overflows into it unnoticed.
 - **After a trap the registers are stale** (last write-back) unless `preciseFaults: 2` (about twice the run time);
@@ -562,28 +754,29 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
   through `PopNotificationMessage`, not through the event.
 - **Deterministic time** counts budget units, not instructions, and an SVC costs nothing.
 - Wall-clock idle in a synchronous `run()` uses `Atomics.wait`; a page's main thread must use `runAsync()`.
-- Graphics waits: `nvnSyncWait`'s timeout is not honoured once the thread parks; `QueueFinish` waits for submitted
-  work, not for pending readbacks; acquire pacing knows one window. An NVN call costs a full `save_ctx`.
-- nn::vi: four calls with opaque tokens, one display, one layer. nn::hid: one player, no Joy-Con styles, no
-  six-axis, vibration or touch.
+- Graphics waits: a finite `nvnSyncWait` timeout cannot run out on the deterministic clock (guest time stands still
+  while the GPU works); acquire pacing knows one window; `nn::vi`'s layer size and crop are noted and not applied
+  to the present.
 - `kill()` does not give linear memory back: the Runtime's memory goes when the last reference to it does (Node
   after a collection: level over 5 restarts; Chromium does not report it to a Worker, see Verified).
 - Host functions are found by name at the first call of each stub; there is no arity or type information.
 - Browser run needs the full Chromium build: in `chrome-headless-shell` 153 any out-of-bounds wasm access kills the
   renderer (SIGSEGV, not a `RuntimeError`).
-- CI (`.github/workflows/ci.yml`) passes actionlint and a local run of each job's commands in a clean copy; it has
-  not run on GitHub.
+- CI (`.github/workflows/ci.yml`): three jobs; this round added `audio:test` to the fast job (`prepare:test` is in
+  `npm test`) and `prepare:browser` before `rt:browser` in the browser job (the page test uses the folder it writes).
+  The edited workflow has not run on GitHub.
 - `RT_GFX_KEEP=1` / `RT_KIT_KEEP=1` let `rt:build` go on with the last `gfx.wasm` or with kit tables that are out
   of date while another area is mid-edit. Never set in CI.
 
 ## Requests to other owners
 
-- **gfx**: (1) `GfxHost.dispose()` that destroys what the replayer made (today `RtGfx` tracks textures and buffers
-  by patching the device's `createTexture` / `createBuffer`); (2) a way to mark a shader key as pending
-  (`gfx_shader_pending(key)`), so that the recorder does not report it missing and `RtGfx` need not drop that
-  line by its text; (3) rebuild pipelines of a key that is registered again; (4) the items of
-  `tools/shaders/README.md` "What src/gfx must change" still open for real shaders: uniform ranges of at least
-  `uboSize` zero-filled, `cube-array`, the `extra` bindings (support buffer first), integer textures.
+- **gfx**: answered this round in `src/gfx` and `gfx_host.ts`: `dispose()`, the `gfx_shader` machine with
+  `shaderPending`, pipelines requested again for a key registered again. Still open for real shaders (the items of
+  `tools/shaders/README.md`): uniform ranges of at least `uboSize` zero-filled, `cube-array`, the `extra` bindings,
+  integer textures; and applying `nn::vi`'s layer size and crop at the present.
+- **loader**: a mode that relocates a module against itself only (a JIT plugin); reuse of an unloaded module's
+  address range by another module.
+- **prepare**: FRAME_STEP patches need a patch area in the loader's map and a per-frame state page; none of that exists.
 - **a64**: a larger or growable pc-map leaf arena (21 MB of translated code today); an executed-instruction counter
   if wanted (see Gaps); `faultFromError` for engines other than V8.
 - **kit / every area**: a build that loads another area's wasm should check its kit stamp

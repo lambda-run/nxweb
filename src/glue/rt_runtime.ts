@@ -5,6 +5,7 @@
 import { A64Host, type A64CacheStore } from "./a64_host.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
 import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, range } from "./rt_layout.ts";
+import { writeKernelCfg, type ProcessLayout } from "./rt_process.ts";
 
 export interface RuntimeModules {
   rt: WebAssembly.Module; kernel: WebAssembly.Module; loader: WebAssembly.Module;
@@ -30,6 +31,12 @@ export interface RuntimeOptions {
   guard?: boolean;
   preciseFaults?: 0 | 1 | 2;          // translator: 2 makes the register dump of a trap exact too (about twice the run time)
   cache?: A64CacheStore;              // translation cache: cacheLoad() before run(), cacheSave() after
+  // The process's address space and kernel settings, chosen per game from its profile (rt_process.ts layoutFor /
+  // settingsFor). Omitted: the kernel's default layout (heap 1.5 GB, alias 1.87 GB)
+  layout?: ProcessLayout;
+  // Per module name: a hash of the code cuts the prepare step applied to it (a cut module keeps its build id): part
+  // of the translation cache key, so that translations of the uncut code are not reused
+  cutsKey?: Record<string, string>;
 }
 // Whether guest accesses to the host area trap when RuntimeOptions.guard is not given (README "Memory safety": the
 // measured cost against the 5 % rule)
@@ -188,6 +195,7 @@ export class Runtime {
   private mainStackTop = 0;
   private nextFile = range("file staging").lo;
   private nextBase = GUEST.codeBase;
+  private stackRegion = GUEST.stackRegion;
   private lateStubs = new Map<string, number>();
   private spOk = new Map<number, { lo: number; hi: number }>();
   private pauseAsked = false;
@@ -203,7 +211,8 @@ export class Runtime {
   times = { hostMs: 0 };               // time inside host functions (ms), for the per-frame breakdown
 
   constructor(mods: RuntimeModules, opts: RuntimeOptions = {}) {
-    this.opts = { budget: 100000, clock: "deterministic", nsPerUnit: 100, mainStackSize: GUEST.mainStackSize, ...opts };
+    const given = Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)) as RuntimeOptions;   // an option given as undefined is not given
+    this.opts = { budget: 100000, clock: "deterministic", nsPerUnit: 100, mainStackSize: GUEST.mainStackSize, ...given };
     if (opts.codeBase !== undefined) this.nextBase = opts.codeBase;
     // One memory for everything. It starts as the host area and grows on demand (the kernel grows it for the heap,
     // stacks and thread-local slots; ensure() for images), up to the 4 GB a wasm32 memory can have.
@@ -222,7 +231,14 @@ export class Runtime {
     this.r.rt_clock_init(this.opts.clock === "wall" ? 1 : 0, BigInt(this.opts.nsPerUnit));
     const arena = range("loader arena");
     this.ld = new Loader(lx, { arena: arena.lo, arenaLen: arena.hi - arena.lo, stubBase: STUBS.base, stubCap: STUBS.cap });
-    if (this.k.kernel_init(0) !== 0) throw new Error("runtime: kernel_init refused the default layout");
+    if (opts.layout) {
+      const p = (this.r.rt_scratch_ptr() >>> 0) + 2048;
+      writeKernelCfg(this, p, opts.layout);
+      if (this.k.kernel_init(p) !== 0) throw new Error("runtime: kernel_init refused the process layout: " + this.red.join("; "));
+      this.stackRegion = opts.layout.stackBase;
+      if (opts.layout.fit === "short") this.log("[RED] runtime: " + opts.layout.note);
+      else if (opts.layout.note) this.log("runtime: " + opts.layout.note);
+    } else if (this.k.kernel_init(0) !== 0) throw new Error("runtime: kernel_init refused the default layout");
 
     this.a64 = new A64Host(mods.translator, mods.helpers, {
       memory: this.memory, layout: A64,
@@ -335,7 +351,7 @@ export class Runtime {
       // start contract: dependencies' init functions first (load order), the main module's last, then the entry
       for (const m of [...set.modules.slice(1), set.modules[0]]) { if (m.init) this.initQueue.push(m.init); this.initQueue.push(...m.initArray); }
       this.entry = set.entry;
-      const stack = GUEST.stackRegion, size = (this.opts.mainStackSize + 0xFFF) & ~0xFFF;
+      const stack = this.stackRegion, size = (this.opts.mainStackSize + 0xFFF) & ~0xFFF;
       if (!this.k.kernel_map_stack(BigInt(stack), BigInt(size))) throw new Error("the kernel refused the main thread's stack");
       this.mainStackTop = stack + size;
       this.mainThread = this.k.kernel_create_main_thread(BigInt(this.ld.stubAddr(startId)), BigInt(this.mainStackTop));
@@ -355,7 +371,8 @@ export class Runtime {
     const entries = this.ld.codeEntries(m.handle, out, (st.hi - out) >>> 2);
     this.a64.addCode(m.base, m.imageSize, { text: { lo: m.text.addr, hi: m.text.addr + m.text.size }, entries });
     this.text.push({ lo: m.text.addr, hi: m.text.addr + m.text.size, handle: m.handle });
-    this.codeIds.push({ key: `${toHex(m.buildId)}@${m.base.toString(16)}`, lo: m.base, size: m.imageSize });
+    const cuts = this.opts.cutsKey?.[m.name];
+    this.codeIds.push({ key: `${toHex(m.buildId)}${cuts ? "+cuts" + cuts : ""}@${m.base.toString(16)}`, lo: m.base, size: m.imageSize });
     this.stats.entries += entries.length;
   }
   private stage(name: string, bytes: Uint8Array): { name: string; ptr: number; len: number } {
