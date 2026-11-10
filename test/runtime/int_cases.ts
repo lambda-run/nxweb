@@ -253,7 +253,7 @@ export function intCases(env: IntEnv, gpu: Gpu | undefined): IntCase[] {
       const sounding = (whole.last - whole.first) / d.sampleRate;
       eq(t.rt.stdout().split("\n")[0], OPEN, "the guest's first line");
       ok(states.includes("Live"), "the output's states: " + states.join(" "));
-      ok(sounding > 2.5 && sounding < 3.1, `the device played ${sounding.toFixed(2)} s of sound for 3 s of buffers`);
+      ok(sounding > 2.5 && sounding < 3.1, `the device played ${sounding.toFixed(2)} s of sound for 3 s of buffers; output states ${states.join(" ")}; red: ${t.rt.red.join(" | ")}; device callbacks ${d.callbacks}, underrun ${d.underrun}`);
       ok(Math.abs(core.freq - 440) < 0.5, `frequency ${core.freq.toFixed(2)} Hz`);
       ok(Math.abs(core.amp - 0.5) < 0.01, `amplitude ${core.amp.toFixed(4)}`);
       // a run loop that came back more than the ring's lead late (29 ms at its lowest) leaves a gap: the machine's, not the port's
