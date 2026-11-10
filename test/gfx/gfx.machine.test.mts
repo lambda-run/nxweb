@@ -167,3 +167,16 @@ test("gfx_device: lost, lost again before a new device came, restored", () => {
   w.refused(s, "Restore");
   w.go(s, [["Lose", "Lost"], ["Restore", "Live"]]);
 });
+
+test("gfx_shader: a key reported missing, awaited and registered, failed and retried, forgotten, registered again", () => {
+  const w = walker("gfx_shader"), s = w.start();
+  w.refused(s, "Forget");                                   // nothing was said about it
+  w.go(s, [["Await", "Pending"], ["Register", "Ready"], ["Register", "Ready"]]);   // translated in the page; registered again: its pipelines are rebuilt
+  w.refused(s, "Await"); w.refused(s, "Fail"); w.refused(s, "Forget");            // a registered key stays registered
+  const t = w.start();
+  w.go(t, [["Await", "Pending"], ["Fail", "Failed"], ["Await", "Pending"], ["Forget", "Unknown"]]);   // a retry, then given up
+  w.go(t, [["Fail", "Failed"], ["Forget", "Unknown"], ["Register", "Ready"]]);    // the library refused it; later the embedder registers it
+  const u = w.start();
+  w.go(u, [["Fail", "Failed"], ["Register", "Ready"]]);
+  w.refused(w.start(), "Forget");
+});
