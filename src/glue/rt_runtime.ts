@@ -159,6 +159,33 @@ function regsModule(m64: boolean): Uint8Array {
     ...sec(10, [3, ...body(fx), ...body([...fx, ...fd]), ...body(setd)])]);
 }
 const hex = (v: number | bigint) => "0x" + v.toString(16);
+// The constants NVN2's own nvnDeviceGetInteger answers (nxnative dm_sdk_nvn2_item): the driver is compiled into the game's sdk, and its
+// switch over the items loads w0 with the major first, then jumps through a byte table (mov w0, #231 / adr / adrp + add / ldrb / add,
+// lsl #2 / br, with cmp wN, #<last item> before it). A case that is a constant is mov w0, #v; b. Returns item -> value for those cases
+export function nvn2Items(mem: Uint8Array, m: ModuleInfo): Map<number, number> {
+  const out = new Map<number, number>(), dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+  const w = (a: number) => dv.getUint32(a, true), n = (m.ro.addr - m.base) >>> 2, end = m.base + m.imageSize;
+  const sx21 = (x: number) => { const v = ((x >>> 3) & 0x1FFFFC) | ((x >>> 29) & 3); return v & 0x100000 ? v - 0x200000 : v; };
+  for (let p = 8; p + 9 < n; p++) {
+    if (w(m.base + p * 4) !== 0x52801CE0) continue;   // mov w0, #231
+    let tb = -1, adr = -1, lim = -1, ldrb = false, br = false;
+    for (let q = p - 8; q <= p + 8; q++) {
+      const at = m.base + q * 4, x = w(at);
+      if (((x & 0xFFC0001F) >>> 0) === 0x7100001F) lim = (x >>> 10) & 0xFFF;
+      else if (((x & 0x9F000000) >>> 0) === 0x90000000 && ((w(at + 4) & 0xFFC00000) >>> 0) === 0x91000000) tb = (at & ~0xFFF) + sx21(x) * 4096 + ((w(at + 4) >>> 10) & 0xFFF);
+      else if (((x & 0x9F000000) >>> 0) === 0x10000000) adr = at + sx21(x);
+      else if (((x & 0xFFE0FC00) >>> 0) === 0x38606800) ldrb = true;
+      else if (((x & 0xFFFFFC1F) >>> 0) === 0xD61F0000) br = true;
+    }
+    if (tb < 0 || adr < 0 || lim <= 1 || !ldrb || !br || tb < m.ro.addr || tb + lim >= end) continue;
+    for (let i = 0; i <= lim; i++) {
+      const c = adr + mem[tb + i] * 4, c0 = w(c), c1 = w(c + 4);
+      if (((c0 & 0xFFE0001F) >>> 0) === 0x52800000 && ((c1 & 0xFC000000) >>> 0) === 0x14000000) out.set(i, (c0 >>> 5) & 0xFFFF);
+    }
+    break;
+  }
+  return out;
+}
 // "NintendoSDK_nnSdk-10_4_0" (SDK 12 spells it NintendoSdk_; Switch 2 SDKs put a variant first: "nnSdk-Generic_20_5_19")
 export function sdkVersionIn(b: Uint8Array): { major: number; text: string } | undefined {
   const pat = [0x5f, 0x6e, 0x6e, 0x53, 0x64, 0x6b, 0x2d];   // "_nnSdk-"
@@ -442,7 +469,16 @@ export class Runtime {
   // relocation targets in the text) is passed along, so that those functions are translated with their neighbours.
   // The game's SDK major version (0: not known), from the version string the sdk module keeps in its read-only data
   sdkMajor = 0;
+  // Whether the sdk module was built for the Switch 2 ("spec: Ounce" in its file system access log line; Switch 1 SDKs say "spec: NX")
+  sdkOunce = false;
+  sdkModule: ModuleInfo | undefined;
   private addModuleCode(m: ModuleInfo): void {
+    if (m.name === "sdk" && !this.sdkModule) {
+      this.sdkModule = m;
+      const ro = this.u8().subarray(m.ro.addr, m.base + m.imageSize), pat = [..."spec: Ounce"].map(c => c.charCodeAt(0));
+      for (let i = ro.indexOf(pat[0]); i >= 0 && !this.sdkOunce; i = ro.indexOf(pat[0], i + 1)) this.sdkOunce = pat.every((c, k) => ro[i + k] === c);
+      if (this.sdkOunce) this.log("sdk: built for the Switch 2 (spec: Ounce)");
+    }
     if (!this.sdkMajor && m.ro.size) {
       const v = sdkVersionIn(this.u8().subarray(m.ro.addr, m.ro.addr + m.ro.size));
       if (v) { this.sdkMajor = v.major; this.log(`sdk: NintendoSDK nnSdk-${v.text} (major ${v.major}), from ${m.name}`); }
