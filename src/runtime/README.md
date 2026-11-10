@@ -107,8 +107,10 @@ data into the wasm file (kernel.wasm: 8.9 MB instead of 24 KB) and into memory a
 
 **The pc map** is the translator's (`src/a64/README.md`): two levels over all 4 GB of guest addresses, leaves
 allocated on demand from the "pc map" range, so a module may be mapped anywhere in the code region (tested at
-0x1600_0000). The range holds 327 leaves, that is 21 MB of code with at least one translated function per 64 KB; a
-game with more translated code than that needs a larger range (the error is "the pc map's leaf arena is full").
+0x1600_0000). The range holds 326 leaves, that is 20 MB of code with at least one translated function per 64 KB; past
+that a leaf is 64 KB from `hostAlloc`, a page of the code region above the modules (`leafAlloc` of the translator's
+host). Such a leaf is outside the host area, so the guard does not keep a stray guest write out of it. When the code
+region has no room left the error is "the pc map's leaf arena is full and there is no room left to extend it".
 
 **Code ranges.** Each module image is one `addCode(base, imageSize, { text, entries })`: the text bounds keep data
 out of the translator's scans, and `entries` are the function entries the loader knows (`ld_code_entries`: defined
@@ -765,10 +767,10 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
   audio module's static data above it do not, text and read-only data are writable, an address at or above 4 GB
   wraps (contract). A host function that hands the guest a pointer into another module's static data (graphics, the
   file system) would fault under the guard: none is known.
-- **Code size beyond the files**: a module file and its image can be large now ("File staging"), but the pc map's
-  leaf arena (rt_layout.ts "pc map") holds 326 leaves of 64 KB, about 20 MB of code that was actually translated;
-  past it `a64: the pc map's leaf arena is full` is thrown. A game that executes more code than that needs the leaves
-  allocated outside the fixed table. The entry bitmap covers the first 256 MB of the code region.
+- **Code size beyond the files**: the pc map grows past its fixed range into the code region, one byte of map per
+  byte of code that was translated (tested with 27 MB of text touched in every 64 KB). The code region's spare is
+  64 MB beyond the images, shared with run-time modules and host blocks, so a game that executes more than about
+  80 MB of its code would need a larger spare. The entry bitmap covers the first 256 MB of the code region.
 - **Address space**: 14 of nxnative's 153 profiles do not fit a 32-bit memory (see "The address space per game");
   "fits" for the other 139 is arithmetic, no game has run. A profile's `mem_reserve`-style keys beyond the split,
   frame-step patches and the other "needs" of a profile are listed by the page and not applied.

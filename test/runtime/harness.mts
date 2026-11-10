@@ -66,7 +66,7 @@ export const haveNvn = (): boolean => existsSync(join(NVN_INCLUDE, "nvn.h"));
 
 // modules stored without compression (elf2nso.py's own LZ4 is Python: too slow for tens of megabytes). large: the
 // module far larger than the fixed file staging range; the test fills and compresses it (large_nso.ts)
-export const STORED_MODULES: Record<string, [src: string, ...flags: string[]]> = { large: ["large.c"] };
+export const STORED_MODULES: Record<string, [src: string, ...flags: string[]]> = { large: ["large.c"], wide: ["wide.c"] };
 // RT_HUGE=1 (Node only): the target size, a 256 MB file with a 512 MB image
 export const HUGE = { ro: 252, data: 60, bss: 200, heap: 300 };
 if (process.env.RT_HUGE === "1") STORED_MODULES.huge = ["large.c", `-DRO_MB=${HUGE.ro}`, `-DDATA_MB=${HUGE.data}`, `-DBSS_MB=${HUGE.bss}`, `-DHEAP_MB=${HUGE.heap}`];

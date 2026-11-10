@@ -201,5 +201,39 @@ export function runExtraTests(m: Mods): TestResult[] {
     eq("unshared code with barriers is the code with NOPs, byte for byte", u1.blob.length == u0.blob.length && u1.blob.every((v, i) => v == u0.blob[i]), true);
     return `shared: ${s1.n - s0.n} fences, unshared: ${u1.n - u0.n}`;
   });
+  test("pc map beyond its fixed range: leaves come from leafAlloc (which may grow the memory); without one, or when it gives none, the error names the pc map; freed leaves are used again", () => {
+    // mov x0,#n; ret in six different 64 KB pages, with a layout whose own arena has room for two leaves
+    const small = { ...A64, pcmapEnd: A64.pcmapBase + 0x40000 + 3 * 0x10000 };
+    const fn = (n: number) => [0xD2800000 | (n << 5), RET];
+    const EXTRA = DATA + 0x10000;
+    const run = (leafAlloc?: (t: { memory: WebAssembly.Memory }) => number) => {
+      let self: ReturnType<typeof mk>;
+      self = mk(m, { layout: small, leafAlloc: leafAlloc ? () => leafAlloc(self) : undefined });
+      for (let i = 0; i < 6; i++) { self.put(BASE + i * 0x10000, fn(i + 1)); self.host.addCode(BASE + i * 0x10000, 8); }
+      const got: bigint[] = [];
+      for (let i = 0; i < 6; i++) got.push(self.call(BASE + i * 0x10000));
+      return { t: self, got };
+    };
+    let threw = ""; try { run(); } catch (e) { threw = String(e); }
+    if (!/pc map's leaf arena is full/.test(threw)) throw new Error("no allocator: " + (threw || "no error"));
+    threw = ""; try { run(() => 0); } catch (e) { threw = String(e); }
+    if (!/pc map's leaf arena is full.*no room left/.test(threw)) throw new Error("an allocator with nothing: " + (threw || "no error"));
+    let given = 0, grown = 0;
+    const r = run(t => {
+      const at = EXTRA + given++ * 0x10000;
+      if (t.memory.buffer.byteLength < at + 0x10000) { t.memory.grow(Math.ceil((at + 0x10000 - t.memory.buffer.byteLength) / 65536)); grown++; }
+      new Uint8Array(t.memory.buffer, at, 0x10000).fill(0xAA);   // the host zeroes what it is given
+      return at;
+    });
+    eq("results", r.got.join(","), "1,2,3,4,5,6");
+    if (given < 4 || grown < 1) throw new Error(`leaves given ${given}, memory grown ${grown} times`);
+    // a range removed gives its leaf back; new code in another page takes it without asking again
+    const before = given;
+    r.t.host.removeCode(BASE + 5 * 0x10000, 8);
+    r.t.put(BASE + 9 * 0x10000, fn(77)); r.t.host.addCode(BASE + 9 * 0x10000, 8);
+    eq("code in a page that took a freed leaf", r.t.call(BASE + 9 * 0x10000), 77n);
+    eq("leaves asked for after the free", given, before);
+    return `${given} leaves from the allocator, the memory grew ${grown} time(s); pc map ${r.t.host.pcMapBytes >> 10} KB`;
+  });
   return out;
 }

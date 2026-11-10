@@ -130,8 +130,9 @@ Module file size is no longer one of them: a start set that does not fit the run
 staged in the process's own heap, stack and alias regions while it is loaded and released before the first guest
 instruction, and the code region is sized from the images (`src/runtime/README.md`, "File staging"). Tested with a
 synthetic 41.6 MB NSO in `rt:test` and `rt:browser`, and by hand (`RT_HUGE=1`) with a 256 MB file whose image is
-512 MB; no real game file was tried. Still fixed: the pc map's leaf arena holds about 20 MB of *executed* code
-(326 leaves of 64 KB; past it the translator throws), and the entry bitmap covers the first 256 MB of the code region.
+512 MB; no real game file was tried. The pc map grows past its fixed 20 MB into the code
+region (tested with 27 MB of text touched in every 64 KB). Still fixed: the entry bitmap covers the first 256 MB of
+the code region.
 
 In the order a real game would hit them: containers (NSP / XCI / NCA: the prepare step takes extracted folders
 only); a real SDK in the guest (rtld's part is played by the loader, but nn::os objects, TLS and SystemEvents have

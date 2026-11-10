@@ -123,6 +123,17 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     }
     return lines;
   });
+  test("code wider than the pc map's fixed range: 416 functions, one per 64 KB of a 27 MB text, all called twice; the pc map grows past its range into the code region and the program runs to completion", async () => {
+    const rt = new Runtime(env.mods);
+    ok(rt.loadNso([{ name: "wide", bytes: env.nso("wide") }]), "load failed: " + rt.red.join(" | "));
+    const r = rt.run();
+    let sum = 0; for (let round = 0; round < 2; round++) for (let i = 0; i < 416; i++) sum = (sum + (i & 0xFFF) + 1) >>> 0;
+    ok(r.stop?.kind === "exit" && r.stop.code === 11, "stop: " + JSON.stringify(r.stop) + " " + rt.red.join(" | "));
+    eq(rt.stdout(), `functions: 416\nsum: ${sum}\n`, "stdout");
+    const fixed = range("pc map"), bytes = rt.a64.pcMapBytes;
+    ok(bytes > fixed.hi - fixed.lo, `the pc map (${mb(bytes)}) did not pass its fixed range (${mb(fixed.hi - fixed.lo)})`);
+    return [`pc map ${mb(bytes)}, its fixed range ${mb(fixed.hi - fixed.lo)}`];
+  });
   if (env.huge) test("large module at the target size (RT_HUGE=1): a 256 MB file with a 512 MB image loads on a layout made for it and runs to completion", async () => {
     const hg = env.huge!, l = await makeLargeNso(hg.stored(), hg.ro * MBY, hg.data * MBY);
     const layout = layoutFor({ code: l.imageBytes });

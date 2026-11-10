@@ -252,6 +252,7 @@ export class Runtime {
       maxInsns: opts.maxInsns, maxFuncs: opts.maxFuncs, depthLimit: opts.depthLimit, tailCalls: opts.tailCalls, fma: opts.fma, nanFix: opts.nanFix,
       cntYield: true, preciseFaults: opts.preciseFaults, guardBase: (opts.guard ?? GUARD_DEFAULT) ? GUARD_BASE : 0,
       onTranslate: (pc: bigint) => this.onTranslate(pc),
+      leafAlloc: () => this.hostAlloc(0x10000),   // pc map leaves beyond the fixed range: pages of the code region
       imports: {
         svc: (n: number) => this.svc(n),
         unimpl: (pc: bigint, insn: number) => this.fault(FAULT.unimplemented, `instruction word ${hex(insn >>> 0)} at ${hex(pc)}`, BigInt(insn >>> 0), true),

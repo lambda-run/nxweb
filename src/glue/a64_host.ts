@@ -24,6 +24,9 @@ export interface A64Options {
   memory: WebAssembly.Memory;   // the one linear memory (guest addresses are offsets)
   layout: A64Layout;
   imports: A64Imports;
+  // more pc map leaves once the layout's own arena is used up: the address of 64 KB of memory that stays the
+  // translator's for the life of this host (it is zeroed here), or 0 when there is none
+  leafAlloc?: () => number;
   maxInsns?: number;            // function size cap (1 = single-instruction mode)
   maxFuncs?: number;            // functions per unit
   chunk?: number;               // region mode chunk in bytes (0 = one entry per unit)
@@ -91,6 +94,7 @@ export class A64Host {
   private zeroLeaf: number;
   private leafNext: number;
   private leafFree: number[] = [];
+  private leafExtra = 0;   // leaves from opts.leafAlloc
   private ranges: { lo: number; hi: number }[] = [];
   private byFunc = new Map<number, A64Unit>();         // function pc -> unit (for fault lookup)
   private cache = new Map<number, CachedUnit>();        // function pc -> cached unit not yet instantiated
@@ -162,27 +166,39 @@ export class A64Host {
     const dv = new DataView(this.memory.buffer);
     return dv.getUint32(dv.getUint32(this.lay.pcmapBase + ((pc >>> 16) << 2), true) + (pc & 0xFFFC), true);
   }
-  private leafFor(pc: number, dv: DataView): number {
+  // a DataView of the memory as it is now (a leaf from leafAlloc may have grown it: views made before are detached)
+  private dvc: DataView | null = null;
+  private dv(): DataView { return this.dvc && this.dvc.buffer === this.memory.buffer ? this.dvc : (this.dvc = new DataView(this.memory.buffer)); }
+  private leafFor(pc: number): number {
+    let dv = this.dv();
     const l1 = this.lay.pcmapBase + ((pc >>> 16) << 2);
     let leaf = dv.getUint32(l1, true);
     if (leaf === this.zeroLeaf) {
       if (this.leafFree.length) leaf = this.leafFree.pop()!;
       else {
-        if (this.leafNext + LEAF > this.lay.pcmapEnd) throw new Error("a64: the pc map's leaf arena is full");
-        leaf = this.leafNext; this.leafNext += LEAF;
+        if (this.leafNext + LEAF <= this.lay.pcmapEnd) { leaf = this.leafNext; this.leafNext += LEAF; }
+        else {
+          leaf = this.opts.leafAlloc?.() ?? 0;
+          if (!leaf || (leaf & 3) || leaf + LEAF > this.memory.buffer.byteLength)
+            throw new Error(`a64: no memory for the pc map of code at 0x${(pc >>> 0).toString(16)}: the pc map's leaf arena is full (${this.pcMapBytes >> 20} MB)` + (this.opts.leafAlloc ? " and there is no room left to extend it" : ""));
+          dv = this.dv();   // the allocation may have grown the memory
+          new Uint8Array(this.memory.buffer, leaf, LEAF).fill(0);
+          this.leafExtra++;
+        }
       }
       dv.setUint32(l1, leaf, true);
     }
     return leaf;
   }
+  private setLeaf(pc: number, index: number, _le?: boolean): void { const leaf = this.leafFor(pc); this.dv().setUint32(leaf + (pc & 0xFFFC), index, true); }
   setPcMap(pc: number, index: number): void {
     const dv = new DataView(this.memory.buffer);
-    dv.setUint32(this.leafFor(pc, dv) + (pc & 0xFFFC), index, true);
+    this.setLeaf(pc, index, true);
   }
   // `count` consecutive instructions from pc get the same table index (host stub regions)
   fillPcMap(pc: number, count: number, index: number): void {
     const dv = new DataView(this.memory.buffer);
-    for (let i = 0; i < count; i++, pc += 4) dv.setUint32(this.leafFor(pc, dv) + (pc & 0xFFFC), index, true);
+    for (let i = 0; i < count; i++, pc += 4) this.setLeaf(pc, index, true);
   }
   // drop every entry of [lo, hi); whole leaves go back to the free list
   clearPcMap(lo: number, hi: number): void {
@@ -196,7 +212,7 @@ export class A64Host {
       if ((a === 0 && b === LEAF) || new Uint32Array(this.memory.buffer, leaf, LEAF >> 2).every(v => v === 0)) { dv.setUint32(l1, this.zeroLeaf, true); this.leafFree.push(leaf); }
     }
   }
-  get pcMapBytes(): number { return this.leafNext - this.lay.pcmapBase - this.leafFree.length * LEAF; }
+  get pcMapBytes(): number { return this.leafNext - this.lay.pcmapBase + (this.leafExtra - this.leafFree.length) * LEAF; }
 
   // ---- code ranges ----
   // register guest code that is in memory at [lo, lo + size). text: the part that holds instructions (default: all).
@@ -314,7 +330,7 @@ export class A64Host {
     for (let i = 0; i < pcs.length; i++) {
       const pc = pcs[i];
       if (pc === 0xFFFFFFFF) continue;          // stub: stays on the trampoline path
-      dv.setUint32(this.leafFor(pc, dv) + (pc & 0xFFFC), base + i, true);
+      this.setLeaf(pc, base + i, true);
       this.byFunc.set(pc, u);
     }
     this.moduleBytes += bytes.length;
