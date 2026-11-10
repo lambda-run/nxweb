@@ -706,6 +706,12 @@ export class Runtime {
     const n = this.k.kernel_svc_ring(index, out, cap);
     this.log(n ? `[RED]   the last ${n} of the ${total} SVCs of thread ${hex(handle)}, oldest first:` : `[RED]   thread ${hex(handle)} made no SVC`);
     for (let i = 0; i < n; i++) this.log("[RED]     " + svcLine(this.dv(), out + i * SVC_REC));
+    const hc = this.hostRing;
+    this.log(hc.length ? `[RED]   the last ${hc.length} of the ${this.stats.hostCalls} host calls (take-overs, NVN), oldest first:` : "[RED]   no host call yet");
+    for (const h of hc) {
+      const name = h.id < this.ld.x.ld_host_count() ? this.ld.hostFunction(h.id).name : `stub #${h.id}`;
+      this.log(`[RED]     ${name}(x0=${hex(h.x[0])} x1=${hex(h.x[1])} x2=${hex(h.x[2])} x3=${hex(h.x[3])}) -> x0=${hex(h.out)}, returns to ${placeOf(Number(h.lr), mods, sym, stub)}${h.thread !== index ? ` [thread #${h.thread}]` : ""}`);
+    }
   }
   private threadInfo(index: number): number {
     const p = this.r.rt_scratch_ptr() + 2048;
@@ -784,6 +790,9 @@ export class Runtime {
     };
   }
   // The thunk: pc is a stub address, registers are written back, x30 is where the guest wants to continue
+  // The last host calls (all threads), for the fault report: which take-over answered what just before a fault
+  private static readonly HOST_RING = 24;
+  private hostRing: { id: number; thread: number; x: bigint[]; lr: bigint; out: bigint }[] = [];
   private hostCall(): void {
     const c = this.core, pc = Number(c.pc.value as bigint), id = (pc - STUBS.base) >>> 2;   // a stub's pc: in the host area
     this.stats.hostCalls++;
@@ -792,7 +801,10 @@ export class Runtime {
     let res: HostResult;
     this.hostDepth++;
     try { res = this.hostCallBody(cpu, id, pc); } finally { this.hostDepth--; }
+    const rec = { id, thread: this.curIndex, x: [0, 1, 2, 3].map(i => cpu.x(i)), lr: cpu.lr, out: 0n };
     if (res !== SKIP) this.finishHostCall(res as HostResult, cpu, pc);
+    rec.out = BigInt.asUintN(64, c.x0.value as bigint);
+    if (this.hostRing.push(rec) > Runtime.HOST_RING) this.hostRing.shift();
     this.times.hostMs += performance.now() - t0;
   }
   private hostCallBody(cpu: HostCpu, id: number, pc: number): HostResult | typeof SKIP {
