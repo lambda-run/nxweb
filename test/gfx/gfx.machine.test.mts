@@ -108,6 +108,11 @@ test("gfx_texture: uploaded with its sampled hash, stale and uploaded again, the
   assert.equal(w.k.x.m_data(a), 0);
   w.refused(a, "Upload"); w.refused(a, "Stale");
   w.go(b, [["GpuWrite", "GpuOwned"]]);
+  // tex_flush_upload: the game filled the storage again and flushed it: the CPU's once more, uploaded at the next use
+  w.refused(b, "Stale");
+  w.go(b, [["CpuWrite", "Unknown"]]); w.go(b, [["Upload", "Uploaded"]], 7); w.go(b, [["GpuWrite", "GpuOwned"]]);
+  const c = w.start();
+  w.refused(c, "CpuWrite"); w.go(c, [["Upload", "Uploaded"]], 1); w.refused(c, "CpuWrite");      // only a texture the GPU owns is taken back
 });
 
 test("gfx_pass: compute dispatches open a compute pass, with and without render targets, and every way out of it", () => {

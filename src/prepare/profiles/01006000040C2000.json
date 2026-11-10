@@ -20,16 +20,12 @@
   "package": "v65536",
   "modules": "main sdk",
   "romfs_marker": "PJ033/Content/Paks/PJ033-Switch.pak",
+  "tex_flush_upload": "on",
   "app_pool": "0xCD500000",
   "sys_resource": "0x0",
   "mem_used": "0x70e4000"
  },
  "needs": [
-  {
-   "key": "tex_flush_upload",
-   "value": "on",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
-  },
   {
    "key": "tex_dirty_upload",
    "value": "on",

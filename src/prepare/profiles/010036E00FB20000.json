@@ -21,14 +21,10 @@
   "package": "v0",
   "modules": "main subsdk0 sdk",
   "romfs_marker": "nativeNXx64/sa/NX_64/root.arc",
-  "app_pool": "0xCD500000"
+  "app_pool": "0xCD500000",
+  "tex_flush_upload": "on"
  },
  "needs": [
-  {
-   "key": "tex_flush_upload",
-   "value": "on",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
-  },
   {
    "key": "tex_dirty_upload",
    "value": "on",

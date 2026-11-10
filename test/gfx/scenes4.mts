@@ -20,7 +20,7 @@ const nticks = (ns: bigint) => Number(ticks(ns));
 const setU64 = (e: Env, a: number, v: bigint) => e.g.dv.setBigUint64(a, v, true);
 const LEFT = [0.5, 1, -0.5, 0, 0, 0, 0, 0], FULL = [1, 1, 0, 0, 0, 0, 0, 0];
 // One frame of the scene's commands into the next window image; the picture
-async function frame(e: Env, body: (cmd: number, target: number) => void): Promise<Awaited<ReturnType<Env["read"]>>> {
+export async function frame(e: Env, body: (cmd: number, target: number) => void): Promise<Awaited<ReturnType<Env["read"]>>> {
   const G = e.G;
   G.c("CommandBufferAddCommandMemory", [G.cmd, G.cmdPool.obj, 0, G.cmdPool.size]);
   const i = G.acquire(e.win);

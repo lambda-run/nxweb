@@ -61,6 +61,8 @@ KEYS = {
     "device_api":     ("a", "the NVN API version nvnDeviceGetInteger reports (an SDK version fact; no profile sets it, the SDK version decides)", ""),
     "pad_layout":     ("a", "input setting: which controls the game needs (simple / full / touch), a hint for the page's on-screen controls", ""),
     "render_cond":    ("a", "gfx_set_profile bit 1 (src/gfx/report.ts): SetRenderEnable / SetRenderEnableConditional evaluated when a submission is lowered, a timestamp report's counter field 0", ""),
+    "tex_flush_upload": ("a", "gfx_set_profile bit 2 (src/gfx/texwatch.ts): textures in pools the CPU writes are registered; a pool flush over one publishes it (full check at its next use, also of a texture the GPU wrote)", ""),
+    "tex_dirty_upload": ("c", "hle_nvn.c nvn_ft_written (page write tracking)", "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."),
     # ---- b: Apple / Metal / rewriter / offline chain, dropped ----
     "ipa":            ("b", "iOS package file name", ""),
     "app_category":   ("b", "App Store category", ""),
@@ -91,8 +93,6 @@ KEYS = {
     "ue_texture_pool": ("c", "hle_uecvar.c + ue_cvar.py", "Unreal's texture streaming pool is not raised: distant textures may stay blurry."),
     "render_base":    ("c", "render-scale stub (FRAME_STEP)", "The render scale setting is not available."),
     "screen_aspect":  ("c", "screen-shape stubs (FRAME_STEP)", "Only 16:9 output: the game's taller-screen mode is not available."),
-    "tex_flush_upload": ("c", "hle_nvn.c ft_add", "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."),
-    "tex_dirty_upload": ("c", "hle_nvn.c nvn_ft_written (page write tracking)", "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."),
     "tex_dyn_slots":  ("c", "shader chain fallback arrays", "Shaders that index textures by a handle computed at run time are not supported."),
     "gpu_timestamps": ("c", "nvn_mtl.m timestamp reports per segment", "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."),
     "shader_key_skip": ("c", "hle_nvn.c keys_hash", "Shader keys do not mask the control-section bytes this engine varies: every variant is translated separately (slow first use)."),

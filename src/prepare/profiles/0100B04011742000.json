@@ -22,15 +22,11 @@
   "package": "v2228224",
   "modules": "main subsdk0 sdk",
   "romfs_marker": "re_chunk_000.pak.patch_001.pak",
+  "tex_flush_upload": "on",
   "app_pool": "0xCD500000",
   "mem_used": "0x14800000"
  },
  "needs": [
-  {
-   "key": "tex_flush_upload",
-   "value": "on",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
-  },
   {
    "key": "tex_dirty_upload",
    "value": "on",

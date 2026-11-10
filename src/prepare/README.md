@@ -271,6 +271,7 @@ the key.
 | `op_mode`, `perf_mode`, `alloc_big_align` | a | 8, 2, 5 | `hle_cfg` `CFG_OPMODE`, `CFG_PERF_BOOST`, `CFG_ALLOC_BIG_ALIGN` |
 | `launch_param`, `game_env` | a | 2, 1 | `hle_cfg_str` `STR_LAUNCH_SPEC`, `STR_GAME_ENV` |
 | `render_cond` | a | 10 | the recorder, `gfx_set_profile` bit 1: `SetRenderEnable(Conditional)` evaluated when a submission is lowered; a timestamp report writes counter 0 (`src/gfx/README.md`, "Counter reports and conditional rendering") |
+| `tex_flush_upload` | a | 12 | the recorder, `gfx_set_profile` bit 2: textures in pools the CPU writes are registered and a pool flush over one publishes it (`src/gfx/texwatch.ts`) |
 | `game_args`, `shared_font`, `device_api` | a | 0 | documented keys no profile sets |
 | `ipa`, `app_category`, `zip_store` | b | 153 each | iOS packaging |
 | `mem_reserve`, `mem_alias`, `mem_stack` | b | 153 each | the Apple host's guest block; the regions they give are what the runtime's per-game layout starts from (see `address_space`) |
@@ -281,7 +282,6 @@ the key.
 | `jit_key_data`, `jit_out_code`, `jit_route` | b | 1 each | the nn::jit image an iPhone is served; nxweb translates at run time |
 | `address_space` (derived) | c | 14 | the runtime's layout rule answers "short" for the profile's regions (below) |
 | `fps_target` | c | 33 | `hle_fpslock.c`, FRAME_STEP stubs, the engine finders |
-| `tex_flush_upload` | c | 12 | textures filled in place and published by a pool flush (`hle_nvn.c` `ft_add`) |
 | `tex_dirty_upload` | c | 11 | write tracking of guest pages |
 | `present_interval` | c | 8 | presents re-paced to the display |
 | `fps_max` | c | 6 | 120 fps |
@@ -290,11 +290,11 @@ the key.
 | `fps_hold`, `program_of`, `screen_aspect`, `shader_key_skip`, `snowdrop_pools`, `stdalloc_cap` | c | 2 each | frame holding; multi-program games; screen-shape stubs; masked shader keys; Snowdrop's pools; StandardAllocator cap |
 | `programs`, `render_base`, `ue_fps_cvar`, `ue_texture_pool` | c | 1 each | multi-program launcher; render scale stub; Unreal console variables |
 
-**Counts over the 153 profiles** ((profile, key) pairs): **a 1,499, b 1,432, c 109**. Keys known to the converter: a
-21, b 20, c 18 (18, 18 and 18 of them set by some profile). **The class c keys some profile sets** are these 18:
-`fps_target` 33, `address_space` 14, `tex_flush_upload` 12, `tex_dirty_upload` 11, `present_interval` 8, `fps_max` 6,
-`gpu_timestamps` 5, `tex_dyn_slots` 4, `fps_hold` 2, `program_of` 2, `screen_aspect` 2, `shader_key_skip` 2,
-`snowdrop_pools` 2, `stdalloc_cap` 2, `programs` 1, `render_base` 1, `ue_fps_cvar` 1, `ue_texture_pool` 1.
+**Counts over the 153 profiles** ((profile, key) pairs): **a 1,511, b 1,432, c 97**. Keys known to the converter: a 22,
+b 20, c 17 (19, 18 and 17 of them set by some profile). **The class c keys some profile sets** are these 17:
+`fps_target` 33, `address_space` 14, `tex_dirty_upload` 11, `present_interval` 8, `fps_max` 6, `gpu_timestamps` 5,
+`tex_dyn_slots` 4, `fps_hold` 2, `program_of` 2, `screen_aspect` 2, `shader_key_skip` 2, `snowdrop_pools` 2,
+`stdalloc_cap` 2, `programs` 1, `render_base` 1, `ue_fps_cvar` 1, `ue_texture_pool` 1.
 
 ### The address space: the runtime's verdict
 

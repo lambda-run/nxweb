@@ -511,19 +511,19 @@
   }
  },
  "pairs_per_class": {
-  "a": 1499,
+  "a": 1511,
   "b": 1432,
-  "c": 109
+  "c": 97
  },
  "keys_per_class": {
-  "a": 21,
+  "a": 22,
   "b": 20,
-  "c": 18
+  "c": 17
  },
  "keys_set_per_class": {
-  "a": 18,
+  "a": 19,
   "b": 18,
-  "c": 18
+  "c": 17
  },
  "top_c": [
   {
@@ -533,10 +533,6 @@
   {
    "key": "address_space",
    "profiles": 14
-  },
-  {
-   "key": "tex_flush_upload",
-   "profiles": 12
   },
   {
    "key": "tex_dirty_upload",
@@ -726,6 +722,18 @@
    "what": "",
    "profiles": 10
   },
+  "tex_flush_upload": {
+   "class": "a",
+   "note": "gfx_set_profile bit 2 (src/gfx/texwatch.ts): textures in pools the CPU writes are registered; a pool flush over one publishes it (full check at its next use, also of a texture the GPU wrote)",
+   "what": "",
+   "profiles": 12
+  },
+  "tex_dirty_upload": {
+   "class": "c",
+   "note": "hle_nvn.c nvn_ft_written (page write tracking)",
+   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages).",
+   "profiles": 11
+  },
   "ipa": {
    "class": "b",
    "note": "iOS package file name",
@@ -893,18 +901,6 @@
    "note": "screen-shape stubs (FRAME_STEP)",
    "what": "Only 16:9 output: the game's taller-screen mode is not available.",
    "profiles": 2
-  },
-  "tex_flush_upload": {
-   "class": "c",
-   "note": "hle_nvn.c ft_add",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale.",
-   "profiles": 12
-  },
-  "tex_dirty_upload": {
-   "class": "c",
-   "note": "hle_nvn.c nvn_ft_written (page write tracking)",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages).",
-   "profiles": 11
   },
   "tex_dyn_slots": {
    "class": "c",

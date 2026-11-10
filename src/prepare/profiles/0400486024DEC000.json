@@ -25,7 +25,8 @@
   "mem_map_limit": "on",
   "app_pool": "0x240000000",
   "sys_resource": "0x3000000",
-  "render_cond": "on"
+  "render_cond": "on",
+  "tex_flush_upload": "on"
  },
  "needs": [
   {
@@ -37,11 +38,6 @@
    "key": "gpu_timestamps",
    "value": "segment",
    "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
-  },
-  {
-   "key": "tex_flush_upload",
-   "value": "on",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
   },
   {
    "key": "tex_dirty_upload",

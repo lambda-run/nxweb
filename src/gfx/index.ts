@@ -19,7 +19,8 @@ import { syncFenceOf, syncWaitFence } from "./sync";
 import { hostFlush, hostExecs, hostInit } from "./hostops";
 import { hostSegsLent, cmdInit } from "./cmd";
 import { texLayout, texLevelOffset } from "./texlayout";
-import { texContentInit, texStat, deswizzle, contentState, benchSample, hashFull } from "./texcontent";
+import { texContentInit, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull } from "./texcontent";
+import { watchInit } from "./texwatch";
 export * from "../kit/exports";
 
 // Once, before anything else: `arena` = gfx_arena_bytes() bytes of linear memory for the module's tables (the embedder
@@ -29,7 +30,7 @@ export function gfx_arena_bytes(): u32 { return ARENA_BYTES; }
 export function gfx_init(arena: usize, bytes: u32): i32 {
   if (inited) return 1;
   if (!arenaInit(arena, bytes)) return 0;
-  tablesInit(); hostInit(); texContentInit(); cmdInit(); pipelineInit(); shaderInit(); lowerInit(); deviceInit(); reportInit();
+  tablesInit(); hostInit(); texContentInit(); cmdInit(); pipelineInit(); shaderInit(); lowerInit(); deviceInit(); reportInit(); watchInit();
   inited = true;
   return 1;
 }
@@ -116,6 +117,10 @@ export function gfx_report_land(id: u32, startNs: u64, endNs: u64, doneNs: u64):
 export function gfx_reports_flush(nowNs: u64): void { reportsFlush(nowNs); }
 export function gfx_reports_pending(): u32 { return reportsPending(); }
 export function gfx_report_stat(i: i32): u32 { return reportStat(i); }
+// Textures the CPU keeps writing (texwatch.ts; profile keys tex_flush_upload, tex_dirty_upload): 0 textures taken back from the
+// GPU by a flush, 1 KB hashed by the scanner, 2 scans completed, 3 scans that found a rewrite, 4 textures published by a
+// flush, 5 textures registered, 6 bytes the scanner hashed in the last submission
+export function gfx_tex_watch_stat(i: i32): u32 { return texWatchStat(i); }
 export function gfx_render_enable_state(): i32 { return renderEnableState(); }   // gfx_render_enable: 0 Drawing, 1 Skipping
 export function gfx_static_end(): usize { return __heap_base; }
 const SCRATCH: usize = memory.data(512);

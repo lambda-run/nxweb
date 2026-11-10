@@ -149,7 +149,7 @@ nxnative write-protects texture pages to see CPU writes; a wasm module cannot. I
 |---|---|
 | Unknown | deswizzle and upload every level and layer; keep the full hash and the sampled hash |
 | Uploaded | sampled hash again (16 probes of 64 bytes; everything under 1 KB). Different → upload again. Same → full hash too when the game called `FlushMappedRange` over the storage since the last submission, or every 60 submissions within 1 MB of hashing a submission; different → upload again |
-| GpuOwned | nothing. Entered when a pass, a copy or a clear writes the texture; never left |
+| GpuOwned | nothing. Entered when a pass, a copy or a clear writes the texture; left only when the game flushes new content over it and its profile has `tex_flush_upload` (below) |
 
 Measured (100 textures 64×64 RGBA8 with 7 levels, all bound every frame, SwiftShader machine): first submission
 14–19 ms for 2.1 MB deswizzled and uploaded; afterwards the checks cost about 0.3–0.5 µs a texture, 30–50 µs a frame.
@@ -157,6 +157,63 @@ Measured (100 textures 64×64 RGBA8 with 7 levels, all bound every frame, SwiftS
 Failure modes, accepted: a CPU write that touches no probed byte and is not flushed shows up to 60 submissions late
 (later if more than 1 MB of textures are due at once); a CPU write into a `GpuOwned` texture's storage is never seen;
 a texture changed while a submission that already used it is lowered keeps the old content for that submission.
+A flush is remembered only until the next submission and for 16 ranges (more: every texture used in that submission
+is hashed in full). The two profile keys below close the first two for the games that need it.
+
+### Textures the CPU keeps writing (`texwatch.ts`; profile keys `tex_flush_upload`, `tex_dirty_upload`)
+
+nxnative's textures are the GPU's alone unless something says the CPU fills them; here every texture is uploaded
+from its storage at its first use, so the two keys mean less than in nxnative, and exactly this:
+
+**Registered textures.** With `tex_flush_upload`, a texture is registered when it is made if it can hold what the CPU
+writes in place, by nxnative's rule (`hle_nvn.c ft_add`): storage in a pool that is neither `CPU_NO_ACCESS` nor
+virtual, block-linear (not `LINEAR` / `LINEAR_RENDER_TARGET`), no packaged layout, not a buffer texture. Up to 16,384
+at a time, kept sorted by address (more: red once, the others behave as without the key).
+
+**`tex_flush_upload`: a pool flush publishes.** `nvnMemoryPoolFlushMappedRange` / `nvnBufferFlushMappedRange` over
+any part of a registered texture's storage marks that texture, found by a binary search, and the mark stays until
+the texture is next used, however many submissions and flushes later:
+
+| State at that use | What happens |
+|---|---|
+| Uploaded | full hash; different from the upload's → uploaded again |
+| GpuOwned | the storage is hashed and compared with **what it held when the GPU took the texture over** (kept at that moment, once a texture). Different: the CPU wrote, its content replaces the GPU's (`CpuWrite` → Unknown → upload: the one way out of `GpuOwned`). The same: the flush was about a neighbour, the GPU's content stays |
+| GpuOwned, and the use is another GPU write | the same test; when the CPU wrote, its texels are uploaded first, then the GPU writes (a scissored clear or a draw keeps what it does not cover) |
+
+A registered texture is no longer hashed because some other range was flushed. Departs from nxnative: there a
+flush makes a registered texture "CPU-written" whatever the GPU did to it, and later GPU copies into it are also
+written into its storage; here the GPU's content is only replaced when the storage really changed, and a GPU copy
+into a `GpuOwned` texture does not reach its storage (so after one, a flush with a CPU write replaces all of it).
+
+**`tex_dirty_upload`: no flush at all** (it needs the first key, as in nxnative). nxnative write-protects the pages
+of registered textures and looks at the faults (`nvn_ft_written`, `nvn_ft_poll`). There is no page protection in a
+WebAssembly memory. The two substitutes, and the choice:
+
+| | A write barrier in translated code (a mark per guest store) | Hashing the storage |
+|---|---|---|
+| Sees | only stores the translator emits. `memcpy` and its relatives are take-overs that copy in the host (`src/hle/libc.ts`), `nn::fs` reads land in guest memory from the host, the kernel copies: each would have to mark too, or a texture a file is read into is missed | every writer |
+| Costs | every guest store of every game, and every host writer instrumented | only registered textures of a game with the key |
+
+Hashing, bounded: the full hash runs at **3.5–4.0 GB/s** (Node 22 and Chromium 153 on this machine, 64 KB to 128 MB),
+and a **scanner** spends at most **4 MB a submission** on it, about **1 ms**. At a registered `Uploaded` texture's
+first use in a submission, after the sampled hash found nothing: if the scanner is free or already on this texture,
+the storage is hashed from where the scan stopped as far as the budget goes; when the scan reaches the end its
+hash is compared with the upload's, and a difference uploads the texture again. One texture has the scanner at a
+time; one that is not used in the next submission gives it up. So:
+
+- registered textures in use under 4 MB together: a silent rewrite shows **at the next draw**;
+- otherwise a round of the scanner takes `ceil(bytes in use / 4 MB)` submissions, and a rewrite is found within
+  two rounds (a write behind the scanner's position waits for the next). Tears of the Kingdom's 42 MB texture
+  arrays, which nxnative names for this key, would take 11 submissions a scan each;
+- only `Uploaded` textures are scanned: one the GPU wrote stays the GPU's until a flush says otherwise, as nxnative
+  leaves an uncompressed texture whose storage the GPU wrote. (nxnative does take a block-compressed one back
+  without a flush; here a block-compressed texture becomes `GpuOwned` only as the destination of a texture copy.)
+
+Measured in the scene (SwiftShader machine): 16 MB of registered textures drawn every frame, 4 MB hashed a
+submission in 1.0–1.1 ms; a submission of three draws with the scan in it 1.3–2.1 ms (recorder and replayer); the
+rewrite near the end of the second 8 MB texture found after 4 submissions; the submission that found it 13–20 ms
+(8 MB deswizzled and uploaded). `gfx_tex_watch_stat(i)`: 0 textures taken back from the GPU, 1 KB scanned, 2 scans,
+3 scans that found a rewrite, 4 textures published by a flush, 5 registered, 6 bytes scanned in the last submission.
 
 **Staged** (a fourth state): `CopyBufferToTexture` and `WriteTexels` into a texture that is not `GpuOwned` write the
 texels into its block-linear storage in stream order (what a later ReadTexels, CopyTextureToBuffer or upload sees),

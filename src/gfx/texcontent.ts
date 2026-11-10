@@ -28,6 +28,8 @@ import { texGeom, texLayers, texSize, fmtOf, fBpb, fBw, fBh, gRowBytes, gRows, g
 import { arenaAlloc } from "./arena";
 import { fmtXform, unpack16, toHalf, X_NONE, X_D16, X_D24, X_D32F, X_D24S8, X_D32FS8, X_S8, X_PACKED, X_NORM16, X_SNORM16, X_ASTC } from "./fmt";
 import { astcRows } from "./astc";
+import * as W from "./texwatch";
+import { profileHas, P_TEX_FLUSH } from "./profile";
 
 const SCRATCH_BYTES: usize = 4 << 20;
 const OUT_BYTES: usize = 6 << 20;        // converted rows (depth as floats, decoded ASTC, unpacked 16-bit texels)
@@ -40,11 +42,15 @@ let submitNo: u32 = 1;
 let scrubLeft: u64 = SCRUB_BUDGET;
 let nUploads: u32 = 0, nUploadBytes: u64 = 0, nSampled: u32 = 0, nFull: u32 = 0, nStale: u32 = 0;
 export function texStat(i: i32): u32 { return i == 0 ? nUploads : i == 1 ? <u32>(nUploadBytes >> 10) : i == 2 ? nSampled : i == 3 ? nFull : nStale; }
+let nTakenBack: u32 = 0;
+// 0 textures the CPU took back from the GPU by a flush; 1.. texwatch.ts watchStat(i - 1)
+export function texWatchStat(i: i32): u32 { return i == 0 ? nTakenBack : W.watchStat(i - 1); }
 
 // Ranges the game flushed (nvnMemoryPoolFlushMappedRange / nvnBufferFlushMappedRange) since the last submission
 const FLUSHED: usize = memory.data(256); let nFlushed: i32 = 0, flushedAll = false;
 export function noteFlush(lo: u64, n: u64): void {
   if (!n) return;
+  W.watchFlush(lo, n);
   if (nFlushed == 16) { flushedAll = true; return; }
   store<u64>(FLUSHED + (<usize>nFlushed << 4), lo); store<u64>(FLUSHED + (<usize>nFlushed << 4), lo + n, 8); nFlushed++;
 }
@@ -53,7 +59,7 @@ function flushedOver(lo: u64, hi: u64): bool {
   for (let i = 0; i < nFlushed; i++) if (load<u64>(FLUSHED + (<usize>i << 4)) < hi && load<u64>(FLUSHED + (<usize>i << 4), 8) > lo) return true;
   return false;
 }
-export function submitDone(): void { submitNo++; scrubLeft = SCRUB_BUDGET; nFlushed = 0; flushedAll = false; }
+export function submitDone(): void { submitNo++; scrubLeft = SCRUB_BUDGET; nFlushed = 0; flushedAll = false; W.watchSubmitDone(); }
 
 const KOX: usize = memory.data<u16>([0, 32, 256, 288]);
 const KOY: usize = memory.data<u16>([0, 16, 64, 80, 128, 144, 192, 208]);
@@ -218,28 +224,35 @@ export function contentInit(serial: u64, tex: usize): void {
   inst(e).init(GFX_TEXTURE, <u32>(serial & 0xffff));
   store<u32>(e, <u32>load<u64>(tex, O.TEX_mem), TE_mem); store<u64>(e, load<u64>(tex, O.TEX_L + O.TL_size), TE_size);
   memory.copy(e + TE_desc, tex + O.TEX_d, O.TD_SIZE);
+  W.watchRegister(serial, tex);
 }
 // A submission is about to read the texture (sample it, copy from it, present it)
 export function contentNeed(serial: u64): void {
   const e = texEntry(serial);
   if (!e) return;
   const m = inst(e), mem = <usize>load<u32>(e, TE_mem), size = <usize>load<u64>(e, TE_size);
+  // tex_flush_upload: the game published this texture with a pool flush since its last use (texwatch.ts)
+  const published = W.watchTake(serial);
+  if (published && m.state == GfxTextureS.GpuOwned) cpuTakesBack(e, mem, size);
   if (m.state == GfxTextureS.GpuOwned || (load<u32>(e, TE_checked) == submitNo && m.state != GfxTextureS.Staged)) return;
   store<u32>(e, submitNo, TE_checked);
   if (m.state == GfxTextureS.Uploaded) {
     let changed = hashSample(mem, size) != m.data;
     if (!changed) {
       const due = submitNo - load<u32>(e, TE_last_full) >= SCRUB_PERIOD && scrubLeft >= size;
-      if (due || flushedOver(mem, <u64>mem + size)) {
+      if (due || published || (!W.watchRegistered(serial) && flushedOver(mem, <u64>mem + size))) {      // a registered texture knows exactly whether a flush touched it
         if (due) scrubLeft -= size;
         store<u32>(e, submitNo, TE_last_full);
         changed = hashFull(mem, size) != load<u64>(e, TE_full);
       }
     }
+    // tex_dirty_upload: nobody said anything; the scanner's turn (texwatch.ts)
+    if (!changed) changed = W.watchScan(e, serial, mem, size, submitNo);
     if (!changed) return;
     nStale++;
     m.step(GfxTextureE.Stale);
   }
+  W.watchForget(serial);
   if (!upload(e)) return;
   store<u64>(e, hashFull(mem, size), TE_full); store<u32>(e, submitNo, TE_last_full);
   m.step(GfxTextureE.Upload, hashSample(mem, size));
@@ -249,8 +262,33 @@ export function contentNeed(serial: u64): void {
 export function contentGpuWrite(serial: u64): void {
   const e = texEntry(serial);
   if (!e) return;
+  if (profileHas(P_TEX_FLUSH) && W.watchRegistered(serial)) gpuTakesOver(e, serial);
   if (inst(e).state == GfxTextureS.Staged) upload(e);
   inst(e).step(GfxTextureE.GpuWrite);
+}
+// tex_flush_upload, a registered texture the GPU is about to write (texwatch.ts).
+// It is not the GPU's yet: the full hash of its storage as it is now is kept, so that a later flush can tell whether
+// the CPU wrote there since. It is the GPU's already and was published meanwhile: what the CPU wrote goes up first
+// (the GPU's write may keep what it does not cover)
+function gpuTakesOver(e: usize, serial: u64): void {
+  const m = inst(e), mem = <usize>load<u32>(e, TE_mem), size = <usize>load<u64>(e, TE_size);
+  if (!mem || <u64>mem + size > <u64>memory.size() << 16) return;
+  if (m.state != GfxTextureS.GpuOwned) { store<u64>(e, hashFull(mem, size), TE_full); return; }
+  if (!W.watchTake(serial)) return;
+  if (!cpuTakesBack(e, mem, size)) return;
+  if (!upload(e)) return;
+  m.step(GfxTextureE.Upload, hashSample(mem, size));
+}
+// A GpuOwned texture whose storage a flush covered: the CPU's again when the storage is not what it was when the GPU
+// took the texture (CpuWrite: Unknown, so its next use uploads). False when the flush changed nothing in it
+function cpuTakesBack(e: usize, mem: usize, size: usize): bool {
+  if (!mem || <u64>mem + size > <u64>memory.size() << 16) return false;
+  const h = hashFull(mem, size);
+  if (h == load<u64>(e, TE_full)) return false;
+  store<u64>(e, h, TE_full);
+  nTakenBack++;
+  inst(e).step(GfxTextureE.CpuWrite);
+  return true;
 }
 // Whether this submission already read the texture from its storage (it was uploaded or checked for draws that may not be submitted yet)
 export function contentInUse(serial: u64): bool { const e = texEntry(serial); return e != 0 && load<u32>(e, TE_checked) == submitNo && inst(e).state != GfxTextureS.GpuOwned; }
