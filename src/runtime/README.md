@@ -25,6 +25,7 @@ linear memory, loads NSO files, and runs guest threads in a loop that the kernel
 | `test/runtime/gfx_cases.ts` | The graphics tests (null replayer under Node, WebGPU and pixel readback in the browser) |
 | `test/runtime/int_cases.ts` | Controllers, audio, the NVN waits, device loss, the robustness sweep |
 | `test/runtime/guard_bench.mts` | `npm run rt:guard`: the guard's cost measured alone, with paired statistics |
+| `test/runtime/mem64_speed.mts`, `mem64_browser.mts`, `mem64_core.ts` | `npm run rt:mem64` (Node) and `rt:mem64:browser` (Chromium, Firefox, in a Worker): memory64's cost, every output checked, paired statistics |
 | `test/runtime/all.mts` | The root `npm test` |
 | `web/` | The page: `index.html`, `main.ts` (page), `worker.ts` (runtime), `build.mts`, `serve.mts` |
 
@@ -251,14 +252,36 @@ tests.
   offsets above 4 GB in Chromium 153, as the whole-memory view with an offset, as a subarray, and as a copy
   (`npm run gfx:mem64`); the copy costs 2.6 to 3.5 times the upload (80 against 30 us for 64 KB, 3.1 against 0.9 ms
   for 4 MB), so the replayer keeps handing views. All 55 scenes pass with the game above 4 GB.
-- *Cost* (this machine, others idle). Node 22, the flat corpus through the runtime (`npm run rt:mem64`, 61
-  programs, 160 M instructions, 9 interleaved rounds, best / median): memory32 382 / 296 M instructions/s; memory64
-  355 / 260 (7.7 % / 13.7 % more time); above 4 GB 350 / 258 (9.2 % / 14.7 %). Doom (`doom:test`, tics 100..600 of
-  demo1, null replayer): 5.58 ms a frame and 1028 M instructions/s in memory32; 6.34 ms and 906 M/s in memory64
-  (+13.6 %); 6.28 ms and 914 M/s above 4 GB. Headless Chromium 153 (`rt:browser`, one run a mode while other jobs
-  ran: no more than an order of size): corpus 195 / 145 / 230 M instructions/s; Doom on the page with `?mem64=1`
-  runs and draws (`doom:browser`). A default process holds the same in both modes: 380 MiB of address space after
-  a small program and no measurable resident memory beyond memory32's (the kernel's page table is no longer
+- *Cost* (`npm run rt:mem64 -- --rounds 15 --launches 3`, Node 24.22.2 / V8 13.6; `npm run rt:mem64:browser --
+  --rounds 15 --launches 3`, headless Chromium 153 / V8 15.3 and Firefox 155, in a Worker; one 8-core VM, nothing
+  else running, the runs one after the other). Three workloads, every output checked (a wrong stdout, exit code or
+  Doom frame fails the run): the flat corpus (61 programs, 162 M guest instructions, 0.1 to 0.5 s a configuration),
+  the built-in demo for 12,000 frames (about 1 s) and Doom's `-timedemo demo3` for 600 frames (2 to 3.5 s), both on
+  the null replayer. Execution time (translator and V8 compile reported apart), memory64 and above 4 GB against
+  memory32: the median of the paired per-round ratios with a 95 % bootstrap interval over 3 launches x 15 rounds.
+
+  | engine, tier | corpus memory64 | corpus above 4 GB | demo memory64 | demo above 4 GB | Doom memory64 | Doom above 4 GB |
+  |---|---|---|---|---|---|---|
+  | Node, default (lazy, tier-up) | +11.8 % [+9.8, +15.0] | +13.4 % [+10.6, +16.0] | +0.1 % [-3.8, +3.5] | +7.1 % [+2.8, +9.3] | -0.1 % [-0.8, +0.9] | +0.1 % [-0.4, +1.0] |
+  | Node, eager Liftoff | +7.5 % [+5.4, +9.3] | +15.1 % [+12.8, +16.8] | +3.3 % [-1.5, +8.0] | +10.3 % [+6.2, +17.3] | +4.0 % [+1.7, +4.8] | +3.2 % [+0.2, +4.2] |
+  | Node, eager TurboFan | +7.3 % [+5.6, +8.4] | +21.0 % [+18.4, +23.1] | +2.6 % [-1.4, +8.7] | +9.0 % [+5.1, +10.6] | -0.6 % [-1.8, +0.6] | -0.9 % [-1.9, +0.3] |
+  | Chromium, default | +8.5 % [+2.6, +18.8] | +10.2 % [+4.2, +16.0] | +1.3 % [-3.4, +7.8] | +5.4 % [+0.8, +11.2] | -0.5 % [-1.8, +2.1] | +0.7 % [-4.9, +3.7] |
+  | Chromium, eager Liftoff | +10.7 % [+3.4, +17.1] | +11.0 % [+0.8, +21.1] | +3.8 % [-0.0, +7.2] | +2.6 % [-0.1, +7.4] | -0.3 % [-7.9, +4.1] | +2.0 % [-5.1, +7.0] |
+  | Chromium, eager TurboFan | +7.0 % [+3.1, +16.6] | +12.8 % [+8.9, +16.8] | +2.6 % [-1.2, +5.9] | +1.5 % [-1.6, +5.2] | +2.8 % [+1.1, +4.9] | +3.4 % [+1.4, +4.6] |
+  | Firefox, default | +13.1 % [+11.2, +15.3] | +12.9 % [+7.8, +16.1] | +2.1 % [-4.3, +4.9] | -0.3 % [-4.2, +4.2] | +3.9 % [+2.5, +9.6] | +5.1 % [+3.4, +11.0] |
+
+  So: the short corpus programs pay 7 to 13 % in memory64 and up to 21 % above 4 GB (Node TurboFan); the long frame
+  loops pay 0 to 4 % (Doom's frame p50 the same: Node TurboFan -1.6 %, Chromium TurboFan +3.3 %, Firefox +3.9 %).
+  The translator's time moves by -4 to +17 % (mostly +5 to +15 %); V8's compile of the translated code by -25 to
+  +13 % (mostly within 5 %; Node's default compile of the corpus above 4 GB is 44 % shorter, not explained). The
+  above-4 GB corpus is the same sources linked at 0x1_8000_0000 (61/61 images of equal size and reference
+  instruction count, 212 of 189,250 words differ: addresses); the demo and Doom load the same NSO in every
+  configuration. Medians of single runs and their ranges are in the scripts' output and
+  `build/runtime/mem64_speed.json` / `mem64_browser.json`; the ranges' tails (up to 3 times the median) are slow
+  rounds on this VM, which the paired ratios and the medians absorb. Not measured: the WebGPU replayer (Doom on the
+  page with `?mem64=1` runs and draws, `doom:browser`), a guest's real memory above 4 GB. Firefox runs without a
+  forced GC and its frame clock has 20 us steps. A default process holds the same in both modes: 380 MiB of
+  address space after a small program and no measurable resident memory beyond memory32's (the kernel's page table is no longer
   initialized whole: 8 MB less touched per process in both modes).
 
 **What is left for a 9 GB title to start from the page** is not memory: the machine must have the real memory the
