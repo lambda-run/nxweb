@@ -320,6 +320,106 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     return `key ${key}`;
   });
 
+  // ---- pointer authentication (ARMv8.3): the identity, with the translator's call / return protocol
+  test("pointer authentication: BLRAA / BLRAAZ call through the pc map with the return-address check, RETAB / RETAA return, BRAA is a tail call", () => {
+    const t = mk(m);
+    const F = BASE, G = BASE + 0x24, H = BASE + 0x2C;
+    t.put(BASE, [
+      0xD503237F,   // 00 f: pacibsp
+      0xA9BF7BFD,   // 04    stp x29, x30, [sp, #-16]!
+      0xAA0003E9,   // 08    mov x9, x0
+      0xD2800020,   // 0c    mov x0, #1
+      0xD73F0921,   // 10    blraa x9, x1
+      0x91004000,   // 14    add x0, x0, #0x10
+      0xD63F093F,   // 18    blraaz x9
+      0xA8C17BFD,   // 1c    ldp x29, x30, [sp], #16
+      0xD65F0FFF,   // 20    retab
+      0x91000800,   // 24 g: add x0, x0, #2
+      0xD65F0BFF,   // 28    retaa
+      0xAA0003E9,   // 2c h: mov x9, x0
+      0xD28000A0,   // 30    mov x0, #5
+      0xD71F0921,   // 34    braa x9, x1
+    ]);
+    t.host.addCode(BASE, 0x38, { entries: [F, H] });
+    t.c.sp.value = BigInt(DATA + 0x8000);
+    eq("f(g, modifier)", t.call(F, [BigInt(G), 0x1234_5678_9ABC_DEF0n]), 0x15n);
+    eq("pc after f", t.c.pc.value, 0xFFFFFFF0n); eq("sp after f", t.c.sp.value, BigInt(DATA + 0x8000)); eq("x30 after f", t.c.x30.value, 0xFFFFFFF0n);
+    if (t.host.getPcMap(G) === 0) throw new Error("g, reached only by BLRAA, has no pc-map entry");
+    eq("h(g): tail call", t.call(H, [BigInt(G), 7n]), 7n);
+    eq("x30 after the tail call (BRAA does not link)", t.c.x30.value, 0xFFFFFFF0n);
+    // the same through preemption: every instruction its own unit of budget
+    const s = mk(m, { maxInsns: 1 });
+    s.put(BASE, Array.from(new Uint32Array(t.memory.buffer, BASE, 14))); s.host.addCode(BASE, 0x38);
+    s.c.sp.value = BigInt(DATA + 0x8000); s.c.x0.value = BigInt(G); s.c.x1.value = 3n; s.c.x30.value = 0xFFFFFFF0n; s.c.pc.value = BigInt(F);
+    let slices = 0;
+    while (!s.host.isHostPc(s.c.pc.value) && slices < 100) { s.c.budget.value = 2; s.c.run(); slices++; }
+    eq("f(g) run two instructions at a time", s.c.x0.value, 0x15n);
+    return `f = 0x15, tail call = 7; ${slices} slices of two instructions`;
+  });
+  test("pointer authentication: a return to another address than the caller's (RETAB after a non-local exit) unwinds the callers", () => {
+    const t = mk(m);
+    t.put(BASE, [
+      0xAA1E03E9,   // 00 f: mov x9, x30
+      0xD63F091F,   // 04    blraaz x8          (g)
+      0xD2800DE0,   // 08    mov x0, #111       (never reached)
+      0xD61F0120,   // 0c    br x9
+      0xAA0103FE,   // 10 g: mov x30, x1        (the non-local exit: return to k)
+      0xD65F0FFF,   // 14    retab
+      0xD2801BC0,   // 18 k: mov x0, #222
+      0xD61F0120,   // 1c    br x9
+    ]);
+    t.host.addCode(BASE, 0x20);
+    t.c.x8.value = BigInt(BASE + 0x10);
+    eq("result", t.call(BASE, [0n, BigInt(BASE + 0x18)]), 222n);
+    eq("pc", t.c.pc.value, 0xFFFFFFF0n);
+    return "the frame of f was left by the pc check, k ran from the run loop";
+  });
+  test("pointer authentication: RETAA / RETAB end a function, a PACIBSP after one is a known entry", () => {
+    const t = mk(m);
+    // a: mov w0,#1; retab   b: pacibsp; mov w0,#2; retaa   c: paciasp; mov w0,#3; retab; then words that are not code
+    t.put(BASE, [0x52800020, 0xD65F0FFF, 0xD503237F, 0x52800040, 0xD65F0BFF, 0xD503233F, 0x52800060, 0xD65F0FFF, 0xFFFFFFFF, 0x12345678]);
+    t.host.addCode(BASE, 40);
+    eq("a()", t.call(BASE), 1n);
+    const u = t.host.units.find(x => x.pcs.includes(BASE))!;
+    if (!u.pcs.includes(BASE + 8) || !u.pcs.includes(BASE + 20)) throw new Error("entries after RETAB / RETAA not found: " + [...u.pcs].map(p => p.toString(16)));
+    eq("instructions translated (a: 2, b: 3, c: 3; nothing past a return)", u.insns, 8);
+    eq("b()", t.call(BASE + 8), 2n); eq("c()", t.call(BASE + 20), 3n);
+    return `unit functions: ${[...u.pcs].map(p => "+0x" + (p - BASE).toString(16)).join(" ")}`;
+  });
+  test("pointer authentication: LDRAA / LDRAB, with writeback; signing and authenticating leave a pointer as it is; PACGA is a fixed function", () => {
+    const t = mk(m);
+    t.put(BASE, [
+      0xDAC10020,   // 00 pacia x0, x1
+      0xDAC11020,   // 04 autia x0, x1
+      0xDAC147E0,   // 08 xpacd x0
+      0xF8A01C02,   // 0c ldrab x2, [x0, #8]!      (M=1 S=0 imm9=1 W=1)
+      0xF87FF403,   // 10 ldraa x3, [x0, #-8]      (M=0 S=1 imm9=0x1FF W=0)
+      0x9AC13004,   // 14 pacga x4, x0, x1
+      RET,
+    ]);
+    t.host.addCode(BASE, 28);
+    const q = new BigUint64Array(t.memory.buffer, DATA, 2); q[0] = 0x1111n; q[1] = 0x2222n;
+    const x0 = t.call(BASE, [BigInt(DATA), 0xABCDn]);
+    eq("x0 (signed, authenticated, stripped, then written back by LDRAB)", x0, BigInt(DATA + 8));
+    eq("x2", t.c.x2.value, 0x2222n); eq("x3", t.c.x3.value, 0x1111n);
+    const mix = (x: bigint, y: bigint) => ((BigInt.asUintN(64, (x ^ BigInt.asUintN(64, (y << 32n) | (y >> 32n))) * 0x9E3779B97F4A7C15n)) >> 32n) << 32n;
+    eq("pacga", BigInt.asUintN(64, t.c.x4.value), mix(BigInt(DATA + 8), 0xABCDn));
+    return "ok";
+  });
+  test("an instruction outside the implemented set is reported with its word and pc when executed, not before", () => {
+    const words = [0xD69F0BFF /* eretaa */, 0x04603000 /* SVE */, 0xD4000002 /* hvc */];
+    const t = mk(m);
+    words.forEach((w, i) => t.put(BASE + i * 0x20, [0xD503201F, w, RET]));
+    t.put(BASE + 0x100, [0x52800540, RET, ...words]);     // a function that does not reach them
+    t.host.addCode(BASE, 0x120, { entries: [...words.map((_, i) => BASE + i * 0x20), BASE + 0x100] });
+    eq("code that does not execute them", t.call(BASE + 0x100), 42n);
+    words.forEach((w, i) => {
+      let msg = ""; try { t.call(BASE + i * 0x20); } catch (e) { msg = String(e); }
+      eq(`report for ${w.toString(16)}`, msg, `Error: unimpl ${(w | 0).toString(16)} at ${(BASE + i * 0x20 + 4).toString(16)}`);
+    });
+    return `${words.length} words reported`;
+  });
+
   if (M64) {
     test("memory64: an address beyond the memory traps (it is not wrapped to 32 bits), fault pc exact", () => {
       const t = mk(m);

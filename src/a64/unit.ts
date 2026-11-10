@@ -152,6 +152,7 @@ function discover(entry: u64): i32 {
         lead(pc + 4, entry); pc += 4; continue;
       }
       if ((insn & 0xFFFFFC1F) == 0xD61F0000 || (insn & 0xFFFFFC1F) == 0xD65F0000) break; // BR / RET
+      if ((insn & 0xFE9FF800) == 0xD61F0800 && ((insn >> 21) & 3) != 1) break;           // BRAA.. / RETAA / RETAB
       if ((insn & 0xFFE0001F) == 0xD4200000 || insn == 0) break;                         // BRK / UDF
       pc += 4;
     }

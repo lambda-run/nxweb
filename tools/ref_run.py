@@ -71,13 +71,15 @@ def _context(uc, pc, mem_lo, mem_hi):
 
 
 def run(image, stack_top=None, base=BASE, entry=None, count=False, trace=None,
-        exact=False, timeout_s=300):
+        exact=False, timeout_s=300, cpu=None):
     """Run `image` (bytes). Returns Result; raises GuestFault on any fault.
 
     count:  count executed instructions and collect per-block execution counts
             (block hook; every translated block is straight-line code).
     exact:  count with a per-instruction code hook instead (slow; cross-check).
     trace:  file object; the pc of each executed block is written to it.
+    cpu:    None = Cortex-A57 (the first Switch); "max" = Unicorn's model with every extension, for programs built
+            for the Switch 2's core (LSE, RCPC, FP16, DotProd, RDM, pointer authentication with the keys disabled).
     """
     if entry is None:
         entry = base
@@ -87,7 +89,7 @@ def run(image, stack_top=None, base=BASE, entry=None, count=False, trace=None,
     res = Result()
 
     uc = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
-    uc.ctl_set_cpu_model(A.UC_CPU_ARM64_A57)          # the Switch's core: no LSE, no SVE
+    uc.ctl_set_cpu_model(A.UC_CPU_ARM64_MAX if cpu == "max" else A.UC_CPU_ARM64_A57)   # default: the Switch's core, no LSE, no SVE
     uc.mem_map(base, map_end - base)                  # zero filled, RWX
     uc.mem_write(base, bytes(image))
     # Contract: all registers 0, sp = stack_top, x30 = 0xFFFF_FFF0.

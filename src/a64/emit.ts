@@ -147,7 +147,7 @@ function looksLikeEntry(insn: u32): bool {
       || (insn & 0xFFC003E0) == 0x6D8003E0     // stp dA, dB, [sp, #-n]!
       || (insn & 0xFF8003FF) == 0xD10003FF     // sub sp, sp, #n
       || (insn & 0xFFE00FE0) == 0xF8000FE0     // str xN, [sp, #-n]!
-      || insn == 0xD503233F || (insn & 0xFFFFFF3F) == 0xD503241F;   // paciasp, bti
+      || insn == 0xD503233F || insn == 0xD503237F || (insn & 0xFFFFFF3F) == 0xD503241F;   // paciasp, pacibsp, bti
 }
 // register a code range; [tlo, thi) is its text (equal to the range when unknown). Marks the known
 // function entries: BL targets, prologue-looking instructions right after a RET, and aligned
@@ -162,7 +162,7 @@ export function addRange(lo: u64, hi: u64, tlo: u64, thi: u64): i32 {
     if ((insn & 0xFC000000) == 0x94000000) {
       let t = pc + <u64>(<i64>((<i32>(insn << 6)) >> 6) << 2);
       if (t - tlo < thi - tlo) setEntry(t);
-    } else if (insn == 0xD65F03C0 && pc + 8 <= thi && looksLikeEntry(load<u32>(<usize>pc + 4))) setEntry(pc + 4);
+    } else if ((insn == 0xD65F03C0 || (insn & 0xFFFFFBFF) == 0xD65F0BFF) && pc + 8 <= thi && looksLikeEntry(load<u32>(<usize>pc + 4))) setEntry(pc + 4);   // after ret / retaa / retab
   }
   for (let a = (lo + 7) & ~7; a + 8 <= hi; a += 8) {
     let v = load<u64>(<usize>a);

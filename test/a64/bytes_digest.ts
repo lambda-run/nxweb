@@ -37,19 +37,24 @@ if (!mem64) for (const [name, tail, shared] of [["core module", 1, 0], ["core mo
   all.update(d);
   console.log(`${name.padEnd(34)} ${len} bytes, sha256 ${d}`);
 }
-for (const [name, o] of sets) {
+// The lines above the rule are the images built for the first Switch's core (the corpus these digests were first
+// taken on): a translator change that only adds instructions leaves them as they were. The images built for the
+// Switch 2's core (sidecar "cpu": "max": pointer authentication, LSE, FP16, ...) have their own lines below it.
+for (const v82 of [false, true]) for (const [name, o] of sets) {
+  if (v82 && name !== "default" && name !== "shared") continue;
   const h = createHash("sha256");
   let n = 0, bytes = 0;
   const sfx = x + (o.shared ? ".shared.wasm" : ".wasm");
   for (const dir of dirs) for (const f of readdirSync(dir).filter(f => f.endsWith(".json") && f !== "manifest.json").sort()) {
     const side = JSON.parse(readFileSync(join(dir, f), "utf8"));
+    if ((side.cpu === "max") !== v82) continue;
     // (some of these option sets change results or exhaust the wasm stack on purpose: only the code is looked at)
     const r = runGuest(mod("translator" + sfx), mod("helpers" + sfx), f, side, readFileSync(join(dir, side.image)), readFileSync(join(dir, side.expected_stdout)), { ...defaultOpts, ...o, mem64, wantCache: true });
     const blob = r.cacheBlob!.subarray(16);   // without the header (magic, cache version, count, base)
     h.update(f); h.update(blob); n++; bytes += blob.length;
   }
   const d = h.digest("hex");
-  all.update(d);
-  console.log(`${name.padEnd(34)} ${n} guests, ${bytes} bytes of units, sha256 ${d}`);
+  if (!v82) all.update(d);
+  console.log(`${(v82 ? "ARMv8.2+ images, " + name : name).padEnd(34)} ${n} guests, ${bytes} bytes of units, sha256 ${d}`);
+  if (!v82 && name === sets[sets.length - 1][0]) console.log(`all: ${all.digest("hex")}\n---`);
 }
-console.log(`all: ${all.digest("hex")}`);

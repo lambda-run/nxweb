@@ -37,6 +37,21 @@ as u32 +0x108, fpcr +0x10C, fpsr +0x110, tpidr +0x118, tpidrro +0x120, v0..v31 a
   host, 0xFFFF_FFE0 = yield).
 - Unknown instruction: compile to a call of import `unimpl(pc: i64, insn: i32)`, reported only if executed.
 
+## Pointer authentication (ARMv8.3; code built for the Switch 2)
+Pointer authentication is the identity, which is what a system with the authentication keys disabled does.
+- Signing (PACIA/PACIB/PACDA/PACDB, their Z forms, the hint forms PACIASP, PACIBSP, PACIA1716, ...) leaves the
+  pointer as it is. Authenticating (AUT*) leaves it as it is and never faults. XPACI/XPACD/XPACLRI have nothing to strip.
+- Sign and authenticate are both the identity, so they agree everywhere: a pointer signed in one place (guest code,
+  a saved context, a jmp_buf, a return address the kernel or a take-over writes) authenticates in every other. Every
+  pointer the embedder reads or writes, in a register, in a context block or in guest memory, is the plain address:
+  x30 after BL/BLR/BLRAA is the return address itself, a thread starts with x30 = 0xFFFF_FFF0, no key or modifier
+  exists anywhere.
+- RETAA/RETAB are RET, BRAA/BRAB/BRAAZ/BRABZ are BR, BLRAA/BLRAB/BLRAAZ/BLRABZ are BLR, with the protocol above
+  (the pc check after the call, the pc map, unwinding). LDRAA/LDRAB load from base + simm10 * 8, with optional
+  writeback of that address.
+- PACGA has no key either: Xd = ((Xn ^ rotl64(Xm|SP, 32)) * 0x9E3779B97F4A7C15) with the low 32 bits cleared. The
+  same inputs give the same code on every run and in every instance.
+
 ## Test guest ABI (test/guests <-> translator Gate 2)
 A test guest is a flat little-endian image loaded at guest address 0x0800_0000, entry at offset 0,
 with a sidecar JSON: `{ "base", "entry", "image": "<file>.bin", "bss_end", "stack_top", "expected_stdout": "<file>.out" }`.

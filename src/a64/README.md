@@ -291,7 +291,20 @@ constant) and CNTPCT_EL0 (time).
 
 Gate 2 (`test/a64/guests_run.ts`): loads each flat image per the contract ABI, runs it with the
 default budget and with `--budget 50`, compares stdout and exit code. Own guests are built by
-`test/a64/guests/build.py` (expected output from `tools/ref_run.py`).
+`test/a64/guests/build.py` (expected output from `tools/ref_run.py`). A source marked `// ISA: a78c` (and, as a
+third variant, the sources in the script's `A78C_TOO`) is compiled with `-mcpu=cortex-a78c
+-mbranch-protection=pac-ret+b-key+leaf`, so every function signs its return address (PACIBSP) and returns with
+RETAB; the reference for such an image is Unicorn's `max` model (sidecar `"cpu": "max"`), whose authentication keys
+are disabled. `npm run a64:bytes` digests those images on lines of their own, after the lines of the images built
+for the first Switch's core, which a change that only adds instructions must leave as they were.
+
+Classes of the ARMv8.1+ instructions (`test/a64/fuzz_classes_v8x.py`) run on Unicorn's `max` model, the others on
+the Cortex-A57 model as before. Pointer authentication is compared bit for bit: with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB
+clear, which is the model's reset state, QEMU's PACIx/AUTIx/PACDx/AUTDx, the hint forms, the authenticating branches,
+returns and loads are the identity too. XPACI/XPACD/XPACLRI strip whatever the enable bits say, so they are given
+canonical pointers (the only ones an identity signer produces). PACGA traps in the model (it has no EL3 to enable
+it): the reference runs a NOP in its place and the expected Xd is computed from the contract's function, all other
+state still coming from Unicorn.
 
 ## Implemented instruction classes
 
@@ -335,11 +348,21 @@ default budget and with `--budget 50`, compares stdout and exit code. Own guests
   URSHL d, SQADD/UQADD/SQSUB/UQSUB, SQABS/SQNEG, SQSHL/UQSHL/SQSHLU #imm, SQDMULH/SQRDMULH, ADDP d,
   FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP, FCM*/FAC*/FABD, FCVT*/SCVTF/UCVTF, FMUL/FMLA/FMLS by element.
 
+- Pointer authentication (ARMv8.3, code built for the Switch 2), as the identity (`docs/CONTRACT.md`, "Pointer
+  authentication": what a system with the keys disabled does): PACIA/PACIB/PACDA/PACDB, PACIZA/PACIZB/PACDZA/PACDZB,
+  AUTIA/AUTIB/AUTDA/AUTDB, AUTIZA/AUTIZB/AUTDZA/AUTDZB, XPACI/XPACD, and the hint forms (PACIASP, PACIBSP, PACIAZ,
+  PACIBZ, AUTIASP, AUTIBSP, AUTIAZ, AUTIBZ, PACIA1716, PACIB1716, AUTIA1716, AUTIB1716, XPACLRI) change nothing;
+  RETAA/RETAB are RET, BRAA/BRAB/BRAAZ/BRABZ are BR, BLRAA/BLRAB/BLRAAZ/BLRABZ are BLR, with the call and return
+  protocol unchanged (the return-address check after the call, the pc map, unwinding; `braa x30` returns like
+  `br x30`); LDRAA/LDRAB load from base + simm10 * 8, with or without writeback; PACGA is the keyless function of the
+  contract. Function discovery ends a path at RETAA/RETAB/BRAA.., and `addCode` takes a `pacibsp` after any return as
+  a function entry.
+
 ## Known gaps
 
 Not translated (compile to `unimpl`, reported only if executed):
 - Half-precision arithmetic (fp16 is not on the Switch CPU), FCVTXN, FJCVTZS, vector FCVT*/SCVTF on halves.
-- LSE atomics (CAS, LDADD, SWP, ...; not on the Switch CPU), pointer authentication BR/BLR/RET forms,
+- LSE atomics (CAS, LDADD, SWP, ...; not on the Switch CPU), ERETAA/ERETAB (EL1),
   MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, SHA-512/SHA-3/SM3/SM4, any system register not
   listed above.
 

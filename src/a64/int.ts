@@ -310,6 +310,13 @@ export function trDpReg(pc: u64, insn: u32): bool {
       if (S) return false;
       let opcode = (insn >> 10) & 63;
       if (opc & 2) { // 1-source
+        if (rm == 1) {
+          // Pointer authentication (ARMv8.3) as the identity: what a system with the keys disabled does. PACIA / PACIB /
+          // PACDA / PACDB and AUTIA / AUTIB / AUTDA / AUTDB (opcode 0..7, modifier Xn|SP), their Z forms (8..15) and
+          // XPACI / XPACD (16, 17) leave Xd as it is: no pointer ever carries a signature, so there is none to strip.
+          if (!sf) return false;
+          return opcode < 8 || (opcode < 18 && rn == 31);
+        }
         if (rm != 0) return false;
         switch (opcode) {
           case 0: // RBIT
@@ -349,6 +356,15 @@ export function trDpReg(pc: u64, insn: u32): bool {
           b(0x04); b(sf ? T_I64 : T_I32); cst(sf, 0); lget(x); ar(sf, 0x6B); b(0x05); lget(x); lget(y); ar(sf, 0x6D); b(0x0B);
           b(0x0B);
           break;
+        }
+        case 12: {
+          // PACGA: a generic authentication code in the upper half, zero below. There is no key: the code is the fixed
+          // function ((Xn ^ rotl(Xm|SP, 32)) * 0x9E3779B97F4A7C15) >> 32 (deterministic, the same on every run).
+          if (!sf) return false;
+          getX(rn, true); getXsp(rm, true); i64c(32); b(0x89); b(0x85);
+          i64c(<i64>0x9E3779B97F4A7C15); b(0x7E); i64c(<i64>0xFFFFFFFF00000000); b(0x83);
+          setX(rd, true);
+          return true;
         }
         case 8: getX(rn, sf); getX(rm, sf); ar(sf, 0x74); break;
         case 9: getX(rn, sf); getX(rm, sf); ar(sf, 0x76); break;
@@ -459,6 +475,16 @@ export function trBranchSys(pc: u64, insn: u32): bool {
   }
   if ((insn & 0xFFFFFC1F) == 0xD63F0000) { getX(<i32>((insn >> 5) & 31), true); callDyn(pc + 4); return true; }
   if ((insn & 0xFFFFFC1F) == 0xD65F0000) { getX(<i32>((insn >> 5) & 31), true); exitRet(); return true; }
+  if ((insn & 0xFE9FF800) == 0xD61F0800) {
+    // BRAA / BRAB / BLRAA / BLRAB (modifier Xm|SP), BRAAZ / BRABZ / BLRAAZ / BLRABZ, RETAA / RETAB: authentication is
+    // the identity (keys disabled), so these are BR / BLR / RET with the same call and return protocol.
+    let Z = (insn >> 24) & 1, op = (insn >> 21) & 3, r = <i32>((insn >> 5) & 31);
+    if (op == 3 || (!Z && rt != 31)) return false;
+    if (op == 2) { if (Z || r != 31) return false; getX(30, true); exitRet(); return true; }
+    getX(r, true);
+    if (op == 1) callDyn(pc + 4); else if (r == 30) exitRet(); else exitDyn();
+    return true;
+  }
   if ((insn & 0xFFFFF01F) == 0xD503201F) return true;   // hints (NOP, YIELD, PAC/BTI hints...)
   if ((insn & 0xFFFFF01F) == 0xD503301F) {              // barriers / CLREX
     let op2 = (insn >> 5) & 7;
@@ -617,6 +643,15 @@ export function trLoadStoreInt(pc: u64, insn: u32): bool {
     return true;
   }
   if ((insn & 0x3A000000) != 0x38000000) return false;
+  if ((insn & 0xFF200400) == 0xF8200400) {
+    // LDRAA / LDRAB: load from the authenticated base (the identity) + simm10 * 8, with optional pre-index writeback
+    let off: i64 = sx((((insn >> 22) & 1) << 9) | ((insn >> 12) & 0x1FF), 10) << 3;
+    getXsp(rn, true); if (off) { i64c(off); b(0x7C); }
+    lset(a);
+    if (insn & 0x800) { lget(a); setXsp(rn, true); }
+    lget(a); loadInt(rt, 3, false, true);
+    return true;
+  }
   let opc = (insn >> 22) & 3;
   let wb = 0; // 1 post, 2 pre
   let imm: i64 = 0;
