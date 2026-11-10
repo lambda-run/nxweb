@@ -122,7 +122,9 @@ def body_at(s, i):
 def sub_outside_strings(text, mapping):
     parts = re.split(r'("(?:\\.|[^"\\])*")', text)
     for k in range(0, len(parts), 2):
-        parts[k] = re.sub(r"\b[A-Za-z_]\w*\b", lambda m: mapping.get(m.group(0), m.group(0)), parts[k])
+        t = re.sub(r"(?<!#)#\s*([A-Za-z_]\w*)", lambda m: '"%s"' % mapping[m.group(1)] if m.group(1) in mapping else m.group(0), parts[k])   # #x
+        t = re.sub(r"\b[A-Za-z_]\w*\b", lambda m: mapping.get(m.group(0), m.group(0)), t)
+        parts[k] = re.sub(r"\s*##\s*", "", t)                                                                                              # a ## b
     return "".join(parts)
 
 

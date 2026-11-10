@@ -2,9 +2,9 @@
 // localhost (WebGPU needs a secure context; COOP/COEP so SharedArrayBuffer is there too), runs the scenes in headless
 // Chromium on SwiftShader, and takes the demo's screenshot.
 import { createServer, type Server } from "node:http";
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { join, extname, normalize } from "node:path";
-import { execFileSync } from "node:child_process";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { join, extname, normalize, dirname } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { ROOT, OUT, guest } from "./harness.mts";
 import { readMachines, unexercised } from "../../src/kit/host/reader.mts";
@@ -34,6 +34,7 @@ function playwright(): any {
 export async function browserTests(only?: string): Promise<{ ran: number; failed: number; summary: string }> {
   bundle();
   execFileSync("python3", [join(ROOT, "test/gfx/swizzle_ref.py"), join(OUT, "swizzle.json")], { stdio: "ignore" });
+  if (spawnSync("python3", [join(ROOT, "test/gfx/astc_ref.py"), join(OUT, "astc.json")], { stdio: "ignore" }).status !== 0) writeFileSync(join(OUT, "astc.json"), JSON.stringify({ cases: [] }));
   const { server, url } = await serve();
   const browser = await playwright().chromium.launch({ args: CHROMIUM_ARGS });
   let failed = 0, summary = "";
@@ -44,13 +45,14 @@ export async function browserTests(only?: string): Promise<{ ran: number; failed
     await page.goto(`${url}/test/gfx/test.html${only ? `?only=${encodeURIComponent(only)}` : ""}`);
     const r = await page.evaluate("window.__gfx");
     if (r.fatal) throw new Error(`the scene page failed: ${r.fatal}\n${errors.join("\n")}`);
-    console.log(`\nscenes in headless Chromium, WebGPU adapter: ${r.adapter || "(no info)"}; features ${r.features.join(", ")}`);
+    console.log(`\nscenes in headless Chromium, WebGPU adapter: ${r.adapter || "(no info)"}; features ${r.features.join(", ")}\n     adapter limits: ${r.limits}`);
     let checks = 0, calls = 0;
     for (const s of r.results) {
       checks += s.checks; calls += s.calls;
       if (s.error) { failed++; console.error(`[RED] FAIL scene: ${s.name}\n${s.error}\n  last log lines:\n  ${(s.logs ?? []).join("\n  ")}`); }
       else console.log(`ok   scene: ${s.name}  (${s.checks} checks, ${s.calls} NVN calls, ${s.ms} ms)`);
       for (const n of s.notes ?? []) console.log(`     ${n}`);
+      for (const f of s.files ?? []) { const out = join(OUT, f.name); mkdirSync(dirname(out), { recursive: true }); writeFileSync(out, f.text !== undefined ? f.text : Buffer.from(f.base64, "base64")); }
     }
     summary = ` (${checks} checks, ${calls} NVN calls)`;
     // Which transitions of the graphics machines the real module took while rendering the scenes

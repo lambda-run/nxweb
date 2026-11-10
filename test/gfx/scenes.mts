@@ -2,11 +2,13 @@
 // argument blocks in the fake guest's memory (Env / Game / Guest), lets the replayer render with WebGPU, reads the
 // presented texture back with copyTextureToBuffer and compares with values computed here. No golden images.
 import { Env, SHADERS, type Image } from "./env.mts";
+import type { GfxHostOptions } from "../../src/glue/gfx_host.ts";
 import { FMT, PRIM, STAGE, SIZEOF, BLEND, DEPTH_FUNC, FILTER, TARGET } from "./nvn.mts";
 
-export interface Scene { name: string; run(e: Env, t: T): Promise<void>; cmdBytes?: number; glConventions?: boolean }
+export interface Scene { name: string; run(e: Env, t: T): Promise<void>; cmdBytes?: number; glConventions?: boolean; host?: GfxHostOptions; ownDevice?: boolean }
 export class T {
   checks = 0;
+  files: { name: string; text?: string; base64?: string }[] = [];      // what the runner saves under build/gfx/ (a capture's text and images)
   ok(c: boolean, msg: string) { this.checks++; if (!c) throw new Error(msg); }
   eq(a: unknown, b: unknown, msg: string) { this.checks++; if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${msg}: got ${JSON.stringify(a)}, expected ${JSON.stringify(b)}`); }
   px(img: Image, x: number, y: number, want: number[], msg: string, tol = 1) {
@@ -18,24 +20,24 @@ export class T {
   rect(img: Image, x0: number, y0: number, x1: number, y1: number, want: number[], msg: string, tol = 1) { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) this.px(img, x, y, want, msg, tol); }
   noRed(e: Env) { this.eq(e.g.red(), [], "red lines"); this.eq(e.host.stats.errors, 0, "WebGPU errors"); }
 }
-const b8 = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 255);
-const rgba8 = (c: number[]) => c.map(b8);
-const RED = [255, 0, 0, 255], GREEN = [0, 255, 0, 255], BLUE = [0, 0, 255, 255], YELLOW = [255, 255, 0, 255];
-const REGION = (e: Env, x: number, y: number, z: number, w: number, h: number, d = 1) => e.g.u32([x, y, z, w, h, d]);
+export const b8 = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 255);
+export const rgba8 = (c: number[]) => c.map(b8);
+export const RED = [255, 0, 0, 255], GREEN = [0, 255, 0, 255], BLUE = [0, 0, 255, 255], YELLOW = [255, 255, 0, 255];
+export const REGION = (e: Env, x: number, y: number, z: number, w: number, h: number, d = 1) => e.g.u32([x, y, z, w, h, d]);
 
 // A texture filled from memory with CopyBufferToTexture, registered in the texture pool: its texture ID
-function upload(e: Env, cmd: number, w: number, h: number, format: number, bytes: ArrayLike<number>): { tex: number; id: number } {
+export function upload(e: Env, cmd: number, w: number, h: number, format: number, bytes: ArrayLike<number>): { tex: number; id: number } {
   const tex = e.G.texture({ w, h, format }), src = e.G.put(Uint8Array.from(bytes));
   e.G.c("CommandBufferCopyBufferToTexture", [cmd, src, tex, 0, REGION(e, 0, 0, 0, w, h), 0]);
   return { tex, id: e.G.texId(tex) };
 }
 // A program whose fragment stage reads one colour from fragment uniform buffer 0 and whose quad is placed by vertex uniform buffer 0
-async function uboProgram(e: Env) { return e.program("vs_quad_ubo", "fs_ubo"); }
-function ubo(e: Env, values: number[]): number { return e.G.put(new Float32Array(values)); }
-function bindUbos(e: Env, cmd: number, vsAddr: number, fsAddr: number) {
+export async function uboProgram(e: Env) { return e.program("vs_quad_ubo", "fs_ubo"); }
+export function ubo(e: Env, values: number[]): number { return e.G.put(new Float32Array(values)); }
+export function bindUbos(e: Env, cmd: number, vsAddr: number, fsAddr: number) {
   e.G.c("CommandBufferBindUniformBuffer", [cmd, STAGE.VERTEX, 0, vsAddr, 32]); e.G.c("CommandBufferBindUniformBuffer", [cmd, STAGE.FRAGMENT, 0, fsAddr, 16]);
 }
-const IDENT = [1, 1, 0, 0, 0, 0, 0, 0];
+export const IDENT = [1, 1, 0, 0, 0, 0, 0, 0];
 
 export const scenes: Scene[] = [
   { name: "clear only", async run(e, t) {
@@ -228,13 +230,13 @@ export const scenes: Scene[] = [
     let i = G.acquire(e.win);
     G.begin(); e.frame(cmd, e.wtex[i], tprog); G.clear(cmd, [0, 0, 0, 1]);
     G.c("CommandBufferSetScissor", [cmd, 0, 0, 32, 32]); G.clear(cmd, [1, 0, 0, 1]);    // a partial clear while the full one is pending: opens the pass with it
-    const tx = upload(e, cmd, 1, 1, FMT.RGBA8, [10, 200, 90, 255]);                    // a copy in the middle: the pass ends
-    G.c("CommandBufferSetScissor", [cmd, 32, 32, 32, 32]); G.clear(cmd, [0, 1, 0, 1]);  // a partial clear with no pass open: opens one that loads
+    const tx = upload(e, cmd, 1, 1, FMT.RGBA8, [10, 200, 90, 255]);                    // a copy in the middle, into a texture nothing has used yet: made in its storage, the pass goes on
+    G.c("CommandBufferSetScissor", [cmd, 32, 32, 32, 32]); G.clear(cmd, [0, 1, 0, 1]);  // a partial clear in the open pass
     G.c("CommandBufferSetScissor", [cmd, 0, 0, 64, 64]); G.c("CommandBufferSetViewport", [cmd, 32, 0, 32, 32]); e.bindTexture(cmd, tx.id, nearest); e.drawQuad(cmd);
     e.finish(i);
     let img = await e.read();
     t.rect(img, 0, 0, 32, 32, RED, "first partial clear"); t.rect(img, 32, 32, 64, 64, GREEN, "second partial clear, after the copy"); t.rect(img, 32, 0, 64, 32, [10, 200, 90, 255], "the texture uploaded mid-pass");
-    t.rect(img, 0, 32, 32, 64, [0, 0, 0, 255], "the full clear"); t.eq([e.stat(0), e.stat(4)], [2, 2], "two passes around the copy, two clears as triangles");
+    t.rect(img, 0, 32, 32, 64, [0, 0, 0, 255], "the full clear"); t.eq([e.stat(0), e.stat(4), e.stat(15)], [1, 2, 1], "one pass (the copy went into the texture's storage), two clears as triangles");
     // a full clear pending, then a draw that samples the target it clears: the clear lands first, the draw reads it
     i = G.acquire(e.win);
     const selfId = G.texId(e.wtex[i]);
@@ -586,35 +588,6 @@ export const scenes: Scene[] = [
     t.rect(img, 0, 0, 64, 8, BLUE, "the scissored clear: the first rows of the target"); t.rect(img, 0, gl ? 8 : 32, 64, gl ? 32 : 64, [0, 0, 0, 255], "the other half: nothing");
     t.eq(e.host.presentFlips, gl ? 1 : 0, "a bottom-up window texture is flipped when it is shown"); t.eq([e.stat(1), e.stat(2)], [4, 0], "draws"); t.noRed(e);
   } })),
-  { name: "1000 draws with their own uniform ranges: buffer and bind group caching, before and after", async run(e, t) {
-    const G = e.G, cmd = G.cmd, prog = await uboProgram(e), N = 1000, cell = (k: number) => [(k % 40) * 1.6, Math.floor(k / 40) * 2.56];
-    // one block of per-object uniforms, as an engine lays them out: 256 bytes apart (NVN's uniform buffer alignment)
-    const colour = (k: number, f = 0) => [((k * 7 + f * 50) % 256) / 255, ((k * 3) % 256) / 255, 0.5, 1];
-    const block = G.put(new Uint8Array(N * 512)), f32 = () => new Float32Array(e.g.memory.buffer);
-    for (let k = 0; k < N; k++) { const [x, y] = cell(k); f32().set([1 / 40, 1 / 25, (x + 0.8) / 32 - 1, 1 - (y + 1.28) / 32, 0, 0, 0, 0], (block + k * 512) / 4); f32().set(colour(k), (block + k * 512 + 256) / 4); }
-    const top = e.g.top;
-    const frame = () => {
-      e.g.top = top; G.c("CommandBufferAddCommandMemory", [cmd, G.cmdPool.obj, 0, G.cmdPool.size]);
-      const i = G.acquire(e.win); G.begin(); e.frame(cmd, e.wtex[i], prog); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]);
-      for (let k = 0; k < N; k++) { bindUbos(e, cmd, block + k * 512, block + k * 512 + 256); e.drawQuad(cmd); }
-      const h = G.end(), t0 = performance.now(); G.submit([h]); const ms = performance.now() - t0; G.present(e.win, i); return ms;
-    };
-    const run = async (frames: number, change: number) => {
-      const u0 = e.host.stats.uploads, g0 = e.host.stats.bindGroups; let ms = 0;
-      for (let f = 0; f < frames; f++) { for (let k = 0; k < change; k++) f32().set(colour(k * 10, f + 1), (block + k * 10 * 512 + 256) / 4); ms += frame(); }
-      await e.settle();
-      return { ms: ms / frames, uploads: (e.host.stats.uploads - u0) / frames, groups: (e.host.stats.bindGroups - g0) / frames };
-    };
-    e.host.cacheUploads = false; frame(); const before = await run(10, 0);
-    e.host.cacheUploads = true; frame(); frame();
-    const after = await run(10, 0), partly = await run(10, 100);
-    const img = await e.read();
-    for (const k of [0, 10, 555, 990, 999]) { const [x, y] = cell(k); t.px(img, Math.floor(x + 0.8), Math.floor(y + 1.28), rgba8(colour(k, k % 10 === 0 && k < 1000 ? 10 : 0)), `cell ${k}`, 1); }
-    t.eq([before.uploads, after.uploads, partly.uploads], [2002, 0, 100], "ranges written a submission: all (2000 uniform, vertex, index); none when nothing changed; the 100 that changed");
-    t.eq([before.groups, after.groups, partly.groups], [1001, 0, 0], "bind groups created a submission (1000 of uniform buffers and the empty texture group)");
-    console.log(`1000 draws, 2002 bound ranges: before ${before.ms.toFixed(1)} ms a submission (2002 buffer writes, 1000 bind groups); after ${after.ms.toFixed(1)} ms unchanged (0 writes, 0 bind groups, 2002 hashes), ${partly.ms.toFixed(1)} ms with 100 ranges changing a frame (100 writes)`);
-    t.noRed(e);
-  } },
   { name: "fans, quads, quad strips, polygons and line loops through converted index buffers; indirect draws and a multi-draw with its count in memory", async run(e, t) {
     const G = e.G, cmd = G.cmd, prog = await e.program("vs_color", "fs_color"), i = G.acquire(e.win);
     const px = (x: number, y: number) => [x / 32 - 1, 1 - y / 32], v = (x: number, y: number, c: number[]) => [...px(x, y), ...c];

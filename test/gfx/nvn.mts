@@ -5,18 +5,18 @@ import { Guest } from "./guest.mts";
 export const SIZEOF = { DEVICE: 0x3000, DEVICE_BUILDER: 0x40, QUEUE: 0x2000, QUEUE_BUILDER: 0x40, MEMORY_POOL: 0x100, MEMORY_POOL_BUILDER: 0x40, TEXTURE_POOL: 0x20, SAMPLER_POOL: 0x20,
   BUFFER: 0x30, BUFFER_BUILDER: 0x40, TEXTURE: 0xC0, TEXTURE_BUILDER: 0x80, TEXTURE_VIEW: 0x28, SAMPLER: 0x30, SAMPLER_BUILDER: 0x60, PROGRAM: 0xC0, SYNC: 0x40, WINDOW: 384, WINDOW_BUILDER: 0x40,
   COMMAND_BUFFER: 0xA0, BLEND_STATE: 0x8, COLOR_STATE: 0x4, CHANNEL_MASK_STATE: 0x4, MULTISAMPLE_STATE: 0x18, POLYGON_STATE: 0x4, DEPTH_STENCIL_STATE: 0x8, VERTEX_ATTRIB_STATE: 0x4, VERTEX_STREAM_STATE: 0x8 };
-export const FMT = { R8: 0x01, RG8: 0x0d, RG32F: 0x16, RGB32F: 0x22, RGBA8: 0x25, RGBA16F: 0x29, RGBA32F: 0x2e, DEPTH16: 0x32, DEPTH24: 0x33, DEPTH32F: 0x34, DEPTH24_STENCIL8: 0x35, RGBA8_SRGB: 0x38,
+export const FMT = { R8: 0x01, RG8: 0x0d, RG32F: 0x16, RGB32F: 0x22, RGBA8: 0x25, RGBA8UI: 0x27, RGBA16F: 0x29, R16: 0x06, DEPTH32F_STENCIL8: 0x36, RGBA4: 0x39, RGB5: 0x3a, RGB5A1: 0x3b, RGB565: 0x3c, BGR565: 0x95, BGR5A1: 0x97, A1BGR5: 0x98, RGBA32F: 0x2e, DEPTH16: 0x32, DEPTH24: 0x33, DEPTH32F: 0x34, DEPTH24_STENCIL8: 0x35, RGBA8_SRGB: 0x38,
   RGB10A2: 0x3d, R11G11B10F: 0x3f, BC1: 0x42, BC3: 0x44, BC7: 0x4d, BGRA8: 0x9a };
 export const PRIM = { POINTS: 0, LINES: 1, LINE_STRIP: 3, TRIANGLES: 4, TRIANGLE_STRIP: 5, TRIANGLE_FAN: 6 };
-export const STAGE = { VERTEX: 0, FRAGMENT: 1 }, STAGE_BITS = { VERTEX: 1, FRAGMENT: 2 };
+export const STAGE = { VERTEX: 0, FRAGMENT: 1, COMPUTE: 5 }, STAGE_BITS = { VERTEX: 1, FRAGMENT: 2, COMPUTE: 0x20 };
 export const POOL_FLAGS = { CPU_CACHED: 0x4, GPU_CACHED: 0x20, CPU_NO_ACCESS: 0x1, SHADER_CODE: 0x40 };
 export const BLEND = { ZERO: 1, ONE: 2, SRC_ALPHA: 5, ONE_MINUS_SRC_ALPHA: 6 }, EQ = { ADD: 1 };
 export const DEPTH_FUNC = { LESS: 2, LEQUAL: 4, ALWAYS: 8 };
 export const FILTER = { NEAREST: 0, LINEAR: 1 }, WRAP = { CLAMP_TO_EDGE: 7, REPEAT: 1 };
-export const TARGET = { T2D: 1, T2D_ARRAY: 4 };
+export const TARGET = { T2D: 1, T3D: 2, T2D_ARRAY: 4, T2D_MS: 5, CUBE: 8, CUBE_ARRAY: 9 };
 
 export interface Pool { obj: number; mem: number; size: number; used: number }
-export interface TextureOpts { w: number; h: number; format: number; levels?: number; target?: number; depth?: number; flags?: number; packaged?: number[] }
+export interface TextureOpts { w: number; h: number; format: number; levels?: number; target?: number; depth?: number; flags?: number; packaged?: number[]; samples?: number }
 
 export class Game {
   g: Guest;
@@ -75,7 +75,7 @@ export class Game {
     this.c("TextureBuilderSetDevice", [b, this.dev]); this.c("TextureBuilderSetDefaults", [b]);
     this.c("TextureBuilderSetTarget", [b, o.target ?? TARGET.T2D]); this.c("TextureBuilderSetFormat", [b, o.format]);
     this.c("TextureBuilderSetSize2D", [b, o.w, o.h]); if (o.depth) this.c("TextureBuilderSetDepth", [b, o.depth]);
-    this.c("TextureBuilderSetLevels", [b, o.levels ?? 1]); this.c("TextureBuilderSetFlags", [b, o.flags ?? 0]);
+    this.c("TextureBuilderSetLevels", [b, o.levels ?? 1]); this.c("TextureBuilderSetFlags", [b, o.flags ?? 0]); if (o.samples) this.c("TextureBuilderSetSamples", [b, o.samples]);
     if (o.packaged) this.c("TextureBuilderSetPackagedTextureLayout", [b, g.bytes(o.packaged)]);      // the 8 layout bytes of a texture file
     const size = this.c("TextureBuilderGetStorageSize", [b]), align = this.c("TextureBuilderGetStorageAlignment", [b]);
     const off = (this.texStore.used + align - 1) & ~(align - 1);

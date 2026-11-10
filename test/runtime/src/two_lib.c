@@ -12,4 +12,6 @@ EXPORT const char *lib_name(void) { return "two_lib"; }
 __attribute__((constructor(101))) static void ctor_a(void) { lib_counter *= 2; say("lib: init_array[0]"); }
 __attribute__((constructor(102))) static void ctor_b(void) { lib_counter += 1; say("lib: init_array[1]"); }
 EXPORT void _init(void) { lib_counter += 1; say("lib: DT_INIT"); }
+__attribute__((destructor)) static void dtor(void) { say("lib: fini_array[0]"); }
+EXPORT void _fini(void) { say("lib: DT_FINI"); }
 void rt_entry(void) { }

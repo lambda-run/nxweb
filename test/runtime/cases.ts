@@ -3,11 +3,13 @@
 // files built from test/runtime/src and checks what the guest printed and how the process ended.
 import { Runtime, type RuntimeModules, type RuntimeOptions, type RunResult, type HostCpu } from "../../src/glue/rt_runtime.ts";
 import { RANGES, HOST_END, STUBS, GUEST } from "../../src/glue/rt_layout.ts";
+import { registerRo, type RoStats } from "../../src/glue/rt_ro.ts";
 
 export interface CorpusGuest { name: string; side: any; image: Uint8Array; expected: Uint8Array }
 export interface Env {
   mods: RuntimeModules;
   nso(name: string): Uint8Array;        // build/runtime/guests/<name>.nso
+  file(name: string): Uint8Array;       // build/runtime/guests/<name> (any built file, e.g. plug.nro)
   corpus: CorpusGuest[];                // test/guests/out
   rssMb?: () => number;                 // resident memory of the process, when the host can tell
   haveGfxGuests?: boolean;              // cube.nso and cube2.nso were built (they need nxnative's nvn.h)
@@ -269,6 +271,28 @@ export function cases(env: Env): Case[] {
   faultCase("fault_stack", "guest stack overflow by runaway recursion", "stack", "recursing without end\n", (rt, r) => {
     ok(Number(r.stop!.fault!.aux) < GUEST.stackRegion, "sp below the stack: " + hex(r.stop!.fault!.aux));
   });
+  // the guard on the host area: any guest access below 0x0800_0000 traps, and the trap's pc is the instruction itself
+  const isMemInsn = (rt: Runtime, pc: bigint) => ((rt.dv().getUint32(Number(pc), true) >>> 25) & 5) === 4;
+  faultCase("fault_null", "a read through a null pointer", "trap", "reading through a null pointer\n", (rt, r) => {
+    const line = rt.red.at(-2)!, pc = r.stop!.fault!.pc, t = rt.modules[0].text;
+    ok(Number(pc) >= t.addr && Number(pc) < t.addr + t.size && isMemInsn(rt, pc), "the pc is a load instruction in the module's text: " + hex(pc));
+    ok(!line.includes("last synced pc"), "the pc is exact: " + line);
+    ok(line.includes("a null or host-area pointer"), line);
+  });
+  faultCase("fault_host", "a write into the kernel's static data", "trap", "writing into the host area (0x1000100, the kernel's static data)\n", (rt, r) => {
+    ok(isMemInsn(rt, r.stop!.fault!.pc) && !rt.red.at(-2)!.includes("last synced pc"), rt.red.at(-2)!);
+    ok(rt.dv().getUint32(0x1000100, true) !== 0x55, "the word was not written");
+  });
+  test("f guard off (guard: false): the same null read returns zero and the same write lands in the kernel's memory, as before", () => {
+    const rt = boot(["fault_null"], { guard: false });
+    exited(rt.run(), 1, rt);
+    eq(rt.stdout(), "reading through a null pointer\nread 0x0\nNOT REACHED\n", "stdout");
+    const rt2 = boot(["fault_host"], { guard: false });
+    rt2.run();
+    eq(rt2.dv().getUint32(0x1000100, true), 0x55, "the word in the kernel's static data");
+    return ["a null read gave 0; 0x55 was written at 0x1000100"];
+  });
+
   test("f fault: a damaged NSO ends in Stopped(fault load), and a deadlock is reported", () => {
     const rt = new Runtime(env.mods), bytes = env.nso("hello").slice();
     bytes[bytes.length - 9] ^= 0x40;
@@ -294,6 +318,47 @@ export function cases(env: Env): Case[] {
     eq(rt.stdout(), "calling svcBreak\n", "stdout");
     ok(rt.red.some(l => /^\[RED\] Break#1 reason=0x0 Result=0x1234/.test(l)), rt.red.join(" | "));
     return rt.red;
+  });
+
+  // ---- run-time modules, fini functions, the counter while the clock is frozen ----
+  for (const budget of [100000, 50]) test(`h run-time modules (budget ${budget}): an NRO loaded through nn::ro, called, unloaded and loaded again three times`, () => {
+    let ro!: RoStats;
+    const rt = boot(["ro_main"], { budget }, rt => {
+      ro = registerRo(rt);
+      rt.register({ name: "test_nro", fn: cpu => { const b = env.file("plug.nro"); if (b.length > Number(cpu.x(1))) return 0; cpu.write(cpu.x(0), b); return b.length; } });
+    });
+    const unitsBefore = () => rt.a64.units.length;
+    exited(rt.run(), 0, rt);
+    const round = (n: number) => `  plug: init function\nround ${n}: LoadModule rc=0x0 state=1\n  loading it again while loaded: rc=0x1\n  plug_counter after its init functions = 105\n` +
+      `  plug_calc(7), which calls main_twice = ${14 + 105 + 1000 * n + 7}\n  plug_calc(7) again (its bss word grew) = ${14 + 105 + 1000 * n + 14}\n` +
+      `  main's own import plug_bump, bound at load: ${106 + 1000 * n}\n  LookupModuleSymbol(no_such_symbol): rc=0x216\n  plug: fini function, counter ${106 + 1000 * n}\n` +
+      `  unloaded: state=0, LookupSymbol rc=0x216, main's import is 0 again\n`;
+    eq(rt.stdout(), `GetBufferSize of something that is no NRO: 0x816\nimage: NRO of ${env.file("plug.nro").length} bytes, GetBufferSize rc=0x0\n` +
+      `LookupSymbol(plug_calc) before any load: rc=0x216\n` + round(1) + round(2) + round(3) + "ro done\n", "stdout");
+    eq([ro.loads, ro.unloads, ro.initCalls, ro.finiCalls], [3, 3, 3, 3], "loads, unloads, init and fini calls");
+    eq([rt.stats.moduleLoads, rt.stats.moduleUnloads, rt.modules.length, rt.a64.codeRanges().length], [3, 3, 1, 1], "runtime: loads, unloads, modules and code ranges left");
+    const main = rt.modules[0];
+    ok(rt.a64.units.every(u => u.pcs.every(pc => pc === 0xFFFFFFFF || (pc >= main.base && pc < main.base + main.imageSize))), "no translated unit of the unloaded module is left");
+    eq(rt.red.filter(l => !l.includes("is loaded already") && !l.includes("forced take-over entry with no reference")), ["[RED] ro::LookupSymbol cannot find plug_calc (first case)"], "red lines besides the three refused double loads");
+    eq(rt.red.filter(l => l.includes("is loaded already")).length, 3, "refused double loads");
+    return [`${unitsBefore()} units at the end, ${rt.a64.translatedFuncs} functions translated in all (the module's again after each load), ${rt.stats.entries} entries passed to the translator`,
+      ...rt.logs.filter(l => l.startsWith("ro::LoadModule")).slice(0, 1)];
+  });
+  test("h fini: the main thread returns from the entry and the fini functions run (main's fini_array backwards, DT_FINI, then the library's), one of them sleeping", () => {
+    const rt = boot(["fini", "two_lib"]);
+    exited(rt.run(), 23, rt);
+    eq(rt.stdout(), "lib: DT_INIT\nlib: init_array[0]\nlib: init_array[1]\nmain: entry returns 23\nmain: fini_array[1]\nmain: fini_array[0] (runs last of the array)\n" +
+      "main: DT_FINI\nmain: DT_FINI slept\nlib: fini_array[0]\nlib: DT_FINI\n", "stdout");
+    eq(rt.stats.finiCalls, 5, "fini calls");
+    noRed(rt);
+  });
+  for (const budget of [100000, 50]) test(`h counter (budget ${budget}): a thread that reads cntpct_el0 while the clock is frozen for background parks at the read and resumes with its registers intact`, () => {
+    const rt = boot(["clock"], { budget }, rt => rt.register({ name: "host_freeze", fn: cpu => { cpu.rt.freezeClock(1, cpu.w(0) !== 0); } }));
+    exited(rt.run(), 0, rt);
+    eq(rt.stdout(), "the reader is parked at its counter read\nthe reader went on: a + b = 42, its tick is not before the freeze\n", "stdout");
+    ok(rt.stats.clockParks >= 1, "parks: " + rt.stats.clockParks);
+    noRed(rt);
+    return [`${rt.stats.clockParks} park${rt.stats.clockParks === 1 ? "" : "s"} at the counter read, ${rt.stats.slices} slices`];
   });
 
   // ---- memory: reserve or grow ----
@@ -338,6 +403,28 @@ export function cases(env: Env): Case[] {
     lines.push(`speed (budget 100000, passing images): ${insns} guest instructions in ${runMs.toFixed(0)} ms of run time = ${(insns / runMs / 1000).toFixed(1)} M insn/s (translation ${trMs.toFixed(0)} ms not included)`);
     if (bad.length) fail(bad.join("\n"));
     return lines;
+  });
+
+  test("guard: what the trap on host-area accesses costs on the corpus (run time with `guard` on and off, interleaved)", () => {
+    const rounds = 7, on: number[] = [], off: number[] = [];
+    let insns = 0;
+    const once = (guard: boolean) => {
+      let ms = 0; insns = 0;
+      for (const g of env.corpus) {
+        const rt = new Runtime(env.mods, { guard });
+        ok(rt.loadFlat(g.image, g.side), `${g.name}: load failed`);
+        const r = rt.run();
+        ok(r.stop?.kind === "exit", `${g.name} with guard ${guard}: ${rt.red.at(-2) ?? r.stop?.kind}`);
+        ms += rt.stats.runMs - rt.a64.translateNs / 1e6; insns += g.side.insn_count ?? 0;
+      }
+      return ms;
+    };
+    once(true); once(false);   // warm up
+    for (let i = 0; i < rounds; i++) { on.push(once(true)); off.push(once(false)); }
+    const stat = (v: number[]) => { const s = [...v].sort((a, b) => a - b); return { min: s[0], med: s[s.length >> 1] }; };
+    const a = stat(on), b = stat(off), pct = (x: number, y: number) => ((x / y - 1) * 100).toFixed(1);
+    return [`${env.corpus.length} images, ${insns} guest instructions, ${rounds} interleaved rounds: guard on min ${a.min.toFixed(0)} ms / median ${a.med.toFixed(0)} ms; off min ${b.min.toFixed(0)} / median ${b.med.toFixed(0)}`,
+      `cost of the guard: ${pct(a.min, b.min)} % (min), ${pct(a.med, b.med)} % (median)`];
   });
 
   // ---- speed of (c) ----

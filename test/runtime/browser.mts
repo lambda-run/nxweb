@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
-import { ROOT, OUT, GUESTS, MODULES, GFX_MODULES, haveNvn, build, buildModules, corpusList } from "./harness.mts";
+import { ROOT, OUT, GUESTS, MODULES, GFX_MODULES, NRO_MODULES, BIG_DIR, SHADER_OUT, shaderArtifacts, buildBig, haveNvn, build, buildModules, corpusList } from "./harness.mts";
 import { writeFileSync } from "node:fs";
 import { png } from "./png.mts";
 import { formatResult, type CaseResult } from "./cases.ts";
@@ -14,6 +14,7 @@ process.chdir(ROOT);
 try {
   build(); buildModules();
   buildSync({ entryPoints: ["test/runtime/web/worker.ts"], bundle: true, format: "iife", outfile: "build/runtime/web/worker.js", logLevel: "warning", absWorkingDir: ROOT });
+  buildSync({ entryPoints: ["src/glue/rt_shader_worker.ts"], bundle: true, format: "esm", outfile: "build/runtime/web/shader_worker.js", logLevel: "warning", absWorkingDir: ROOT });
 } catch (e) { console.error(e instanceof Error ? e.message : e); console.error("[RED] rt:browser: the build failed"); process.exit(1); }
 
 const { chromium } = createRequire(import.meta.url)("playwright");
@@ -26,6 +27,8 @@ window.start = (only) => { const w = new Worker("/worker.js");
   w.postMessage({ only }); };
 </script>`;
 const corpusDir = join(ROOT, "test", "guests", "out");
+const haveBig = buildBig(), shaders = shaderArtifacts();
+const TYPES: Record<string, string> = { ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".nxsl": "application/octet-stream" };
 const server = createServer((req, res) => {
   const url = req.url ?? "/";
   const head = { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp", "Cache-Control": "no-store" };
@@ -34,7 +37,11 @@ const server = createServer((req, res) => {
     let m: RegExpExecArray | null;
     if (url === "/") return send(page, "text/html");
     if (url === "/worker.js") return send(readFileSync(join(OUT, "web", "worker.js")), "text/javascript");
-    if (url === "/list") return send(JSON.stringify({ nso: [...Object.keys(MODULES), ...(haveNvn() ? Object.keys(GFX_MODULES) : [])], corpus: corpusList(), gfx: haveNvn() }), "application/json");
+    if (url === "/list") return send(JSON.stringify({ nso: [...Object.keys(MODULES), ...(haveNvn() ? Object.keys(GFX_MODULES) : [])], files: [...Object.keys(NRO_MODULES).map(n => n + ".nro"), "romfs.img", "romfs_blob.bin"], corpus: corpusList(), gfx: haveNvn(), big: haveBig ? "a64_big.O1" : null, shaders }), "application/json");
+    if (url === "/shader_worker.js") return send(readFileSync(join(OUT, "web", "shader_worker.js")), "text/javascript");
+    if ((m = /^\/shaders\/([\w./-]+)$/.exec(url)) && !m[1].includes("..")) return send(readFileSync(join(SHADER_OUT, m[1])), TYPES[m[1].slice(m[1].lastIndexOf("."))] ?? "application/octet-stream");
+    if ((m = /^\/guest\/([\w.]+)$/.exec(url))) return send(readFileSync(join(GUESTS, m[1])), "application/octet-stream");
+    if ((m = /^\/big\/([\w.]+)$/.exec(url))) return send(readFileSync(join(BIG_DIR, m[1])), "application/octet-stream");
     if ((m = /^\/wasm\/(\w+\.wasm)$/.exec(url))) return send(readFileSync(join(OUT, m[1])), "application/wasm");
     if ((m = /^\/nso\/(\w+\.nso)$/.exec(url))) return send(readFileSync(join(GUESTS, m[1])), "application/octet-stream");
     if ((m = /^\/corpus\/([\w.]+)$/.exec(url))) return send(readFileSync(join(corpusDir, m[1])), "application/octet-stream");
@@ -74,7 +81,7 @@ try {
   // ---- the page a person opens (web/index.html), driven as a person would ----
   if (haveNvn() && (!only || "page".includes(only) || only.includes("page"))) {
     ran++;
-    const t0 = Date.now(), name = "page: web/index.html runs the built-in demo; state from the process machine, pause, resume, keyboard input, stop";
+    const t0 = Date.now(), name = "page: web/index.html runs the built-in demo; state from the process machine, pause, resume, keyboard input, stop; then started and stopped five more times without a reload";
     try {
       const { buildWeb } = await import("../../web/build.mts"), { serve } = await import("../../web/serve.mts");
       await buildWeb();
@@ -105,6 +112,14 @@ try {
         await until("Running again", async () => await text("state") === "Running" && await text("frames") !== f1);
         await q.click("#stop");
         await until("Stopped", async () => await text("state") === "Stopped");
+        if (await text("why") !== "killed") throw new Error("why: " + await text("why"));
+        // a second program without reloading the page: the demo again, stopped again, five times
+        for (let i = 1; i <= 5; i++) {
+          await q.click("#demo");
+          await until(`run ${i + 1}: Running with 20 frames`, async () => await text("state") === "Running" && Number((await text("frames")).split(",")[0]) >= 20);
+          await q.click("#stop");
+          await until(`run ${i + 1}: Stopped`, async () => await text("state") === "Stopped");
+        }
         const why = await text("why"), red = await q.locator("#log .red").count();
         if (why !== "killed") throw new Error("why: " + why);
         if (red) throw new Error(red + " red log lines: " + (await q.locator("#log .red").allTextContents()).join(" | "));

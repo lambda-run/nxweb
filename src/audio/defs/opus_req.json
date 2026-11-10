@@ -1,0 +1,18 @@
+{
+  "id": 0,
+  "name": "opus_req",
+  "doc": "One decode request of a hardware Opus decoder manager (src/audio/opus.ts), which is also one of the manager's I/O buffers. Waiting: the packet is queued (EnqueueOpusDataToHardwareOpusDecoder). Executing: ExecuteHardwareOpusDecoderDecoding handed it to the decoder; a synchronous decoder completes it inside that call, an asynchronous one (WebCodecs) later. Completed: its PCM waits for DequeuePcmInterleavedData. Cancel is a reset or finalize of its decoder; a request the asynchronous decoder still holds becomes Abandoned and its slot is free again only when the decoder answers, so a late answer can never land in a reused slot.",
+  "states": ["Free", "Waiting", "Executing", "Completed", "Abandoned"],
+  "initial": "Free",
+  "events": ["Enqueue", "Execute", "Complete", "Dequeue", "Cancel", "Abandon"],
+  "transitions": [
+    ["Free", "Enqueue", "Waiting"],
+    ["Waiting", "Execute", "Executing"],
+    ["Executing", "Complete", "Completed"],
+    ["Completed", "Dequeue", "Free"],
+    ["Waiting", "Cancel", "Free"],
+    ["Completed", "Cancel", "Free"],
+    ["Executing", "Abandon", "Abandoned"],
+    ["Abandoned", "Complete", "Free"]
+  ]
+}

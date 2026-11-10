@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { loadDefs, KIT_DIR, type MachineDef } from "../../src/kit/host/defs.mts";
+import { writeStamp } from "../../src/kit/host/stamp.mts";
 import { readMachines, readTrace, formatRecord, type KitExports, type WasmMachine } from "../../src/kit/host/reader.mts";
 
 export const ROOT = join(KIT_DIR, "..", "..");
@@ -14,6 +15,7 @@ export function build(): void {
   mkdirSync(dirname(WASM), { recursive: true });
   execFileSync(process.execPath, [join(ROOT, "node_modules", "assemblyscript", "bin", "asc.js"), "src/kernel/index.ts", "-o", WASM,
     "--runtime", "stub", "-O2", "--initialMemory", "1536"], { cwd: ROOT, stdio: "inherit" });
+  writeStamp(WASM);
 }
 
 export interface KernelExports extends KitExports {

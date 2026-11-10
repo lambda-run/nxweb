@@ -33,6 +33,12 @@ int rt_entry(u64 x0, Handle main_thread) {
   say("calling svcBreak");
   u32 result = 0x1234;
   svcBreak(0, (u64)&result, 4);
+#elif MODE == 6
+  say("reading through a null pointer");
+  say_x("read ", *(volatile u32 *)x0);
+#elif MODE == 7
+  say("writing into the host area (0x1000100, the kernel's static data)");
+  *(volatile u32 *)(x0 + 0x1000100) = 0x55;
 #endif
   say("NOT REACHED");
   return 1;

@@ -6,6 +6,7 @@ import { mkdirSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { check } from "../../kit/host/gen.mts";
+import { writeStamp } from "../../kit/host/stamp.mts";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const WASM = join(ROOT, "build", "loader", "loader.wasm");
@@ -18,6 +19,7 @@ export function build(): void {
     execFileSync(process.execPath, [join(ROOT, "node_modules", "assemblyscript", "bin", "asc.js"), "src/loader/index.ts", "-o", relative(ROOT, WASM), "--runtime", "stub", "-O3"],
       { cwd: ROOT, stdio: "inherit" });
   } catch { throw new Error("[RED] loader:build: src/loader/index.ts did not compile"); }
+  writeStamp(WASM);
 }
 
 if (process.argv[1] && import.meta.filename === process.argv[1]) {

@@ -1,0 +1,17 @@
+{
+  "id": 0,
+  "name": "audio_buf",
+  "doc": "One buffer slot of an AudioOut (src/audio/out.ts). Reclaimed: the slot holds no buffer (never used, or the game took the buffer back). Appended: queued, not a byte consumed. Playing: the consumer (silent sink or device mixer) is inside it; a change of consumer leaves it here with its position. Released: played to the end, or returned by a Stop or a purge (Flush), and waiting in the released queue for GetReleasedAudioOutBuffer. Drop is a Close with released buffers nobody took. A buffer is released exactly once because Finish and Flush leave Appended and Playing only.",
+  "states": ["Reclaimed", "Appended", "Playing", "Released"],
+  "initial": "Reclaimed",
+  "events": ["Append", "Play", "Finish", "Flush", "Reclaim", "Drop"],
+  "transitions": [
+    ["Reclaimed", "Append", "Appended"],
+    ["Appended", "Play", "Playing"],
+    ["Playing", "Finish", "Released"],
+    ["Appended", "Flush", "Released"],
+    ["Playing", "Flush", "Released"],
+    ["Released", "Reclaim", "Reclaimed"],
+    ["Released", "Drop", "Reclaimed"]
+  ]
+}

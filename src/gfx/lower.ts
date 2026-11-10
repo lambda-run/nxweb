@@ -20,10 +20,12 @@ import { GFX_PASS, GfxPassE, GfxPassS } from "../kit/gen/tables";
 import * as O from "./obj";
 import * as H from "./hostops";
 import { texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
-import { progShader, libRefl, RF_ubo, RF_tex, RF_io } from "./shader";
+import { progShader, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags } from "./shader";
+import { fmtClass, fmtCanon, fmtTwin } from "./fmt";
 import * as PK from "./pipeline";
 import { syncFence } from "./sync";
-import { contentNeed, contentGpuWrite, regionCopy, submitDone } from "./texcontent";
+import { contentNeed, contentGpuWrite, contentStage, contentState, contentInUse, regionCopy, submitDone } from "./texcontent";
+import { GfxTextureS } from "../kit/gen/tables";
 
 // ---- current state (nxnative's S and R) ----
 let prog: usize = 0;
@@ -33,8 +35,16 @@ const MS: usize = memory.data(16);
 const VATTR: usize = memory.data(128); let nattr: i32 = 0;
 const VSTREAM: usize = memory.data(128); let nstream: i32 = 0;
 const VBUF: usize = memory.data(256);        // { u64 address, u64 size } x 16
-const UBO: usize = memory.data(512);         // [stage 0..1][16] { u64 address, u64 size }
-const TEXH: usize = memory.data(512);        // [stage 0..1][32] u64 handle
+// Stages here: 0 vertex, 1 fragment, 2 compute (NVN's 0, 1 and 5; the others have no WebGPU stage)
+const UBO: usize = memory.data(768);         // [stage 0..2][16] { u64 address, u64 size }
+const TEXH: usize = memory.data(768);        // [stage 0..2][32] u64 handle
+const SSBO: usize = memory.data(768);        // [stage 0..2][16] { u64 address, u64 size }
+const IMGH: usize = memory.data(192);        // [stage 0..2][8] u64 image handle (a texture ID)
+let progC: usize = 0, depthClamp = false;
+// Storage ranges a compute pass wrote: read back into guest memory when the pass ends
+const WR: usize = memory.data(512); let nwr: i32 = 0;
+// @ts-ignore: decorator
+@inline function hst(st: u32): u32 { return st < 2 ? st : st == 5 ? 2 : 3; }
 const VP: usize = memory.data(16); let hasVp = false, depthNear: f32 = 0, depthFar: f32 = 1;
 let scX: i32 = 0, scY: i32 = 0, scW: i32 = 0, scH: i32 = 0, hasSc = false;
 const BLENDC: usize = memory.data(16);
@@ -62,12 +72,14 @@ let dirty: u32 = D_ALL;
 let curPipe: i32 = -1, curVs: i32 = -1, curFs: i32 = -1;
 
 // Counters the tests and the README's numbers read (gfx_stat)
-let nPasses: u32 = 0, nDraws: u32 = 0, nSkipped: u32 = 0, nSnapshots: u32 = 0, nClearRects: u32 = 0, nSubmits: u32 = 0;
-export function stat(i: i32): u32 { return i == 0 ? nPasses : i == 1 ? nDraws : i == 2 ? nSkipped : i == 3 ? nSnapshots : i == 4 ? nClearRects : i == 5 ? nSubmits : 0; }
+let nPasses: u32 = 0, nDraws: u32 = 0, nSkipped: u32 = 0, nSnapshots: u32 = 0, nClearRects: u32 = 0, nSubmits: u32 = 0, nDispatches: u32 = 0, nComputePasses: u32 = 0, nMirrored: u32 = 0;
+export function stat(i: i32): u32 { return i == 0 ? nPasses : i == 1 ? nDraws : i == 2 ? nSkipped : i == 3 ? nSnapshots : i == 4 ? nClearRects : i == 5 ? nSubmits : i == 13 ? nDispatches : i == 14 ? nComputePasses : i == 15 ? nMirrored : 0; }
 export function passState(): i32 { return pass().state; }
 
-let onceMask: u32 = 0;
-function once(bit: u32): bool { if (onceMask & (1 << bit)) return false; onceMask |= 1 << bit; return true; }
+let onceMask: u64 = 0;
+function once(bit: u32): bool { if (onceMask & (<u64>1 << bit)) return false; onceMask |= <u64>1 << bit; return true; }
+// The GPU device was replaced: everything the replayer was told about the open submission is told again
+export function lowerDeviceReset(): void { dirty = D_ALL; curPipe = -1; }
 
 export function lowerInit(): void {
   pass().init(GFX_PASS, 0);
@@ -81,6 +93,10 @@ export function dsDefault(): u64 { return <u64>((1 << 1) | (2 << 2) | (8 << 7) |
 
 // ---- render pass ----
 function emitBeginPass(): void {
+  // The targets become the GPU's first: a target with texels staged in its storage is uploaded now, before the record
+  // (an upload hands the stream over)
+  for (let i = 0; i < rtN; i++) contentGpuWrite(load<u64>(RT + <usize>i * RT_E));
+  contentGpuWrite(load<u64>(RT + 8 * RT_E));
   const r = H.hostRec(H.H_BEGIN_PASS, 376);
   // +8 u32 colour count, +12 u32 flags (1 depth target, 2 clear depth, 4 clear stencil), +16 f32 clear depth, +20 u32 clear stencil, +24 u32 width, +28 u32 height
   // +32 colour[8]: { u64 serial (0 none), u32 level, u32 layer, u32 format, u32 load (1 = clear), f32 rgba[4] } (40 bytes)
@@ -92,14 +108,21 @@ function emitBeginPass(): void {
   for (let i = 0; i < rtN; i++) {
     const t = RT + <usize>i * RT_E, o = r + 32 + <usize>i * 40;
     store<u64>(o, load<u64>(t)); store<u32>(o, load<u32>(t, RT_level), 8); store<u32>(o, load<u32>(t, RT_layer), 12); store<u32>(o, load<u32>(t, RT_fmt), 16);
-    contentGpuWrite(load<u64>(t));
     store<u32>(o, (pendColor >> i) & 1, 20); memory.copy(o + 24, PEND_RGBA + (<usize>i << 4), 16);
   }
-  if (hasDepth) { contentGpuWrite(load<u64>(d)); store<u64>(r, load<u64>(d), 352); store<u32>(r, load<u32>(d, RT_level), 360); store<u32>(r, load<u32>(d, RT_layer), 364); store<u32>(r, load<u32>(d, RT_fmt), 368); }
+  if (hasDepth) { store<u64>(r, load<u64>(d), 352); store<u32>(r, load<u32>(d, RT_level), 360); store<u32>(r, load<u32>(d, RT_layer), 364); store<u32>(r, load<u32>(d, RT_fmt), 368); }
   pendColor = 0; pendDepth = false; pendStencil = false;
   dirty = D_ALL; nPasses++;
 }
 function emitEndPass(): void { H.hostRec(H.H_END_PASS, 8); nsnap = 0; }
+// The compute pass ends: what it wrote into storage buffers goes back to guest memory (it lands when the GPU is done;
+// until then the replayer serves binds of those ranges from the GPU's copy)
+function emitEndCompute(): void {
+  H.hostRec(H.H_END_PASS, 8);
+  for (let i = 0; i < nwr; i++) { const r = H.hostRec(H.H_BUF_READBACK, 24); store<u64>(r, load<u64>(WR + (<usize>i << 4)), 8); store<u32>(r, <u32>load<u64>(WR + (<usize>i << 4), 8), 16); }
+  nwr = 0;
+  dirty |= D_VBUF | D_UBO;
+}
 
 // The one place the pass machine steps. What the stream needs follows from the state the event finds:
 // leaving Open ends the pass, leaving ClearPending without a draw lands the clears in a pass of their own,
@@ -107,10 +130,12 @@ function emitEndPass(): void { H.hostRec(H.H_END_PASS, 8); nsnap = 0; }
 function passEvent(ev: u8): bool {
   const m = pass(), from = m.state;
   if (!m.can(ev)) { m.step(ev); return false; }
-  const opens = ev == GfxPassE.Draw || ev == GfxPassE.PartialClear;
+  const opens = ev == GfxPassE.Draw || ev == GfxPassE.PartialClear, inCompute = from == GfxPassS.Compute || from == GfxPassS.ComputeUnset;
+  if (inCompute) { if (ev == GfxPassE.Dispatch) { m.step(ev); return true; } emitEndCompute(); }
   if (opens) { if (from != GfxPassS.Open) emitBeginPass(); }
   else if (from == GfxPassS.Open) emitEndPass();
   else if (from == GfxPassS.ClearPending && ev != GfxPassE.FullClear) { emitBeginPass(); emitEndPass(); }
+  if (ev == GfxPassE.Dispatch) { H.hostRec(H.H_BEGIN_COMPUTE, 8); nComputePasses++; }
   m.step(ev);
   return true;
 }
@@ -130,10 +155,22 @@ function rtFill(e: usize, t: usize, view: usize, hasView: bool): void {
   const bits = hasView ? load<u8>(view) : 0;
   const level: u32 = bits & 1 ? load<u8>(view, O.VIEW_base_level) : 0;
   store<u64>(e, load<u64>(t, O.TEX_serial));
-  store<u32>(e, bits & 4 ? <u32>load<u16>(view, O.VIEW_format) : load<u32>(t, O.TEX_d + O.TD_format), RT_fmt);
+  // A view may only switch between a format and its sRGB twin (WebGPU): any other view format renders in the texture's
+  // own, here and therefore in the pipeline key and in the attachment alike
+  let fmt = load<u32>(t, O.TEX_d + O.TD_format);
+  if (bits & 4) {
+    const vf = <u32>load<u16>(view, O.VIEW_format);
+    if (fmtCanon(vf) != fmtCanon(fmt)) {
+      if (fmtTwin(fmtCanon(fmt)) == fmtCanon(vf)) fmt = vf;
+      else if (once(32)) { L.red("a render target view reads format 0x"); L.hex(fmt); L.str(" as 0x"); L.hex(vf); L.str(": WebGPU views can only switch sRGB, the texture's own format is rendered"); L.end(); }
+    }
+  }
+  store<u32>(e, fmt, RT_fmt);
   store<u32>(e, level, RT_level); store<u32>(e, bits & 2 ? <u32>load<u16>(view, O.VIEW_min_layer) : 0, RT_layer);
   store<u32>(e, mipExt(load<u32>(t, O.TEX_d + O.TD_width), level), RT_w); store<u32>(e, mipExt(load<u32>(t, O.TEX_d + O.TD_height), level), RT_h);
-  const s = load<i32>(t, O.TEX_d + O.TD_samples); store<u32>(e, s > 1 ? s : 1, RT_samples);
+  // WebGPU has 1 and 4 samples: 2, 8 and 16 are rendered with 4
+  const s = load<i32>(t, O.TEX_d + O.TD_samples); store<u32>(e, s > 1 ? 4 : 1, RT_samples);
+  if (s > 1 && s != 4 && once(33)) { L.red("a render target has "); L.i(s); L.str(" samples: WebGPU has 1 and 4, it is rendered with 4"); L.end(); }
 }
 function setRenderTargets(r: usize): void {
   let n = load<i32>(r, O.P_SET_RT_n); if (n < 0 || n > 8) n = 0;
@@ -270,6 +307,7 @@ function fillKey(prim: i32, itype: i32): bool {
     if ((dsSt >> 6) & 1) { store<u8>(k, <u8>stValueMask, PK.PK_stencil_vmask); store<u8>(k, <u8>stWriteMask, PK.PK_stencil_wmask); }
   }
   store<u8>(k, <u8>samples, PK.PK_samples); store<u8>(k, load<u8>(MS, 2), PK.PK_a2c);
+  let flags: u32 = depthClamp ? 1 : 0, vin: u64 = 0;
   if (itype >= 0 && (prim == 3 || prim == 5)) store<u8>(k, <u8>(itype + 1), PK.PK_itype);
   let need = load<u32>(libRefl(curVs), RF_io);
   store<u32>(k, need, PK.PK_attr_mask);
@@ -281,7 +319,13 @@ function fillKey(prim: i32, itype: i32): bool {
     if (stream >= 16 || !load<u64>(VBUF + (<usize>stream << 4))) { if (once(5)) { L.red("no vertex buffer bound for stream "); L.u(stream); L.str(": the draw is skipped"); L.end(); } return false; }
     store<u32>(k + PK.PK_attr + (<usize>loc << 2), a);
     store<u64>(k + PK.PK_stream + (<usize>stream << 3), <i32>stream < nstream ? load<u64>(VSTREAM + (<usize>stream << 3)) : 0);
+    vin |= <u64>fmtClass(a & 0xff) << (<u64>loc * 2);
   }
+  // The class of each input (float, sint, uint) is part of the WGSL text, but in NVN it follows the bound format: a
+  // shader bound with another class needs a variant of its module (README, "vertex input classes")
+  const rf = libRefl(curVs);
+  if ((load<u32>(rf, RF_flags) & 1) && load<u64>(rf, RF_vin) != vin) flags |= 2;
+  store<u64>(k, vin, PK.PK_vin); store<u8>(k, <u8>flags, PK.PK_flags);
   return true;
 }
 
@@ -306,6 +350,7 @@ function emitState(): void {
       }
     }
     store<f32>(r, x, 8); store<f32>(r, y, 12); store<f32>(r, w, 16); store<f32>(r, h, 20);
+    if (w != vpW || h != vpH) { vpW = w; vpH = h; dirty |= D_UBO; }      // the support buffer carries the viewport size
     store<f32>(r, min<f32>(max<f32>(depthNear, 0), 1), 24); store<f32>(r, min<f32>(max<f32>(depthFar, 0), 1), 28);
   }
   if (dirty & D_SC) {
@@ -323,31 +368,100 @@ function emitState(): void {
       store<u32>(r, s, 8); store<u32>(r, <u32>load<u64>(VBUF + (<usize>s << 4), 8), 12); store<u64>(r, load<u64>(VBUF + (<usize>s << 4)), 16);
     }
   }
-  if (dirty & D_UBO) for (let st: u32 = 0; st < 2; st++) {
-    let m = load<u32>(libRefl(st ? curFs : curVs), RF_ubo) & 0xffff;
-    for (let i: u32 = 0; m; i++, m >>= 1) {
-      if (!(m & 1)) continue;
-      const b = UBO + (<usize>(st * 16 + i) << 4), r = H.hostRec(H.H_UBO, 32);
-      store<u32>(r, st, 8); store<u32>(r, i, 12); store<u64>(r, load<u64>(b), 16); store<u32>(r, <u32>load<u64>(b, 8), 24);
-    }
-  }
-  if (dirty & D_TEX) for (let st: u32 = 0; st < 2; st++) {
-    let m = load<u32>(libRefl(st ? curFs : curVs), RF_tex);
-    for (let slot: u32 = 0; m; slot++, m >>= 1) {
-      if (!(m & 1)) continue;
-      const h = texHandle(st, slot), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h);
-      if (serial) contentNeed(serial);       // may upload it now
-      const r = H.hostRec(H.H_TEX, 48);
-      if (!serial && once(7)) { L.red("a draw samples texture ID "); L.u(h & 0xfffff); L.str(" (stage "); L.u(st); L.str(" slot "); L.u(slot); L.str("), which names no live texture: it reads as empty"); L.end(); }
-      store<u32>(r, st, 8); store<u32>(r, slot, 12); store<u64>(r, serial, 16);
-      const hasView = serial != 0 && load<u8>(e, TDE_has_view) != 0;
-      store<u32>(r, (snapped(serial) ? 1 : 0) | (hasView ? 2 : 0), 24); store<u32>(r, <u32>(h >> 20) & 0xfff, 28);
-      if (hasView) memory.copy(r + 32, e + TDE_view, O.VIEW_SIZE);
-    }
-  }
+  if (dirty & D_UBO) { emitUbos(0, curVs); emitUbos(1, curFs); }
+  if (dirty & D_TEX) { emitTexs(0, curVs); emitTexs(1, curFs); }
   if (dirty & D_BLENDC) memory.copy(H.hostRec(H.H_BLEND_COLOR, 24) + 8, BLENDC, 16);
   if (dirty & D_STREF) store<u32>(H.hostRec(H.H_STENCIL_REF, 16), stRef, 8);
   dirty = 0;
+}
+
+// What stage st's shader `id` reads, to the replayer: uniform ranges (with the size the WGSL type covers: the replayer
+// binds at least that, zero past what the game bound), the translator's support buffer, textures, storage, images
+let vpW: f32 = 0, vpH: f32 = 0;
+function emitUbos(st: u32, id: i32): void {
+  const rf = libRefl(id);
+  let m = load<u32>(rf, RF_ubo) & 0x7fff;
+  for (let i: u32 = 0; m; i++, m >>= 1) {
+    if (!(m & 1)) continue;
+    if (i == 14) { emitSupport(st); continue; }
+    const b = UBO + (<usize>(st * 16 + i) << 4), r = H.hostRec(H.H_UBO, 32);
+    store<u32>(r, st, 8); store<u32>(r, i, 12); store<u64>(r, load<u64>(b), 16); store<u32>(r, <u32>load<u64>(b, 8), 24); store<u32>(r, load<u32>(rf + RF_ubo_size + (<usize>i << 2)), 28);
+  }
+}
+// Ryujinx's support buffer (Ryujinx.Graphics.Shader SupportBuffer, std140): u32 alpha_test +0; u32 is_bgra[8] +16 (16 bytes
+// each); vec4 viewport_inverse +144; vec4 viewport_size +160; i32 frag_scale_count +176; f32 render_scale[73] +192 (16
+// bytes each); ivec4 tfe_offset +1360; i32 tfe_vertex_count +1376. Render scale 1 throughout, nothing is BGRA-swapped
+const SUPPORT_BYTES: usize = 1392;
+function emitSupport(st: u32): void {
+  const r = H.hostRec(H.H_UBO_DATA, 24 + SUPPORT_BYTES), p = r + 24;
+  store<u32>(r, st, 8); store<u32>(r, 14, 12); store<u32>(r, <u32>SUPPORT_BYTES, 16);
+  const w = vpW > 0 ? vpW : <f32>rtW, h = vpH > 0 ? vpH : <f32>rtH;
+  store<f32>(p, w > 0 ? 2 / w : 0, 144); store<f32>(p, h > 0 ? 2 / h : 0, 148); store<f32>(p, 1, 152); store<f32>(p, 0, 156);
+  store<f32>(p, w, 160); store<f32>(p, h, 164); store<f32>(p, 1, 168); store<f32>(p, 1, 172);
+  for (let i: usize = 0; i < 73; i++) store<f32>(p + 192 + (i << 4), 1);
+}
+function emitTexs(st: u32, id: i32): void {
+  let m = load<u32>(libRefl(id), RF_tex);
+  for (let slot: u32 = 0; m; slot++, m >>= 1) {
+    if (!(m & 1)) continue;
+    const h = texHandle(st, slot), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h);
+    if (serial) contentNeed(serial);       // may upload it now
+    const r = H.hostRec(H.H_TEX, 48);
+    if (!serial && once(7)) { L.red("a draw samples texture ID "); L.u(h & 0xfffff); L.str(" (stage "); L.u(st); L.str(" slot "); L.u(slot); L.str("), which names no live texture: it reads as empty"); L.end(); }
+    store<u32>(r, st, 8); store<u32>(r, slot, 12); store<u64>(r, serial, 16);
+    const hasView = serial != 0 && load<u8>(e, TDE_has_view) != 0;
+    store<u32>(r, (st < 2 && snapped(serial) ? 1 : 0) | (hasView ? 2 : 0), 24); store<u32>(r, <u32>(h >> 20) & 0xfff, 28);
+    if (hasView) memory.copy(r + 32, e + TDE_view, O.VIEW_SIZE);
+  }
+}
+// Storage buffers and images of a compute dispatch. A written range is noted for the read-back at the end of the pass
+function emitStorage(st: u32, id: i32): void {
+  const rf = libRefl(id), wm = load<u32>(rf, RF_ssbo_w);
+  let m = load<u32>(rf, RF_ssbo) & 0xffff;
+  for (let i: u32 = 0; m; i++, m >>= 1) {
+    if (!(m & 1)) continue;
+    const b = SSBO + (<usize>(st * 16 + i) << 4), addr = load<u64>(b), size = load<u64>(b, 8), w = (wm >> i) & 1, r = H.hostRec(H.H_SSBO, 32);
+    store<u32>(r, st, 8); store<u32>(r, i, 12); store<u64>(r, addr, 16); store<u32>(r, <u32>size, 24); store<u32>(r, w, 28);
+    if (w && addr && size) {
+      let k = 0; while (k < nwr && (load<u64>(WR + (<usize>k << 4)) != addr || load<u64>(WR + (<usize>k << 4), 8) != size)) k++;
+      if (k == nwr) { if (nwr < 32) { store<u64>(WR + (<usize>k << 4), addr); store<u64>(WR + (<usize>k << 4), size, 8); nwr++; } else if (once(34)) L.redLine("a compute pass writes more than 32 storage ranges: the others are not read back into guest memory"); }
+    }
+  }
+  const im = load<u32>(rf, RF_img);
+  for (let i: u32 = 0; i < 8; i++) {
+    if (!((im >> i) & 1)) continue;
+    const h = load<u64>(IMGH + (<usize>(st * 8 + i) << 3)), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h), w = (im >> (8 + i)) & 1;
+    if (!serial && once(35)) { L.red("a dispatch binds image ID "); L.u(h & 0xfffff); L.str(", which names no live texture: skipped by the replayer"); L.end(); }
+    if (serial) { if (w) contentGpuWrite(serial); else contentNeed(serial); }
+    const hasView = serial != 0 && load<u8>(e, TDE_has_view) != 0, r = H.hostRec(H.H_IMG, 48);
+    store<u32>(r, st, 8); store<u32>(r, i, 12); store<u64>(r, serial, 16); store<u32>(r, w | (hasView ? 2 : 0), 24);
+    if (hasView) memory.copy(r + 32, e + TDE_view, O.VIEW_SIZE);
+  }
+}
+// nvnCommandBufferDispatchCompute(Indirect). A compute pipeline is its shader alone; the pass machine opens a compute
+// pass, which consecutive dispatches share. Every binding the shader uses is sent with each dispatch
+let curCsPipe: i32 = -1, curCs: i32 = -1;
+function dispatch(r: usize): void {
+  let x = load<u32>(r), y = load<u32>(r, 4), z = load<u32>(r, 8);
+  const ind = <usize>load<u64>(r, O.P_DISPATCH_ind);
+  if (ind) { x = load<u32>(ind); y = load<u32>(ind, 4); z = load<u32>(ind, 8); }      // CPU-visible at submit, as indirect draws
+  if (!progC || load<u32>(progC) != O.MAGIC_PROG) { if (once(36)) L.redLine("compute dispatch without a bound compute program: skipped"); nSkipped++; return; }
+  const cs = progShader(progC, 2);
+  if (cs < 0) { nSkipped++; return; }
+  if (!x || !y || !z) return;
+  if (cs != curCs) {
+    const k = PK.KEY;
+    memory.fill(k, 0, PK.PK_SIZE);
+    store<u16>(k, 0xffff, PK.PK_vs); store<u16>(k, <u16>cs, PK.PK_fs); store<u8>(k, 0xff, PK.PK_prim);
+    curCsPipe = PK.pipelineGet(); curCs = cs;
+    dirty |= D_PIPE;                         // the key record no longer holds the draw pipeline's key
+  }
+  if (curCsPipe < 0) { curCs = -1; nSkipped++; return; }
+  passEvent(GfxPassE.Dispatch);
+  emitUbos(2, cs); emitTexs(2, cs); emitStorage(2, cs);
+  const o = H.hostRec(H.H_DISPATCH, 24);
+  store<u32>(o, curCsPipe, 8); store<u32>(o, x, 12); store<u32>(o, y, 16); store<u32>(o, z, 20);
+  nDispatches++;
 }
 
 function draw(r: usize, size: u32, indexed: bool): void {
@@ -413,9 +527,23 @@ function viewLayer(v: usize, has: bool): u32 { return has && (load<u8>(v) & 2) ?
 function copyB2T(r: usize, size: u32): void {
   const t = liveTex(<usize>load<u64>(r, O.P_COPY_B2T_tex));
   if (!t) { if (once(27)) L.redLine("CopyBufferToTexture: the texture is not live at submit; the copy is dropped"); return; }
+  const has = load<u8>(r, O.P_COPY_B2T_has_view) != 0;
+  if (isTarget(load<u64>(t, O.TEX_serial))) passBreak();      // a clear of it may be pending, or its pass open: those come first
+  // While the storage holds the texture's content the copy is made there, in stream order (the swizzled bytes a later
+  // ReadTexels, CopyTextureToBuffer or re-upload sees, as nxnative mirrors it); the next use uploads. No GPU copy then
+  if (contentState(load<u64>(t, O.TEX_serial)) != GfxTextureS.GpuOwned) {
+    let row: u32 = 0, img: u32 = 0;
+    if (<usize>size - 8 >= O.COPY_STRIDES_OFF + O.P_COPY_STRIDES_SIZE) { row = <u32>load<i64>(r, O.COPY_STRIDES_OFF); img = <u32>load<i64>(r, O.COPY_STRIDES_OFF + 8); }
+    // A texture this submission already used was uploaded for draws that are not submitted yet: they go first, so that
+    // they see the old texels and the draws after the copy the new ones
+    if (contentInUse(load<u64>(t, O.TEX_serial))) { passBreak(); H.hostRec(H.H_FLUSH, 8); }
+    if (regionCopy(t, viewLevel(r + O.P_COPY_B2T_view, has), viewLayer(r + O.P_COPY_B2T_view, has), r + O.P_COPY_B2T_r, <usize>load<u64>(r, O.P_COPY_B2T_src), row, img, true)) {
+      contentStage(load<u64>(t, O.TEX_serial)); nMirrored++; dirty |= D_TEX; return;
+    }
+  }
   passBreak();
   contentGpuWrite(load<u64>(t, O.TEX_serial));
-  const has = load<u8>(r, O.P_COPY_B2T_has_view) != 0, o = H.hostRec(H.H_COPY_B2T, 64);
+  const o = H.hostRec(H.H_COPY_B2T, 64);
   store<u64>(o, load<u64>(r, O.P_COPY_B2T_src), 8); store<u64>(o, load<u64>(t, O.TEX_serial), 16);
   store<u32>(o, viewLevel(r + O.P_COPY_B2T_view, has), 24); store<u32>(o, viewLayer(r + O.P_COPY_B2T_view, has), 28);
   memory.copy(o + 32, r + O.P_COPY_B2T_r, 24);
@@ -426,6 +554,7 @@ function copyT2T(r: usize): void {
   if (!s || !d) { if (once(28)) L.redLine("CopyTextureToTexture: a texture is not live at submit; the copy is dropped"); return; }
   passBreak();
   contentNeed(load<u64>(s, O.TEX_serial)); contentGpuWrite(load<u64>(d, O.TEX_serial));
+  // A Downsample (COPY_RESOLVE) is the same record: the replayer resolves instead of copying
   const hs = load<u8>(r, O.P_COPY_T2T_has_sv) != 0, hd = load<u8>(r, O.P_COPY_T2T_has_dv) != 0, o = H.hostRec(H.H_COPY_T2T, 96);
   store<u64>(o, load<u64>(s, O.TEX_serial), 8); store<u64>(o, load<u64>(d, O.TEX_serial), 16);
   store<u32>(o, viewLevel(r + O.P_COPY_T2T_sv, hs), 24); store<u32>(o, viewLayer(r + O.P_COPY_T2T_sv, hs), 28);
@@ -440,6 +569,7 @@ function copyT2B(r: usize, size: u32): void {
   const has = load<u8>(r, O.P_COPY_B2T_has_view) != 0, level = viewLevel(r + O.P_COPY_B2T_view, has), layer = viewLayer(r + O.P_COPY_B2T_view, has);
   let row: u32 = 0, img: u32 = 0;
   if (<usize>size - 8 >= O.COPY_STRIDES_OFF + O.P_COPY_STRIDES_SIZE) { row = <u32>load<i64>(r, O.COPY_STRIDES_OFF); img = <u32>load<i64>(r, O.COPY_STRIDES_OFF + 8); }
+  if (isTarget(load<u64>(t, O.TEX_serial))) passBreak();      // a pending clear of it lands first: it is then the GPU's
   H.hostFlush();
   if (regionCopy(t, level, layer, r + O.P_COPY_B2T_r, <usize>load<u64>(r, O.P_COPY_B2T_src), row, img, false)) { H.hostRec(H.H_MEM_DIRTY, 8); dirty |= D_VBUF | D_UBO; return; }
   passBreak();
@@ -480,6 +610,7 @@ function exec(p: usize, depth: i32): void {
       case O.OP_BIND_PROGRAM: {
         const np = <usize>load<u64>(a);
         if (load<i32>(a, 8) & 3) { if (np != prog) { prog = np; dirty |= D_PIPE; } curVs = -1; curFs = -1; }
+        if (load<i32>(a, 8) & 0x20) { progC = np; curCs = -1; }
         break;
       }
       case O.OP_BIND_STATE: {
@@ -500,22 +631,34 @@ function exec(p: usize, depth: i32): void {
       case O.OP_BIND_VBUF1: { const e = VBUF + (<usize>(load<u32>(a) & 15) << 4); store<u64>(e, load<u64>(a, 8)); store<u64>(e, <u64>load<u32>(a, 4), 8); dirty |= D_VBUF; break; }
       case O.OP_BIND_UBO: case O.OP_BIND_UBO_SMALL: {
         const small = op == O.OP_BIND_UBO_SMALL;
-        const st: u32 = small ? load<u16>(a) : load<u32>(a), i: u32 = small ? load<u16>(a, 2) : load<u32>(a, 4);
-        if (st < 2 && i < 16) { const e = UBO + (<usize>(st * 16 + i) << 4); store<u64>(e, load<u64>(a, 8)); store<u64>(e, small ? <u64>load<u32>(a, 4) : load<u64>(a, 16), 8); dirty |= D_UBO; }
-        else if (st >= 2 && once(29)) L.redLine("uniform buffer bound to a stage other than vertex or fragment: not replayed");
+        const st: u32 = hst(small ? load<u16>(a) : load<u32>(a)), i: u32 = small ? load<u16>(a, 2) : load<u32>(a, 4);
+        if (st < 3 && i < 16) { const e = UBO + (<usize>(st * 16 + i) << 4); store<u64>(e, load<u64>(a, 8)); store<u64>(e, small ? <u64>load<u32>(a, 4) : load<u64>(a, 16), 8); dirty |= D_UBO; }
+        else if (st >= 3 && once(29)) L.redLine("uniform buffer bound to a geometry or tessellation stage: not replayed (WebGPU has no such stage)");
         break;
       }
       case O.OP_BIND_TEX1: {
-        const sv = load<i32>(a), st = <u32>(sv & ~O.BIND_TEX1_NOBASE), slot = load<u32>(a, 4), h = load<u64>(a, 8);
+        const sv = load<i32>(a), st = hst(<u32>(sv & ~O.BIND_TEX1_NOBASE)), slot = load<u32>(a, 4), h = load<u64>(a, 8);
         let tid = h & 0xfffff, sid = <u64>(<u32>h >> 20);
         if (!(sv & O.BIND_TEX1_NOBASE)) { if (tid) tid += <u64>load<i32>(a, 16); if (sid) sid += <u64>load<i32>(a, 20); }
-        if (st < 2 && slot < 32) { store<u64>(TEXH + (<usize>(st * 32 + slot) << 3), tid | sid << 20); dirty |= D_TEX; }
+        if (st < 3 && slot < 32) { store<u64>(TEXH + (<usize>(st * 32 + slot) << 3), tid | sid << 20); dirty |= D_TEX; }
         break;
       }
+      case O.OP_BIND_SSBO: {
+        const st = hst(load<u32>(a)), i = load<u32>(a, 4);
+        if (st < 3 && i < 16) { const e = SSBO + (<usize>(st * 16 + i) << 4); store<u64>(e, load<u64>(a, 8)); store<u64>(e, load<u64>(a, 16), 8); }
+        break;
+      }
+      case O.OP_BIND_IMG: {
+        const st = hst(load<u32>(a)), first = load<u32>(a, 4), n = load<u32>(a, 8);
+        if (st < 3) for (let i: u32 = 0; i < n && first + i < 8; i++) store<u64>(IMGH + (<usize>(st * 8 + first + i) << 3), load<u64>(a + O.P_BIND_HANDLES_h + (<usize>i << 3)) & 0xfffff);
+        break;
+      }
+      case O.OP_DISPATCH: dispatch(a); break;
+      case O.OP_DEPTH_CLAMP: { const on = load<i32>(a) != 0; if (on != depthClamp) { depthClamp = on; dirty |= D_PIPE; } break; }
       case O.OP_BIND_TEX: {
-        const st = load<u32>(a), first = load<u32>(a, 4), n = load<u32>(a, 8);
+        const st = hst(load<u32>(a)), first = load<u32>(a, 4), n = load<u32>(a, 8);
         const src = <usize>load<u64>(a, O.P_BIND_HANDLES_src), defer = load<i32>(a, O.P_BIND_HANDLES_defer) != 0 && src != 0;
-        if (st < 2) for (let i: u32 = 0; i < n && first + i < 32; i++)
+        if (st < 3) for (let i: u32 = 0; i < n && first + i < 32; i++)
           store<u64>(TEXH + (<usize>(st * 32 + first + i) << 3), defer ? <u64>load<u32>(src + (<usize>i << 3)) : load<u64>(a + O.P_BIND_HANDLES_h + (<usize>i << 3)));
         dirty |= D_TEX; break;
       }

@@ -9,6 +9,7 @@ import { KIT_DIR } from "../../src/kit/host/defs.mts";
 import { readMachines, type KitExports, type WasmMachine } from "../../src/kit/host/reader.mts";
 import { FsHost, fsIsPending, fsToken, FS_RETRY, FS_KIND, DEV, type FsStorage, type FsDevice, type FsExports } from "../../src/glue/fs_host.ts";
 
+import { writeStamp } from "../../src/kit/host/stamp.mts";
 export const ROOT = join(KIT_DIR, "..", "..");
 export const WASM = join(ROOT, "build", "fs", "fs.wasm");
 export const SCRATCH = process.env.FS_TEST_TMP ?? join(ROOT, "build", "fs", "tmp");
@@ -18,6 +19,7 @@ export function build(): void {
   mkdirSync(dirname(WASM), { recursive: true });
   execFileSync(process.execPath, [join(ROOT, "node_modules", "assemblyscript", "bin", "asc.js"), "src/fs/index.ts", "-o", WASM, "--runtime", "stub", "-O2"],
     { cwd: ROOT, stdio: "inherit" });
+  writeStamp(WASM);
 }
 
 // Fn ids by nxnative's identifier (h_fs_<x>), from src/fs/names.ts

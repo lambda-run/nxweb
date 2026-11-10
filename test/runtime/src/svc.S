@@ -61,3 +61,9 @@ FN svcCreateEvent                  // (Handle *writable, Handle *readable)
     str     w1, [x3]
     str     w2, [x4]
     ret
+// (u64 a, u64 b, u64 *tick): reads the system counter into *tick and returns a + b computed after the read
+FN cnt_read_keep
+    mrs     x3, cntpct_el0
+    str     x3, [x2]
+    add     x0, x0, x1
+    ret

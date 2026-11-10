@@ -32,6 +32,7 @@ export function texEntry(serial: u64): usize {
   const e = TEXTAB + <usize>(serial & 0xffff) * TE_SIZE;
   return serial && load<u64>(e) == serial ? e : 0;
 }
+export function texSlot(s: u32): usize { return TEXTAB + <usize>s * TE_SIZE; }
 export function texFree(serial: u64): void { const e = texEntry(serial); if (e) store<u64>(e, 0); }
 
 // ---- programs: serial -> per-stage shader keys and library ids ----

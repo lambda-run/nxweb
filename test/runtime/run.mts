@@ -3,6 +3,7 @@
 import { ROOT, build, buildModules, loadEnv } from "./harness.mts";
 import { runCases, formatResult } from "./cases.ts";
 import { runGfxCases } from "./gfx_cases.ts";
+import { runMoreCases } from "./more_cases.ts";
 
 process.chdir(ROOT);
 try { build(); buildModules(); }
@@ -12,6 +13,7 @@ if (!env.corpus.length) console.error("[RED] rt:test: test/guests/out is empty (
 const only = process.argv[2];
 const results = runCases(env, only, r => console.log(formatResult(r)));
 results.push(...await runGfxCases(env, undefined, only, [], r => console.log(formatResult(r))));
+results.push(...await runMoreCases(env, undefined, only, r => console.log(formatResult(r))));
 const failed = results.filter(r => !r.ok).length;
 console.log(`\nrt:test (node ${process.version}): ${results.length} tests, ${failed} failed`);
 process.exit(failed ? 1 : 0);

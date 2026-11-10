@@ -107,6 +107,7 @@ export let waitTimeout: i64 = -1;
 export let resumeHow: i32 = 0;
 export function setResume(how: i32): void { resumeHow = how; }
 export function retClear(): void { retFlags = 0; retX1 = 0; retD0 = 0; waitHandle = 0; waitTimeout = -1; }
+export function retRestore(f: u32, x1: u64, d0: u64, wh: u32, wt: i64): void { retFlags = f; retX1 = x1; retD0 = d0; waitHandle = wh; waitTimeout = wt; }
 export function setX1(v: u64): void { retX1 = v; retFlags |= R_X1; }
 export function retF64(v: f64): u64 { retD0 = reinterpret<u64>(v); retFlags |= R_D0; return 0; }
 export function retF32(v: f32): u64 { retD0 = <u64>reinterpret<u32>(v); retFlags |= R_D0; return 0; }

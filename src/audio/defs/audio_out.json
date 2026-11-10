@@ -1,0 +1,32 @@
+{
+  "id": 0,
+  "name": "audio_out",
+  "doc": "Who consumes one AudioOut's queue (src/audio/out.ts): nxnative's state, backend, start_phase and stalled / retry fields as one machine. Stopped: nobody; the guest-visible state is Stopped here and Started everywhere else. SilentStarting: the silent sink consumes on the guest clock while the device is asked to run (an AudioContext waits for a user gesture as long as it takes; with no device attached this state lasts); it carries when the attempt began and the backoff reached. Live: the device mixer consumes. SilentRetry: the device failed to start, delivered no callback within 1 s of running, stopped calling back for 200 ms or was taken away; the silent sink consumes and the device is asked again at the time the state carries, 1, 2, 4, 8, 8 ... s apart. Suspended: the page is hidden; the silent sink consumes and nothing is retried. Reaching Live or Stopped forgets the backoff.",
+  "states": ["Stopped", "SilentStarting", "Live", "SilentRetry", "Suspended"],
+  "initial": "Stopped",
+  "data": {
+    "SilentStarting": { "name": "attempt", "type": "host microseconds when the attempt began << 4 | backoff index (0 = none, 1..4 = 1, 2, 4, 8 s)" },
+    "SilentRetry": { "name": "retry", "type": "host microseconds of the next attempt << 4 | backoff index (1..4)" }
+  },
+  "events": ["Start", "StartHidden", "DeviceCallback", "StartFailed", "StartTimeout", "Stall", "DeviceLost", "RetryDue", "Suspend", "Resume", "Stop"],
+  "transitions": [
+    ["Stopped", "Start", "SilentStarting"],
+    ["Stopped", "StartHidden", "Suspended"],
+    ["SilentStarting", "DeviceCallback", "Live"],
+    ["SilentStarting", "StartFailed", "SilentRetry"],
+    ["SilentStarting", "StartTimeout", "SilentRetry"],
+    ["Live", "Stall", "SilentRetry"],
+    ["Live", "DeviceLost", "SilentRetry"],
+    ["SilentRetry", "RetryDue", "SilentStarting"],
+
+    ["SilentStarting", "Suspend", "Suspended"],
+    ["Live", "Suspend", "Suspended"],
+    ["SilentRetry", "Suspend", "Suspended"],
+    ["Suspended", "Resume", "SilentStarting"],
+
+    ["SilentStarting", "Stop", "Stopped"],
+    ["Live", "Stop", "Stopped"],
+    ["SilentRetry", "Stop", "Stopped"],
+    ["Suspended", "Stop", "Stopped"]
+  ]
+}

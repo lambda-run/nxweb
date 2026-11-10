@@ -11,9 +11,10 @@ import * as T from "./tables";
 import { texLayout, texLevelOffset } from "./texlayout";
 import { progSetKeys } from "./shader";
 import { syncInitialize, syncFinalize, syncWait } from "./sync";
+import { fenceNew } from "./tables";
 import { windowInitialize, windowAcquire, windowPresent, windowGetCrop } from "./window";
 import { submit, emitFence, passBreak, blendDefault, dsDefault } from "./lower";
-import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY } from "./hostops";
+import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY, H_FENCE } from "./hostops";
 import { contentInit, noteFlush, regionCopy, writeTexels } from "./texcontent";
 
 // Device properties: values measured on Tegra X1 (nxnative g_devinfo). Items 0 and 1 are the API version (apiMajor /
@@ -67,6 +68,22 @@ export function status(id: i32): i32 { return <u32>id < <u32>NVN_NFUNC ? load<u8
 @inline function FL(a: usize, i: usize): f32 { return load<f32>(a + 64 + (i << 3)); }
 // @ts-ignore: decorator
 @inline function B(a: usize, i: usize): bool { return (load<u32>(a + (i << 3)) & 0xff) != 0; }   // NVNboolean: only the low 8 bits count
+
+// A float result: the low 32 bits of d0, written back at argsPtr + 64 (the upper bits zero, as an FMOV S0 leaves them).
+// gen_names.mts finds RETF and FL in each case and builds the ABI table (nvn_abi) from them
+function RETF(a: usize, v: f32): u64 { store<u64>(a, 0, 64); store<f32>(a, v, 64); return 0; }
+// The name of function id as a NUL-terminated string in static memory (valid until the next call), 0 for no such id
+const NAME_BUF: usize = memory.data(128);
+export function nameCopy(id: i32): usize {
+  for (let i = 0; i < NVN_NFUNC; i++) {
+    const e = NAMES + <usize>load<u16>(NAME_OFFS + (<usize>i << 1));
+    if (<i32>load<u16>(e) == id) { const n = <usize>load<u8>(e, 2); memory.copy(NAME_BUF, e + 3, n); store<u8>(NAME_BUF + n, 0); return NAME_BUF; }
+  }
+  return 0;
+}
+// The fence the last nvnQueueFinish waits for: the embedder parks the thread until it is done (README, "QueueFinish")
+let finishFence: u64 = 0;
+export function finishFenceLast(): u64 { return finishFence; }
 
 // Bit-field helpers for the state objects (obj.ts)
 function bits32(p: usize, shift: u32, width: u32, v: u32): void { const m = ((<u32>1 << width) - 1) << shift; store<u32>(p, (load<u32>(p) & ~m) | ((v << shift) & m)); }
@@ -298,6 +315,8 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnTextureViewSetTarget: { const v = P(a, 0); store<u8>(v, load<u8>(v) | 8); store<u8>(v, <u8>I(a, 1), O.VIEW_target); return 0; }
     case F.nvnTextureViewSetSwizzle: { const v = P(a, 0); store<u8>(v, load<u8>(v) | 16); for (let i: usize = 0; i < 4; i++) store<u8>(v + O.VIEW_swz + i, <u8>I(a, 1 + i)); return 0; }
     case F.nvnTextureViewSetDepthStencilMode: { const v = P(a, 0); store<u8>(v, (load<u8>(v) & 0x3f) | 32 | (<u8>(I(a, 1) & 3) << 6)); return 0; }
+    case F.nvnTextureViewGetFormat: { const v = P(a, 0); if (P(a, 1)) store<i32>(P(a, 1), load<u16>(v, O.VIEW_format)); return (load<u8>(v) >> 2) & 1; }
+    case F.nvnTextureViewGetTarget: { const v = P(a, 0); if (P(a, 1)) store<i32>(P(a, 1), load<u8>(v, O.VIEW_target)); return (load<u8>(v) >> 3) & 1; }
     case F.nvnTextureViewGetLayers: { const v = P(a, 0); store<i32>(P(a, 1), load<u16>(v, O.VIEW_min_layer)); store<i32>(P(a, 2), load<u16>(v, O.VIEW_nlayers)); return (load<u8>(v) >> 1) & 1; }
     case F.nvnTextureViewGetLevels: { const v = P(a, 0); store<i32>(P(a, 1), load<u8>(v, O.VIEW_base_level)); store<i32>(P(a, 2), load<u8>(v, O.VIEW_nlevels)); return load<u8>(v) & 1; }
 
@@ -328,6 +347,17 @@ export function call(fn: i32, a: usize): u64 {
       return 1;
     }
     case F.nvnSamplerFinalize: store<u32>(P(a, 0), 0); return 0;
+    case F.nvnSamplerBuilderGetLodBias: return RETF(a, load<f32>(P(a, 0) + O.SB_p, O.SP_lod_bias));
+    case F.nvnSamplerBuilderGetMaxAnisotropy: return RETF(a, load<f32>(P(a, 0) + O.SB_p, O.SP_aniso));
+    case F.nvnSamplerBuilderGetCompare: { const p = P(a, 0) + O.SB_p; store<i32>(P(a, 1), load<u8>(p, O.SP_cmp_mode)); store<i32>(P(a, 2), load<u8>(p, O.SP_cmp_func)); return 0; }
+    case F.nvnSamplerBuilderGetBorderColor: memory.copy(P(a, 1), P(a, 0) + O.SB_p + O.SP_border, 16); return 0;
+    case F.nvnSamplerGetMinMagFilter: { const p = P(a, 0) + O.SAMP_p; store<i32>(P(a, 1), load<u8>(p, O.SP_minf)); store<i32>(P(a, 2), load<u8>(p, O.SP_magf)); return 0; }
+    case F.nvnSamplerGetWrapMode: { const p = P(a, 0) + O.SAMP_p; store<i32>(P(a, 1), load<u8>(p, O.SP_ws)); store<i32>(P(a, 2), load<u8>(p, O.SP_wt)); store<i32>(P(a, 3), load<u8>(p, O.SP_wr)); return 0; }
+    case F.nvnSamplerGetLodClamp: { const p = P(a, 0) + O.SAMP_p; store<f32>(P(a, 1), load<f32>(p, O.SP_lod_min)); store<f32>(P(a, 2), load<f32>(p, O.SP_lod_max)); return 0; }
+    case F.nvnSamplerGetLodBias: return RETF(a, load<f32>(P(a, 0) + O.SAMP_p, O.SP_lod_bias));
+    case F.nvnSamplerGetCompare: { const p = P(a, 0) + O.SAMP_p; store<i32>(P(a, 1), load<u8>(p, O.SP_cmp_mode)); store<i32>(P(a, 2), load<u8>(p, O.SP_cmp_func)); return 0; }
+    case F.nvnSamplerGetBorderColor: memory.copy(P(a, 1), P(a, 0) + O.SAMP_p + O.SP_border, 16); return 0;
+    case F.nvnSamplerGetMaxAnisotropy: return RETF(a, load<f32>(P(a, 0) + O.SAMP_p, O.SP_aniso));
     case F.nvnSamplerSetDebugLabel: return 0;
 
     // ---------- Programs ----------
@@ -349,7 +379,7 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnSyncInitialize: syncInitialize(P(a, 0)); return 1;
     case F.nvnSyncFinalize: syncFinalize(P(a, 0)); return 0;
     case F.nvnSyncSetDebugLabel: return 0;
-    case F.nvnSyncWait: return syncWait(P(a, 0));
+    case F.nvnSyncWait: return syncWait(P(a, 0), X(a, 1));
     case F.nvnQueueBuilderSetDefaults: {
       const b = P(a, 0), d = load<u64>(b);
       memory.fill(b, 0, O.QB_SIZE); store<u64>(b, d);
@@ -376,9 +406,10 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnQueueGetError: return 0;                     // GPU_NO_ERROR
     case F.nvnQueueSubmitCommands: { const q = P(a, 0); store<u64>(q, load<u64>(q, O.QUEUE_submits) + 1, O.QUEUE_submits); submit(I(a, 1), P(a, 2)); return 0; }
     case F.nvnQueueFlush: hostFlush(); return 0;           // everything submitted so far is with the replayer
-    // DEPARTS: nxnative's Finish blocks until the GPU is done. A browser turn cannot block: the work is flushed, and the
-    // kernel waits on the fence word when it must
-    case F.nvnQueueFinish: hostRec(H_FLUSH, 8); hostFlush(); return 0;
+    // DEPARTS: nxnative's Finish blocks until the GPU is done. A browser turn cannot block: the work is flushed with a
+    // fence behind it (fences also wait for texture and buffer read-backs to land in guest memory), and the embedder
+    // parks the thread until gfx_finish_fence() is done
+    case F.nvnQueueFinish: passBreak(); finishFence = fenceNew(); store<u64>(hostRec(H_FENCE, 16), finishFence, 8); hostRec(H_FLUSH, 8); hostFlush(); return 0;
     case F.nvnQueueFenceSync: passBreak(); emitFence(P(a, 1)); hostFlush(); return 0;
     case F.nvnQueuePresentTexture: windowPresent(P(a, 1), I(a, 2)); return 0;
     case F.nvnQueueAcquireTexture: return windowAcquire(P(a, 1), 0, P(a, 2));
@@ -553,6 +584,15 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferGetCopyRowStride: return load<u64>(P(a, 0), O.CMD_copy_row);
     case F.nvnCommandBufferGetCopyImageStride: return load<u64>(P(a, 0), O.CMD_copy_image);
     case F.nvnCommandBufferFenceSync: C.fenceSync(P(a, 0), X(a, 1)); return 0;
+    case F.nvnCommandBufferBindStorageBuffer: C.bindStorageBuffer(P(a, 0), I(a, 1), I(a, 2), X(a, 3), X(a, 4)); return 0;
+    case F.nvnCommandBufferBindStorageBuffers: { const rg = P(a, 4); for (let i = 0, n = I(a, 3); i < n; i++) C.bindStorageBuffer(P(a, 0), I(a, 1), I(a, 2) + i, load<u64>(rg + (<usize>i << 4)), load<u64>(rg + (<usize>i << 4), 8)); return 0; }
+    case F.nvnCommandBufferBindImage: store<u64>(RANGE, X(a, 3)); C.bindTextures(P(a, 0), I(a, 1), I(a, 2), 1, RANGE, O.OP_BIND_IMG); return 0;
+    case F.nvnCommandBufferBindImages: C.bindTextures(P(a, 0), I(a, 1), I(a, 2), I(a, 3), P(a, 4), O.OP_BIND_IMG); return 0;
+    case F.nvnCommandBufferDispatchCompute: C.dispatch(P(a, 0), I(a, 1), I(a, 2), I(a, 3), 0); return 0;
+    case F.nvnCommandBufferDispatchComputeIndirect: C.dispatch(P(a, 0), 0, 0, 0, X(a, 1)); return 0;
+    case F.nvnCommandBufferSetDepthClamp: C.depthClamp(P(a, 0), B(a, 1)); return 0;
+    case F.nvnCommandBufferDownsample: C.downsample(P(a, 0), P(a, 1), 0, P(a, 2), 0); return 0;
+    case F.nvnCommandBufferDownsampleTextureView: C.downsample(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4)); return 0;
   }
   const st = status(fn);
   if (st == 2) return 0;                                   // empty by design (gen_names.mts NOPS)

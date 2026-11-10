@@ -23,13 +23,16 @@ import { Inst } from "../kit/machine";
 import { GFX_TEXTURE, GfxTextureE, GfxTextureS } from "../kit/gen/tables";
 import * as O from "./obj";
 import * as H from "./hostops";
-import { texEntry, TE_inst, TE_mem, TE_size, TE_desc, TE_full, TE_last_full, TE_checked } from "./tables";
+import { texEntry, texSlot, TEX_SLOTS, TE_inst, TE_mem, TE_size, TE_desc, TE_full, TE_last_full, TE_checked } from "./tables";
 import { texGeom, texLayers, texSize, fmtOf, fBpb, fBw, fBh, gRowBytes, gRows, gSlices, gTh, gTd, gBase, gGobs, gBw, gBh, gBpb } from "./texlayout";
 import { arenaAlloc } from "./arena";
+import { fmtXform, unpack16, toHalf, X_NONE, X_D16, X_D24, X_D32F, X_D24S8, X_D32FS8, X_S8, X_PACKED, X_NORM16, X_SNORM16, X_ASTC } from "./fmt";
+import { astcRows } from "./astc";
 
 const SCRATCH_BYTES: usize = 4 << 20;
-let SCRATCH: usize = 0;
-export function texContentInit(): void { SCRATCH = arenaAlloc(SCRATCH_BYTES); }
+const OUT_BYTES: usize = 6 << 20;        // converted rows (depth as floats, decoded ASTC, unpacked 16-bit texels)
+let SCRATCH: usize = 0, OUT: usize = 0;
+export function texContentInit(): void { SCRATCH = arenaAlloc(SCRATCH_BYTES); OUT = arenaAlloc(OUT_BYTES); }
 const SCRUB_PERIOD: u32 = 60;
 const SCRUB_BUDGET: u64 = 1 << 20;
 
@@ -103,12 +106,70 @@ function hashSample(p: usize, n: usize): u64 {
 }
 
 // H_TEX_DATA: +8 u64 serial, +16 u32 level, +20 u32 z (layer or first slice), +24 u32 y, +28 u32 width, +32 u32 height (texels, whole blocks),
-// +36 u32 slices, +40 u32 address of the rows, +44 u32 bytes per row, +48 u32 x
-function emitData(serial: u64, level: u32, z: u32, x: u32, y: u32, w: u32, h: u32, slices: u32, ptr: usize, pitch: usize): void {
+// +36 u32 slices, +40 u32 address of the rows, +44 u32 bytes per row, +48 u32 x, +52 u32 what the rows are: 0 texels of the
+// host texture's format, 1 depth as f32, 2 stencil as u8 (WebGPU takes depth only through a draw, stencil as its own aspect)
+function emitData(serial: u64, level: u32, z: u32, x: u32, y: u32, w: u32, h: u32, slices: u32, ptr: usize, pitch: usize, what: u32 = 0): void {
   const r = H.hostRec(H.H_TEX_DATA, 56);
   store<u64>(r, serial, 8); store<u32>(r, level, 16); store<u32>(r, z, 20); store<u32>(r, y, 24); store<u32>(r, w, 28); store<u32>(r, h, 32); store<u32>(r, slices, 36);
-  store<u32>(r, <u32>ptr, 40); store<u32>(r, <u32>pitch, 44); store<u32>(r, x, 48);
+  store<u32>(r, <u32>ptr, 40); store<u32>(r, <u32>pitch, 44); store<u32>(r, x, 48); store<u32>(r, what, 52);
   nUploadBytes += <u64>pitch * (h / fBh) * slices;
+}
+// Bytes of OUT one row of nbx blocks takes once converted (0: the format goes as it is stored)
+function outRowBytes(f: u32, nbx: u32): usize {
+  switch (fmtXform(f)) {
+    case X_NONE: return 0;
+    case X_PACKED: return <usize>nbx * 4;
+    case X_NORM16: case X_SNORM16: return <usize>nbx * fBpb;
+    case X_ASTC: return <usize>nbx * fBw * 4 * fBh;
+    default: return <usize>nbx * 5;      // depth as f32 and stencil as u8
+  }
+}
+// Rows of blocks (nby rows of nbx blocks for each of `slices`, pitch bytes apart at ptr) of format f to the replayer,
+// converted when WebGPU has no such format or cannot be given it directly. fmtOf(f) was called; x, y in texels.
+// Memory layouts of the depth formats and the packed 16-bit formats: as nxnative reads them (D24: depth in the upper
+// 24 bits, stencil in the low 8; D32F_S8: a float, then a word with the stencil in its low byte; packed: red at bit 0)
+function send(serial: u64, f: u32, level: u32, z: u32, x: u32, y: u32, nbx: u32, nby: u32, slices: u32, ptr: usize, pitch: usize): void {
+  const k = fmtXform(f), rows = nby * slices;
+  if (k == X_NONE) { emitData(serial, level, z, x, y, nbx * fBw, nby * fBh, slices, ptr, pitch); return; }
+  if (outRowBytes(f, nbx) * rows > OUT_BYTES) { L.redLine("texels to convert do not fit the conversion area: not uploaded"); return; }
+  if (k == X_ASTC) {
+    const op: usize = <usize>nbx * fBw * 4;
+    astcRows(ptr, pitch, nbx, rows, fBw, fBh, OUT, op, f >= 0x87);
+    // slices of an ASTC texture are layers: one record each keeps rows = nby * bh
+    emitData(serial, level, z, x, y, nbx * fBw, nby * fBh, slices, OUT, op);
+    return;
+  }
+  if (k == X_PACKED) {
+    for (let r: u32 = 0; r < rows; r++) { const s = ptr + <usize>r * pitch, o = OUT + (<usize>r * nbx << 2); for (let i: usize = 0; i < nbx; i++) store<u32>(o + (i << 2), unpack16(f, load<u16>(s + (i << 1)))); }
+    emitData(serial, level, z, x, y, nbx, nby, slices, OUT, <usize>nbx << 2);
+    return;
+  }
+  if (k == X_NORM16 || k == X_SNORM16) {
+    const n: usize = <usize>nbx * fBpb >> 1;
+    for (let r: u32 = 0; r < rows; r++) {
+      const s = ptr + <usize>r * pitch, o = OUT + <usize>r * (n << 1);
+      if (k == X_NORM16) for (let i: usize = 0; i < n; i++) store<u16>(o + (i << 1), toHalf(<f32>load<u16>(s + (i << 1)) / 65535));
+      else for (let i: usize = 0; i < n; i++) store<u16>(o + (i << 1), toHalf(max<f32>(<f32>load<i16>(s + (i << 1)) / 32767, -1)));
+    }
+    emitData(serial, level, z, x, y, nbx, nby, slices, OUT, n << 1);
+    return;
+  }
+  const so = OUT + (<usize>rows * nbx << 2), hasDepth = k != X_S8, hasStencil = k == X_D24S8 || k == X_D32FS8 || k == X_S8;
+  for (let r: u32 = 0; r < rows; r++) {
+    const s = ptr + <usize>r * pitch, o = OUT + (<usize>r * nbx << 2), q = so + <usize>r * nbx;
+    for (let i: usize = 0; i < nbx; i++) {
+      switch (k) {
+        case X_D16: store<f32>(o + (i << 2), <f32>load<u16>(s + (i << 1)) / 65535); break;
+        case X_D24: store<f32>(o + (i << 2), <f32>(<f64>(load<u32>(s + (i << 2)) >> 8) / 16777215)); break;
+        case X_D32F: store<f32>(o + (i << 2), load<f32>(s + (i << 2))); break;
+        case X_D24S8: { const v = load<u32>(s + (i << 2)); store<f32>(o + (i << 2), <f32>(<f64>(v >> 8) / 16777215)); store<u8>(q + i, <u8>v); break; }
+        case X_D32FS8: store<f32>(o + (i << 2), load<f32>(s + (i << 3))); store<u8>(q + i, load<u8>(s + (i << 3), 4)); break;
+        default: store<u8>(q + i, load<u8>(s + i));
+      }
+    }
+  }
+  if (hasDepth) emitData(serial, level, z, x, y, nbx, nby, slices, OUT, <usize>nbx << 2, 1);
+  if (hasStencil) emitData(serial, level, z, x, y, nbx, nby, slices, so, nbx, 2);
 }
 // @ts-ignore: decorator
 @inline function mipExt(v: u32, l: u32): u32 { v >>= l; return v ? v : 1; }
@@ -126,20 +187,23 @@ function upload(e: usize): bool {
     const w = load<u32>(d, O.TD_width), h = load<u32>(d, O.TD_height), bw = (w + fBw - 1) / fBw;
     let stride = load<u32>(d, O.TD_stride);
     if (!stride) { const al: u32 = (flags & 0x40) ? 128 : 32; stride = (fBpb * bw + al - 1) & ~(al - 1); }
-    emitData(serial, 0, 0, 0, 0, bw * fBw, (h + fBh - 1) / fBh * fBh, 1, mem, stride);
-    H.hostFlush();
+    const f = <u32>load<i32>(d, O.TD_format), nby = (h + fBh - 1) / fBh, orb = outRowBytes(f, bw);
+    const band: u32 = orb ? max<u32>(<u32>(OUT_BYTES / orb), 1) : nby;
+    for (let y0: u32 = 0; y0 < nby; y0 += band) { send(serial, f, 0, 0, 0, y0 * fBh, bw, min<u32>(band, nby - y0), 1, mem + <usize>y0 * stride, stride); H.hostFlush(); }
     return true;
   }
   const layers = texLayers(d), levels = max<u32>(load<u32>(d, O.TD_levels), 1);
   for (let layer: u32 = 0; layer < layers; layer++) for (let level: u32 = 0; level < levels; level++) {
     if (!texGeom(d, level, layer)) continue;
     const pitch: usize = (gRowBytes + 3) & ~3, per = pitch * gSlices;
+    const f = <u32>load<i32>(d, O.TD_format), nbx = gRowBytes / gBpb, orb = outRowBytes(f, nbx) * gSlices;
     let band = <u32>(SCRATCH_BYTES / per);
+    if (orb) band = min<u32>(band, <u32>(OUT_BYTES / orb));
     if (!band) { L.redLine("a texture level's slices do not fit the upload scratch area one row at a time: not uploaded"); continue; }
     for (let y0: u32 = 0; y0 < gRows; y0 += band) {
       const y1 = min<u32>(gRows, y0 + band);
       blMove(mem, SCRATCH, pitch, true, y0, y1);
-      emitData(serial, level, target == 2 ? 0 : layer, 0, y0 * gBh, gRowBytes / gBpb * gBw, (y1 - y0) * gBh, gSlices, SCRATCH, pitch);
+      send(serial, f, level, target == 2 ? 0 : layer, 0, y0 * gBh, nbx, y1 - y0, gSlices, SCRATCH, pitch);
       H.hostFlush();          // the scratch area is read now
     }
   }
@@ -160,7 +224,7 @@ export function contentNeed(serial: u64): void {
   const e = texEntry(serial);
   if (!e) return;
   const m = inst(e), mem = <usize>load<u32>(e, TE_mem), size = <usize>load<u64>(e, TE_size);
-  if (m.state == GfxTextureS.GpuOwned || load<u32>(e, TE_checked) == submitNo) return;
+  if (m.state == GfxTextureS.GpuOwned || (load<u32>(e, TE_checked) == submitNo && m.state != GfxTextureS.Staged)) return;
   store<u32>(e, submitNo, TE_checked);
   if (m.state == GfxTextureS.Uploaded) {
     let changed = hashSample(mem, size) != m.data;
@@ -180,8 +244,30 @@ export function contentNeed(serial: u64): void {
   store<u64>(e, hashFull(mem, size), TE_full); store<u32>(e, submitNo, TE_last_full);
   m.step(GfxTextureE.Upload, hashSample(mem, size));
 }
-// The GPU writes the texture (attachment of a pass, destination of a copy)
-export function contentGpuWrite(serial: u64): void { const e = texEntry(serial); if (e && inst(e).state != GfxTextureS.GpuOwned) inst(e).step(GfxTextureE.GpuWrite); else if (e) inst(e).step(GfxTextureE.GpuWrite); }
+// The GPU writes the texture (attachment of a pass, destination of a copy, an image a compute shader stores to).
+// Texels a command staged in the storage are uploaded first: the write may keep what it does not cover
+export function contentGpuWrite(serial: u64): void {
+  const e = texEntry(serial);
+  if (!e) return;
+  if (inst(e).state == GfxTextureS.Staged) upload(e);
+  inst(e).step(GfxTextureE.GpuWrite);
+}
+// Whether this submission already read the texture from its storage (it was uploaded or checked for draws that may not be submitted yet)
+export function contentInUse(serial: u64): bool { const e = texEntry(serial); return e != 0 && load<u32>(e, TE_checked) == submitNo && inst(e).state != GfxTextureS.GpuOwned; }
+// Texels were written into the storage in stream order (CopyBufferToTexture mirrored, WriteTexels): the next use uploads
+export function contentStage(serial: u64): void { const e = texEntry(serial); if (e && inst(e).can(GfxTextureE.Stage)) inst(e).step(GfxTextureE.Stage); }
+// The GPU device was lost and replaced (device.ts): every live texture's host copy is gone
+export function contentLost(): u32 {
+  let gone: u32 = 0;
+  for (let s: u32 = 1; s < TEX_SLOTS; s++) {
+    const e = texSlot(s);
+    if (!load<u64>(e)) continue;
+    if (inst(e).state == GfxTextureS.GpuOwned) gone++;
+    inst(e).step(GfxTextureE.Lost);
+    store<u32>(e, 0, TE_checked);
+  }
+  return gone;
+}
 export function contentState(serial: u64): i32 { const e = texEntry(serial); return e ? <i32>inst(e).state : -1; }
 
 // ---- regions between a texture's storage and linear memory: ReadTexels, WriteTexels, CopyTextureToBuffer on the CPU ----
@@ -225,14 +311,14 @@ export function regionCopy(tex: usize, level: u32, layer0: u32, region: usize, l
 export function writeTexels(tex: usize, level: u32, layer0: u32, region: usize, data: usize, row: usize, img: usize): void {
   const e = texEntry(load<u64>(tex, O.TEX_serial));
   if (!e) { L.redLine("WriteTexels on a texture that is not live"); return; }
-  if (regionCopy(tex, level, layer0, region, data, row, img, true)) { if (inst(e).state == GfxTextureS.Uploaded) inst(e).step(GfxTextureE.Stale); return; }
+  if (regionCopy(tex, level, layer0, region, data, row, img, true)) { inst(e).step(GfxTextureE.Stage); return; }
   const d = e + TE_desc;
   if (!fmtOf(load<i32>(d, O.TD_format))) return;
   const w = load<u32>(region, 12), h = load<u32>(region, 16), dep = max<u32>(load<u32>(region, 20), 1), nbx = (w + fBw - 1) / fBw, nby = (h + fBh - 1) / fBh;
   if (!row) row = nbx * fBpb;
   if (!img) img = row * nby;
   const is3d = load<i32>(d, O.TD_target) == 2;
-  for (let k: u32 = 0; k < dep; k++) emitData(load<u64>(e), level, (is3d ? 0 : layer0) + load<u32>(region, 8) + k, load<u32>(region), load<u32>(region, 4), nbx * fBw, nby * fBh, 1, data + <usize>k * img, row);
+  for (let k: u32 = 0; k < dep; k++) { send(load<u64>(e), <u32>load<i32>(d, O.TD_format), level, (is3d ? 0 : layer0) + load<u32>(region, 8) + k, load<u32>(region), load<u32>(region, 4), nbx, nby, 1, data + <usize>k * img, row); H.hostFlush(); }
   H.hostFlush();
 }
 // The per-use check alone, n times over one texture's storage (the tests time it)

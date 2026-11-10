@@ -21,7 +21,7 @@ stateDiagram-v2
     OpenReadWrite --> Stale: Invalidate
 ```
 
-Machine id 3. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 6. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

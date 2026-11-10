@@ -287,6 +287,7 @@ static Mat rot_x(float a) { float c = cosf_(a), s = sinf_(a); Mat o = {{ 1, 0, 0
 static NVNprogram g_cube_prog; static NVNbufferAddress g_cube_vb, g_cube_ib, g_cube_ubo; static float *g_cube_mvp;
 static NVNtexture g_cube_tex; static NVNsampler g_cube_samp; static NVNtextureHandle g_cube_handle;
 static const float g_bg[4] = { 0.05f, 0.07f, 0.12f, 1.0f };
+static void cube_texture_init(void);
 static void cube_init(void) {
   static const signed char faces[6][3][3] = { {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}}, {{0,1,0},{1,0,0},{0,0,-1}}, {{0,-1,0},{1,0,0},{0,0,1}}, {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}} };
   static const signed char corner[4][2] = { {-1,-1}, {1,-1}, {-1,1}, {1,1} };
@@ -303,6 +304,9 @@ static void cube_init(void) {
   g_cube_vb = data_put(v, sizeof v, 0); g_cube_ib = data_put(idx, sizeof idx, 0);
   g_cube_ubo = data_put(0, 64, (void **)&g_cube_mvp);
   program_init(&g_cube_prog, "vs_cube", "fs_tex");
+  cube_texture_init();
+}
+static void cube_texture_init(void) {
   // 8x8 RGBA8 texels (four colours, a light border), written into the texture's storage in the pool in the Switch's
   // block-linear order, as a packaged texture arrives: byte (x, y) of a 64 x 8 byte block is at
   // (x/32)*256 + (y/2)*64 + ((x/16)&1)*32 + (y&1)*16 + (x&15)

@@ -6,7 +6,7 @@
 
 export const HOST_END = 0x0800_0000;   // the guest's code region starts here (kernel default layout)
 
-export interface Range { name: string; lo: number; hi: number; module?: "rt" | "loader" | "kernel" | "gfx"; what: string }
+export interface Range { name: string; lo: number; hi: number; module?: "rt" | "loader" | "kernel" | "gfx" | "fs"; what: string }
 
 const SIZES: [name: string, size: number, module: Range["module"] | undefined, what: string][] = [
   ["null guard",     0x0001_0000, undefined, "never written by the host: a guest null pointer reads zeroes here"],
@@ -16,7 +16,9 @@ const SIZES: [name: string, size: number, module: Range["module"] | undefined, w
   ["kernel static",  0x00A0_0000, "kernel",  "src/kernel static data: thread records and contexts, handle table, alias page states (8 MB)"],
   ["gfx static",     0x0010_0000, "gfx",     "src/gfx static data (its --memoryBase in build/runtime/gfx.wasm)"],
   ["gfx arena",      0x0200_0000, undefined, "gfx_init(arena, gfx_arena_bytes()): 24 MB today, 32 MB kept"],
-  ["file staging",   0x0200_0000, undefined, "NSO/NRO file bytes while the loader needs them"],
+  ["file staging",   0x0180_0000, undefined, "NSO/NRO file bytes while the loader needs them (24 MB)"],
+  ["fs static",      0x0010_0000, "fs",      "src/fs static data (its --memoryBase in build/runtime/fs.wasm; about 400 KB)"],
+  ["fs arena",       0x0070_0000, undefined, "fs_init(arena): RomFS tables of the mounted images, save trees, directory snapshots (7 MB)"],
   ["a64 translator", 0x0100_0000, undefined, "src/a64 translator static data and buffers (its --memoryBase, root a64:build script)"],
   ["a64 helpers",    0x0001_0000, undefined, "src/a64 helpers static data (its --memoryBase)"],
   ["a64 entry bits", 0x0080_0000, undefined, "translator: 1 bit per instruction of the 256 MB code region (known function entries)"],

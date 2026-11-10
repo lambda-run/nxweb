@@ -7,6 +7,7 @@
 import { Runtime, type HostCpu, type HostResult } from "./rt_runtime.ts";
 import { GfxHost, type ShaderInfo } from "./gfx_host.ts";
 import { range } from "./rt_layout.ts";
+import type { RtShaders, ShaderBlob } from "./rt_shaders.ts";
 
 export interface GfxOptions {
   device?: any;                       // a GPUDevice; omitted: the null replayer
@@ -18,6 +19,25 @@ export interface GfxOptions {
   unpaced?: boolean;                  // measurements: an acquire waits only for the GPU to finish the previous present
 }
 
+// Every texture and buffer a device makes is noted in the set of the process that is current on it and leaves the
+// set when it is destroyed: what a stopped process still has can then be destroyed without knowing the replayer's
+// containers. One patch per device (own properties over createTexture / createBuffer), however many processes use it.
+const TRACK = Symbol.for("nxweb.rt.gpuTrack");
+function trackDevice(device: any): { current: Set<any> | null } {
+  let t = device[TRACK];
+  if (t) return t;
+  t = device[TRACK] = { current: null as Set<any> | null };
+  for (const k of ["createTexture", "createBuffer"]) {
+    const make = device[k];
+    device[k] = function (this: any, ...a: any[]) {
+      const o = make.apply(device, a), set: Set<any> | null = t.current;
+      if (set) { const destroy = o.destroy.bind(o); set.add(o); o.destroy = () => { set.delete(o); destroy(); }; }
+      return o;
+    };
+  }
+  return t;
+}
+
 export class RtGfx {
   readonly rt: Runtime;
   readonly x: any;                    // the recorder's exports (nvn_*, gfx_*)
@@ -25,6 +45,7 @@ export class RtGfx {
   readonly live: boolean;             // a real device is attached
   stats = { nvnCalls: 0, frames: 0, syncWaits: 0, syncParked: 0, finishes: 0, acquires: 0, acquireParked: 0 };
   times = { execMs: 0 };              // time inside the replayer (WebGPU calls), part of the runtime's host-call time
+  shaders: RtShaders | null = null;   // where missing shader keys are looked up (rt_shaders.ts attaches itself)
   private opts: GfxOptions;
   private fenceWaiters = new Map<number, (() => void)[]>();
   private fenceSeen = 0;
@@ -36,10 +57,11 @@ export class RtGfx {
   constructor(rt: Runtime, module: WebAssembly.Module, opts: GfxOptions = {}) {
     this.rt = rt; this.opts = opts; this.live = !!opts.device;
     const dec = new TextDecoder();
+    if (this.live) trackDevice(opts.device).current = this.owned;
     this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l) });
     const env = {
       memory: rt.memory,
-      log: (p: number, n: number) => rt.log(dec.decode(rt.u8().slice(p >>> 0, (p >>> 0) + n))),
+      log: (p: number, n: number) => { const line = dec.decode(rt.u8().slice(p >>> 0, (p >>> 0) + n)); if (!this.shaders?.dropLine(line)) rt.log(line); },
       abort: () => { throw new Error("abort in the gfx module"); },
       gfx_exec: (p: number, n: number) => {
         if (this.live) { const t0 = performance.now(); this.host.exec(p >>> 0, n >>> 0); this.times.execMs += performance.now() - t0; }
@@ -56,9 +78,40 @@ export class RtGfx {
     if (!this.x.gfx_init(arena.lo, need)) throw new Error("runtime: gfx_init failed");
     // the replayer's reports go through here so that waiting guest threads hear of them
     this.host.attach({ ...this.x, gfx_fence_signal: (n: number) => this.fenceSignal(n) });
-    rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => this.stubOfName(cpu.cstr(cpu.x(0), 128)) });
+    rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => this.stubOfName(cpu.cstr(cpu.x(0), 128)) });    rt.onDispose(() => this.dispose());
   }
-  registerShader(keyHex: string, info: ShaderInfo): number { return this.host.registerShader(keyHex, { entry: "main", ...info } as ShaderInfo); }
+  // Releases the GPU objects the replayer made for this process (textures and buffers; pipelines, bind groups and
+  // samplers have no destroy and go with their last reference), so that the next process starts from nothing on the
+  // same device and canvas. GfxHost.dispose() is used when the replayer has one; in any case every texture and
+  // buffer made on the device while this process was the device's current one, and not destroyed since, is destroyed
+  // here (trackDevice). Returns how many were.
+  disposedObjects = 0;
+  dispose(): number {
+    const h = this.host as any;
+    this.fenceWaiters.clear(); this.lastPresentDone = null;
+    if (!this.live) return 0;
+    if (typeof h.dispose === "function") { try { h.dispose(); } catch (e) { this.rt.log(`[RED] runtime: GfxHost.dispose failed: ${e instanceof Error ? e.message : e}`); } }
+    let n = 0;
+    for (const o of [...this.owned]) { try { o.destroy(); n++; } catch { /* gone already */ } }
+    this.owned.clear();
+    const t = this.opts.device[TRACK];
+    if (t && t.current === this.owned) t.current = null;
+    return this.disposedObjects = n;
+  }
+  private owned = new Set<any>();
+  registerShader(keyHex: string, info: ShaderInfo): number { this.shaders?.known(keyHex); return this.host.registerShader(keyHex, { entry: "main", ...info } as ShaderInfo); }
+  // The key of a stage as the recorder computes it (src/gfx/shader.ts shaderKey; an NVN2 control section: none here)
+  // and the bytes it is made of: NVNshaderData { u64 data; u64 control } at sd
+  private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
+    const rt = this.rt, dv = rt.dv(), data = Number(dv.getBigUint64(sd, true)), c = Number(dv.getBigUint64(sd + 8, true));
+    if (!c || c + 0x880 > rt.u8().length) return null;
+    if (dv.getUint32(c, true) === 0x98761234 && dv.getUint32(c + 4, true) === 0xc9) return null;
+    const own = dv.getUint32(c + 0x20, true), nctl = own >= 0x760 && own < 0x880 ? own : 0x880, ncode = dv.getUint32(c + 0x704, true);
+    const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= rt.u8().length;
+    const control = () => rt.u8().slice(c, c + 0x880), code = () => hasCode ? rt.u8().slice(data, data + ncode) : new Uint8Array(0);
+    const key = Array.from(rt.sha256Of([rt.u8().subarray(c, c + nctl), hasCode ? rt.u8().subarray(data, data + ncode) : new Uint8Array(0)]).subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
+    return { key, blob: () => ({ key, control: control(), code: code() }) };
+  }
 
   private fenceSignal(n: number): void {
     this.x.gfx_fence_signal(n);
@@ -92,6 +145,13 @@ export class RtGfx {
     switch (name) {
       // a game asks the device for every other entry point by name
       case "nvnDeviceGetProcAddress": return cpu => this.stubOfName(cpu.cstr(cpu.x(1), 128));
+      // nvnProgramSetShaders(program, count, NVNshaderData[]): every stage's key is looked up (library, in-page
+      // translation) before the recorder notes the keys
+      case "nvnProgramSetShaders": return cpu => {
+        const n = cpu.w(1) | 0, sd = Number(cpu.x(2));
+        if (this.shaders && sd && n > 0 && n <= 6) for (let i = 0; i < n; i++) { const st = this.stageOf(sd + 16 * i); if (st) this.shaders.need(st.key, st.blob); }
+        return this.call(id, cpu.args());
+      };
       // nvnSyncWait(sync, timeout): the recorder only reports; when the fence is not done and the game is willing to
       // wait, the thread parks until the replayer signals the fence
       case "nvnSyncWait": return cpu => {

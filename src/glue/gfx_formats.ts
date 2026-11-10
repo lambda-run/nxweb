@@ -27,6 +27,27 @@ export const NVN_FORMATS: Record<number, NvnFormat> = {
   0x6d: F("rgba8unorm", 4), 0x99: F("bgra8unorm", 4), 0x9a: F("bgra8unorm", 4), 0x9b: F("bgra8unorm-srgb", 4), 0x9c: F("bgra8unorm-srgb", 4),
 };
 
+// Formats WebGPU cannot hold as they are stored. The recorder converts their texels on upload (src/gfx/fmt.ts fmtXform,
+// texcontent.ts send): what the host texture is then. caps: what the device takes as it is (GfxHost.caps: 1 ASTC, 2 16-bit
+// normalized formats, from the features `texture-compression-astc` and `texture-formats-tier1`).
+const ASTC_BLOCKS = [[4, 4], [5, 4], [5, 5], [6, 5], [6, 6], [8, 5], [8, 6], [8, 8], [10, 5], [10, 6], [10, 8], [10, 10], [12, 10], [12, 12]];
+const NORM16: Record<number, [string, string, number]> = { 0x06: ["r16unorm", "r16float", 2], 0x07: ["r16snorm", "r16float", 2], 0x12: ["rg16unorm", "rg16float", 4], 0x13: ["rg16snorm", "rg16float", 4],
+  0x2a: ["rgba16unorm", "rgba16float", 8], 0x2b: ["rgba16snorm", "rgba16float", 8] };
+// conv: the host format is not the guest's (copies between guest memory and the GPU's copy of such a texture are not converted)
+export function hostFormat(format: number, caps: number): (NvnFormat & { conv?: boolean }) | undefined {
+  if (format >= 0x79 && format <= 0x94) {
+    const srgb = format >= 0x87, [bw, bh] = ASTC_BLOCKS[(format - 0x79) % 14];
+    return caps & 1 ? F(`astc-${bw}x${bh}-unorm${srgb ? "-srgb" : ""}`, 16, undefined, "float", bw, bh) : { ...F(srgb ? "rgba8unorm-srgb" : "rgba8unorm", 4), conv: true };
+  }
+  if ((format >= 0x39 && format <= 0x3c) || (format >= 0x95 && format <= 0x98)) return { ...F("rgba8unorm", 4), conv: true };       // packed 16-bit texels, unpacked
+  const n = NORM16[format];
+  if (n) return caps & 2 ? F(n[0], n[2]) : { ...F(n[1], n[2]), conv: true };
+  return NVN_FORMATS[format];
+}
+// Formats a texture may be bound as a storage image with (core WebGPU; bgra8unorm needs the feature `bgra8unorm-storage`)
+export const STORAGE_FORMATS = new Set(["rgba8unorm", "rgba8snorm", "rgba8uint", "rgba8sint", "rgba16uint", "rgba16sint", "rgba16float", "r32uint", "r32sint", "r32float", "rg32uint", "rg32sint", "rg32float",
+  "rgba32uint", "rgba32sint", "rgba32float"]);
+
 // NVN enums to WebGPU names, indexed by the NVN value
 export const COMPARE = [undefined, "never", "less", "equal", "less-equal", "greater", "not-equal", "greater-equal", "always"];
 export const STENCIL_OP = [undefined, "keep", "zero", "replace", "increment-clamp", "decrement-clamp", "invert", "increment-wrap", "decrement-wrap"];

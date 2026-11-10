@@ -109,3 +109,61 @@ test("gfx_texture: uploaded with its sampled hash, stale and uploaded again, the
   w.refused(a, "Upload"); w.refused(a, "Stale");
   w.go(b, [["GpuWrite", "GpuOwned"]]);
 });
+
+test("gfx_pass: compute dispatches open a compute pass, with and without render targets, and every way out of it", () => {
+  const w = walker("gfx_pass"), s = w.start();
+  // before any render targets: dispatches share a pass; a copy, a submit and the first targets end it
+  w.go(s, [["Dispatch", "ComputeUnset"], ["Dispatch", "ComputeUnset"], ["Break", "Unset"], ["Dispatch", "ComputeUnset"], ["Submit", "Unset"], ["Dispatch", "ComputeUnset"], ["SetTargets", "TargetsSet"]]);
+  // with targets: from no pass, with clears pending (they land first), from an open render pass
+  w.go(s, [["Dispatch", "Compute"], ["Dispatch", "Compute"], ["Draw", "Open"], ["Dispatch", "Compute"], ["FullClear", "ClearPending"], ["Dispatch", "Compute"]]);
+  w.go(s, [["PartialClear", "Open"], ["Dispatch", "Compute"], ["Feedback", "TargetsSet"], ["Dispatch", "Compute"], ["Break", "TargetsSet"], ["Dispatch", "Compute"], ["Submit", "TargetsSet"]]);
+  w.go(s, [["Dispatch", "Compute"], ["SetTargets", "TargetsSet"]]);
+  const u = w.start();
+  w.go(u, [["Dispatch", "ComputeUnset"]]);
+  w.refused(u, "Draw"); w.refused(u, "FullClear"); w.refused(u, "PartialClear"); w.refused(u, "Feedback");     // still no render targets
+});
+
+test("gfx_pipeline: a device loss asks for every pipeline again", () => {
+  const w = walker("gfx_pipeline"), a = w.start(), b = w.start(), c = w.start();
+  w.refused(a, "Reset");                                    // never requested
+  w.go(a, [["Request", "Building"], ["Reset", "Building"], ["Built", "Ready"], ["Reset", "Building"], ["Built", "Ready"]]);
+  w.go(b, [["Request", "Building"], ["Error", "Failed"], ["Reset", "Building"], ["Built", "Ready"]]);
+  w.go(c, [["Request", "Building"], ["Error", "Failed"]]);
+  w.refused(c, "Built");
+});
+
+test("gfx_sync: a wait with a timeout parks; woken by the fence, expired by the embedder's timer, or fenced again", () => {
+  const w = walker("gfx_sync"), s = w.start();
+  w.refused(s, "Park"); w.refused(s, "Wake"); w.refused(s, "Expire");
+  w.go(s, [["Fence", "PendingFence"]], 5);
+  w.go(s, [["Park", "Parked"]], 5); assert.equal(w.k.x.m_data(s), 5);
+  w.go(s, [["Park", "Parked"]], 5); assert.equal(w.k.x.m_data(s), 5);      // the wait is made again and the fence is still not done
+  w.refused(s, "Complete");                                 // a parked wait ends as CONDITION_SATISFIED (Wake), not ALREADY_SIGNALED
+  w.go(s, [["Wake", "Signaled"]]);
+  w.go(s, [["Reset", "Unfenced"], ["Acquire", "PendingAcquire"]], 6);
+  w.go(s, [["Park", "Parked"]], 6);
+  w.go(s, [["Expire", "PendingFence"]], 6); assert.equal(w.k.x.m_data(s), 6);   // the timeout ran out: pending again
+  w.go(s, [["Park", "Parked"]], 6);
+  w.go(s, [["Reset", "Unfenced"]]);                         // fenced again while a wait is parked
+});
+
+test("gfx_texture: texels staged in the storage by a copy; the device lost under each state", () => {
+  const w = walker("gfx_texture"), a = w.start(), b = w.start(), c = w.start();
+  w.go(a, [["Stage", "Staged"], ["Stage", "Staged"], ["Upload", "Uploaded"]], 77);
+  assert.equal(w.k.x.m_data(a), 77);
+  w.go(a, [["Stage", "Staged"]]); assert.equal(w.k.x.m_data(a), 0);
+  w.refused(a, "Stale");
+  w.go(a, [["Lost", "Staged"], ["GpuWrite", "GpuOwned"], ["Lost", "GpuOwned"]]);
+  w.refused(a, "Stage");                                    // the GPU owns it: a copy goes to the GPU
+  w.go(b, [["Lost", "Unknown"], ["Upload", "Uploaded"]], 5);
+  w.go(b, [["Lost", "Unknown"]]); assert.equal(w.k.x.m_data(b), 0);
+  w.go(c, [["Upload", "Uploaded"]], 9);
+});
+
+test("gfx_device: lost, lost again before a new device came, restored", () => {
+  const w = walker("gfx_device"), s = w.start();
+  w.refused(s, "Restore");
+  w.go(s, [["Lose", "Lost"], ["Lose", "Lost"], ["Restore", "Live"]]);
+  w.refused(s, "Restore");
+  w.go(s, [["Lose", "Lost"], ["Restore", "Live"]]);
+});

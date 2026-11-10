@@ -27,7 +27,7 @@
     "gfx:demo": "node test/gfx/demo_serve.mts",
     "a64:big": "npm run -s a64:build && python3 test/a64/guests/build.py --big && node test/a64/guests_run.ts --dir test/a64/guests/out_big --speed --mem",
     "rt:build": "node src/runtime/host/build.mts",
-    "rt:test": "node test/runtime/run.mts",
+    "rt:test": "node --expose-gc test/runtime/run.mts",
     "rt:browser": "node test/runtime/browser.mts",
     "shaders:naga": "cargo build --release --target wasm32-unknown-unknown --manifest-path tools/shaders/naga_wasm/Cargo.toml --target-dir build/shaders/naga_target && cp build/shaders/naga_target/wasm32-unknown-unknown/release/nx_naga.wasm build/shaders/nx_naga.wasm",
     "shaders:asm": "python3 tools/shaders/maxwell_asm.py build/shaders/maxwell",
@@ -40,7 +40,11 @@
     "web": "node web/serve.mts",
     "fs:build": "asc src/fs/index.ts -o build/fs/fs.wasm -O2 --runtime stub",
     "fs:test": "node test/fs/run.mts",
-    "fs:browser": "node test/fs/browser.mts"
+    "fs:browser": "node test/fs/browser.mts",
+    "hle:names": "python3 tools/hle_names.py",
+    "hle:check": "python3 tools/hle_names.py --check",
+    "hle:build": "node src/hle/host/build.mts",
+    "hle:test": "node test/hle/run.mts"
   },
   "keywords": [],
   "author": "",

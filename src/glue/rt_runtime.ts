@@ -2,7 +2,7 @@
 // loop, host-function dispatch and fault capture. No Node APIs: the same file runs under Node and in a browser Worker.
 // Policy lives in the AssemblyScript modules (scheduling and waits: src/kernel; lifecycle, clock arithmetic, fault
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
-import { A64Host } from "./a64_host.ts";
+import { A64Host, type A64CacheStore } from "./a64_host.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
 import { RANGES, HOST_END, GUEST, STUBS, A64, range } from "./rt_layout.ts";
 
@@ -10,6 +10,7 @@ export interface RuntimeModules {
   rt: WebAssembly.Module; kernel: WebAssembly.Module; loader: WebAssembly.Module;
   translator: WebAssembly.Module; helpers: WebAssembly.Module;
   gfx?: WebAssembly.Module;           // build/runtime/gfx.wasm, for src/glue/rt_gfx.ts
+  fs?: WebAssembly.Module;            // build/runtime/fs.wasm, for src/glue/rt_fs.ts
 }
 export interface RuntimeOptions {
   budget?: number;                    // budget units per time slice (function entries + backward branches); default 100000
@@ -20,6 +21,11 @@ export interface RuntimeOptions {
   reserve4g?: boolean;                // allocate the whole 4 GB at once instead of growing on demand (default false)
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
+  // Guest loads and stores below 0x0800_0000 (the host area: kernel, loader, translator state, the null page) trap
+  // instead of reading or corrupting it (default true; one subtraction per access, see README "Memory safety").
+  guard?: boolean;
+  preciseFaults?: 0 | 1 | 2;          // translator: 2 makes the register dump of a trap exact too (about twice the run time)
+  cache?: A64CacheStore;              // translation cache: cacheLoad() before run(), cacheSave() after
 }
 export const STATES = ["Empty", "Loading", "Ready", "Running", "Paused", "Stopped"] as const;
 export type State = typeof STATES[number];
@@ -95,6 +101,7 @@ const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0,
   2, 0x11, 1, 3, 0x65, 0x6E, 0x76, 9, 0x68, 0x6F, 0x73, 0x74, 0x5F, 0x63, 0x61, 0x6C, 0x6C, 0, 0,
   3, 2, 1, 0, 7, 5, 1, 1, 0x66, 0, 1, 0x0A, 6, 1, 4, 0, 0x10, 0, 0x0B]);
 const hex = (v: number | bigint) => "0x" + v.toString(16);
+const toHex = (b: Uint8Array) => Array.from(b, v => v.toString(16).padStart(2, "0")).join("");
 const dec = new TextDecoder();
 
 export class Runtime {
@@ -109,14 +116,22 @@ export class Runtime {
   set: LoadedSet | null = null;
   modules: ModuleInfo[] = [];
   mainThread = 0;
-  stats = { slices: 0, svcs: 0, hostCalls: 0, runMs: 0, grows: 0 };
+  stats = { slices: 0, svcs: 0, hostCalls: 0, runMs: 0, grows: 0, entries: 0, moduleLoads: 0, moduleUnloads: 0, finiCalls: 0, clockParks: 0 };
+  disposed = false;
 
   private out: Uint8Array[] = [];
   private registry = new Map<string, HostFunctionDef>();
   private handlers: (HostFunctionDef | null | undefined)[] = [];   // by host function id; null = unresolved import
   private unresolvedSeen = new Set<string>();
   private pending = new Map<number, (r: WaitResult, cpu: HostCpu) => HostResult>();   // thread index -> the resume of its host-call wait
-  private text: { lo: number; hi: number }[] = [];
+  private text: { lo: number; hi: number; handle: number }[] = [];
+  private dyn = new Map<string, { handle: number; ptr: number; len: number; base: number; size: number }>();   // run-time modules by SHA-256 of the file
+  private codeIds: { key: string; lo: number; size: number }[] = [];   // what the translation cache is keyed by, per code range
+  private cacheInsns = 0;
+  private finiQueue: number[] | null = null;
+  private exitCode = 0n;
+  private nested = 0;                 // depth of guest callbacks made by host functions
+  private disposers: (() => void)[] = [];
   private thunk = 0;
   private cur = 0;                    // context block of the thread in core
   private curIndex = -1;
@@ -138,7 +153,7 @@ export class Runtime {
   private sleeper: Int32Array | null = null;
   private frozenSeen = false;
   private exts: Ext[] = [];
-  private threadEvent = new Map<number, { r: number; w: number }>();
+  private threadEvent = new Map<number, { r: number; w: number; thread: number }>();
   private wake: (() => void) | null = null;
   times = { hostMs: 0 };               // time inside host functions (ms), for the per-frame breakdown
 
@@ -167,6 +182,7 @@ export class Runtime {
     this.a64 = new A64Host(mods.translator, mods.helpers, {
       memory: this.memory, layout: A64,
       maxInsns: opts.maxInsns, maxFuncs: opts.maxFuncs, depthLimit: opts.depthLimit, tailCalls: opts.tailCalls, fma: opts.fma, nanFix: opts.nanFix,
+      cntYield: true, preciseFaults: opts.preciseFaults, guardBase: opts.guard === false ? 0 : HOST_END,
       onTranslate: (pc: bigint) => this.onTranslate(pc),
       imports: {
         svc: (n: number) => this.svc(n),
@@ -176,6 +192,7 @@ export class Runtime {
       },
     });
     this.core = this.a64.core;
+    this.a64.keepBytes = !!opts.cache;
     // every stub pc maps to one thunk that calls hostCall(); the stub region is inside the pc map, outside the code window
     const thunk = new WebAssembly.Instance(new WebAssembly.Module(THUNK), { env: { host_call: () => this.hostCall() } }).exports.f;
     this.thunk = this.a64.table.length;
@@ -236,14 +253,7 @@ export class Runtime {
   loadNso(files: { name: string; bytes: Uint8Array }[], o: { verifyHash?: boolean } = {}): boolean {
     if (!this.r.rt_load_begin()) throw new Error("runtime: a process was loaded already");
     try {
-      const stage = range("file staging");
-      const staged = files.map(f => {
-        const ptr = this.nextFile;
-        if (ptr + f.bytes.length > stage.hi) throw new Error(`file ${f.name}: ${f.bytes.length} bytes do not fit the file staging range`);
-        this.u8().set(f.bytes, ptr);
-        this.nextFile = (ptr + f.bytes.length + 0xFFF) & ~0xFFF;
-        return { name: f.name, ptr, len: f.bytes.length };
-      });
+      const staged = files.map(f => this.stage(f.name, f.bytes));
       for (const d of this.registry.values()) this.ld.hostAdd(d.name, !!d.forced);
       const startId = this.ld.hostAdd(START_NAME, false);
       this.registry.set(START_NAME, { name: START_NAME, fn: cpu => this.startStep(cpu) });
@@ -257,10 +267,8 @@ export class Runtime {
       for (const m of set.modules) {
         if (this.k.kernel_module_add(BigInt(m.base), BigInt(m.imageSize), BigInt(m.ro.addr - m.base), BigInt(m.data.addr - m.base)) < 0)
           throw new Error(`module ${m.name}: the kernel refused the image at ${hex(m.base)}+${hex(m.imageSize)}`);
-        this.text.push({ lo: m.text.addr, hi: m.text.addr + m.text.size });
+        this.addModuleCode(m);
       }
-      const lo = set.modules[0].base, hi = Math.max(...set.modules.map(m => m.base + m.imageSize));
-      this.a64.setCode(BigInt(lo), this.u8().subarray(lo, hi));
       // start contract: dependencies' init functions first (load order), the main module's last, then the entry
       for (const m of [...set.modules.slice(1), set.modules[0]]) { if (m.init) this.initQueue.push(m.init); this.initQueue.push(...m.initArray); }
       this.entry = set.entry;
@@ -276,6 +284,124 @@ export class Runtime {
     this.r.rt_load_ok();
     return true;
   }
+  // Tells the translator about a relocated module: its image is a code range, its text the part that holds
+  // instructions, and what the loader knows to be function entries (function symbols, init and fini functions,
+  // relocation targets in the text) is passed along, so that those functions are translated with their neighbours.
+  private addModuleCode(m: ModuleInfo): void {
+    const st = range("file staging"), out = (this.nextFile + 3) & ~3;
+    const entries = this.ld.codeEntries(m.handle, out, (st.hi - out) >>> 2);
+    this.a64.addCode(m.base, m.imageSize, { text: { lo: m.text.addr, hi: m.text.addr + m.text.size }, entries });
+    this.text.push({ lo: m.text.addr, hi: m.text.addr + m.text.size, handle: m.handle });
+    this.codeIds.push({ key: `${toHex(m.buildId)}@${m.base.toString(16)}`, lo: m.base, size: m.imageSize });
+    this.stats.entries += entries.length;
+  }
+  private stage(name: string, bytes: Uint8Array): { name: string; ptr: number; len: number } {
+    const stage = range("file staging"), ptr = this.nextFile;
+    if (ptr + bytes.length > stage.hi) throw new Error(`file ${name}: ${bytes.length} bytes do not fit the file staging range`);
+    this.u8().set(bytes, ptr);
+    this.nextFile = (ptr + bytes.length + 0xFFF) & ~0xFFF;
+    return { name, ptr, len: bytes.length };
+  }
+  // SHA-256 of the concatenation of byte ranges (the loader's implementation; the bytes are copied to free staging memory)
+  sha256Of(parts: Uint8Array[]): Uint8Array {
+    const st = range("file staging"), at = this.nextFile, n = parts.reduce((a, p) => a + p.length, 0);
+    if (at + n > st.hi) throw new Error(`runtime: ${n} bytes to hash do not fit the file staging range`);
+    let o = at;
+    for (const p of parts) { if (p.buffer === this.memory.buffer) this.u8().copyWithin(o, p.byteOffset, p.byteOffset + p.length); else this.u8().set(p, o); o += p.length; }
+    const out = (this.r.rt_scratch_ptr() >>> 0) + 3400;
+    this.ld.x.ld_sha256(at, n, out);
+    return this.u8().slice(out, out + 32);
+  }
+  // wakes runAsync() when something outside the guest changed what the next slice would do
+  requestWake(): void { this.wake?.(); }
+  private sha256(ptr: number, len: number): string {
+    const out = (this.r.rt_scratch_ptr() >>> 0) + 3400;
+    this.ld.x.ld_sha256(ptr, len, out);
+    return toHex(this.u8().subarray(out, out + 32));
+  }
+
+  // ---- modules loaded and unloaded at run time (NRO; what nn::ro does: src/glue/rt_ro.ts) ----
+  // Loads a module file while the process runs: staged (once per content: a reload maps the pristine copy again, at
+  // the same base), mapped in the code region, relocated against everything loaded (and the modules loaded before
+  // have their imports of its symbols bound to it), told to the kernel and to the translator. The caller runs its
+  // init functions (HostCpu.call) and then calls activateModule. Throws (LoaderError) when the file is refused.
+  loadModule(name: string, bytes: Uint8Array): ModuleInfo {
+    if (this.flat || !this.set) throw new Error("runtime: loadModule needs a loaded process");
+    const staged = this.stage(name, bytes), id = this.sha256(staged.ptr, staged.len);
+    let d = this.dyn.get(id);
+    if (d) {
+      this.nextFile = staged.ptr;   // the same content: the copy staged at its first load is the pristine one
+      const st = this.ld.state(d.handle);
+      if (st !== "Unloaded") throw new Error(`module ${name} is loaded already (${st})`);
+    } else {
+      const handle = this.ld.parse(staged), size = this.ld.get(handle, 2 /* Info.ImageSize */);
+      const base = this.nextBase;
+      this.nextBase = base + size + 0x1000;
+      d = { handle, ptr: staged.ptr, len: staged.len, base, size };
+      this.dyn.set(id, d);
+    }
+    this.ensure(d.base + d.size);
+    this.ld.map(d.handle, d.base);
+    this.ld.relocate(d.handle);
+    const m = this.ld.info(d.handle);
+    if (this.k.kernel_module_add(BigInt(m.base), BigInt(m.imageSize), BigInt(m.ro.addr - m.base), BigInt(m.data.addr - m.base)) < 0) {
+      this.ld.unload(d.handle);
+      throw new Error(`module ${m.name}: the kernel refused the image at ${hex(m.base)}+${hex(m.imageSize)}`);
+    }
+    this.addModuleCode(m);
+    this.modules.push(m);
+    this.spOk.clear();
+    this.stats.moduleLoads++;
+    return m;
+  }
+  activateModule(handle: number): void { this.ld.activate(handle); }
+  // Unloads a run-time module (after its fini functions ran): its translations and pc-map entries go, the loader
+  // binds again what pointed into it, the kernel forgets the image. Its memory stays reserved for a reload.
+  unloadModule(handle: number): void {
+    const m = this.modules.find(m => m.handle === handle);
+    if (!m || ![...this.dyn.values()].some(d => d.handle === handle)) throw new Error(`runtime: module ${handle} was not loaded at run time`);
+    this.a64.removeCode(m.base, m.imageSize);
+    this.ld.unload(handle);
+    if (!this.k.kernel_module_remove(BigInt(m.base))) this.log(`[RED] runtime: the kernel still holds the image of ${m.name} at ${hex(m.base)} (a thread stack inside it is mapped)`);
+    this.text = this.text.filter(t => t.handle !== handle);
+    this.codeIds = this.codeIds.filter(c => c.lo !== m.base);
+    this.modules = this.modules.filter(x => x !== m);
+    this.spOk.clear();
+    this.stats.moduleUnloads++;
+  }
+
+  // ---- translation cache ----
+  // Units translated in an earlier run of the same code at the same address with the same translator options are
+  // compiled from stored bytes instead of being translated: key = build id (flat images: SHA-256) @ load address /
+  // A64Host.optionsKey(). Call after loading and before run(). Returns how many units became available.
+  async cacheLoad(): Promise<{ ranges: number; units: number; bytes: number }> {
+    const store = this.opts.cache, got = { ranges: 0, units: 0, bytes: 0 };
+    if (!store) return got;
+    for (const c of this.codeIds) {
+      let blob: Uint8Array | null = null;
+      try { blob = await store.get(`${c.key}/${this.a64.optionsKey()}`); } catch (e) { this.log(`runtime: translation cache read failed (${e instanceof Error ? e.message : e}); translating`); }
+      if (!blob) continue;
+      const n = this.a64.importCache(blob);
+      if (n) { got.ranges++; got.units += n; got.bytes += blob.length; }
+    }
+    this.cacheInsns = this.a64.translatedInsns;
+    return got;
+  }
+  // Stores every range's units (those that came from the cache and the new ones). Nothing is written when nothing
+  // was translated since cacheLoad(). Returns the bytes written.
+  async cacheSave(): Promise<number> {
+    const store = this.opts.cache;
+    if (!store || this.a64.translatedInsns === this.cacheInsns) return 0;
+    let bytes = 0;
+    for (const c of this.codeIds) {
+      const blob = this.a64.exportCache(c.lo, c.size);
+      if (blob.length <= 16) continue;
+      try { await store.put(`${c.key}/${this.a64.optionsKey()}`, blob); bytes += blob.length; } catch (e) { this.log(`runtime: translation cache write failed (${e instanceof Error ? e.message : e})`); }
+    }
+    this.cacheInsns = this.a64.translatedInsns;
+    return bytes;
+  }
+
   // The host function the main thread starts in: runs the init functions as guest calls, then enters the main module
   private startStep(cpu: HostCpu): HostResult {
     const start = cpu.rt.core.pc.value as bigint;
@@ -298,8 +424,9 @@ export class Runtime {
       this.ensure(top);
       this.u8().set(image, base);
       if (this.k.kernel_module_add(BigInt(base), BigInt(top - base), 0n, 0n) < 0) throw new Error("the kernel refused the flat image");
-      this.text.push({ lo: base, hi: base + image.length });
+      this.text.push({ lo: base, hi: base + image.length, handle: -1 });
       this.a64.setCode(BigInt(base), image);
+      this.codeIds.push({ key: `${this.sha256(base, image.length)}@${base.toString(16)}`, lo: base, size: image.length & ~3 });
       this.flat = true;
       this.mainThread = this.k.kernel_create_main_thread(BigInt(side.entry), BigInt(side.stack_top));
       if (!this.mainThread) throw new Error("the kernel could not create the main thread");
@@ -320,17 +447,31 @@ export class Runtime {
     const now: bigint = this.opts.clock === "wall" ? this.r.rt_clock_set(this.wallNs()) : this.r.rt_clock_now(this.core.budget.value);
     this.k.kernel_tick(now);
   }
+  // `mrs cntpct_el0` (the translator's cntYield: the registers are written back and pc is the instruction itself).
+  // While the kernel holds the clock for background the read waits: the thread parks on the kernel's clock wait,
+  // whose wake changes no register, and runs the read again when the freeze ends.
   private cntpct(): bigint {
     if (this.flat) { this.flatTick += 1000n; return this.flatTick; }
     this.tick();
-    if ((this.k.kernel_clock_reasons() & 2) && !this.frozenSeen) {
-      // The kernel wants a counter read to wait while the app is in the background. An `mrs` is not a point where
-      // translated code can unwind (no pc check after it), so the read returns the value the clock stands at.
-      this.frozenSeen = true;
-      this.log("[RED] runtime: cntpct_el0 read while the guest clock is frozen for background: the read does not wait (not implemented), it returns the standing value");
+    if (this.k.kernel_clock_reasons() & 2) {
+      const c = this.core;
+      if (this.nested) {
+        if (!this.frozenSeen) { this.frozenSeen = true; this.log("[RED] runtime: cntpct_el0 read inside a guest callback while the guest clock is frozen for background: a callback cannot wait, the read returns the standing value"); }
+        return this.k.kernel_guest_ticks();
+      }
+      c.save_ctx(this.cur);
+      const act = this.k.kernel_clock_wait(this.cur);
+      if (act !== ACT_CONTINUE) {
+        if (act !== ACT_SWITCH) this.stopFlag = true;
+        this.stats.clockParks++;
+        c.pc.value = PC_YIELD;
+        return 0n;
+      }
     }
     return this.k.kernel_guest_ticks();
   }
+  // Hold or release a freeze reason of the guest clock (0 hold, 1 background, 2 keyboard: src/kernel/README.md)
+  freezeClock(reason: number, on: boolean): void { this.k.kernel_clock_freeze(reason, on ? 1 : 0); this.wake?.(); }
   private sleepMs(ms: number): void {
     if (ms <= 0) return;
     try {
@@ -456,9 +597,13 @@ export class Runtime {
   // to PC_CALLBACK. The outer translated frames are still on the wasm stack; they go on when the host call returns.
   // ---- waits for things outside the guest ----
   nowNs(): bigint { return this.opts.clock === "wall" ? this.r.rt_clock_set(this.wallNs()) : this.r.rt_clock_now(this.core.budget.value); }
+  // The event a thread waits on for things outside the guest: one pair per thread, closed when the thread record
+  // has gone to another thread and at dispose()
   private eventOf(index: number): { r: number; w: number } {
+    const thread = this.dv().getUint32(this.threadInfo(index) + 28, true);
     let ev = this.threadEvent.get(index);
-    if (!ev) { const p = (this.r.rt_scratch_ptr() >>> 0) + 3072; const r = this.k.kernel_event_new(p); ev = { r, w: this.dv().getUint32(p, true) }; this.threadEvent.set(index, ev); }
+    if (ev && ev.thread !== thread) { this.k.kernel_handle_close(ev.r); this.k.kernel_handle_close(ev.w); ev = undefined; }
+    if (!ev) { const p = (this.r.rt_scratch_ptr() >>> 0) + 3072; const r = this.k.kernel_event_new(p); ev = { r, w: this.dv().getUint32(p, true), thread }; this.threadEvent.set(index, ev); }
     return ev;
   }
   // Signals the waits whose outside thing has happened and whose time has come. Returns the earliest time of a wait
@@ -475,11 +620,31 @@ export class Runtime {
     return { next, overdue, nextDone };
   }
   get waitingOutside(): number { return this.exts.filter(e => !e.signaled).length; }
-  // The embedder ends the process (Ready, Running or Paused)
+  // The embedder ends the process (Ready, Running or Paused): the process machine stops, the kernel ends every
+  // thread, and everything the process held outside its memory is released (dispose).
   kill(): void {
-    if (this.state === "Stopped" || this.state === "Empty" || this.state === "Loading") return;
+    if (this.state === "Stopped" || this.state === "Empty" || this.state === "Loading") { if (this.state === "Stopped") this.dispose(); return; }
     this.r.rt_kill(); this.stop = { kind: "killed", code: 0 };
+    this.k.kernel_kill();
+    this.dispose();
     this.wake?.();
+  }
+  // Something to release when the process is disposed of (graphics objects, storage handles)
+  onDispose(fn: () => void): void { this.disposers.push(fn); }
+  // Releases what a stopped process still holds, so that the embedder can make another Runtime in the same page:
+  // the per-thread wait events, the waits for outside things, every translated unit (their table slots are cleared
+  // so the engine can free the modules) and what attached parts registered (onDispose). The memory itself goes
+  // when the last reference to this Runtime does. Logs, stdout and the stop reason stay readable.
+  dispose(): void {
+    if (this.disposed) return;
+    if (this.state !== "Stopped" && this.state !== "Empty") throw new Error(`runtime: dispose() in state ${this.state}; kill() first`);
+    this.disposed = true;
+    for (const fn of this.disposers.splice(0)) { try { fn(); } catch (e) { this.log(`[RED] runtime: a dispose step failed: ${e instanceof Error ? e.message : e}`); } }
+    for (const ev of this.threadEvent.values()) { this.k.kernel_handle_close(ev.r); this.k.kernel_handle_close(ev.w); }
+    this.threadEvent.clear(); this.exts = []; this.pending.clear();
+    for (const g of this.a64.codeRanges()) this.a64.removeCode(g.lo, g.hi - g.lo);
+    for (let i = 0; i < this.a64.table.length; i++) this.a64.table.set(i, null);
+    this.registry.clear(); this.handlers = []; this.lateStubs.clear();
   }
   // run() for a host with an event loop: slices stay synchronous, and between them control goes back to the event
   // loop, every yieldMs while threads run and for as long as every thread waits for something outside the guest.
@@ -503,9 +668,16 @@ export class Runtime {
   }
 
   guestCall(fn: bigint, args: (bigint | number)[]): bigint {
-    const c = this.core, r = this.r, lr: bigint = c.x30.value;
+    const c = this.core, lr: bigint = c.x30.value;
     args.forEach((a, i) => { c["x" + i].value = BigInt.asUintN(64, BigInt(a)); });
     c.x30.value = PC_CALLBACK; c.pc.value = fn;
+    this.nested++;
+    try { this.guestLoop(fn); } finally { this.nested--; }
+    c.x30.value = lr;
+    return c.x0.value;
+  }
+  private guestLoop(fn: bigint): void {
+    const c = this.core, r = this.r;
     for (;;) {
       c.run();
       if (this.pendFault || this.stopFlag) throw new GuestCallAbort();
@@ -520,8 +692,6 @@ export class Runtime {
         c.budget.value = this.opts.budget; r.rt_clock_slice_begin(this.opts.budget);
       }
     }
-    c.x30.value = lr;
-    return c.x0.value;
   }
   private finishHostCall(res: HostResult, cpu: HostCpu, stubPc: number): void {
     const c = this.core;
@@ -597,7 +767,11 @@ export class Runtime {
             const out = this.outside(limit, t0, target === FOREVER ? undefined : Number(target - this.wallNs()) / 1e6); if (out) return out; break;
           }
         }
-        if (until === FOREVER) { this.faultNow(FAULT.deadlock, "every thread waits and no wait has a deadline", 0n, this.lastCtx, true); break; }
+        if (until === FOREVER) {
+          // a frozen guest clock is not a deadlock: the embedder releases it (freezeClock), which wakes the loop
+          if (k.kernel_clock_reasons() && limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true }; }
+          this.faultNow(FAULT.deadlock, "every thread waits and no wait has a deadline" + (k.kernel_clock_reasons() ? ` (the guest clock is frozen, reasons ${hex(k.kernel_clock_reasons())})` : ""), 0n, this.lastCtx, true); break;
+        }
         if (wall) {
           if (limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true, wakeMs: Number(until - this.wallNs()) / 1e6 }; }
           this.sleepMs(Number(until - this.wallNs()) / 1e6); k.kernel_tick(r.rt_clock_set(this.wallNs()));
@@ -615,12 +789,18 @@ export class Runtime {
       k.kernel_tick(wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value));
       if (wall) r.rt_clock_slice_end(c.budget.value);
       if (trap instanceof GuestCallAbort && !this.pendFault && this.stopFlag) trap = undefined;   // the process ended inside a callback
+      if ((this.state as State) === "Stopped") break;   // killed from inside a host function
       if (trap !== undefined || this.pendFault) {
         // the registers go into the thread's context for the report (after a trap: as of the last write-back)
         const pf = this.pendFault;
         if (c.pc.value !== PC_YIELD) c.save_ctx(ctx);
         if (pf) this.faultNow(pf.kind, pf.detail, pf.aux, ctx, pf.exact);
-        else if (trap instanceof WebAssembly.RuntimeError) this.faultNow(FAULT.trap, trap.message, 0n, ctx, false);
+        else if (trap instanceof WebAssembly.RuntimeError) {
+          // the translator's side table gives the instruction that trapped (the registers stay those of the last write-back)
+          const at = this.a64.faultFromError(trap);
+          if (at) this.dv().setBigUint64(ctx + 0x100, BigInt(at.pc), true);
+          this.faultNow(FAULT.trap, this.trapText(trap.message, at?.pc), 0n, ctx, !!at);
+        }
         else if (trap instanceof RangeError) this.faultNow(FAULT.trap, "the wasm stack is exhausted (" + trap.message + ")", 0n, ctx, false);
         else this.faultNow(FAULT.host, trap instanceof Error ? `${trap.name}: ${trap.message}` : String(trap), 0n, ctx, false);
         break;
@@ -629,7 +809,10 @@ export class Runtime {
       const pc: bigint = c.pc.value;
       if (pc === PC_YIELD) continue;               // an SVC or host call gave up the core; the context was saved there
       c.save_ctx(ctx);
-      if (pc === PC_EXIT) { k.kernel_thread_returned(ctx); if (k.kernel_stop_reason()) { this.finish(); break; } continue; }
+      if (pc === PC_EXIT) {
+        if (this.curIndex === k.kernel_thread_index(this.mainThread) && this.finiStep(ctx)) { k.kernel_preempt(ctx); continue; }
+        k.kernel_thread_returned(ctx); if (k.kernel_stop_reason()) { this.finish(); break; } continue;
+      }
       if (pc >= PC_SPECIAL) { this.faultNow(FAULT.jump, `${hex(pc)} is a reserved pc value`, pc, ctx); break; }
       if (!this.stackOk(ctx)) break;
       if (c.budget.value < 0) k.kernel_preempt(ctx);
@@ -643,6 +826,39 @@ export class Runtime {
     if (limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true, wakeMs }; }
     this.faultNow(FAULT.host, "a guest thread waits for something outside the guest (a GPU completion, a frame); run() cannot wait for it, use runAsync()", 0n, this.lastCtx, true);
     return null;
+  }
+  // What a trap in translated code most likely was, from the instruction at the exact pc
+  private trapText(message: string, pc: number | undefined): string {
+    if (pc === undefined || !/out of bounds/.test(message)) return message;
+    const insn = this.dv().getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
+    if (!isMem) return message;
+    const guard = this.opts.guard !== false;
+    return `${message}: the instruction ${hex(insn)} at ${hex(pc)} loads or stores through ${base === 31 ? "sp" : "x" + base} at an address ` +
+      (guard ? `below ${hex(HOST_END)} (a null or host-area pointer) or beyond the end of the memory` : "beyond the end of the memory");
+  }
+  // The main thread returned from the entry (a clean exit): the fini functions run on it, as guest calls that return
+  // to the exit pc: dynamic modules still loaded and then the start set, last loaded first, each fini_array backwards
+  // and then DT_FINI. True while one was started; false when all are done (x0 is the entry's result again).
+  private finiStep(ctx: number): boolean {
+    const dv = this.dv();
+    if (this.flat) return false;
+    if (!this.finiQueue) {
+      this.exitCode = dv.getBigUint64(ctx, true);
+      this.finiQueue = [];
+      // the reverse of the init order: run-time modules still loaded (last loaded first), the main module, then
+      // what it depends on (last in load order first)
+      const start = this.set?.modules.length ?? 0;
+      for (const m of [...this.modules.slice(start).reverse(), ...this.modules.slice(0, 1), ...this.modules.slice(1, start).reverse()]) {
+        const now = this.ld.info(m.handle);
+        this.finiQueue.push(...[...now.finiArray].reverse().filter(f => f));
+        if (now.fini) this.finiQueue.push(now.fini);
+      }
+    }
+    const next = this.finiQueue.shift();
+    if (next === undefined) { dv.setBigUint64(ctx, this.exitCode, true); return false; }
+    dv.setBigUint64(ctx + 0x100, BigInt(next), true); dv.setBigUint64(ctx + 30 * 8, PC_EXIT, true);
+    this.stats.finiCalls++;
+    return true;
   }
   private finish(): void {
     const reason = this.k.kernel_stop_reason(), code = this.k.kernel_exit_code();

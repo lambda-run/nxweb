@@ -6,6 +6,7 @@ import { RtGfx } from "../../src/glue/rt_gfx.ts";
 import { RtInput, registerVi, registerHid, BTN } from "../../src/glue/rt_hle.ts";
 import type { ShaderInfo } from "../../src/glue/gfx_host.ts";
 import type { Env, CaseResult } from "./cases.ts";
+import { RtShaders, type ShaderOptions } from "../../src/glue/rt_shaders.ts";
 
 // Hand-written WGSL standing in for the translation of the guests' shader "binaries" (binding convention and the
 // position fix-up: src/gfx/README.md, "what the shader chain must emit")
@@ -37,8 +38,8 @@ export async function demoShaders(): Promise<[string, ShaderInfo][]> {
 }
 
 export interface Gpu { device: any; canvas?: any; nextFrame?: () => Promise<unknown> }
-export interface GfxProcess { rt: Runtime; gfx: RtGfx; input: RtInput; frameNs: bigint[] }
-export interface GfxBoot extends RuntimeOptions { frames: number; script?: string; gpu?: Gpu; raf?: boolean; unpaced?: boolean; nullReplayer?: boolean; onPresent?: (f: number, p: GfxProcess) => void }
+export interface GfxProcess { rt: Runtime; gfx: RtGfx; input: RtInput; frameNs: bigint[]; shaders?: RtShaders }
+export interface GfxBoot extends RuntimeOptions { frames: number; script?: string; gpu?: Gpu; raf?: boolean; unpaced?: boolean; nullReplayer?: boolean; shaders?: ShaderOptions; noDemoShaders?: boolean; onPresent?: (f: number, p: GfxProcess) => void }
 // A process with graphics, nn::vi, nn::hid and the demo's shader library attached
 export async function bootGfx(env: Env, files: { name: string; bytes: Uint8Array }[], o: GfxBoot): Promise<GfxProcess> {
   const rt = new Runtime(env.mods, o), input = new RtInput(), frameNs: bigint[] = [];
@@ -46,8 +47,8 @@ export async function bootGfx(env: Env, files: { name: string; bytes: Uint8Array
   const gpu = o.nullReplayer ? undefined : o.gpu;
   const gfx = new RtGfx(rt, env.mods.gfx!, { device: gpu?.device, canvas: gpu?.canvas, nextFrame: o.raf ? gpu?.nextFrame : undefined, unpaced: o.unpaced,
     onPresent: f => { frameNs.push(rt.guestNs()); o.onPresent?.(f, p); } });
-  p = { rt, gfx, input, frameNs };
-  for (const [key, info] of await demoShaders()) if (gfx.registerShader(key, info) < 0) throw new Error("registerShader failed");
+  p = { rt, gfx, input, frameNs, shaders: o.shaders ? new RtShaders(gfx, o.shaders) : undefined };
+  if (!o.noDemoShaders) for (const [key, info] of await demoShaders()) if (gfx.registerShader(key, info) < 0) throw new Error("registerShader failed");
   registerVi(rt); registerHid(rt, input);
   input.frame = () => gfx.stats.frames;
   if (o.script) input.script(o.script, l => rt.log(l));

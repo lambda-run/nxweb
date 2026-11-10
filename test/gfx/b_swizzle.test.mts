@@ -67,5 +67,5 @@ test("WriteTexels and ReadTexels go through the texture's block-linear storage: 
   const b = cases.find(x => x.name.startsWith("BC1 64x64"))!, tb = put(b), bl = Buffer.from(b.levels[0].linear, "base64");
   G.c("TextureReadTexels", [tb, 0, g.u32([8, 12, 0, 16, 8, 1]), dst]);
   for (let y = 0; y < 2; y++) assert.ok(Buffer.from(g.u8.subarray(dst + y * 32, dst + y * 32 + 32)).equals(bl.subarray((3 + y) * 128 + 16, (3 + y) * 128 + 48)), `BC block row ${y}`);
-  assert.equal(g.x.gfx_tex_state(t), 0, "no GPU involved: the storage is the content"); assert.deepEqual(g.red(), []);
+  assert.equal(g.x.gfx_tex_state(t), 3, "no GPU involved: the storage is the content (Staged: the next use uploads it)"); assert.deepEqual(g.red(), []);
 });

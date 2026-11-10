@@ -26,7 +26,8 @@ const ready = init().catch(e => log("[RED] page: " + (e?.message ?? e)));
 async function load(files: { name: string; bytes: Uint8Array }[], shaders: [string, any][], frames: number, r: number | undefined) {
   await ready;
   if (!mods) return;
-  if (rt && rt.state !== "Stopped") { rt.kill(); await new Promise(res => setTimeout(res, 30)); }
+  // the process before this one ends here: its threads, its translated code and its graphics objects are released
+  if (rt) { rt.kill(); await runDone; }
   ratio = r; stdoutSeen = 0; last = undefined;
   const me = rt = new Runtime(mods, { clock: "wall", log: l => log(l) });
   gfx = new RtGfx(me, mods.gfx!, { device: device ?? undefined, canvas: device ? canvas : undefined, nextFrame: () => new Promise(res => (self as any).requestAnimationFrame(res)) });
@@ -39,12 +40,15 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   status();
   go(me);
 }
-async function go(me: Runtime) {
+let runDone: Promise<void> = Promise.resolve();
+function go(me: Runtime): void {
   if (running) return;
   running = true;
-  try { await me.runAsync(); } catch (e: any) { log("[RED] page: the run loop threw: " + (e?.stack ?? e)); }
-  running = false;
-  status();
+  runDone = (async () => {
+    try { await me.runAsync(); } catch (e: any) { log("[RED] page: the run loop threw: " + (e?.stack ?? e)); }
+    running = false;
+    status();
+  })();
 }
 
 // ---- what the page shows, four times a second ----
