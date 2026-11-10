@@ -47,6 +47,27 @@ export class OpfsStorage implements FsStorage {
     const root = await (navigator as any).storage.getDirectory();
     return root.getDirectoryHandle(this.dir, { create: true });
   }
+  private async acquire(name: string): Promise<FsDevice | number> {
+    try {
+      const file = await (await this.folder()).getFileHandle(name, { create: true });
+      for (const t0 = Date.now(); ;) {
+        try {
+          const dev = new OpfsDevice(await file.createSyncAccessHandle());
+          this.open_.set(name, dev);
+          return dev;
+        } catch (e) {
+          if ((e as { name?: string }).name !== "NoModificationAllowedError" || Date.now() - t0 >= this.lockWaitMs) return DEV.IO;
+          await new Promise(r => setTimeout(r, 50));
+        }
+      }
+    } catch { return DEV.IO; }
+  }
+  // Open a save's container ahead of its mount. A mount of a container opened this way does not pend, so a run
+  // loop that never returns to the event loop can still mount it. Returns whether it could be opened.
+  async preopen(kind: number, index: bigint | number = 0): Promise<boolean> {
+    const name = this.name(kind, BigInt(index));
+    return this.open_.has(name) || typeof await this.acquire(name) !== "number";
+  }
   open(kind: number, index: bigint): FsDevice | number | Promise<FsDevice | number> {
     if (kind < FS_KIND.SAVE) {
       const b = this.images.get(`${kind}:${index}`);
@@ -54,21 +75,7 @@ export class OpfsStorage implements FsStorage {
     }
     if (kind === FS_KIND.TEMP) { let d = this.temp.get(`${index}`); if (!d) this.temp.set(`${index}`, d = new MemDevice()); return d; }
     const name = this.name(kind, index);
-    return (async () => {
-      try {
-        const file = await (await this.folder()).getFileHandle(name, { create: true });
-        for (const t0 = Date.now(); ;) {
-          try {
-            const dev = new OpfsDevice(await file.createSyncAccessHandle());
-            this.open_.set(name, dev);
-            return dev;
-          } catch (e) {
-            if ((e as { name?: string }).name !== "NoModificationAllowedError" || Date.now() - t0 >= this.lockWaitMs) return DEV.IO;
-            await new Promise(r => setTimeout(r, 50));
-          }
-        }
-      } catch { return DEV.IO; }
-    })();
+    return this.open_.get(name) ?? this.acquire(name);
   }
   remove(kind: number, index: bigint): Promise<number> {
     const name = this.name(kind, index);

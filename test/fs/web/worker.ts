@@ -160,7 +160,7 @@ async function mountedClean(dir: string): Promise<{ g: Guest; st: OpfsStorage; w
   if (m.g.state() !== "Clean") throw new Error(`the save does not mount read-write: ${m.g.logs.filter(l => l.startsWith("[RED]")).join(" | ")}`);
   return { ...m, waited: Date.now() - t0 };
 }
-const sha256 = async (b: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", b)));
+const sha256 = async (b: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", b as BufferSource)));
 
 // ---- the cases ----
 const cases: Record<string, (a: any) => Promise<string>> = {
@@ -218,6 +218,18 @@ const cases: Record<string, (a: any) => Promise<string>> = {
     check(dec((await g2.get("c1:/a"))!) === "one" && (await g2.list("c2:/")).length === 0 && (await g2.list("t:/")).length === 0, "after the delete");
     st2.close();
     return "cache 1 kept, cache 2 deleted, temporary storage empty";
+  },
+  async "opfs: a container opened ahead of the mount: nothing pends (a run loop that never yields can mount it)"(a) {
+    const st = new OpfsStorage(`${a.dir}-pre`);
+    check(await st.preopen(FS_KIND.SAVE) && await st.preopen(FS_KIND.CACHE, 3), "preopen");
+    const g = new Guest(st);
+    g.reset();
+    const p = g.alloc(64); g.dv.setBigUint64(p, BigInt(g.str("save")), true);
+    check(g.host.x.fs_call(FN.MountSave, p) === 0n && g.state() === "Clean", "the mount finished inside fs_call");
+    await g.path("MountCache", "cache", 3); await g.put("save:/f", enc("x")); await g.put("cache:/f", enc("y"));
+    check(await g.path("Commit", "save") === R.OK && await g.path("Commit", "cache") === R.OK && g.pendings === 0, `pending calls: ${g.pendings}`);
+    st.close();
+    return "mount, writes and commits of two containers without a pending call";
   },
   async "romfs: an image in a Blob, read with FileReaderSync: every file as the Python reader has it"(a) { return romfs(a, true); },
   async "romfs: an image in a Blob, read with asynchronous slices: every read pends and is completed"(a) { return romfs(a, false); },
