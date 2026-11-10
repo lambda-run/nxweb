@@ -24,15 +24,10 @@
   "app_pool": "0xCD500000",
   "sys_resource": "0x0",
   "tex_flush_upload": "on",
+  "tex_dirty_upload": "on",
   "mem_used": "0x87bc000"
  },
- "needs": [
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",

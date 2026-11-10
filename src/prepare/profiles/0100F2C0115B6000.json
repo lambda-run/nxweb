@@ -24,14 +24,10 @@
   "romfs_marker": "Pack/ZsDic.pack.zs",
   "app_pool": "0xCD500000",
   "tex_flush_upload": "on",
-  "render_cond": "on"
+  "render_cond": "on",
+  "tex_dirty_upload": "on"
  },
  "needs": [
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
-  },
   {
    "key": "fps_target",
    "value": "60",

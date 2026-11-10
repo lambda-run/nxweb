@@ -62,7 +62,7 @@ KEYS = {
     "pad_layout":     ("a", "input setting: which controls the game needs (simple / full / touch), a hint for the page's on-screen controls", ""),
     "render_cond":    ("a", "gfx_set_profile bit 1 (src/gfx/report.ts): SetRenderEnable / SetRenderEnableConditional evaluated when a submission is lowered, a timestamp report's counter field 0", ""),
     "tex_flush_upload": ("a", "gfx_set_profile bit 2 (src/gfx/texwatch.ts): textures in pools the CPU writes are registered; a pool flush over one publishes it (full check at its next use, also of a texture the GPU wrote)", ""),
-    "tex_dirty_upload": ("c", "hle_nvn.c nvn_ft_written (page write tracking)", "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."),
+    "tex_dirty_upload": ("a", "gfx_set_profile bit 4 (src/gfx/texwatch.ts): registered textures are hashed in full by a scanner, 4 MB a submission, in place of nxnative's page write tracking", ""),
     # ---- b: Apple / Metal / rewriter / offline chain, dropped ----
     "ipa":            ("b", "iOS package file name", ""),
     "app_category":   ("b", "App Store category", ""),

@@ -112,7 +112,7 @@
   "010029B018432000": {
    "name": "Ghost Trick: Phantom Detective",
    "builds": 1,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "01002B00111A2000": {
@@ -184,7 +184,7 @@
   "010036E00FB20000": {
    "name": "The Great Ace Attorney Chronicles",
    "builds": 1,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "010038600B27E000": {
@@ -196,7 +196,7 @@
   "010038B015560000": {
    "name": "FINAL FANTASY TACTICS - The Ivalice Chronicles",
    "builds": 1,
-   "needs": 1,
+   "needs": 0,
    "cuts": 2
   },
   "01003E601E324000": {
@@ -304,13 +304,13 @@
   "010056B015FE8000": {
    "name": "NieR:Automata The End of YoRHa Edition",
    "builds": 1,
-   "needs": 4,
+   "needs": 3,
    "cuts": 8
   },
   "010057D006492000": {
    "name": "OCTOPATH TRAVELER",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "01005CA01580E000": {
@@ -322,7 +322,7 @@
   "01006000040C2000": {
    "name": "Yoshi's Crafted World",
    "builds": 1,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "0100606026F12000": {
@@ -670,7 +670,7 @@
   "0100B04011742000": {
    "name": "Monster Hunter Rise",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 0
   },
   "0100B7C00933A000": {
@@ -688,7 +688,7 @@
   "0100B8E016F76000": {
    "name": "NieR:Automata The End of YoRHa Edition",
    "builds": 1,
-   "needs": 4,
+   "needs": 3,
    "cuts": 8
   },
   "0100B99019412000": {
@@ -826,7 +826,7 @@
   "0100F2C0115B6000": {
    "name": "The Legend of Zelda: Tears of the Kingdom",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 0
   },
   "0100F43008C44000": {
@@ -874,7 +874,7 @@
   "0400486024DEC000": {
    "name": "The Legend of Zelda: Ocarina of Time",
    "builds": 1,
-   "needs": 4,
+   "needs": 3,
    "cuts": 0
   },
   "040074A01BF12000": {
@@ -886,7 +886,7 @@
   "040077201BE50000": {
    "name": "Kirby Air Riders",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "04007EF01F8AE000": {

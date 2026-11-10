@@ -511,19 +511,19 @@
   }
  },
  "pairs_per_class": {
-  "a": 1511,
+  "a": 1522,
   "b": 1432,
-  "c": 97
+  "c": 86
  },
  "keys_per_class": {
-  "a": 22,
+  "a": 23,
   "b": 20,
-  "c": 17
+  "c": 16
  },
  "keys_set_per_class": {
-  "a": 19,
+  "a": 20,
   "b": 18,
-  "c": 17
+  "c": 16
  },
  "top_c": [
   {
@@ -533,10 +533,6 @@
   {
    "key": "address_space",
    "profiles": 14
-  },
-  {
-   "key": "tex_dirty_upload",
-   "profiles": 11
   },
   {
    "key": "present_interval",
@@ -729,9 +725,9 @@
    "profiles": 12
   },
   "tex_dirty_upload": {
-   "class": "c",
-   "note": "hle_nvn.c nvn_ft_written (page write tracking)",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages).",
+   "class": "a",
+   "note": "gfx_set_profile bit 4 (src/gfx/texwatch.ts): registered textures are hashed in full by a scanner, 4 MB a submission, in place of nxnative's page write tracking",
+   "what": "",
    "profiles": 11
   },
   "ipa": {

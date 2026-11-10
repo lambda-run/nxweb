@@ -24,7 +24,8 @@
   "romfs_marker": "data014.cpk",
   "app_pool": "0xCD500000",
   "sys_resource": "0x1000000",
-  "tex_flush_upload": "on"
+  "tex_flush_upload": "on",
+  "tex_dirty_upload": "on"
  },
  "needs": [
   {
@@ -41,11 +42,6 @@
    "key": "gpu_timestamps",
    "value": "segment",
    "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
-  },
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
   }
  ],
  "dropped": [

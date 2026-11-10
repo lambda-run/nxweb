@@ -23,15 +23,11 @@
   "modules": "main subsdk0 sdk",
   "romfs_marker": "re_chunk_000.pak.patch_001.pak",
   "tex_flush_upload": "on",
+  "tex_dirty_upload": "on",
   "app_pool": "0xCD500000",
   "mem_used": "0x14800000"
  },
  "needs": [
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
-  },
   {
    "key": "fps_target",
    "value": "60",

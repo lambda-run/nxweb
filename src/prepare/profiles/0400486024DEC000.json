@@ -26,7 +26,8 @@
   "app_pool": "0x240000000",
   "sys_resource": "0x3000000",
   "render_cond": "on",
-  "tex_flush_upload": "on"
+  "tex_flush_upload": "on",
+  "tex_dirty_upload": "on"
  },
  "needs": [
   {
@@ -38,11 +39,6 @@
    "key": "gpu_timestamps",
    "value": "segment",
    "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
-  },
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
   },
   {
    "key": "address_space",

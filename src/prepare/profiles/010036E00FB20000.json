@@ -22,15 +22,10 @@
   "modules": "main subsdk0 sdk",
   "romfs_marker": "nativeNXx64/sa/NX_64/root.arc",
   "app_pool": "0xCD500000",
-  "tex_flush_upload": "on"
+  "tex_flush_upload": "on",
+  "tex_dirty_upload": "on"
  },
- "needs": [
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",
