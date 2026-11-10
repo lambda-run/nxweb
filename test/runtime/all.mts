@@ -5,10 +5,20 @@
 //   runtime               the end-to-end tests under Node (`npm run rt:browser` needs Playwright and is not part of this)
 //   doom                  the Doom guest (test/doom): skipped unless the engine and the data file are on this machine
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, writeSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Output goes out with blocking writes. When stdout is a pipe (CI), process.stdout.write hands the pipe 64 KiB and
+// queues the rest for the event loop, which the spawnSync of the next step blocks; process.exit then drops it:
+// everything after the first 64 KiB of a long step's output, the summary and the reason for the exit code.
+function emit(s: string): void {
+  const b = Buffer.from(s);
+  for (let o = 0; o < b.length;) {
+    try { o += writeSync(1, b, o); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EAGAIN") throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
+  }
+}
+const say = (...a: unknown[]) => emit(a.join(" ") + "\n");
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // The three programs the translator's README lists as failing (NaN payloads, FPCR rounding modes, reciprocal estimates)
 export const A64_EXPECTED_FAILURES = ["fp_nan_bits", "fpcr_modes", "neon_estimate"];
@@ -18,11 +28,11 @@ const steps: Step[] = [];
 function npm(script: string): { code: number; out: string } {
   const r = spawnSync("npm", ["run", "-s", script], { cwd: ROOT, encoding: "utf8", maxBuffer: 256 << 20 });
   const out = (r.stdout ?? "") + (r.stderr ?? "");
-  process.stdout.write(out.split("\n").filter(l => !/MODULE_TYPELESS_PACKAGE_JSON|Reparsing as ES module|To eliminate this warning|--trace-warnings/.test(l)).join("\n"));
+  emit(out.split("\n").filter(l => !/MODULE_TYPELESS_PACKAGE_JSON|Reparsing as ES module|To eliminate this warning|--trace-warnings/.test(l)).join("\n"));
   return { code: r.status ?? 1, out };
 }
 function step(name: string, fn: () => { ok: boolean; note: string }): void {
-  console.log(`\n===== ${name} =====`);
+  say(`\n===== ${name} =====`);
   const t0 = Date.now();
   let r: { ok: boolean; note: string };
   try { r = fn(); } catch (e) { r = { ok: false, note: String(e) }; }
@@ -61,8 +71,8 @@ step("prepare:test", () => { const r = npm("prepare:test"); return { ok: r.code 
 // skipped (and passing) without the engine and the data file: DOOMGENERIC or tools/doom/fetch.sh, DOOM_WAD
 step("doom:test", () => { const r = npm("doom:test"); return { ok: r.code === 0, note: last(r.out, /^doom:test/) }; });
 
-console.log("\n===== summary =====");
-for (const s of steps) console.log(`${s.ok ? "ok  " : "[RED] FAIL"} ${s.name.padEnd(12)} ${(s.ms / 1000).toFixed(1).padStart(6)} s  ${s.note}`);
+say("\n===== summary =====");
+for (const s of steps) say(`${s.ok ? "ok  " : "[RED] FAIL"} ${s.name.padEnd(12)} ${(s.ms / 1000).toFixed(1).padStart(6)} s  ${s.note}`);
 const bad = steps.filter(s => !s.ok).length;
-console.log(`\nnpm test: ${steps.length} areas, ${bad} failed`);
+say(`\nnpm test: ${steps.length} areas, ${bad} failed`);
 process.exit(bad ? 1 : 0);
