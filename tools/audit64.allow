@@ -1357,6 +1357,12 @@ src/glue/hle_host.ts	V	1	return { buttons: Number(dv.getBigUint64(p, true)), axe
 src/glue/hle_rt.ts	B	1	const name = /\(([^)]+)\)$/.exec(d.toString())?.[1]?.split(" ").map(w => w[0]).join("") ?? " ";
 src/glue/hle_rt.ts	B	1	eventDupReadable: h => rt.k.kernel_event_dup_readable(h) >>> 0,
 src/glue/hle_rt.ts	V	1	eventNew: () => { const p = o.scratch ?? (rt.r.rt_scratch_ptr() + 3080); const r = rt.k.kernel_event_new(p) >>> 0; return { r, w: new DataView(rt.memory.buffer)
+src/glue/hle_scan.ts	B	1	const SYM_MAX = 1 << 20;
+src/glue/hle_scan.ts	V	1	const dyn = mod0 + dv.getInt32(mod0 + 4, true);
+src/glue/hle_scan.ts	V	1	const e: number = sym + 24 * i, at: number = str + dv.getUint32(e, true);
+src/glue/hle_scan.ts	V	1	const u32 = (o: number) => o >= 0 && o + 4 <= n ? dv.getUint32(o, true) : -1;
+src/glue/hle_scan.ts	B	1	if (top >= base) { while (top - base < SYM_MAX && u32(chains + 4 * (top - base)) >= 0 && !(u32(chains + 4 * (top - base)) & 1)) top++; count = top + 1; }
+src/glue/hle_scan.ts	B	1	let table: Map<string, readonly [string, string, string, number]> | null = null;
 src/glue/rt_audio.ts	B	1	const n = this.o.arenaBytes ?? 16 << 20, base = this.rt.hostAlloc(n);
 src/glue/rt_audio.ts	V	1	const p = rt.r.rt_scratch_ptr() + 3088, r = rt.k.kernel_event_new(p) >>> 0, w = rt.dv().getUint32(p, true);
 src/glue/rt_audio.ts	V	1	const rt = this.rt, q = this.req, dv = cpu.dv(), kind = dv.getUint32(q, true);
