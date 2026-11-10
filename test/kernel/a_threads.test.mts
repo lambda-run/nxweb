@@ -129,6 +129,21 @@ test("scheduler: starting or waking a higher-priority thread on the caller's cor
   k.check();
 });
 
+test("scheduler: under kernel_preempt_hold (guest code run by a host function) a better thread waits for the hold's end", () => {
+  const k = new Kernel(), m = k.main;
+  k.x.kernel_preempt_hold(1);
+  assert.equal(k.call(m, SVC.Create, 0, L.code, 0, L.stack + 0x40000, 30, 0), 0);
+  assert.equal(k.svc(m, SVC.Start, m.w(1)), ACT.CONTINUE, "the caller keeps its core while held");
+  const h = m.w(1);
+  assert.equal(k.call(m, SVC.GetId, 0, CUR_THREAD), 0);
+  assert.equal(m.state, "Running");
+  k.x.kernel_preempt_hold(0);
+  assert.equal(k.svc(m, SVC.GetId, CUR_THREAD), ACT.SWITCH, "the first SVC after the hold gives the core to the better thread");
+  assert.equal(k.schedule()!.handle, h);
+  assert.equal(m.state, "Runnable");
+  k.check();
+});
+
 test("scheduler: the virtual cores take turns, and a thread keeps running across SVCs that do not block", () => {
   const k = new Kernel(), m = k.main;
   const t1 = k.thread(44, 1), t2 = k.thread(20, 2), t3 = k.thread(60, 3);
