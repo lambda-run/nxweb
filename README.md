@@ -13,7 +13,7 @@ You supply your own games. Nothing from any game is in this repository. Not affi
 | ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs |
 | ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean, 62 of 71 test programs pass (see `src/a64/README.md` for gaps) |
 | Module loader (`src/loader`) | Working, tests pass (no real game file tried) |
-| Kernel core (`src/kernel`) | In progress |
+| Kernel core (`src/kernel`) | Working in isolation, tests pass |
 | NVN on WebGPU (`src/gfx`) | In progress |
 
 Start with [docs/CONTRACT.md](docs/CONTRACT.md). Generated state diagrams are in [docs/machines](docs/machines).

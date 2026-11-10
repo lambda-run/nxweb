@@ -19,6 +19,8 @@ export interface A64Options {
   maxFuncs?: number;            // functions per unit (entries + auto-discovered BL targets)
   fma?: boolean;                // relaxed-simd fused multiply-add (default true)
   tailCalls?: boolean;          // wasm tail calls (default true)
+  nanFix?: boolean;             // ARM NaN generation/propagation on FP arithmetic (default true)
+  depthLimit?: number;          // nested guest calls before a call unwinds through run() (default 160, 0 = off)
   // called by the index-0 trampoline when a pc has no translation yet; returns a table index.
   // Default: translate a unit starting at pc. Return A64Host.STOP to stop execution instead.
   onTranslate?: (pc: bigint) => number;
@@ -34,7 +36,7 @@ export interface CoreExports {
   [name: string]: unknown;
 }
 
-const OPT = { pcmapBase: 0, codeLo: 1, mapSize: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6 };
+const OPT = { pcmapBase: 0, codeLo: 1, mapSize: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8 };
 
 export class A64Host {
   static readonly TRAMPOLINE = 0;
@@ -51,10 +53,12 @@ export class A64Host {
   private opts: A64Options;
   private unitImports: WebAssembly.Imports;
 
-  constructor(translatorWasm: BufferSource, opts: A64Options) {
+  constructor(translatorWasm: BufferSource | WebAssembly.Module, helpersWasm: BufferSource | WebAssembly.Module, opts: A64Options) {
     this.opts = opts;
     this.memory = opts.memory;
-    const mod = new WebAssembly.Module(translatorWasm);
+    const mod = translatorWasm instanceof WebAssembly.Module ? translatorWasm : new WebAssembly.Module(translatorWasm);
+    const hmod = helpersWasm instanceof WebAssembly.Module ? helpersWasm : new WebAssembly.Module(helpersWasm);
+    const hlp = new WebAssembly.Instance(hmod, { env: { abort: () => { throw new Error("a64 helpers abort"); } } }).exports;
     this.tr = new WebAssembly.Instance(mod, { env: { abort: () => { throw new Error("a64 translator abort"); } } }).exports;
     this.tr.init();
     this.setOptions(opts);
@@ -66,7 +70,7 @@ export class A64Host {
     this.core = new WebAssembly.Instance(coreMod, {
       env: { memory: this.memory, table: this.table, translate: onTranslate },
     }).exports as unknown as CoreExports;
-    this.unitImports = { cpu: this.core as any, env: { memory: this.memory, table: this.table, ...opts.imports } };
+    this.unitImports = { cpu: this.core as any, hlp: hlp as any, env: { memory: this.memory, table: this.table, ...opts.imports } };
     (this.core.excl_addr as WebAssembly.Global).value = -1n;
   }
 
@@ -79,6 +83,8 @@ export class A64Host {
     if (o.maxFuncs !== undefined) t.setOpt(OPT.maxFuncs, o.maxFuncs);
     if (o.fma !== undefined) t.setOpt(OPT.fma, o.fma ? 1 : 0);
     if (o.tailCalls !== undefined) t.setOpt(OPT.tail, o.tailCalls ? 1 : 0);
+    if (o.nanFix !== undefined) t.setOpt(OPT.nan, o.nanFix ? 1 : 0);
+    if (o.depthLimit !== undefined) t.setOpt(OPT.depth, o.depthLimit);
   }
 
   // give the translator the guest code bytes for [base, base + bytes.length)

@@ -4,7 +4,7 @@ import {
   b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, fc,
   getX, setX, t32, t64, tf32, tf64, tv, optFma, optNan, gget, G_FPCR, F_VOP,
 } from "./emit";
-import { vget, vset, setF, setVint, roundMode, vfpExpand32, vfpExpand64, minMaxNum, rmodeTest } from "./fp";
+import { vget, vset, setF, setVint, roundMode, vfpExpand32, vfpExpand64, minMaxNum, rmodeTest, nanFixS } from "./fp";
 
 const SH = new StaticArray<u8>(16);
 function shuffle(): void { simd(0x0D); for (let i = 0; i < 16; i++) b(SH[i]); }
@@ -98,7 +98,7 @@ function narrowTo(sz: u32, Q: bool, rd: i32): void {
 }
 
 // stack: wide vector -> saturating narrow into rd. srcS: source lanes signed; dstS: destination signed
-function satNarrowTo(sz: u32, Q: bool, rd: i32, srcS: bool, dstS: bool): void {
+function satNarrowTo(sz: u32, Q: bool, rd: i32, srcS: bool, dstS: bool, fm: i32 = 0): void {
   let W = tv(4);
   if (sz == 2) {
     // 64 -> 32 through scalar code
@@ -123,7 +123,7 @@ function satNarrowTo(sz: u32, Q: bool, rd: i32, srcS: bool, dstS: bool): void {
     for (let j = 0; j < 8; j++) { SH[j] = <u8>j; SH[8 + j] = <u8>(16 + j); }
     shuffle();
   }
-  vset(rd);
+  finish(rd, fm);
 }
 
 // helper call: vop(op, a, b, c). Callers push i32 op first via vopBegin, then three vectors, then vopEnd.
@@ -155,6 +155,16 @@ function infZeroMask(d: bool, A: u32, B: u32): void {
   lget(B); vfo(d, 0); fsplat(d, Infinity); vfcmp(d, 0); lget(A); vzero(); vfcmp(d, 0); simd(0x4E);
   simd(0x50);
 }
+
+// stack: v -> ; emits `if (FPCR.RMode != 0) vop(30 | op) else <v on stack>`; caller emits the fast path then rmodeEnd()
+function rmodeBegin(op: i32): void {
+  let T = tv(14);
+  lset(T);
+  rmodeTest(); b(0x04); b(0x7B);
+  gget(G_FPCR); i32c(2); b(0x76); i32c(0x300000); b(0x71); i32c(30 | op); b(0x72); lget(T); vzero(); vzero(); vopEnd();
+  b(0x05); lget(T);
+}
+function rmodeEnd(): void { b(0x0B); }
 
 // lanewise scalar fallback. kind 0: float -> int (round mode, then saturating convert)
 // kind 1: int -> float, kind 2: float rounding, kind 3: float -> int after scaling by 2^fbits,
@@ -340,7 +350,7 @@ function threeSame(insn: u32, scalar: bool): bool {
   let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31), rm = <i32>((insn >> 16) & 31);
   if (opcode >= 0x18) return threeSameFp(insn, scalar);
   let fm: i32 = scalar ? scalarFm(sz) : (Q ? 0 : 1);
-  if (scalar && sz != 3 && opcode != 1 && opcode != 5 && opcode != 0x16) return false;
+  if (scalar && sz != 3 && opcode != 1 && opcode != 5 && opcode != 0x16 && opcode != 9 && opcode != 11) return false;
   if (!scalar && sz == 3 && !Q && opcode != 3) return false;
   switch (opcode) {
     case 1: case 5: { // SQADD/UQADD, SQSUB/UQSUB
@@ -401,7 +411,11 @@ function threeSame(insn: u32, scalar: bool): bool {
       if (U) vcmp(sz, 0); else { simd(0x4E); v128c(0, 0); vcmp(sz, 1); }
       break;
     case 18: if (sz == 3) return false; vget(rd); vget(rn); vget(rm); vmul(sz); vi(sz, U ? 0x11 : 0x0E); break;
-    case 19: if (sz == 3 || U) return false; vget(rn); vget(rm); vmul(sz); break;
+    case 19:
+      if (U) { if (sz != 0) return false; vopBegin(14); vget(rn); vget(rm); vzero(); vopEnd(); break; }   // PMUL
+      if (sz == 3) return false; vget(rn); vget(rm); vmul(sz); break;
+    case 9: case 11:   // SQSHL / UQSHL / SQRSHL / UQRSHL by register
+      vopBegin(26 | (sz << 8) | (U ? 0x400 : 0) | (opcode == 11 ? 0x800 : 0)); vget(rn); vget(rm); vzero(); vopEnd(); break;
     case 20: case 21: case 23: { // SMAXP/UMAXP, SMINP/UMINP, ADDP
       if (scalar || (opcode == 23 && U) || (opcode != 23 && sz == 3)) return false;
       let e: i32 = 1 << sz;
@@ -483,8 +497,17 @@ function twoReg(insn: u32, scalar: bool): bool {
   let hi = (sz & 2) != 0, d = (sz & 1) != 0;
   let fm: i32 = scalar ? scalarFm(sz) : (Q ? 0 : 1);
   let ffm: i32 = scalar ? (d ? 1 : 2) : (Q ? 0 : 1);
+  if (!scalar && !U && (opcode == 0x16 || opcode == 0x17) && sz == 0) { // FCVTN / FCVTL half <-> single
+    let fl = opcode == 0x16;
+    vopBegin(29 | (fl ? 0x800 : 0)); vget(rn);
+    if (Q && !fl) { vget(rn); for (let j = 0; j < 16; j++) SH[j] = <u8>(8 + (j & 7)); shuffle(); }
+    vzero(); vzero(); vopEnd();
+    if (fl && Q) { let W = tv(4); lset(W); vget(rd); lget(W); for (let j = 0; j < 8; j++) { SH[j] = <u8>j; SH[8 + j] = <u8>(16 + j); } shuffle(); }
+    vset(rd);
+    return true;
+  }
   if (opcode < 0x0C || opcode == 0x12 || opcode == 0x13 || opcode == 0x14) {
-    if (scalar && opcode != 7 && (sz != 3 || opcode < 8 || opcode > 11)) return false;
+    if (scalar && opcode != 7 && opcode != 3 && opcode != 0x12 && opcode != 0x14 && (sz != 3 || opcode < 8 || opcode > 11)) return false;
     if (!scalar && sz == 3 && !Q && opcode >= 8 && opcode <= 11) return false;
     switch (opcode) {
       case 0: case 1: {
@@ -528,8 +551,14 @@ function twoReg(insn: u32, scalar: bool): bool {
       case 9: vget(rn); v128c(0, 0); vcmp(sz, U ? 6 : 0); break;
       case 10: if (U) return false; vget(rn); v128c(0, 0); vcmp(sz, 2); break;
       case 11: vget(rn); vi(sz, U ? 1 : 0); break;
-      case 0x12: if (sz == 3 || scalar) return false; vget(rn); if (U) satNarrowTo(sz, Q, rd, true, false); else narrowTo(sz, Q, rd); return true;
-      case 0x14: if (sz == 3 || scalar) return false; vget(rn); satNarrowTo(sz, Q, rd, !U, !U); return true;
+      case 0x12:
+        if (sz == 3 || (scalar && !U)) return false;
+        vget(rn); if (U) satNarrowTo(sz, Q && !scalar, rd, true, false, scalar ? scalarFm(sz) : 0); else narrowTo(sz, Q, rd);
+        return true;
+      case 0x14: if (sz == 3) return false; vget(rn); satNarrowTo(sz, Q && !scalar, rd, !U, !U, scalar ? scalarFm(sz) : 0); return true;
+      case 3: // SUQADD / USQADD
+        if (!scalar && sz == 3 && !Q) return false;
+        vopBegin(27 | (sz << 8) | (U ? 0x400 : 0)); vget(rd); vget(rn); vzero(); vopEnd(); break;
       case 0x13: if (!U || sz == 3) return false; vget(rn); vext(sz + 1, Q, true); i32c(8 << sz); vi(sz + 1, 0xB); vset(rd); return true;
       case 4: { // CLS / CLZ, lane by lane
         if (sz == 3) return false;
@@ -559,9 +588,17 @@ function twoReg(insn: u32, scalar: bool): bool {
     case 0x0E: if (!hi || U) return false; vget(rn); v128c(0, 0); vfcmp(d, 2); break;
     case 0x0F: if (!hi) return false; vget(rn); vfo(d, U ? 1 : 0); break;
     case 0x18: if (hi && U) return false; vget(rn); vround(d, hi ? 1 : U ? 4 : 0); break;
-    case 0x19: vget(rn); vround(d, hi ? (U ? 0 : 3) : (U ? 0 : 2)); break;
+    case 0x19:
+      vget(rn);
+      if (U) { rmodeBegin(((d ? 3 : 2) << 8) | ((d ? 0 : 1) << 12)); vround(d, 0); rmodeEnd(); }
+      else vround(d, hi ? 3 : 2);
+      break;
     case 0x1A: case 0x1B: case 0x1C: {
-      if (opcode == 0x1C && hi) return false;
+      if (opcode == 0x1C && hi) { // URECPE / URSQRTE
+        if (d || scalar) return false;
+        vopBegin((U ? 20 : 19) | (2 << 8)); vget(rn); vzero(); vzero(); vopEnd();
+        break;
+      }
       let mode: u32 = opcode == 0x1C ? 4 : opcode == 0x1A ? (hi ? 1 : 0) : (hi ? 3 : 2);
       vget(rn);
       if (d || mode == 4) lanewise(0, d, U, mode, 0);
@@ -569,11 +606,16 @@ function twoReg(insn: u32, scalar: bool): bool {
       break;
     }
     case 0x1D:
-      if (hi) return false;
+      if (hi) { vopBegin((U ? 17 : 16) | ((d ? 3 : 2) << 8)); vget(rn); vzero(); vzero(); vopEnd(); break; }   // FRECPE / FRSQRTE
       vget(rn);
+      rmodeBegin(((d ? 3 : 2) << 8) | ((d ? (U ? 4 : 3) : (U ? 6 : 5)) << 12));
       if (d) lanewise(1, true, U, 0, 0); else simd(U ? 0xFB : 0xFA);
+      rmodeEnd();
       break;
-    case 0x1F: if (!hi || !U) return false; vget(rn); vfo(d, 3); break;
+    case 0x1F:
+      if (!hi) return false;
+      if (!U) { if (!scalar) return false; vopBegin(18 | ((d ? 3 : 2) << 8)); vget(rn); vzero(); vzero(); vopEnd(); break; }  // FRECPX
+      vget(rn); ltee(tv(NA)); vfo(d, 3); nanFixV(d, 1); break;
     case 0x16: { // FCVTN / FCVTN2
       if (scalar || U || hi || !d) return false;
       vget(rn); simd(0x5E);
@@ -608,12 +650,13 @@ function across(insn: u32): bool {
     if (!Q || (sz & 1)) return false;
     let isMin = (sz & 2) != 0;
     for (let l = 0; l < 4; l++) {
-      vget(rn); simd(0x1F); b(l);
-      if (l & 1) { if (opcode == 0x0F) b(isMin ? 0x96 : 0x97); else minMaxNum(false, !isMin); }
-      if (l == 1) lset(tf32(5));
+      vget(rn); simd(0x1F); b(l); ltee(tf32(3 + (l & 1)));
+      if (l & 1) { if (opcode == 0x0F) b(isMin ? 0x96 : 0x97); else minMaxNum(false, !isMin); nanFixS(false, 2); }
+      if (l == 1) lset(tf32(8));
     }
-    lset(tf32(6)); lget(tf32(5)); lget(tf32(6));
+    lset(tf32(4)); lget(tf32(8)); ltee(tf32(3)); lget(tf32(4));
     if (opcode == 0x0F) b(isMin ? 0x96 : 0x97); else minMaxNum(false, !isMin);
+    nanFixS(false, 2);
     setF(rd, false);
     return true;
   }
@@ -665,13 +708,14 @@ function scalarPairwise(insn: u32): bool {
   if (!U) return false;
   let d = (sz & 1) != 0, hi = (sz & 2) != 0;
   let ex: u32 = d ? 0x21 : 0x1F;
-  vget(rn); simd(ex); b(0); vget(rn); simd(ex); b(1);
+  vget(rn); simd(ex); b(0); ltee(d ? tf64(3) : tf32(3)); vget(rn); simd(ex); b(1); ltee(d ? tf64(4) : tf32(4));
   switch (opcode) {
     case 0x0D: if (hi) return false; b(d ? 0xA0 : 0x92); break;
     case 0x0F: b(d ? (hi ? 0xA4 : 0xA5) : (hi ? 0x96 : 0x97)); break;
     case 0x0C: minMaxNum(d, !hi); break;
     default: return false;
   }
+  nanFixS(d, 2);
   setF(rd, d);
   return true;
 }
@@ -786,18 +830,18 @@ function shiftImm(insn: u32, scalar: bool): bool {
     case 0x0C: if (!U) return false; vget(rn); satShl(sz, true, false, lsh); break;   // SQSHLU
     case 0x0E: vget(rn); satShl(sz, !U, !U, lsh); break;                               // SQSHL / UQSHL
     case 0x10: case 0x11: { // SHRN / RSHRN, SQSHRUN / SQRSHRUN
-      if (scalar || sz == 3) return false;
+      if (sz == 3 || (scalar && !U)) return false;
       vget(rn);
-      if (U) { if (opcode == 0x10) vshr(sz + 1, false, rsh); else vrshr(sz + 1, false, rsh); satNarrowTo(sz, Q, rd, true, false); return true; }
+      if (U) { if (opcode == 0x10) vshr(sz + 1, false, rsh); else vrshr(sz + 1, false, rsh); satNarrowTo(sz, Q && !scalar, rd, true, false, scalar ? scalarFm(sz) : 0); return true; }
       if (opcode == 0x10) { i32c(rsh); vi(sz + 1, 0xD); } else vrshr(sz + 1, true, rsh);
       narrowTo(sz, Q, rd);
       return true;
     }
     case 0x12: case 0x13: { // SQSHRN / UQSHRN, SQRSHRN / UQRSHRN
-      if (scalar || sz == 3) return false;
+      if (sz == 3) return false;
       vget(rn);
       if (opcode == 0x12) vshr(sz + 1, U, rsh); else vrshr(sz + 1, U, rsh);
-      satNarrowTo(sz, Q, rd, !U, !U);
+      satNarrowTo(sz, Q && !scalar, rd, !U, !U, scalar ? scalarFm(sz) : 0);
       return true;
     }
     case 0x14: { // SSHLL / USHLL
@@ -811,8 +855,10 @@ function shiftImm(insn: u32, scalar: bool): bool {
       if (sz < 2) return false;
       if (!scalar && sz == 3 && !Q) return false;
       vget(rn);
+      rmodeBegin((sz << 8) | ((sz == 3 ? (U ? 4 : 3) : (U ? 6 : 5)) << 12) | (rsh << 22));
       if (sz == 3) lanewise(4, true, U, 0, rsh);
       else { simd(U ? 0xFB : 0xFA); let k: u32 = <u32>(127 - rsh) << 23; v128c(<u64>k | (<u64>k << 32), <u64>k | (<u64>k << 32)); simd(0xE6); }
+      rmodeEnd();
       break;
     }
     case 0x1F: { // FCVTZS / FCVTZU fixed-point
@@ -829,10 +875,31 @@ function shiftImm(insn: u32, scalar: bool): bool {
   return true;
 }
 
-function threeDiff(insn: u32): bool {
+function threeDiff(insn: u32, scalar: bool): bool {
   let Q = ((insn >> 30) & 1) != 0, U = ((insn >> 29) & 1) != 0, sz = (insn >> 22) & 3;
   let opcode = (insn >> 12) & 15;
   let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31), rm = <i32>((insn >> 16) & 31);
+  if (opcode == 9 || opcode == 11 || opcode == 13) { // SQDMLAL / SQDMLSL / SQDMULL
+    if (U || sz == 0 || sz == 3) return false;
+    let hiHalf = Q && !scalar;
+    vopBegin(28 | (sz << 8) | ((opcode == 13 ? 0 : opcode == 9 ? 1 : 2) << 12));
+    for (let j = 0; j < 16; j++) SH[j] = <u8>(8 + (j & 7));
+    vget(rn); if (hiHalf) { vget(rn); shuffle(); }
+    vget(rm); if (hiHalf) { vget(rm); shuffle(); }
+    vget(rd); vopEnd();
+    finish(rd, scalar ? (sz == 1 ? 2 : 1) : 0);
+    return true;
+  }
+  if (scalar) return false;
+  if (opcode == 14) { // PMULL
+    if (U || (sz != 0 && sz != 3)) return false;
+    vopBegin(15 | (sz << 8));
+    for (let j = 0; j < 16; j++) SH[j] = <u8>(8 + (j & 7));
+    vget(rn); if (Q) { vget(rn); shuffle(); }
+    vget(rm); if (Q) { vget(rm); shuffle(); }
+    vzero(); vopEnd(); vset(rd);
+    return true;
+  }
   if (sz == 3) return false;
   let w = sz + 1;
   switch (opcode) {
@@ -880,17 +947,29 @@ function indexed(insn: u32, scalar: bool): bool {
     if (d) { if (L) return false; idx = H; } else idx = (H << 1) | L;
     if (!scalar && d && !Q) return false;
     vget(rm); simd(d ? 0x1D : 0x1B); b(idx); simd(d ? 0x12 : 0x11); lset(E);
-    if (opcode == 9) { vget(rn); lget(E); vfo(d, 6); }
-    else { vget(rn); lget(E); vget(rd); vfma(d, opcode == 5); }
+    if (opcode == 9) { vget(rn); ltee(tv(NA)); lget(E); ltee(tv(NB)); vfo(d, 6); nanFixV(d, 2); }
+    else {
+      vget(rn); lget(E); vget(rd); vfma(d, opcode == 5);
+      if (optNan) { lget(E); lset(tv(11)); vget(rn); if (opcode == 5) vfo(d, 1); lset(tv(NB)); vget(rd); lset(tv(NA)); nanFixV(d, 3); }
+    }
     finish(rd, scalar ? (d ? 1 : 2) : (Q ? 0 : 1));
     return true;
   }
-  if (scalar) return false;
+  if (scalar && !(!U && (opcode == 3 || opcode == 7 || opcode == 11))) return false;
   if (sz == 1) idx = (H << 2) | (L << 1) | M;
   else if (sz == 2) { idx = (H << 1) | L; rm |= <i32>(M << 4); }
   else return false;
   vget(rm); simd(sz == 1 ? 0x19 : 0x1B); b(idx); simd(0x0F + sz); lset(E);
   let w = sz + 1;
+  if (!U && (opcode == 3 || opcode == 7 || opcode == 11)) { // SQDMLAL / SQDMLSL / SQDMULL by element
+    let hiHalf = Q && !scalar;
+    vopBegin(28 | (sz << 8) | ((opcode == 11 ? 0 : opcode == 3 ? 1 : 2) << 12));
+    for (let j = 0; j < 16; j++) SH[j] = <u8>(8 + (j & 7));
+    vget(rn); if (hiHalf) { vget(rn); shuffle(); }
+    lget(E); vget(rd); vopEnd();
+    finish(rd, scalar ? (sz == 1 ? 2 : 1) : 0);
+    return true;
+  }
   if (!U && opcode == 8) { vget(rn); lget(E); vi(sz, 0x15); finish(rd, Q ? 0 : 1); return true; }
   if (U && (opcode == 0 || opcode == 4)) { vget(rd); vget(rn); lget(E); vi(sz, 0x15); vi(sz, opcode == 4 ? 0x11 : 0xE); finish(rd, Q ? 0 : 1); return true; }
   if (!U && (opcode == 12 || opcode == 13)) { vget(rn); lget(E); vqdmulh(sz, opcode == 13); finish(rd, Q ? 0 : 1); return true; }
@@ -957,6 +1036,13 @@ export function trSimd(pc: u64, insn: u32): bool {
   if ((insn & (1 << 24)) == 0) {
     if ((insn & (1 << 21)) == 0) {
       if ((insn & 0x00E08400) == 0x00000400) return copy(insn, scalar);
+      if (scalar && (insn & 0xFF208C00) == 0x5E000000) { // SHA three-register
+        let k = (insn >> 12) & 7;
+        let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31), rm = <i32>((insn >> 16) & 31);
+        if (k == 7) return false;
+        vopBegin(k < 3 ? 4 + k : k == 3 ? 8 : k == 4 ? 10 : k == 5 ? 11 : 13); vget(rd); vget(rn); vget(rm); vopEnd(); vset(rd);
+        return true;
+      }
       if (scalar || (insn & 0x8000) != 0) return false;
       let lo = (insn >> 10) & 3;
       if (!U && lo == 0) return tbl(insn);
@@ -969,9 +1055,24 @@ export function trSimd(pc: u64, insn: u32): bool {
       let g = (insn >> 17) & 15;
       if (g == 0) return twoReg(insn, scalar);
       if (g == 8) return scalar ? scalarPairwise(insn) : across(insn);
+      if (g == 4 && ((insn >> 22) & 3) == 0) { // AES (vector) / SHA two-register (scalar)
+        let k = (insn >> 12) & 31, rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31);
+        if (!scalar) {
+          if ((insn & 0xFF200000) != 0x4E200000 || k < 4 || k > 7) return false;
+          vopBegin(k - 4);
+          if (k < 6) { vget(rd); vget(rn); } else { vget(rn); vzero(); }
+          vzero(); vopEnd(); vset(rd);
+          return true;
+        }
+        if ((insn & 0xFF200000) != 0x5E200000 || k > 2) return false;
+        vopBegin(k == 0 ? 7 : k == 1 ? 9 : 12);
+        if (k == 0) { vget(rn); vzero(); } else { vget(rd); vget(rn); }
+        vzero(); vopEnd(); vset(rd);
+        return true;
+      }
       return false;
     }
-    if (((insn >> 10) & 3) == 0 && !scalar) return threeDiff(insn);
+    if (((insn >> 10) & 3) == 0) return threeDiff(insn, scalar);
     return false;
   }
   if (insn & 0x400) {

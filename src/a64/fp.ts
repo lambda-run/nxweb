@@ -300,6 +300,7 @@ export function trFp(pc: u64, insn: u32): bool {
         b(0x05); lget(X); b(0xB6); b(0x0B);
         setF(rd, false); return true;
       }
+      case 5: if (d) return false; getF(rn, false); b(0xBB); setF(rd, true); return true;
       case 8: getF(rn, d); roundMode(d, 0); setF(rd, d); return true;
       case 9: getF(rn, d); roundMode(d, 1); setF(rd, d); return true;
       case 10: getF(rn, d); roundMode(d, 2); setF(rd, d); return true;

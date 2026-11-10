@@ -178,3 +178,73 @@ E("simd_fmaxv_fminv", "0 1 1 01110 a:1 0 11000 011 k:2 10 Rn:5 Rd:5", fix={"k": 
 for ty, fp, n in TY:
     E("simd_fixed_conv_scalar_%s" % n, "01 U:1 111110 immh:4 immb:3 111 k:1 k2:1 1 Rn:5 Rd:5",
       fix={"immh": (lambda r, f, pc, ty=ty: (8 | r.getrandbits(3)) if ty else (4 | r.getrandbits(2))), "k2": (lambda r, f, pc: f["k"])}, fp=fp)
+
+# ------------------------------------------------------------------------------ round 2
+for ty, fp, n in TY:
+    E("simd_frecpe_frsqrte_%s" % n, "0 Q:1 U:1 01110 1 sz:1 10000 11101 10 Rn:5 Rd:5", fix={"sz": ty, "Q": (lambda r, f, pc, ty=ty: 1 if ty else f["Q"])}, fp=fp)
+    E("simd_frecpe_frsqrte_scalar_%s" % n, "01 U:1 11110 1 sz:1 10000 11101 10 Rn:5 Rd:5", fix={"sz": ty}, fp=fp)
+    E("simd_frecpx_%s" % n, "01 0 11110 1 sz:1 10000 11111 10 Rn:5 Rd:5", fix={"sz": ty}, fp=fp)
+    E("simd_frecps_frsqrts_%s" % n, "0 Q:1 0 01110 a:1 sz:1 1 Rm:5 11111 1 Rn:5 Rd:5", fix={"sz": ty, "Q": (lambda r, f, pc, ty=ty: 1 if ty else f["Q"])}, fp=fp)
+    E("simd_frecps_frsqrts_scalar_%s" % n, "01 0 11110 a:1 sz:1 1 Rm:5 11111 1 Rn:5 Rd:5", fix={"sz": ty}, fp=fp)
+    E("simd_fmulx_%s" % n, "0 Q:1 0 01110 0 sz:1 1 Rm:5 11011 1 Rn:5 Rd:5", fix={"sz": ty, "Q": (lambda r, f, pc, ty=ty: 1 if ty else f["Q"])}, fp=fp)
+    E("simd_fmulx_scalar_%s" % n, "01 0 11110 0 sz:1 1 Rm:5 11011 1 Rn:5 Rd:5", fix={"sz": ty}, fp=fp)
+E("simd_urecpe_ursqrte", "0 Q:1 U:1 01110 1 0 10000 11100 10 Rn:5 Rd:5")
+E("simd_sqdmull", "0 Q:1 0 01110 size:2 1 Rm:5 1 k:2 1 00 Rn:5 Rd:5", fix={"size": [1, 2], "k": [0, 1, 2]})
+E("simd_sqdmull_scalar", "01 0 11110 size:2 1 Rm:5 1 k:2 1 00 Rn:5 Rd:5", fix={"size": [1, 2], "k": [0, 1, 2]})
+E("simd_sqdmull_indexed", "0 Q:1 0 01111 size:2 L:1 M:1 Rm:4 k:2 11 H:1 0 Rn:5 Rd:5", fix={"size": [1, 2], "k": [0, 1, 2]})
+E("simd_sqdmull_indexed_scalar", "01 0 11111 size:2 L:1 M:1 Rm:4 k:2 11 H:1 0 Rn:5 Rd:5", fix={"size": [1, 2], "k": [0, 1, 2]})
+E("simd_qshl_reg", "0 Q:1 U:1 01110 size:2 1 Rm:5 010 r:1 1 1 Rn:5 Rd:5")
+E("simd_qshl_reg_scalar", "01 U:1 11110 size:2 1 Rm:5 010 r:1 1 1 Rn:5 Rd:5")
+E("simd_suqadd_usqadd", "0 Q:1 U:1 01110 size:2 10000 00011 10 Rn:5 Rd:5")
+E("simd_suqadd_usqadd_scalar", "01 U:1 11110 size:2 10000 00011 10 Rn:5 Rd:5")
+E("simd_qxtn_scalar", "01 U:1 11110 size:2 10000 opcode:5 10 Rn:5 Rd:5", fix={"size": [0, 1, 2], "opcode": [0x12, 0x14]}, filt=lambda f: f["opcode"] == 0x14 or f["U"])
+E("simd_qshrn_scalar", "01 U:1 111110 immh:4 immb:3 100 k:2 1 Rn:5 Rd:5", filt=lambda f: 0 < f["immh"] < 8 and (f["U"] or f["k"] >= 2))
+E("simd_pmul", "0 Q:1 1 01110 00 1 Rm:5 10011 1 Rn:5 Rd:5")
+E("simd_pmull", "0 Q:1 0 01110 size:2 1 Rm:5 1110 00 Rn:5 Rd:5", fix={"size": [0, 3]})
+E("aes", "0100 1110 0010 100 001 k:2 10 Rn:5 Rd:5")
+E("sha_3reg", "0101 1110 000 Rm:5 0 k:3 00 Rn:5 Rd:5", fix={"k": [0, 1, 2, 3, 4, 5, 6]})
+E("sha_2reg", "0101 1110 0010 100 000 k:2 10 Rn:5 Rd:5", fix={"k": [0, 1, 2]})
+
+
+def _half_vals(r, f, pre):
+    v = 0
+    for i in range(8):
+        k = r.random()
+        h = r.choice((0, 0x8000, 0x7C00, 0xFC00, 0x7E00, 0x7C01, 0xFE55, 1, 0x3FF, 0x400, 0x7BFF, 0x3C00, 0xBC00)) if k < 0.3 else r.getrandbits(16)
+        v |= h << (16 * i)
+    pre["v%d" % f["Rn"]] = v
+
+
+E("fcvt_h_to_sd", "000 11110 11 1 00010 d:1 10000 Rn:5 Rd:5", setup=_half_vals)
+E("fcvt_s_to_h", "000 11110 00 1 000111 10000 Rn:5 Rd:5", fp=(32, 0))
+E("fcvt_d_to_h", "000 11110 01 1 000111 10000 Rn:5 Rd:5", fp=(64, 0))
+E("simd_fcvtl_h", "0 Q:1 0 01110 0 0 10000 10111 10 Rn:5 Rd:5", setup=_half_vals)
+E("simd_fcvtn_h", "0 Q:1 0 01110 0 0 10000 10110 10 Rn:5 Rd:5", fp=(32, 0))
+
+
+def rmode_case(rng, pc):
+    """FPCR.RMode-dependent operations with a random rounding mode."""
+    ty = rng.getrandbits(1)
+    rn, rd = rng.randrange(32), rng.randrange(32)
+    k = rng.randrange(6)
+    pre = {"fpcr": rng.randrange(4) << 22}
+    base = 0x1E200000 | (ty << 22) | (rn << 5) | rd
+    if k == 0:
+        w = base | (rng.choice((14, 15)) << 15) | 0x4000                       # FRINTX / FRINTI
+    elif k == 1:
+        w = base | (rng.getrandbits(1) << 31) | (rng.choice((2, 3)) << 16)      # SCVTF / UCVTF
+    elif k == 2:
+        sf = rng.getrandbits(1)
+        w = (base & ~0x200000) | (sf << 31) | (rng.choice((2, 3)) << 16) | (rng.randrange(32 if not sf else 0, 64) << 10)
+    elif k == 3:
+        w = 0x1E624000 | (rn << 5) | rd                                         # FCVT d -> s
+        pre["v%d" % rn] = fuzz_lib.rnd_f64(rng)
+    elif k == 4:
+        w = 0x5E21D800 | (rng.getrandbits(1) << 29) | (ty << 22) | (rn << 5) | rd   # scalar SIMD SCVTF/UCVTF
+    else:
+        Q = 1 if ty else rng.getrandbits(1)
+        w = rng.choice((0x2E219800, 0x2EA19800, 0x0E21D800, 0x2E21D800)) | (Q << 30) | (ty << 22) | (rn << 5) | rd  # FRINTX/FRINTI/SCVTF/UCVTF vectors
+    return Case([w], pre)
+
+
+S("fpcr_rmode", rmode_case)

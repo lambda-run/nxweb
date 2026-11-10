@@ -8,9 +8,10 @@ const SCRATCH = 0x300000, PCMAP = 0x400000, MAP_SIZE = 0x100000;
 const BATCH = 512;
 
 const args = process.argv.slice(2);
-const nofma = args[0] === "--nofma";
-if (nofma) args.shift();
-const translator = readFileSync(new URL("../../build/a64/translator.wasm", import.meta.url));
+let nofma = false, strict = false, nonan = false;
+while (args[0]?.startsWith("--")) { const a = args.shift(); if (a === "--nofma") nofma = true; if (a === "--strictnan") strict = true; if (a === "--nonan") nonan = true; }
+const translator = new WebAssembly.Module(readFileSync(new URL("../../build/a64/translator.wasm", import.meta.url)));
+const helpers = new WebAssembly.Module(readFileSync(new URL("../../build/a64/helpers.wasm", import.meta.url)));
 
 function hex(b: Uint8Array, off: number, n: number): string {
   let s = "";
@@ -33,15 +34,15 @@ function nanEq(a: DataView, b: DataView, off: number, fp: number): boolean {
 function runFile(path: string): void {
   const file = readFileSync(path);
   const dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
-  const ncases = dv.getUint32(8, true), fp = dv.getUint32(12, true), nameLen = dv.getUint32(16, true), winSize = dv.getUint32(20, true);
+  const ncases = dv.getUint32(8, true), fp = strict ? 0 : dv.getUint32(12, true), nameLen = dv.getUint32(16, true), winSize = dv.getUint32(20, true);
   const name = file.subarray(24, 24 + nameLen).toString().replace(/\0+$/, "");
   let off = 24 + nameLen;
   const code = file.subarray(off, off + ncases * SLOT); off += ncases * SLOT;
   const winInit = file.subarray(off, off + winSize); off += winSize;
 
   const memory = new WebAssembly.Memory({ initial: 0x500000 >> 16 });
-  const host = new A64Host(translator, {
-    memory, pcmapBase: PCMAP, codeLo: CODE_BASE, mapSize: MAP_SIZE, maxInsns: 1, maxFuncs: 1, fma: !nofma,
+  const host = new A64Host(translator, helpers, {
+    memory, pcmapBase: PCMAP, codeLo: CODE_BASE, mapSize: MAP_SIZE, maxInsns: 1, maxFuncs: 1, fma: !nofma, nanFix: !nonan,
     imports: {
       svc: () => { throw new Error("svc"); },
       unimpl: () => { unimpl = true; },

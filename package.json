@@ -11,13 +11,15 @@
     "guests:build": "python3 tools/build_guests.py",
     "guests:check": "python3 tools/build_guests.py --check",
     "guests:run": "python3 tools/ref_run.py",
-    "a64:build": "asc src/a64/index.ts -o build/a64/translator.wasm -O2 --runtime stub --enable simd",
+    "a64:build": "asc src/a64/index.ts -o build/a64/translator.wasm -O2 --runtime stub --enable simd && asc src/a64/helpers.ts -o build/a64/helpers.wasm -O2 --runtime stub --enable simd --disableWarning 112",
     "a64:fuzz": "npm run -s a64:build && python3 test/a64/fuzz.py",
     "a64:guests:build": "python3 test/a64/guests/build.py",
     "a64:guests": "npm run -s a64:build && npm run -s a64:guests:build && node --stack-size=3000 test/a64/guests_run.ts; a=$?; echo '--- again with budget=50 (forced preemption) ---'; node --stack-size=3000 test/a64/guests_run.ts --budget 50; b=$?; exit $((a|b))",
     "a64:speed": "npm run -s a64:build && node --stack-size=3000 test/a64/guests_run.ts --speed",
     "loader:build": "node src/loader/host/build.mts",
-    "loader:test": "node test/loader/run.mts"
+    "loader:test": "node test/loader/run.mts",
+    "kernel:build": "asc src/kernel/index.ts -o build/kernel/kernel.wasm -O2 --runtime stub --initialMemory 1536",
+    "kernel:test": "node test/kernel/run.mts"
   },
   "keywords": [],
   "author": "",

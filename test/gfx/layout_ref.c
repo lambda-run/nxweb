@@ -74,5 +74,33 @@ int main(void) {
     R(TEXTURE_VIEW, NVNtextureView); R(SAMPLER, NVNsampler); R(SAMPLER_BUILDER, NVNsamplerBuilder); R(PROGRAM, NVNprogram); R(SYNC, NVNsync); R(WINDOW, NVNwindow); R(WINDOW_BUILDER, NVNwindowBuilder);
     R(COMMAND_BUFFER, NVNcommandBuffer); R(BLEND_STATE, NVNblendState); R(COLOR_STATE, NVNcolorState); R(CHANNEL_MASK_STATE, NVNchannelMaskState); R(MULTISAMPLE_STATE, NVNmultisampleState);
     R(POLYGON_STATE, NVNpolygonState); R(DEPTH_STENCIL_STATE, NVNdepthStencilState); R(VERTEX_ATTRIB_STATE, NVNvertexAttribState); R(VERTEX_STREAM_STATE, NVNvertexStreamState);
+    // Bit-field layouts: the values a game's copies of the state objects hold (the *SetDefaults of hle_nvn.c, and one sample each)
+    { blend_st b; memset(&b, 0, sizeof b); b.src_rgb = NVN_BLEND_FUNC_ONE; b.dst_rgb = NVN_BLEND_FUNC_ZERO; b.src_a = NVN_BLEND_FUNC_ONE; b.dst_a = NVN_BLEND_FUNC_ZERO; b.eq_rgb = NVN_BLEND_EQUATION_ADD; b.eq_a = NVN_BLEND_EQUATION_ADD; uint64_t v = 0; memcpy(&v, &b, sizeof b); printf("BITS_BLEND_DEFAULT=%llu\n", (unsigned long long)v);
+      b.target = 5; b.src_rgb = NVN_BLEND_FUNC_SRC_ALPHA; b.dst_rgb = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA; b.src_a = NVN_BLEND_FUNC_CONSTANT_ALPHA; b.dst_a = NVN_BLEND_FUNC_DST_COLOR; b.eq_rgb = NVN_BLEND_EQUATION_MAX; b.eq_a = NVN_BLEND_EQUATION_SUB;
+      v = 0; memcpy(&v, &b, sizeof b); printf("BITS_BLEND_SAMPLE=%llu\n", (unsigned long long)v); }
+    { color_st c; memset(&c, 0, sizeof c); c.logic_op = NVN_LOGIC_OP_COPY; c.alpha_func = NVN_ALPHA_FUNC_ALWAYS; uint32_t v = 0; memcpy(&v, &c, sizeof c); printf("BITS_COLOR_DEFAULT=%u\n", v); c.blend_en = 0x21; v = 0; memcpy(&v, &c, sizeof c); printf("BITS_COLOR_SAMPLE=%u\n", v); }
+    { poly_st p; memset(&p, 0, sizeof p); p.front = NVN_FRONT_FACE_CCW; p.mode = NVN_POLYGON_MODE_FILL; uint32_t v = 0; memcpy(&v, &p, sizeof p); printf("BITS_POLY_DEFAULT=%u\n", v);
+      p.cull = NVN_FACE_BACK; p.front = NVN_FRONT_FACE_CW; p.mode = NVN_POLYGON_MODE_LINE; p.offset_en = 4; v = 0; memcpy(&v, &p, sizeof p); printf("BITS_POLY_SAMPLE=%u\n", v); }
+    { ds_st d; memset(&d, 0, sizeof d); d.dw = 1; d.df = NVN_DEPTH_FUNC_LESS; d.sf_f = d.sf_b = NVN_STENCIL_FUNC_ALWAYS; d.fail_f = d.zfail_f = d.zpass_f = d.fail_b = d.zfail_b = d.zpass_b = NVN_STENCIL_OP_KEEP;
+      uint64_t v = 0; memcpy(&v, &d, sizeof d); printf("BITS_DS_DEFAULT=%llu\n", (unsigned long long)v);
+      d.dt = 1; d.dw = 0; d.df = NVN_DEPTH_FUNC_GEQUAL; d.st = 1; d.sf_f = NVN_STENCIL_FUNC_EQUAL; d.sf_b = NVN_STENCIL_FUNC_NOTEQUAL; d.fail_f = NVN_STENCIL_OP_ZERO; d.zfail_f = NVN_STENCIL_OP_REPLACE; d.zpass_f = NVN_STENCIL_OP_INCR;
+      d.fail_b = NVN_STENCIL_OP_DECR; d.zfail_b = NVN_STENCIL_OP_INVERT; d.zpass_b = NVN_STENCIL_OP_INCR_WRAP; v = 0; memcpy(&v, &d, sizeof d); printf("BITS_DS_SAMPLE=%llu\n", (unsigned long long)v); }
+    { va_st a; memset(&a, 0, sizeof a); a.fmt = NVN_FORMAT_RGBA32F; a.offset = 12345; a.stream = 3; uint32_t v = 0; memcpy(&v, &a, sizeof a); printf("BITS_VA_SAMPLE=%u\n", v); }
+    { chmask_st m = {0xffffffffu}; m.mask = (m.mask & ~(0xfu << 8)) | 5u << 8; printf("BITS_CHMASK_SAMPLE=%u\n", m.mask); }
+    { view_t w; memset(&w, 0, sizeof w); w.set_levels = 1; w.base_level = 2; w.nlevels = 3; w.set_layers = 1; w.min_layer = 4; w.nlayers = 5; w.set_format = 1; w.format = NVN_FORMAT_RGBA8_SRGB; w.set_dsmode = 1; w.dsmode = 1;
+      uint64_t v[2]; memcpy(v, &w, 16); printf("BITS_VIEW_SAMPLE_LO=%llu\nBITS_VIEW_SAMPLE_HI=%llu\n", (unsigned long long)v[0], (unsigned long long)v[1]); }
+    // Record sizes with the header, by the formulas of hle_nvn.c (rec, RECN, REC_SNAP, rec_draw, bind_state, rec_copy)
+#define REC(payload) (((8 + (size_t)(payload)) + 7) & ~(size_t)7)
+#define SNAP(T) ((sizeof(T) + 7) & ~(size_t)7)
+    printf("REC_END=8\nREC_CALL=16\nREC_JUMP=16\n");
+    printf("REC_SET_RT_1=%zu\nREC_SET_RT_0=%zu\n", REC(SNAP(p_set_rt) + 2 * sizeof(tex_t)), REC(SNAP(p_set_rt) + sizeof(tex_t)));
+    printf("REC_CLEAR_COLOR=%zu\nREC_CLEAR_DS=%zu\nREC_VIEWPORTS=%zu\nREC_SCISSOR=%zu\nREC_DEPTH_RANGE=%zu\nREC_BIND_PROGRAM=%zu\n", REC(sizeof(p_clear_color)), REC(sizeof(p_clear_ds)), REC(sizeof(p_viewports)), REC(sizeof(p_scissor)), REC(sizeof(p_depth_range)), REC(sizeof(p_bind_program)));
+    printf("REC_BIND_BLEND=%zu\nREC_BIND_COLOR=%zu\nREC_BIND_CHMASK=%zu\nREC_BIND_MS=%zu\nREC_BIND_POLY=%zu\nREC_BIND_DS=%zu\n", REC(offsetof(p_bind_state, bytes) + sizeof(blend_st)), REC(offsetof(p_bind_state, bytes) + sizeof(color_st)),
+           REC(offsetof(p_bind_state, bytes) + sizeof(chmask_st)), REC(offsetof(p_bind_state, bytes) + sizeof(ms_st)), REC(offsetof(p_bind_state, bytes) + sizeof(poly_st)), REC(offsetof(p_bind_state, bytes) + sizeof(ds_st)));
+    printf("REC_BIND_VATTR_3=%zu\nREC_BIND_VSTREAM_2=%zu\nREC_BIND_VBUF1=%zu\nREC_BIND_VBUF_2=%zu\nREC_BIND_UBO_SMALL=%zu\nREC_BIND_TEX1=%zu\nREC_BIND_TEX_3=%zu\n", REC(offsetof(p_bind_vattr, st) + 4 * 3), REC(offsetof(p_bind_vstream, st) + 8 * 2),
+           REC(sizeof(p_bind_vbuf1)), REC(offsetof(p_bind_vbuf, r) + 16 * 2), REC(sizeof(p_bind_ubo_small)), REC(offsetof(p_bind_tex1, tbase)), REC(offsetof(p_bind_handles, h) + 8 * 3));
+    printf("REC_STENCIL=%zu\nREC_POLY_OFFSET=%zu\nREC_BLEND_COLOR=%zu\nREC_DRAW=%zu\nREC_DRAW_IDX=%zu\nREC_BARRIER=%zu\nREC_SET_POOL=%zu\n", REC(sizeof(p_stencil)), REC(sizeof(p_poly_offset)), REC(sizeof(p_blend_color)), REC(offsetof(p_draw, ind)),
+           REC(offsetof(p_draw_idx, ind)), REC(8), REC(sizeof(p_set_pool)));
+    printf("REC_COPY_B2T=%zu\nREC_COPY_B2T_STRIDES=%zu\nREC_COPY_T2T=%zu\nREC_COPY_B2B=32\nREC_UPDATE_UB_20=%zu\nREC_FENCE_SYNC=16\n", REC(COPY_STRIDES_OFF), REC(COPY_STRIDES_OFF + sizeof(p_copy_strides)), REC(SNAP(p_copy_t2t) + 2 * sizeof(tex_t)), (size_t)((24 + 20 + 7) & ~7));
     return 0;
 }

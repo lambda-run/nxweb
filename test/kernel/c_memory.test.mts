@@ -151,7 +151,7 @@ test("t_svc_memory ownership: MapMemory borrows its source, UnmapMemory moves th
   assert.equal(k.u8[H + 3 * MB], 0x91);
   assert.equal(resize(k, 0), 0);
   assert.equal(k.count("maps"), 0);
-  assert.equal(k.red.length, 6);
+  assert.equal(k.red.length, 3, "the three refusals of well-formed requests are reported");
   assert.ok(k.red.every(l => l.startsWith("[RED] kernel: MapMemory refused (0x")));
   k.check();
 });

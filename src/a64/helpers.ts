@@ -399,7 +399,7 @@ function qshl(x: i64, s: i32, bits: i32, U: bool, round: bool, sat: bool): i64 {
     return r;
   }
   let n = -s;
-  if (n > bits) return 0;
+  if (n > bits) return round ? 0 : x >> 63;
   let r: i64 = n >= 64 ? (x >> 63) : x >> n;
   if (round) r += <i64>((<u64>x >> (n - 1)) & 1);
   return r;
@@ -492,7 +492,13 @@ export function vop(op: i32, a: v128, b: v128, c: v128): v128 {
       else for (let i = 0; i < 2; i++) { let v = load<u64>(PA + 8 * i); store<u64>(PR + 8 * i, k == 16 ? recpe64(v, false) : k == 17 ? rsqrte64(v, false) : recpx(v, false)); }
       return v128.load(PR);
     }
-    case 23: case 24: case 25: { // NaN fix-up: c = computed result, lanes that are NaN are recomputed. 23: nan1(a) 24: nan2(a,b) 25: nan3(a,b,extra)
+    case 25: { // FPMulAdd NaN result per lane: a = addend, b = op1, c = op2 (caller selects the NaN lanes)
+      v128.store(PA, a); v128.store(PB, b); v128.store(PC, c);
+      if (sz == 2) for (let i = 0; i < 4; i++) SW(PR, i, n3s(W(PA, i), W(PB, i), W(PC, i)));
+      else for (let i = 0; i < 2; i++) store<u64>(PR + 8 * i, n3d(load<u64>(PA + 8 * i), load<u64>(PB + 8 * i), load<u64>(PC + 8 * i)));
+      return v128.load(PR);
+    }
+    case 23: case 24: { // NaN fix-up: c = computed result, lanes that are NaN are recomputed. 23: nan1(a) 24: nan2(a,b) 25: nan3(a,b,extra)
       v128.store(PA, a); v128.store(PB, b); v128.store(PR, c);
       if (sz == 2) {
         for (let i = 0; i < 4; i++) if (isNaN32(W(PR, i))) SW(PR, i, k == 23 ? n1s(W(PA, i)) : n2s(W(PA, i), W(PB, i)));
