@@ -68,7 +68,8 @@ stateDiagram-v2
   NoProcess --> Loading: load / handoff / demo
   Loading --> Ending: a process is there (endProcess: cacheSave, kill; await runDone)
   Ending --> Loading
-  Loading --> NoProcess: loadNso refused / 64-bit memory not available
+  Loading --> Refused: loadNso refused / 64-bit memory not available
+  Refused --> Ending: load / handoff / demo / stop (the refused runtime stays in rt, holding its gfx, audio and saves, until then)
   Loading --> Running: go(me) (running = true)
   Running --> Idle: run loop returned (Paused or Stopped; running = false)
   Idle --> Running: resume (Paused only)

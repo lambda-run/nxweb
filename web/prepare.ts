@@ -180,7 +180,8 @@ function tick(): void {
 setInterval(tick, 250);
 
 // A start or an open between its check and its run (the module and the scanner are awaited first): a second click
-// then would make a second Prepare beside the first, or find the first running and show an internal error
+// then would make a second Prepare beside the first, or find the first running and show an internal error; a folder
+// picked or dropped meanwhile is ignored before it replaces the "Continue with" target
 let busy = false;
 const idle = () => !busy && !(prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state));
 async function start(tree: PrepTree, o: { redo?: StageName; version?: number } = {}, inner = false): Promise<PrepResult | null> {
@@ -260,7 +261,7 @@ $("pick").addEventListener("click", async () => {
     let h: any;
     try { h = await picker.call(window, { id: "nxweb-game", mode: "read" }); }
     catch (e) { if (!refused(e)) return; log(`the folder picker is not available here (${(e as Error).name}): using the file input`); }
-    if (h) { await remember(h); showResume(h.name); await start(new HandleTree(h)); return; }
+    if (h) { if (!idle()) return; await remember(h); showResume(h.name); await start(new HandleTree(h)); return; }
   }
   ($("dirinput") as HTMLInputElement).click();
 });
@@ -281,7 +282,7 @@ $("fileinput").addEventListener("change", async ev => {
 });
 $("dirinput").addEventListener("change", async ev => {
   const files = (ev.target as HTMLInputElement).files;
-  if (files && files.length) { await remember(null); showResume(""); await start(new FileListTree(files)); }
+  if (files && files.length && idle()) { await remember(null); showResume(""); await start(new FileListTree(files)); }
 });
 
 // ---- a drop: on the drop area, or anywhere on the main page (web/main.ts passes the event's DataTransfer on) ----
@@ -301,9 +302,9 @@ function takeDrop(dt: DataTransfer | null | undefined): void {
       showExplain("Several files were dropped", "Drop one .nup file, or the game's folder itself (not the files inside it).", "", all.map(name).join(", ")); (window as any).nxwebExplained = "several"; return;
     }
     // File System Access where the browser has it (the handle survives a reload), else the entry API every browser has
-    if (one.h?.kind === "directory") { await remember(one.h); showResume(one.h.name); await start(new HandleTree(one.h)); return; }
+    if (one.h?.kind === "directory") { if (!idle()) return; await remember(one.h); showResume(one.h.name); await start(new HandleTree(one.h)); return; }
     if (one.h?.kind === "file") { await openFile(await one.h.getFile(), one.h); return; }
-    if (one.entry?.isDirectory) { await remember(null); showResume(""); await start(new EntryTree(one.entry)); return; }
+    if (one.entry?.isDirectory) { if (!idle()) return; await remember(null); showResume(""); await start(new EntryTree(one.entry)); return; }
     if (one.file) await openFile(one.file);
   })();
 }
