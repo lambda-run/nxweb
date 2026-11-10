@@ -463,6 +463,9 @@ export function trBranchSys(pc: u64, insn: u32): bool {
   if ((insn & 0xFFFFF01F) == 0xD503301F) {              // barriers / CLREX
     let op2 = (insn >> 5) & 7;
     if (op2 == 2) { i64c(-1); gset(G_EXADDR); return true; }
+    // DSB (4), DMB (5): on a shared memory other host threads may run guest code, so the barrier is real
+    // (`atomic.fence`). An unshared memory has one host thread: nothing, as for ISB (6), which orders no memory access.
+    if ((op2 == 4 || op2 == 5) && optShared) { b(0xFE); b(0x03); b(0x00); return true; }
     return op2 == 4 || op2 == 5 || op2 == 6 || op2 == 7 || op2 == 1;
   }
   if ((insn & 0xFFF80000) == 0xD5080000) { // SYS

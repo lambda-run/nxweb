@@ -176,5 +176,30 @@ export function runExtraTests(m: Mods): TestResult[] {
     eq("memory kept the other write", new BigUint64Array(t.memory.buffer, DATA, 1)[0], 99n);
     return "ok";
   });
+
+  test("barriers: DMB / DSB are atomic.fence on a shared memory and nothing on an unshared one; ISB is nothing", () => {
+    // ldr x1,[x0]; dmb ish; add x1,x1,#1; dsb sy; str x1,[x0]; isb; mov x0,x1; ret   and the same with NOPs
+    const NOP = 0xD503201F, DMB = 0xD5033BBF, DSB = 0xD5033F9F, ISB = 0xD5033FDF;
+    const prog = (dmb: number, dsb: number, isb: number) => [0xF9400001, dmb, 0x91000421, dsb, 0xF9000001, isb, 0xAA0103E0, RET];
+    const fences = (shared: boolean, words: number[]) => {
+      const t = mk(m, { shared });
+      t.host.keepBytes = true;
+      t.put(BASE, words); t.host.addCode(BASE, 32);
+      new BigUint64Array(t.memory.buffer, DATA, 1)[0] = 41n;
+      eq(`result (${shared ? "shared" : "unshared"})`, t.call(BASE, [BigInt(DATA)]), 42n);   // translated, compiled (so validated) and run
+      eq("memory", new BigUint64Array(t.memory.buffer, DATA, 1)[0], 42n);
+      const blob = t.host.exportCache(BASE, 32);
+      let n = 0;
+      for (let i = 0; i + 2 < blob.length; i++) if (blob[i] == 0xFE && blob[i + 1] == 0x03 && blob[i + 2] == 0x00) n++;
+      return { n, blob };
+    };
+    const plain = prog(NOP, NOP, NOP), barriers = prog(DMB, DSB, ISB);
+    const s0 = fences(true, plain), s1 = fences(true, barriers), u0 = fences(false, plain), u1 = fences(false, barriers);
+    eq("atomic.fence instructions on a shared memory (DMB, DSB; not ISB)", s1.n - s0.n, 2);
+    eq("ISB alone on a shared memory", fences(true, prog(NOP, NOP, ISB)).n - s0.n, 0);
+    eq("atomic.fence instructions on an unshared memory", u1.n - u0.n, 0);
+    eq("unshared code with barriers is the code with NOPs, byte for byte", u1.blob.length == u0.blob.length && u1.blob.every((v, i) => v == u0.blob[i]), true);
+    return `shared: ${s1.n - s0.n} fences, unshared: ${u1.n - u0.n}`;
+  });
   return out;
 }

@@ -66,7 +66,7 @@ export interface A64Fault { pc: number; unit: A64Unit; funcPc: number; offset: n
 const OPT = { pcmapBase: 0, entryBase: 1, regionLo: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8, chunk: 9, rmArith: 10,
               regionSize: 11, shared: 12, cntYield: 13, precise: 14, guard: 15 };
 const L1_BYTES = 0x40000, LEAF = 0x10000;
-export const A64_CACHE_VERSION = 3;   // bump when the translator's output changes
+export const A64_CACHE_VERSION = 4;   // bump when the translator's output changes
 
 export class A64Host {
   static readonly TRAMPOLINE = 0;
