@@ -30,6 +30,11 @@ export class RtFs {
     this.rt = rt;
     this.host = new FsHost(module, storage, {
       memory: rt.memory, memEnv: rt.memImports, log: l => rt.log(l), saveFailed: o.saveFailed ?? (e => rt.log(`[RED] fs: a save could not be written (error ${e})`)),
+      arenaMore: n => {
+        const a = rt.hostAlloc(n);
+        rt.log(a ? `fs: the arena grows by ${(n / 1048576).toFixed(0)} MB at 0x${a.toString(16)} (host-allocated, for the process's life)` : `[RED] fs: no host memory for ${n} more bytes of arena`);
+        return a;
+      },
       completed: (token, result) => {
         const wake = this.done.get(token);
         this.done.delete(token);

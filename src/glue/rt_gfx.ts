@@ -26,6 +26,7 @@ export interface GfxOptions {
   holdFences?: () => boolean;
   // The game profile's graphics switches (rt_process.ts gfxSettingsFor: the bits of src/gfx/profile.ts). Omitted: none
   profile?: { bits: number };
+  sdkMajor?: number;                  // the game's SDK major version (nv::GetGraphicsMemoryInfo's record is 0x20 bytes up to SDK 10). Omitted: newer
 }
 // nvnSyncWait's timeout is in nanoseconds; games pass ~0 (NVN's "wait forever") or values of years: no timer then
 const SYNC_FOREVER = 1n << 62n;
@@ -85,7 +86,32 @@ export class RtGfx implements HleGfx {
     this.host.onDeviceLost = () => { this.stats.deviceLosses++; rt.requestWake(); };
     this.host.onDeviceRestored = () => { this.stats.deviceRestores++; this.lastPresentDone = null; rt.requestWake(); };
     rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => this.stubOfName(cpu.cstr(cpu.x(0), 128)) });
+    this.registerNv(rt);
     rt.onDispose(() => this.dispose());
+  }
+  // nv:: (the driver glue under NVN) and nn::gs's check, as nxnative dm/gfx/hle_nv.c: NVN is the replayer's, so the
+  // SDK's own driver boot must not run (nv::InitializeGraphics -> nn::gs::sdk::BootGraphicsSystem ->
+  // nn::gsv::BootWithRemoteMemory asks nn::am for a graphics supervisor nxweb never has: Zelda faulted there at
+  // sdk+0x1dd76c, x0 = 0). The allocators and the pool are recorded; GetGraphicsMemoryInfo reports the pool.
+  readonly nv = { alloc: [] as bigint[], devtoolsAlloc: [] as bigint[], pool: 0n, poolSize: 0n, inited: false };
+  private registerNv(rt: Runtime): void {
+    const nv = this.nv, mb = (n: bigint) => (Number(n) / 1048576).toFixed(2);
+    const reg = (name: string, fn: (cpu: HostCpu) => HostResult) => rt.register({ name, forced: true, fn });
+    reg("_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", cpu => { nv.alloc = [0, 1, 2, 3].map(i => cpu.x(i)); });
+    reg("_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", cpu => { nv.devtoolsAlloc = [0, 1, 2, 3].map(i => cpu.x(i)); });
+    reg("_ZN2nv18InitializeGraphicsEPvm", cpu => {
+      nv.pool = cpu.x(0); nv.poolSize = cpu.x(1); nv.inited = true;
+      cpu.log(`nv::InitializeGraphics: pool ${mb(nv.poolSize)} MB at 0x${nv.pool.toString(16)}, recorded (the replayer allocates its own)`);
+    });
+    reg("_ZN2nv16FinalizeGraphicsEv", () => { nv.pool = 0n; nv.poolSize = 0n; nv.inited = false; });
+    reg("_ZN2nv9InitCheckEv", cpu => { if (!nv.inited) cpu.log("[RED] nv::InitCheck: graphics not initialised (nv::InitializeGraphics was not called)"); });
+    reg("_ZN2nv21GetGraphicsMemoryInfoEPNS_10MemoryInfoE", cpu => {
+      const rec = new Uint8Array((this.opts.sdkMajor ?? 99) <= 10 ? 0x20 : 0x40), dv = new DataView(rec.buffer);
+      if (nv.inited) { dv.setBigUint64(0, nv.poolSize, true); dv.setBigUint64(16, nv.poolSize, true); }   // total, used 0, free
+      cpu.write(cpu.x(0), rec);
+    });
+    reg("_ZN2nv22DumpGraphicsMemoryInfoEv", cpu => cpu.log(`nv::DumpGraphicsMemoryInfo: pool ${mb(nv.poolSize)} MB, 0 used (the replayer's)`));
+    reg("_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm", () => {});
   }
   // Releases the GPU objects the replayer made for this process (GfxHost.dispose: every texture and buffer; pipelines,
   // bind groups and samplers have no destroy and go with their last reference), so that the next process starts from

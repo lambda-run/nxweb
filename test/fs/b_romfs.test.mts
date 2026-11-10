@@ -176,6 +176,24 @@ function smallTree(dir: string): void {
   writeFileSync(join(dir, "n".repeat(0xFF)), "long name"); writeFileSync(join(dir, "back\\slash"), "unreachable by path");
 }
 
+// Zelda's RomFS tables are 13 MB, the runtime's "fs arena" range 7 MB: the module asks the embedder for more
+both("romfs: tables larger than the arena: refused without more memory, mounted with the embedder's (arenaMore)", async (async) => {
+  const dir = join(SCRATCH, `wide${+async}`), file = img(`wide${+async}.img`);
+  mkdirSync(dir, { recursive: true });
+  for (let i = 0; i < 3000; i++) writeFileSync(join(dir, `f${String(i).padStart(4, "0")}_${"x".repeat(120)}`), String(i));
+  python(["build", dir, file]);
+  const st = () => new NodeStorage({ rom: file, saveDir: join(SCRATCH, "unused") });
+  const small = new Fs(st(), { async, arena: 256 << 10 });
+  assert.notEqual(await small.mount("MountRom", "rom", 0, 0), R.OK, "256 KB of arena cannot hold the tables");
+  assert.ok(small.red.some(l => l.includes("the arena has no room for its tables")), small.red.join("\n"));
+  const fs = new Fs(st(), { async, arena: 256 << 10, more: 32 << 20 });
+  assert.equal(await fs.mount("MountRom", "rom", 0, 0), R.OK);
+  assert.equal(fs.moreGiven, 16 << 20, "one grow of the 16 MB minimum");
+  assert.equal(fs.x.fs_arena_size(), (256 << 10) + (16 << 20) - 0, "the arena's size counts what was added");
+  for (const i of [0, 1234, 2999]) assert.equal((await fs.getFile(`rom:/f${String(i).padStart(4, "0")}_${"x".repeat(120)}`))?.toString(), String(i));
+  assert.equal((await fs.list("rom:/", 3, 4000))!.length, 3000);
+});
+
 both("romfs: path rules (case, '.', '..', backslashes, slashes), open modes, error results, handles", async (async) => {
   const dir = join(SCRATCH, `tree${+async}`), file = img(`small${+async}.img`);
   smallTree(dir);
