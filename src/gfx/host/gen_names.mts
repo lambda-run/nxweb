@@ -10,7 +10,6 @@ import { fileURLToPath } from "node:url";
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LIST = join(DIR, "names.txt");
-if (process.argv[2]) copyFileSync(process.argv[2], LIST);
 
 // Empty by design, as in nxnative (hle_nvn.c g_nops): debug markers and hints with no effect on the picture
 export const NOPS = [
@@ -42,6 +41,7 @@ export function generate(): { source: string; total: number; implemented: number
 
 export const OUT = join(DIR, "gen", "names.ts");
 if (process.argv[1] && import.meta.filename === process.argv[1]) {
+  if (process.argv[2]) copyFileSync(process.argv[2], LIST);
   const g = generate();
   writeFileSync(OUT, g.source);
   console.log(`gfx names: ${g.total} names, ${g.implemented} implemented + ${g.nops} empty by design, ${g.total - g.implemented - g.nops} unimplemented (red stub)`);
