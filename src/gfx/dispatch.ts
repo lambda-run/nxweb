@@ -676,6 +676,7 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnTextureBuilderGetStorageClass: return 0;
     // Guest memory is the GPU's memory: the dirty scan and pool flushes find written texels; nothing to flush here (as nxnative)
     case F.nvnTextureFlushTexels: return 0;
+    case F.nvnCommandBufferSetRecordingMode: return 0;   // the host records every command buffer alike (as nxnative)
     case F.nvnCommandBufferSignalEvent: C.signalEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 5)); return 0;
     case F.nvnCommandBufferWaitEvent: C.waitEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 3)); return 0;
     case F.nvnCommandBufferBindStorageBuffer: C.bindStorageBuffer(P(a, 0), I(a, 1), I(a, 2), X(a, 3), X(a, 4)); return 0;

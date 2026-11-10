@@ -1054,8 +1054,8 @@ export class Runtime {
       c.sp.value = sp;
     }
     c.x30.value = PC_CALLBACK; c.pc.value = fn;
-    this.nested++;
-    try { this.guestLoop(fn); } finally { this.nested--; }
+    this.nested++; this.k.kernel_preempt_hold(1);
+    try { this.guestLoop(fn); } finally { this.nested--; this.k.kernel_preempt_hold(0); }
     c.x30.value = lr; c.sp.value = sp0;
     return c.x0.value;
   }

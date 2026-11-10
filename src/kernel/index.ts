@@ -5,7 +5,7 @@ import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { kLock, kUnlock, ACT_CONTINUE, ACT_SWITCH, ACT_STOP, FOREVER, WAITERS_BIT, guestOk, ld32, lineStart, lineEnd, puts, putx } from "./base";
 import { handlesInit, handlesUsed, handlesCountEvents, eventsLive, evRefs, O_THREAD, O_EVENT_R, O_EVENT_W, MAX_EVENTS, hPeek, hNew } from "./handle";
 import { KThread, thr, MAX_THREADS, NCORES, threadsInit, threadNew, threadOfCtx, threadsAlive, threadObjects, WK_LOCK, WK_SYNC } from "./thread";
-import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent } from "./sched";
+import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent, schedPreemptHold } from "./sched";
 import { syncInit, expire, nextDeadline, wakeClockWaiters } from "./sync";
 import { clockInit, clockSetNow, clockFreeze, clockReasons, guestNs, guestTicks, hostTimeOf, entropySeed, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
@@ -107,6 +107,9 @@ export function kernel_preempt(ctx: usize): void {
   if (t != null) schedSliceEnded(t);
   kUnlock();
 }
+// A host function runs guest code on the current thread (on 1, off 0): until off, a running thread is not switched
+// away from at an SVC because a better one became ready; it still blocks (the embedder reports that as a fault)
+export function kernel_preempt_hold(on: i32): void { kLock(); schedPreemptHold(on != 0); kUnlock(); }
 // The thread returned from its entry function (pc = 0xFFFF_FFF0). The main thread: the process ends with exit code
 // w0 (test guest ABI). Any other thread: a red line, and it exits as by ExitThread.
 export function kernel_thread_returned(ctx: usize): i32 {
