@@ -7,6 +7,7 @@ import {
 } from "./emit";
 import { getExtended } from "./int";
 import { trSimd } from "./simd";
+import { trFp16Scalar, trFp16Int, trFp16Simd } from "./fp16";
 
 // @ts-ignore
 @inline function sx(x: u32, bits: u32): i64 { return <i64>((<i32>(x << (32 - bits))) >> (32 - bits)); }
@@ -139,6 +140,7 @@ export function trFp(pc: u64, insn: u32): bool {
   let ty = (insn >> 22) & 3;
   let d = ty == 1;
   if ((insn & 0xFF000000) == 0x1F000000) { // FMADD family
+    if (ty == 3) return trFp16Scalar(insn);
     if (ty > 1) return false;
     let o1 = (insn >> 21) & 1, o0 = (insn >> 15) & 1, ra = <i32>((insn >> 10) & 31);
     if (optFma) {
@@ -170,6 +172,7 @@ export function trFp(pc: u64, insn: u32): bool {
     return true;
   }
   if ((insn & 0x7F200000) == 0x1E000000) { // fixed-point conversions
+    if (ty == 3) return trFp16Int(insn);
     if (ty > 1) return false;
     let sf = (insn >>> 31) != 0, rmode = (insn >> 19) & 3, opcode = (insn >> 16) & 7, scale = (insn >> 10) & 63;
     let fbits = 64 - scale;
@@ -188,8 +191,12 @@ export function trFp(pc: u64, insn: u32): bool {
     }
     return false;
   }
-  if ((insn & 0x7F200000) != 0x1E200000) return trSimd(pc, insn);
+  if ((insn & 0x7F200000) != 0x1E200000) {
+    let h = trFp16Simd(insn);
+    return h >= 0 ? h != 0 : trSimd(pc, insn);
+  }
   if ((insn & 0xFC00) == 0) { // FP <-> integer
+    if (ty == 3) return trFp16Int(insn);
     let sf = (insn >>> 31) != 0, rmode = (insn >> 19) & 3, opcode = (insn >> 16) & 7;
     if (opcode >= 6) {
       if (rmode == 0 && ty == 0 && !sf) {
@@ -232,6 +239,7 @@ export function trFp(pc: u64, insn: u32): bool {
       rndConst(d ? 10 : 9); b(0xA7); setVint(rd, false); return true;
     }
   }
+  if (ty == 3) return trFp16Scalar(insn);
   if (ty > 1) return false;
   switch ((insn >> 10) & 3) {
     case 1: { // FCCMP / FCCMPE

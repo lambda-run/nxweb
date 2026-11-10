@@ -18,7 +18,7 @@ instantiates modules, owns the function table and the pc map and provides the im
 | `unit.ts` | function discovery, per-function assembly, register write-back/reload analysis, unit module builder, core module builder, `decode` (the one decoder), `probe` |
 | `scan.ts` | the static scan: `probe` over a module's text, a memo of distinct words, names for what is rejected (`classify`) |
 | `index.ts` | exports: `init, setOpt, setOptAddr, addRange, removeRange, setEntry, entryBuf, translate, outPtr, metaBuf, sideBuf, buildCore, probe, staticBase, staticEnd, addrBits`, and the scan's `scan*` |
-| `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding; `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `rarith{s,d}`: directed-rounding scalar arithmetic) |
+| `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding, FP16 arithmetic lane by lane (`hlanes`); `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `rarith{s,d}`: directed-rounding scalar arithmetic) |
 
 **Core module** (`buildCore()`, bytes produced by the same encoder). Imports `env.memory`,
 `env.table`, `env.translate(pc: i64) -> i32`. Defines and exports the contract globals (`x0..x30, sp,
@@ -305,7 +305,7 @@ npm run a64:extra            # feature tests: fault pcs, code ranges, cntpct yie
 npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py), then 30,000
                              #         cases in memory64 and 30,000 with code and memory window above 4 GB
     python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N] [--mem64 | --hi] [--total N]
-npm run a64:fuzz:mem64       # the full 338,000 cases in memory64, and again above 4 GB
+npm run a64:fuzz:mem64       # the full 432,000 cases in memory64, and again above 4 GB
 npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out, then again with
                              #         budget=50, without wasm tail calls, on a shared memory; in memory64; in
                              #         memory64 with the images linked at 0x1_8000_0000 (test/a64/guests/out_hi,
@@ -356,7 +356,10 @@ the Cortex-A57 model as before. LSE: CAS and CASP cases run after a load of the 
 happens) or of one half of it; every base is 16-byte aligned, so the classes also run with `--shared`. Unicorn 2.1
 (QEMU 5.0) compares LDSMAX/LDSMIN of 8, 16 and 32 bits as 64-bit numbers (the zero-extended memory value against the
 whole register), which is not the architecture (`SInt(data) > SInt(value)` at the access size): for those cases
-the expected memory is computed by the class (`_smaxmin_post`), the rest of the state is Unicorn's. Pointer authentication is compared bit for bit: with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB
+the expected memory is computed by the class (`_smaxmin_post`), the rest of the state is Unicorn's. FP16
+(`test/a64/fuzz_classes_fp16.py`, compared bit for bit, NaNs too): the same QEMU writes a scalar fixed-point
+FCVTZS/FCVTZU of a half as a sign-extended 32-bit lane; the class keeps the 16-bit element (`_h_only`), as the
+architecture does. Pointer authentication is compared bit for bit: with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB
 clear, which is the model's reset state, QEMU's PACIx/AUTIx/PACDx/AUTDx, the hint forms, the authenticating branches,
 returns and loads are the identity too. XPACI/XPACD/XPACLRI strip whatever the enable bits say, so they are given
 canonical pointers (the only ones an identity signer produces). PACGA traps in the model (it has no EL3 to enable
@@ -426,17 +429,30 @@ state still coming from Unicorn.
   such CASPs never interleave, so a pair is never half exchanged (the loads are done once before the lock is taken,
   so an address that traps does so without holding it). LDAPR/LDAPUR/STLUR are atomic loads / stores like LDAR/STLR.
   As for the exclusives, an atomic access on a shared memory traps when its address is not aligned to its size.
+- Half-precision floating point (FP16, ARMv8.2; `fp16.ts`): on H registers FADD/FSUB/FMUL/FDIV/FNMUL/FMAX/FMIN/
+  FMAXNM/FMINNM, FMADD/FMSUB/FNMADD/FNMSUB, FABS/FNEG/FSQRT/FMOV, FRINT{N,P,M,Z,A,X,I}, FCMP/FCMPE (and #0.0),
+  FCCMP/FCCMPE, FCSEL, FMOV #imm, FMOV to and from W/X, FCVT{N,P,M,Z,A}{S,U} to W/X, SCVTF/UCVTF from W/X, both
+  also fixed-point; vector .4H/.8H and scalar H: the FP16 three-same group (FADD/FSUB/FMUL/FDIV/FABD/FMULX/FMLA/
+  FMLS/FMAX/FMIN/FMAXNM/FMINNM and their pairwise forms, FRECPS/FRSQRTS, FCMEQ/FCMGE/FCMGT/FACGE/FACGT), the
+  two-register group (FRINT*, FCVT*, SCVTF/UCVTF, FCM*#0, FABS/FNEG/FSQRT, FRECPE/FRSQRTE, FRECPX), FMAXV/FMINV/
+  FMAXNMV/FMINNMV, scalar FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP, FMLA/FMLS/FMUL/FMULX by element, fixed-point
+  SCVTF/UCVTF/FCVTZS/FCVTZU; FHM: FMLAL/FMLSL/FMLAL2/FMLSL2, vector and by element (half products added to single
+  lanes, fused, rounded by FPCR.RMode). Each instruction is one call of `hlp.vop` (case 31) with FPCR.RMode read at run time;
+  the helper computes in f64 exactly (add, sub, mul, conversions), with innocuous double rounding (div, sqrt) or
+  rounded to odd (the fused forms) and rounds once to half, with ARM's NaN rules: bit-exact against Unicorn,
+  NaNs included. FPCR.FZ16 / DN / AHP are not modelled, FPSR flags are not set (as for S and D).
 
 ## Known gaps
 
 Not translated (compile to `unimpl`, reported only if executed):
-- Half-precision arithmetic (fp16 is not on the Switch CPU), FCVTXN, FJCVTZS, vector FCVT*/SCVTF on halves.
+- FCVTXN, FJCVTZS.
 - ERETAA/ERETAB (EL1), LSE128,
   MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, SHA-512/SHA-3/SM3/SM4, any system register not
   listed above.
 
 Behavioural differences:
-- Rounding mode: vector arithmetic and the FMADD family always round to nearest; FPCR.FZ/DN/AHP are
+- Rounding mode: vector arithmetic and the FMADD family on S and D always round to nearest (FP16 honours
+  FPCR.RMode everywhere); FPCR.FZ/FZ16/DN/AHP are
   ignored; FRINTX does not raise inexact. FPSR cumulative flags and QC are never set.
 - FMADD/FMLA/FRECPS/FRSQRTS and the directed-rounding helpers are exact only when the engine's
   relaxed-simd madd is fused (x64 with FMA3, arm64). With `fma` off the translator emits unfused code.
@@ -457,8 +473,11 @@ Behavioural differences:
 
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
-- Gate 1: 169 classes x 2000 cases = 338000 cases, 0 failures; again with `--strictnan --shared --seed 5`, 0 failures.
-- Gate 2 (Node): 75 guest images, 75 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
+- Gate 1: 216 classes x 2000 cases = 432000 cases, 0 failures (the 34 FP16 and FHM classes, 68000 cases, also with
+  `--strictnan --shared --seed 5`, `--mem64`, `--hi` and `--nonan --nofma --seed 9`: 0 failures).
+- Gate 2 (Node, with FP16): 88 guest images (61 shared, 27 own, `a64_fp16` among them), 88 pass in each of
+  default, `--budget 50`, `--notail`, `--shared`, `--mem64` and the four above-4 GB runs.
+- Gate 2 (Node, before FP16): 75 guest images, 75 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
   `--precise 2`, `--cntyield` and warm from the translation cache. Feature tests: 9 of 9.
 - Gate 2 (Chromium, Worker): 75 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
   (569 units from the Cache API on the warm pass, 0 instructions translated); feature tests 9 of 9.
