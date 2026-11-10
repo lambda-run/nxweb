@@ -689,7 +689,7 @@ export class Runtime {
   private faultLines(kind: number, index: number, handle: number, ctx: number): void {
     const dv = this.dv(), pc = Number(dv.getBigUint64(ctx + 0x100, true)), x30 = Number(dv.getBigUint64(ctx + 30 * 8, true));
     if (kind === FAULT.trap && this.opts.preciseFaults !== 2)
-      this.log("[RED]   the registers are as last written back (the function's entry or its last call), pc excepted; preciseFaults: 2 makes them exact");
+      this.log("[RED]   the registers are as last written back (the function's entry or its last call), pc excepted; preciseFaults: 2 (the page: ?precise=2) makes them exact");
     const mods: CodeRange[] = [];
     for (const t of this.text) {
       if (t.handle >= 0) { const m = this.ld.info(t.handle); mods.push({ name: m.name, handle: t.handle, base: m.base, lo: t.lo, hi: t.hi }); }

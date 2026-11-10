@@ -57,6 +57,7 @@ const requestDevice = async (): Promise<any> => {
 // any program when the page was opened with ?mem64=1 (for measuring the mode)
 let mods64: Promise<RuntimeModules> | undefined;
 const forceMem64 = new URLSearchParams(self.location?.search ?? "").get("mem64") === "1";
+const precise = ({ "1": 1, "2": 2 } as const)[new URLSearchParams(self.location?.search ?? "").get("precise") ?? ""];
 function modules64(): Promise<RuntimeModules> {
   return mods64 ??= (async () => {
     const mod = async (n: string) => WebAssembly.compileStreaming(fetch(`wasm/${n}64.wasm`));
@@ -121,7 +122,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
     try { if (!hasMemory64()) throw new Error("this browser has no 64-bit WebAssembly memory"); set = await modules64(); }
     catch (e: any) { log(`[RED] page: this program needs the 64-bit memory mode and it cannot be had here (${e?.message ?? e})`); rt = undefined as any; status(); return; }
   }
-  const me = rt = new Runtime(set, { clock: "wall", guard, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
+  const me = rt = new Runtime(set, { clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
     layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
   optionsNote = (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
     (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");
