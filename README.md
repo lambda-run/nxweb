@@ -5,7 +5,10 @@ AssemblyScript and NVN graphics on WebGPU. A port of [nxnative](https://github.c
 
 You supply your own games. Nothing from any game is in this repository. Not affiliated with Nintendo.
 
-**Status: early.** No game runs yet. Self-made test modules (real NSO files built from C) load and run end to end:
+**Status: early.** No game runs yet. Self-made test modules (real NSO files built from C) load, run and draw through NVN in the browser:
+
+![The demo page running a translated test module that draws a spinning cube through NVN on WebGPU](docs/images/web-demo.png)
+
 
 | Area | State |
 |---|---|
@@ -22,5 +25,6 @@ Start with [docs/CONTRACT.md](docs/CONTRACT.md). Generated state diagrams are in
 ```
 npm install
 pip install unicorn capstone     # reference emulator, tests only
+npm run web                      # the page above, on http://localhost:8080
 npm test                         # needs clang with the aarch64 target and ld.lld
 ```

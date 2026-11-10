@@ -345,16 +345,16 @@ The cube guests in Chromium (SwiftShader, no GPU), unpaced on the wall clock, 30
 
 | | cube | cube2 (two threads) |
 |---|---|---|
-| frames per second | 184 | 198 |
-| guest instructions per frame | 885 | 714 |
-| per frame: translated code and SVCs | 0.151 ms | 0.134 ms |
-| per frame: host calls outside WebGPU (NVN recorder, hid, stubs) | 0.185 ms | 0.144 ms |
-| per frame: WebGPU calls in the replayer | 0.245 ms | 0.203 ms |
-| per frame: waiting for the GPU and the event loop | 4.8 ms | 4.6 ms |
-| guest instructions per second of translated-code time | 5.9 M | 5.3 M |
+| frames per second | 154-184 | 170-198 |
+| guest instructions per frame | 911 | 742 |
+| per frame: translated code and SVCs | 0.09-0.15 ms | 0.13 ms |
+| per frame: host calls outside WebGPU (NVN recorder, hid, stubs) | 0.19-0.20 ms | 0.14-0.16 ms |
+| per frame: WebGPU calls in the replayer | 0.21-0.25 ms | 0.18-0.20 ms |
+| per frame: waiting for the GPU and the event loop | 4.8-6.0 ms | 4.6-5.4 ms |
+| guest instructions per second of translated-code time | 5.9-10.5 M | 5.3-5.6 M |
 
-A frame of these guests is 43 NVN calls and almost no computation, so "translated code" is mostly the price of
-entering and leaving it 47 times (each NVN call saves the CPU state once to marshal x0..x7 and d0..d7). Paced by
+(Two runs each.) A frame of these guests is 45 NVN calls and almost no computation, so "translated code" is mostly the price of
+entering and leaving it 49 times (each NVN call saves the CPU state once to marshal x0..x7 and d0..d7). Paced by
 `requestAnimationFrame` the page shows 60 frames/s with 15.6 ms of each frame idle.
 
 (c)'s instruction count is taken from a run with `maxInsns = 1`, where a budget unit is one instruction; its run

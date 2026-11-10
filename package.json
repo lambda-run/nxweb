@@ -37,7 +37,10 @@
     "shaders:test": "node test/shaders/run.mts",
     "a64:extra": "npm run -s a64:build && node test/a64/extra_run.ts",
     "web:build": "node web/build.mts",
-    "web": "node web/serve.mts"
+    "web": "node web/serve.mts",
+    "fs:build": "asc src/fs/index.ts -o build/fs/fs.wasm -O2 --runtime stub",
+    "fs:test": "node test/fs/run.mts",
+    "fs:browser": "node test/fs/browser.mts"
   },
   "keywords": [],
   "author": "",

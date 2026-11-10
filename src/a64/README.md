@@ -28,9 +28,28 @@ index 1 is `stop` (sets `budget = -1`, which makes every frame unwind and `run()
 `translate` returns 1 when it does not want to continue). `run()` loops
 `while (pc < 0xFFFF_FF00 && budget >= 0) call_indirect(pcmap[pc])`.
 
-**pc map.** A flat `u32` array in guest memory, one entry per guest instruction of the code range
-`[codeLo, codeLo + mapSize)`: `index = load32(pcmapBase + ((pc - codeLo) & ~3))`, 0 (trampoline)
-outside the range. The three numbers are translator options baked into the generated code.
+**Memory.** The translator and the helpers import the embedder's one linear memory (`asc --importMemory
+--zeroFilledMemory --memoryBase`, root `a64:build` script; the bases are the "a64 translator" and "a64 helpers"
+ranges of `src/glue/rt_layout.ts`, and `A64Host` refuses to start when the binaries and the layout disagree or the
+data would not fit). Guest code is read where it lies; there is no private copy. Everything the translator keeps is
+static data plus buffers taken from its own bump allocator at start (15.4 MB: 8 MB unit output, 2 MB function body,
+2 MB side table, the rest tables); it never grows the memory. `translator.shared.wasm` / `helpers.shared.wasm` are
+the same code importing a shared memory.
+
+**pc map.** Two levels, covering all 4 GB of guest addresses: a first level of 65536 `u32` leaf addresses (one per
+64 KB) and 64 KB leaves (`u32` table index per instruction) that the glue allocates on demand from the "pc map"
+range; every untouched 64 KB points at one shared zero leaf, so a lookup is two loads and no branch:
+`index = load32(load32(L1 + (pc >> 16) * 4) + (pc & 0xFFFC))`, 0 = trampoline. Cost: 320 KB fixed plus 64 KB per
+64 KB of code that has at least one translated function (1.9 MB for the 1.66 MB big guest). `A64Host.setPcMap /
+fillPcMap / getPcMap / clearPcMap`; the translator reads the map to know what is already translated.
+
+**Code ranges.** `A64Host.addCode(lo, size, { text, entries })` registers code that is in memory (up to 64 ranges,
+any time); `removeCode(lo, size)` forgets one: its pc-map entries are cleared (empty leaves return to the free
+list), its units leave `host.units` and their table slots are set to null so the engine can free the modules, and
+pending cache entries are dropped. A function, everything discovered from it, the BL targets pulled into its unit
+and the region-mode chunk all stay inside one range, so no unit spans two ranges. `host.units[i]` gives
+`{ tableBase, pcs, side, insns, cached }`: the guest pc of every function of the unit. `setCode(base, bytes)` is
+kept as the one-window shorthand.
 
 **Translation unit** = list of entry pcs -> one wasm module importing memory, table, the `cpu.*`
 globals, `env.svc/unimpl/brk/cntpct`, `cpu.crc32`, the `hlp.*` helpers and `env.table_base`; its functions are placed in
@@ -38,11 +57,16 @@ the table by an active element segment at `table_base`. `metaBuf()` lists the fu
 glue can fill the pc map. BL targets inside the code window are added to the unit (up to
 `maxFuncs`) and become direct `call`s; everything else is an indirect transfer by the protocol.
 
-**Unit size (region mode, default).** `setCode` scans the window once for function entries (every BL
-target, the instruction after each RET, aligned 8-byte words pointing into the window). When a pc
-needs translating, the unit also takes every not-yet-translated entry of the same 64 KB chunk
-(`chunk` option, `maxFuncs` 1024). The translator remembers which pcs are translated, so nothing is
-translated twice and a BL to an already translated function goes through the pc map. Chosen from
+**Function entries.** `addCode` scans the range once and sets a bit per known entry (bitmap, 1 bit per instruction
+of the code region): every BL target; an instruction right after a RET **if it looks like a function start** (`stp
+.., [sp, #-n]!`, `sub sp, sp, #n`, `str xN, [sp, #-n]!`, `paciasp`, `bti`); every aligned 8-byte word of the range
+that points into its text (function pointers, vtables, init arrays); and whatever the loader passes in `entries`
+(symbols, relocation targets) or later through `addEntries`. A missed entry costs nothing but a lazy translation.
+
+**Unit size (region mode, default).** When a pc
+needs translating, the unit also takes every not-yet-translated known entry of the same 64 KB chunk
+(`chunk` option, `maxFuncs` 1024). Nothing is translated twice: a pc with a pc-map entry is never taken again
+and a BL to it goes through the pc map. Chosen from
 the larger-code check below: one module per function costs about 230 KB of engine memory per module;
 64 KB chunks give modules of 0.2-0.7 MB, the lowest total translate+compile time and 4x less memory.
 
@@ -77,6 +101,32 @@ unwinds by the pc check and `run()` continues there with an empty wasm stack. Gu
 therefore bounded only by the guest stack, and frames abandoned by a longjmp done with `br xN` are
 released at the latest when the limit is reached.
 
+**Shared memory (`shared: true`, default off).** The core module and every unit import the memory as shared
+(needs the threads feature; use the `.shared.wasm` translator and helpers). LDXR/LDAXR are atomic loads, STXR is
+`atomic.rmw.cmpxchg` against the value the load saw (after the address check), LDAR/STLR are atomic loads/stores.
+A 128-bit STXP is two exchanges with a roll-back of the first when the second loses (not atomic as a pair).
+Atomic accesses trap on a misaligned address. CPU state stays in per-instance globals, so each Worker has its own.
+
+**cntpct as a yield point (`cntYield: true`, default off).** `mrs xN, cntpct_el0 / cntvct_el0` becomes: write back,
+`pc` = the instruction itself, call `cntpct`, pc check, reload, then use the returned value. The embedder may park:
+set `pc` to 0xFFFF_FFE0 inside the import (its return value is ignored), let everything unwind, and later resume at
+the saved pc; the read is then executed again. Off, it is a plain call with nothing written back.
+
+**Fault pcs.** Default (no run-time cost): every unit carries a side table (module byte offset -> guest pc, 8 bytes
+per instruction, kept by the glue) and a name section (`f_<hex pc>` per function). `host.faultFromError(e)` reads
+the innermost wasm frame of the trap's stack (`f_8000000 (wasm://wasm/..:wasm-function[N]:0xOFFSET)`, the same in
+Node and Chromium), finds the unit by the function name and the instruction by the offset. Registers are then those
+of the last write-back (dirty cached registers are lost with the wasm frame). `preciseFaults: 1` writes `pc` before
+every memory instruction; `preciseFaults: 2` also writes back the dirty registers there, which makes pc and all
+registers exact at the faulting instruction at about twice the run time (see Status).
+
+**Translation cache.** `host.keepBytes = true; ...; blob = host.exportCache(lo, size)` serializes the units of a
+range (wasm bytes, function pcs, side tables); `host.importCache(blob)` on a later start makes them available and a
+cached unit is compiled and installed when one of its functions is first needed, so nothing is translated. The
+caller's key must contain the module's build id, its load address (the code embeds absolute addresses) and
+`host.optionsKey()` (translator cache version, layout and every code-changing option). Stores: `webCacheStore()`
+(Cache API, used in the browser gate) and `test/a64/cache_node.ts` (files, `guests_run.ts --cache DIR`).
+
 **Flags** are four i32 locals/globals. A `SUBS/CMP` additionally keeps its operands in dedicated
 locals so that a following `b.cond`/`csel`/`cset`/`ccmp` in the same block is emitted as one direct
 comparison; dead flag computations are left to the wasm engine's optimizer.
@@ -108,12 +158,14 @@ undecodable compiles to `unimpl(pc, insn)`; after `unimpl`/`brk` return, the fun
 ## Running the gates
 
 ```
-npm run a64:build            # asc -> build/a64/translator.wasm and build/a64/helpers.wasm
+npm run a64:build            # asc -> build/a64/{translator,helpers}{,.shared}.wasm
+npm run a64:extra            # feature tests: fault pcs, code ranges, cntpct yield, cache, shared exclusives
 npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py)
     python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N]
 npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out, then again with
-                             #         budget=50 (forced preemption), then again without wasm tail calls
-npm run a64:browser          # Gate 2 in headless Chromium (Playwright), translator in a Worker; same three passes
+                             #         budget=50, without wasm tail calls, on a shared memory; then a64:extra
+npm run a64:browser          # the same in headless Chromium (full build, Playwright channel "chromium"), in a
+                             #         Worker, plus cache cold/warm (Cache API), the big guest and the feature tests
 npm run a64:big              # larger-code check: generated 400k-instruction guest, time / size / memory
     python3 test/a64/fuzz.py --strictnan     # compare NaNs bitwise too
 npm run a64:speed            # per-guest guest-instructions/second and translation time
@@ -186,39 +238,32 @@ Not translated (compile to `unimpl`, reported only if executed):
 Behavioural differences:
 - Rounding mode: vector arithmetic and the FMADD family always round to nearest; FPCR.FZ/DN/AHP are
   ignored; FRINTX does not raise inexact. FPSR cumulative flags and QC are never set.
-- NaNs: with `nanFix` on the fuzz gate is bit-exact including NaNs on this x64 host. Operations
-  outside the list above (conversions, FRINT, FABS/FNEG, compares) rely on the host, which matches
-  ARM on x64 for every fuzzed class.
 - FMADD/FMLA/FRECPS/FRSQRTS and the directed-rounding helpers are exact only when the engine's
   relaxed-simd madd is fused (x64 with FMA3, arm64). With `fma` off the translator emits unfused code.
-- Exclusives are compare-and-store on plain memory, not atomic across wasm threads.
-- A wasm trap (out-of-bounds access) leaves registers cached in locals unwritten.
-- One code window at a time (`setCode`); no self-modifying-code detection (`A64Host.invalidate()`
-  drops all translations). Wasm memory offsets are used for the pc map, so the map must stay put.
-- Region mode's "after RET" entry heuristic also starts functions at mid-function blocks that follow
-  an early return; such code is translated twice (about 70% extra wasm on the synthetic big guest).
+- Unshared memory: exclusives are compare-and-store, fine for one thread at a time. Shared: see above
+  (STXP 64-bit pair not atomic as a pair; atomic forms trap on misaligned addresses, where ARM's LDAR/STLR do not).
+- After a wasm trap the registers cached in locals are lost unless `preciseFaults: 2` is on; the fault pc is exact
+  either way. The stack-frame format is V8's (Node, Chromium); other engines get `undefined` from `faultFromError`.
+- No self-modifying-code detection: the embedder calls `removeCode`/`addCode` (or `invalidate()`) when code changes.
+- Code and cache blobs are tied to the load address. At most 64 code ranges; a unit holds at most 250k instructions
+  and 8 MB of wasm (more is split over further units).
 - Multi-structure LD2/3/4 and ST2/3/4 and everything behind `hlp.vop` are lane-by-lane (correct, slow).
+- The speed figures below were taken while other jobs ran on the machine; run-to-run spread is about +-20%.
 
-## Status (last full run, Node 22.23 and headless Chromium 153, x64 with FMA3)
+## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
-- Gate 1: 169 classes x 2000 cases = 338000 cases, 0 failures; the same with `--strictnan --seed 3`.
-- Gate 2 (Node): 75 guest images (61 shared corpus + 14 own): 75 pass with the default budget, with
-  `--budget 50`, and with `--notail`; no raised `--stack-size`.
-- Gate 2 (Chromium, Worker): 75 pass in the same three configurations.
-- Speed, all 75 guests (275.7 M guest instructions): Node 343-494 M instructions/s, Chromium 339 M/s;
-  translation 1.2-1.7 us per guest instruction including wasm compile + instantiate (translator alone
-  0.39-0.49 us).
-- Cost of options on the shared corpus (21 runs each, min / median of total run time, ms):
-  default 325-331 / 360-378; `--nonan` 336 / 370; `--normarith` 326 / 360; both off 314 / 348;
-  on the FP-heavy subset (fp_scalar, neon, vec_auto) default 85 / 100, `--normarith` 77 / 95, both off 79 / 87.
-- Larger-code check (`npm run a64:big`: 1.66 MB image, 404k instructions, 2602 functions):
-
-  | unit policy | modules | largest module | wasm total | translate + compile | process RSS |
-  | --- | --- | --- | --- | --- | --- |
-  | one function per unit (round 1 behaviour incl. duplicates) | 2601 | 42 KB | 25.2 MB | 3823 ms | 1160 MB |
-  | one function per unit, no duplicates | 2601 | 11 KB | 12.1 MB | 2089 ms | 591 MB |
-  | 16 KB chunks | 100 | 181 KB | 15.5 MB | 294 ms | 160 MB |
-  | 64 KB chunks (default) | 25 | 663-704 KB | 15.4-16.3 MB | 215-263 ms | 139-145 MB |
-  | 256 KB chunks | 7 | 2.5 MB | 15.4 MB | 232 ms | 136 MB |
-
-  V8 accepted every module size tried (up to 4.7 MB in one module). Translator memory is 98 MB (fixed buffers).
+- Gate 1: 169 classes x 2000 cases = 338000 cases, 0 failures; again with `--strictnan --shared --seed 5`, 0 failures.
+- Gate 2 (Node): 75 guest images, 75 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
+  `--precise 2`, `--cntyield` and warm from the translation cache. Feature tests: 9 of 9.
+- Gate 2 (Chromium, Worker): 75 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
+  (569 units from the Cache API on the warm pass, 0 instructions translated); feature tests 9 of 9.
+- Runtime (`npm run rt:test`, `rt:browser`): 25 of 25 and 31 of 31 after the matching edits in `rt_layout.ts`
+  (three a64 ranges, `A64` export) and `rt_runtime.ts` (layout option, `fillPcMap` for the stub region).
+- Speed, shared corpus, 15 interleaved runs each, total run time min / median ms: default 351 / 495;
+  shared 379 / 454; `cntYield` 388 / 530; `preciseFaults: 1` 389 / 507; `preciseFaults: 2` 719 / 921.
+  In Chromium, all 75 guests: unshared 298 M guest instructions/s, shared 317 M/s.
+- Big guest (1.66 MB image, 404184 instructions, 2602 functions), entry discovery before -> after tightening:
+  translated instructions 691506 -> 404184 (1.71x -> 1.00x of the image), wasm 15.4 MB -> 9.6 MB, translate +
+  compile 215-263 ms -> 153-204 ms, 25 modules both, largest 663 KB -> 391 KB, pc map 1.9 MB.
+- Translation cache on the big guest: Node cold 150 ms of translation + compile, warm 31-36 ms (25 units from a
+  12.9 MB file, 0 instructions translated); Chromium cold 138 ms, warm 32 ms.

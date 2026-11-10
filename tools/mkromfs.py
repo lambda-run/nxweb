@@ -2,7 +2,7 @@
 """Build and read standard RomFS images (for the fs tests; no game data).
 
   mkromfs.py build <dir> <out.img> [--virtual <path>:<size>]...
-  mkromfs.py synth <out.img> --seed N [--files N] [--dirs N] [--depth N] [--max-size N] [--nonascii] [--virtual <path>:<size>]...
+  mkromfs.py synth <out.img> --seed N [--files N] [--dirs N] [--depth N] [--max-size N] [--max-name N] [--nonascii] [--virtual <path>:<size>]...
   mkromfs.py ls <img>                 one JSON object per line: {"path": hex, "type": "d"|"f", "size", "sha256"|"stamps"}
   mkromfs.py readat <img> <requests.json>   [[path hex, offset, length], ...] -> one hex string per line
 
@@ -182,11 +182,12 @@ class Builder:
         return {"dirs": len(dirs), "files": len(files), "size": o4 + len(fm)}
 
 
-def synth(b: Builder, seed: int, nfiles: int, ndirs: int, depth: int, max_size: int, nonascii: bool):
+def synth(b: Builder, seed: int, nfiles: int, ndirs: int, depth: int, max_size: int, nonascii: bool, max_name: int = 0x300):
     rnd = random.Random(seed)
 
     def name():
         n = rnd.choice([1, 2, 3, 5, 8, 13, 31, 64]) if rnd.random() < 0.9 else rnd.randint(100, 0x300)
+        n = min(n, max_name)
         if nonascii and rnd.random() < 0.3:
             # any byte but NUL, '/' and '\\' (a path cannot name a backslash: it is a separator): not valid UTF-8 in general
             s = bytes(rnd.choice([c for c in range(1, 256) if c not in (47, 92)]) for _ in range(n))
@@ -326,7 +327,7 @@ def main():
     p = sub.add_parser("build"); p.add_argument("dir"); p.add_argument("out"); p.add_argument("--virtual", action="append")
     p = sub.add_parser("synth"); p.add_argument("out"); p.add_argument("--seed", type=int, default=1)
     p.add_argument("--files", type=int, default=100); p.add_argument("--dirs", type=int, default=20); p.add_argument("--depth", type=int, default=4)
-    p.add_argument("--max-size", type=int, default=4096); p.add_argument("--nonascii", action="store_true"); p.add_argument("--virtual", action="append")
+    p.add_argument("--max-size", type=int, default=4096); p.add_argument("--nonascii", action="store_true"); p.add_argument("--max-name", type=int, default=0x300); p.add_argument("--virtual", action="append")
     p = sub.add_parser("ls"); p.add_argument("img")
     p = sub.add_parser("readat"); p.add_argument("img"); p.add_argument("requests")
     a = ap.parse_args()
@@ -336,7 +337,7 @@ def main():
         if a.cmd == "build":
             b.add_tree(a.dir)
         else:
-            synth(b, a.seed, a.files, a.dirs, a.depth, a.max_size, a.nonascii)
+            synth(b, a.seed, a.files, a.dirs, a.depth, a.max_size, a.nonascii, a.max_name)
         for parts, size in parse_virtual(a.virtual):
             b.add_file(parts, File(size=size, virtual=True))
         print(json.dumps(b.write(a.out)))

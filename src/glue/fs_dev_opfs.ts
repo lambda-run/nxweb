@@ -28,13 +28,16 @@ export class OpfsDevice implements FsDevice {
 }
 
 // Saves live in <OPFS root>/<dir>/{save,device,cache<i>}.nxsv. One tab at a time: a second synchronous access
-// handle on the same file is refused by the browser, and the mount falls back to read-only.
+// handle on the same file is refused by the browser, and the mount falls back to read-only. After a page reload
+// the handle of the Worker that died is released only after a while (about 2 s in Chromium 153, measured by
+// `npm run fs:browser`), so an open that is refused is tried again for lockWaitMs before it gives up.
 export class OpfsStorage implements FsStorage {
   private dir: string;
+  private lockWaitMs: number;
   private images = new Map<string, Blob>();
   private temp = new Map<string, MemDevice>();
   private open_ = new Map<string, OpfsDevice>();
-  constructor(dir: string) { this.dir = dir; }
+  constructor(dir: string, o: { lockWaitMs?: number } = {}) { this.dir = dir; this.lockWaitMs = o.lockWaitMs ?? 5000; }
   setRom(blob: Blob): void { this.images.set(`${FS_KIND.ROM}:0`, blob); }
   setAddOnContent(index: number, blob: Blob): void { this.images.set(`${FS_KIND.AOC}:${index}`, blob); }
   private name(kind: number, index: bigint): string {
@@ -54,9 +57,16 @@ export class OpfsStorage implements FsStorage {
     return (async () => {
       try {
         const file = await (await this.folder()).getFileHandle(name, { create: true });
-        const dev = new OpfsDevice(await file.createSyncAccessHandle());
-        this.open_.set(name, dev);
-        return dev;
+        for (const t0 = Date.now(); ;) {
+          try {
+            const dev = new OpfsDevice(await file.createSyncAccessHandle());
+            this.open_.set(name, dev);
+            return dev;
+          } catch (e) {
+            if ((e as { name?: string }).name !== "NoModificationAllowedError" || Date.now() - t0 >= this.lockWaitMs) return DEV.IO;
+            await new Promise(r => setTimeout(r, 50));
+          }
+        }
       } catch { return DEV.IO; }
     })();
   }

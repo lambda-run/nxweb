@@ -268,6 +268,7 @@ both("save: a failed storage write poisons the transaction: the commit is refuse
   await fs.putFile("save:/slot", B("committed")); await fs.putFile("save:/other", B("other"));
   assert.equal(await fs.path("Commit", "save"), R.OK);
   const [, h] = await fs.open("save:/slot", MODE.R | MODE.W);
+  const [, hw] = await fs.open("save:/other", MODE.W), [, hro] = await fs.open("save:/other", MODE.R);
   const [, dh] = await fs.openDir("save:/");
   // the disk is full: the game does not look at WriteFile's result and commits as usual
   disk.plan.fail = (_i, kind) => (kind === "write" ? DEV.NO_SPACE : undefined);
@@ -283,13 +284,14 @@ both("save: a failed storage write poisons the transaction: the commit is refuse
   assert.equal(await fs.path("Commit", "save"), R.FAIL);
   assert.deepEqual(fs.saveFailed, [28], "the front end is told, with the errno of the first failure");
   assert.equal(fs.saveState(), "Clean");
-  assert.ok(fs.red.some(l => /save commit refused/.test(l)) && fs.red.some(l => /2 handle\(s\) were still open/.test(l)), fs.red.join("\n"));
+  assert.ok(fs.red.some(l => /save commit refused/.test(l)) && fs.red.some(l => /4 handle\(s\) were still open/.test(l)), fs.red.join("\n"));
   assert.equal((await fs.getFile("save:/slot"))!.toString(), "committed", "the working copy is the committed version again");
   // what was open in the discarded copy fails until it is closed
   assert.equal((await fs.read(h, 0, 4))[0], R.FAIL); assert.equal(await fs.write(h, 0, B("x")), R.FAIL); assert.equal((await fs.size(h))[0], R.FAIL);
   assert.equal((await fs.readDir(dh, 4))[0], R.FAIL); assert.equal((await fs.dirCount(dh))[0], R.FAIL);
   assert.equal(fs.saveState(), "Clean", "a stale handle changes nothing");
-  await fs.close(h); await fs.call("CloseDirectory", dh);
+  assert.equal(await fs.write(hw, 0, B("x")), R.FAIL); assert.equal((await fs.read(hro, 0, 1))[0], R.FAIL);
+  await fs.close(h); await fs.close(hw); await fs.close(hro); await fs.call("CloseDirectory", dh);
   assert.equal(fs.x.fs_open_files(), 0); assert.equal(fs.x.fs_open_dirs(), 0);
   // the next transaction (the game's next full save) commits
   await fs.putFile("save:/slot", B("second try"));
