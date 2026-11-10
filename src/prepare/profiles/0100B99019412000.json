@@ -22,15 +22,10 @@
   "modules": "main subsdk0 sdk",
   "romfs_marker": "Model/World08_Textures.bfres.zs",
   "app_pool": "0xCD500000",
-  "sys_resource": "0x0"
+  "sys_resource": "0x0",
+  "render_cond": "on"
  },
- "needs": [
-  {
-   "key": "render_cond",
-   "value": "on",
-   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",

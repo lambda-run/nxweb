@@ -75,6 +75,11 @@ export interface GfxHostOptions {
   // Upper bounds on the device's limits as the replayer sees them (name -> value, e.g. maxSampledTexturesPerShaderStage: 16): a pipeline that needs more
   // fails with the replayer's own red line, as on a device that has no more. For tests, and to see what a smaller device would refuse
   limits?: Record<string, number>;
+  // The guest clock in nanoseconds, for counter reports (the times their timestamps are made of). Omitted: performance.now()
+  now?: () => bigint;
+  // false: do not use WebGPU timestamp queries even when the device has them (counter reports then take times estimated
+  // on the CPU from when a segment was handed to the GPU and when the GPU reported it done)
+  timestampQuery?: boolean;
 }
 
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
@@ -104,6 +109,11 @@ const LIMITS = ["maxUniformBuffersPerShaderStage", "maxSampledTexturesPerShaderS
   "maxDynamicUniformBuffersPerPipelineLayout", "maxVertexAttributes", "maxVertexBuffers", "maxColorAttachmentBytesPerSample", "maxBindingsPerBindGroup", "maxInterStageShaderVariables", "maxBufferSize",
   "maxStorageBufferBindingSize", "maxUniformBufferBindingSize", "maxTextureDimension2D", "maxTextureArrayLayers", "maxBindGroups", "maxBindGroupsPlusVertexBuffers"];
 const UA_CHUNK = 1 << 20, UA_ALIGN = 256;
+FEATURES.push("timestamp-query");
+const H_REPORT = 33, H_REPORT_COMMIT = 34;       // hostops.ts
+const TS_QUERIES = 512;                          // two a render pass: its start and its end
+// One piece of work handed to the GPU (a queue.submit), as counter reports need it timed. Times are guest nanoseconds
+interface Seg { submitAt: bigint; startAt: bigint; doneAt: bigint; prev: Seg | null; q0: number; q1: number; gpu0: bigint; gpu1: bigint; done: Promise<void> | null }
 
 const FULLSCREEN_VS = `
 struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
@@ -186,6 +196,7 @@ export class GfxHost {
     const has = (f: string) => !!device.features?.has?.(f);
     this.uaAlign = Math.max(16, this.limit("minUniformBufferOffsetAlignment", UA_ALIGN));
     this.caps = (has("texture-compression-astc") && !this.opts.forceAstcDecode ? 1 : 0) | (has("texture-formats-tier1") ? 2 : 0);
+    this.timestampSource = has("timestamp-query") && this.opts.timestampQuery !== false ? "gpu" : "cpu";
     if (this.opts.canvas) {
       this.context = this.opts.canvas.getContext("webgpu");
       this.canvasFormat = (globalThis as any).navigator.gpu.getPreferredCanvasFormat();
@@ -262,6 +273,7 @@ export class GfxHost {
     this.x?.gfx_device_lost?.();
     // What was submitted to the dead device will never finish: its fences complete now, so no guest thread waits forever
     for (const n of [...this.fencesPending].sort((a, b) => a - b)) this.signalFence(n);
+    this.reportsLost();
     this.onDeviceLost?.(info ?? {});
     if (this.opts.requestDevice) {
       try { const d = await this.opts.requestDevice(); if (d) this.restore(d); else this.log("[RED] no new WebGPU device after the loss: nothing is drawn"); }
@@ -559,7 +571,9 @@ export class GfxHost {
   private flush() {
     this.endPass();
     if (this.uniformArena) this.uaWrite();
+    const stamps = this.segBeforeSubmit();
     if (this.enc) { this.device.queue.submit([this.enc.finish()]); this.enc = null; this.stats.submits++; }
+    this.segAfterSubmit(stamps);
     const gen = this.gen;
     for (const q of this.queued.splice(0)) this.readbacks.push(q.buf.mapAsync(1).then(() => {
       if (gen !== this.gen) return;
@@ -583,6 +597,88 @@ export class GfxHost {
       for (const [k, e] of this.ranges) if (e.used < this.flushNo - 240) { this.release(e.buf); this.ranges.delete(k); this.groups.clear(); }
       if (this.groups.size > 8192) this.groups.clear();
     }
+  }
+  // ---- counter reports (src/gfx/report.ts): the times of the segments they lie in ----
+  // A report (H_REPORT) belongs to the segment being encoded when it is reached. When the recorder commits a
+  // submission's reports (H_REPORT_COMMIT) they land together once the segment of that record is done on the GPU:
+  // gfx_report_land(id, GPU start of its segment, GPU end of its segment, end of the last segment). Fences issued
+  // later wait for that, as for read-backs.
+  // Where the times come from. With the WebGPU feature `timestamp-query`: every render pass of a segment writes the
+  // GPU's clock at its start and end; the first start and the last end are the segment's, and the GPU's clock is tied
+  // to the guest clock by taking the last segment's end as the moment the GPU reported the work done (WebGPU has no
+  // paired CPU / GPU sample; browsers quantise the stamps, 100 us in Chromium). Without the feature, or for a segment
+  // with no render pass: start = when the segment was handed over, or when the segment before it was done if that
+  // was later; end = when the GPU reported it done (onSubmittedWorkDone), which is at the mercy of the event loop.
+  timestampSource: "gpu" | "cpu" = "cpu";
+  private reportsSeen = false;
+  private reportsCommit = false;
+  private reportsOpen: { id: number; seg: Seg }[] = [];
+  private segCur: Seg | null = null;
+  private segLast: Seg | null = null;
+  private tsSet: GPU = null;
+  private tsResolve: GPU = null;
+  private tsNext = 0;
+  private now(): bigint { return this.opts.now ? this.opts.now() : BigInt(Math.round(performance.now() * 1e6)); }
+  private segOf(): Seg { return (this.segCur ??= { submitAt: 0n, startAt: 0n, doneAt: 0n, prev: this.segLast, q0: -1, q1: -1, gpu0: 0n, gpu1: 0n, done: null }); }
+  // A render pass is about to begin: its start and end are stamped when reports are in use and the device can
+  private stamp(desc: any): any {
+    if (!this.reportsSeen || this.timestampSource !== "gpu" || this.tsNext + 2 > TS_QUERIES) return desc;
+    this.tsSet ??= this.device.createQuerySet({ type: "timestamp", count: TS_QUERIES });
+    const s = this.segOf();
+    if (s.q0 < 0) s.q0 = this.tsNext;
+    s.q1 = this.tsNext + 1;
+    desc.timestampWrites = { querySet: this.tsSet, beginningOfPassWriteIndex: this.tsNext, endOfPassWriteIndex: this.tsNext + 1 };
+    this.tsNext += 2;
+    return desc;
+  }
+  // Before the encoder is finished: the segment's stamps are resolved into a buffer that is read once it is submitted
+  private segBeforeSubmit(): GPU {
+    if (!this.reportsSeen) return null;
+    const s = this.enc || this.reportsOpen.length ? this.segOf() : null;
+    if (!s || s.q0 < 0 || !this.enc) return null;
+    const n = s.q1 - s.q0 + 1;
+    this.tsResolve ??= this.newBuffer({ size: TS_QUERIES * 8, usage: 0x200 | 0x04 /* QUERY_RESOLVE | COPY_SRC */ });
+    const read = this.newBuffer({ size: n * 8, usage: 0x01 | 0x08 /* MAP_READ | COPY_DST */ });
+    this.enc.resolveQuerySet(this.tsSet, s.q0, n, this.tsResolve, 0);
+    this.enc.copyBufferToBuffer(this.tsResolve, 0, read, 0, n * 8);
+    return read;
+  }
+  private segAfterSubmit(read: GPU): void {
+    const s = this.segCur;
+    if (!s) return;
+    this.segCur = null; this.segLast = s; this.tsNext = 0;
+    const gen = this.gen;
+    s.submitAt = this.now();
+    const stamps: Promise<void> = read ? read.mapAsync(1).then(() => {
+      if (gen !== this.gen) return;
+      const v = new BigUint64Array(read.getMappedRange());
+      s.gpu0 = v[0]; s.gpu1 = v[v.length - 1];
+      read.unmap(); this.kill(read);
+    }, () => {}) : Promise.resolve();
+    s.done = (this.lost ? Promise.resolve() : this.device.queue.onSubmittedWorkDone().catch(() => {})).then(() => {
+      s.doneAt = this.now();
+      s.startAt = s.prev && s.prev.doneAt > s.submitAt ? s.prev.doneAt : s.submitAt;
+      s.prev = null;
+    }).then(() => stamps);
+    if (!this.reportsCommit) return;
+    this.reportsCommit = false;
+    const group = this.reportsOpen.splice(0);
+    if (group.length) this.readbacks.push(s.done.then(() => { if (gen === this.gen && !this.disposed) this.reportsLand(group, s); }));
+  }
+  private reportsLand(group: { id: number; seg: Seg }[], last: Seg): void {
+    for (const r of group) {
+      const g = r.seg;
+      let start = g.startAt || last.startAt, end = g.doneAt || last.doneAt;
+      // the GPU's own times of the segment, placed on the guest clock by the last segment's end
+      if (g.gpu1 > 0n && last.gpu1 >= g.gpu1 && g.gpu1 >= g.gpu0 && g.gpu0 > 0n) { start = last.doneAt - (last.gpu1 - g.gpu0); end = last.doneAt - (last.gpu1 - g.gpu1); }
+      this.x.gfx_report_land(r.id, BigInt.asUintN(64, start), BigInt.asUintN(64, end), last.doneAt);
+    }
+    this.dropUploads();       // guest memory changed
+  }
+  // The device is gone: what was on its way lands now, with the time it is
+  private reportsLost(): void {
+    this.reportsOpen = []; this.reportsCommit = false; this.segCur = null; this.segLast = null; this.tsSet = null; this.tsResolve = null; this.tsNext = 0;
+    this.x?.gfx_reports_flush?.(this.now());
   }
   private release(b: GPU) { let l = this.pool.get(b.size); if (!l) this.pool.set(b.size, l = []); l.push(b); }
   // Bind groups by what they bind: buffers, views and samplers are stable objects, numbered on first sight
@@ -628,6 +724,7 @@ export class GfxHost {
       }
     }
     this.endPass();
+    this.stamp(desc);
     this.pass = this.encoder().beginRenderPass(desc);
     this.passInfo = { colorFmt, depthFmt, samples, w: dv.getUint32(p + 24, true), h: dv.getUint32(p + 28, true), targets };
     this.cur = null; this.bindDirty = true; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
@@ -1165,6 +1262,8 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.COPY_T2B: this.copyT2B(dv, p); break;
         case H.FLUSH: this.flush(); break;
         case H.MEM_DIRTY: this.dropUploads(); break;
+        case H_REPORT: this.reportsSeen = true; this.reportsOpen.push({ id: dv.getUint32(p + 8, true), seg: this.segOf() }); break;
+        case H_REPORT_COMMIT: this.reportsCommit = true; break;
         default: this.log(`[RED] host stream: unknown op ${op} at 0x${p.toString(16)}`); return;
       }
       if (dv.buffer !== this.memory.buffer) dv = this.dv;

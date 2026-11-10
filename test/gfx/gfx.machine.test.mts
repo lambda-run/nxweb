@@ -180,3 +180,12 @@ test("gfx_shader: a key reported missing, awaited and registered, failed and ret
   w.go(u, [["Fail", "Failed"], ["Register", "Ready"]]);
   w.refused(w.start(), "Forget");
 });
+
+test("gfx_render_enable: disabled and enabled, a condition that holds, fails or cannot be known, from either state", () => {
+  const w = walker("gfx_render_enable"), s = w.start();
+  w.go(s, [["Enable", "Drawing"], ["Pass", "Drawing"], ["Unknown", "Drawing"]]);           // nothing to skip
+  w.go(s, [["Disable", "Skipping"], ["Disable", "Skipping"], ["Enable", "Drawing"]]);      // SetRenderEnable(false) ... (true)
+  w.go(s, [["Fail", "Skipping"], ["Fail", "Skipping"], ["Pass", "Drawing"]]);              // one conditional block after another, with no enable between
+  w.go(s, [["Fail", "Skipping"], ["Unknown", "Drawing"]]);                                 // a condition that cannot be evaluated draws
+  w.go(s, [["Fail", "Skipping"], ["Enable", "Drawing"]]);
+});

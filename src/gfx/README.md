@@ -184,6 +184,58 @@ takes about 0.2–0.4 s once.
 `CopyTextureToBuffer` is a CPU copy in stream order when the storage holds the content; otherwise a GPU readback that
 lands in guest memory later, and fences issued after it complete only once it has landed (`GfxHost.landed()`).
 
+## What a game's profile switches on (`profile.ts`, `gfx_set_profile`)
+
+nxnative keeps a few mechanisms off unless a game's profile asks for them, because each changes what a game sees
+and is right only for games checked with it. The same keys, converted by `tools/prepare/convert_profiles.py`, reach
+the recorder as bits (`src/glue/rt_process.ts gfxSettingsFor`, `RtGfx`'s `profile` option): 1 `render_cond on`,
+2 `tex_flush_upload on`, 4 `tex_dirty_upload on`, 8 `gpu_timestamps segment`, 16 `present_interval display`.
+With no bit set the module behaves as before.
+
+## Counter reports and conditional rendering (`report.ts`, machine `gfx_render_enable`)
+
+`nvnCommandBufferReportCounter(type, address)` makes the GPU write a 16-byte record `{ u64 counter, u64 timestamp }`
+when it reaches the command; the timestamp is in ticks of 614.4 MHz on the guest clock (nxnative `nvn_timestamp.h`,
+384 ticks per 625 ns, exact in both directions). The recorder cannot write it when it lowers the command, so each
+report gets an id and goes into the host stream (`H_REPORT`); at the end of a submission `H_REPORT_COMMIT` says that
+the reports so far land together when the GPU has finished that piece of work. The replayer then calls
+`gfx_report_land(id, start, end, done)` and the recorder writes guest memory. **A fence issued after a report waits
+for it**, like a read-back. An embedder with no device calls `gfx_reports_flush(now)`.
+
+| Counter | Record |
+|---|---|
+| `TIMESTAMP` (0), `TIMESTAMP_TOP` (0x10) | timestamp; the counter field is the timestamp too, as nxnative writes it, and **0 with `render_cond`** (as the hardware) |
+| any other but `SAMPLES_PASSED` | counter 0 and the timestamp (nxnative's placeholder: nothing is counted) |
+| `SAMPLES_PASSED` (1) | **not written**, red once: occlusion queries are not counted (WebGPU's are a yes / no, not a count) |
+
+`nvnDeviceGetTimestampInNanoseconds(record)` converts a record's timestamp;
+`nvnDeviceGetCurrentTimestampInNanoseconds` answers what the embedder last gave `gfx_set_now` (the runtime gives the
+guest clock before the call).
+
+**Conditional rendering** (profile key `render_cond`; nxnative `nvn_mtl.m OP_RENDER_COND`, `rc_value`). Without the
+key `SetRenderEnable(false)` and `SetRenderEnableConditional` record nothing and say once, red, that the host draws
+anyway: a game that only saves GPU time with them is right either way. With the key each becomes an `OP_RENDER_COND`
+record (nxnative's layout) that the lowering evaluates **on the CPU, from guest memory, at its place in the stream**:
+`SetRenderEnableConditional(mode, a)` draws when the 64-bit counters at `a` and `a + 16` are equal (mode 0) or
+differ (mode 1). While the state is `Skipping`, `ClearColor`, `ClearDepthStencil`, and draws are dropped; state
+changes, copies and compute dispatches are not. The state is queue state and lasts across submissions.
+
+What a counter reads at lowering time, in this order:
+
+1. a record a counter that is not counted here ever wrote (`SAMPLES_PASSED` and the placeholders): **unknown**;
+2. a timestamp report still on its way to that address: **the 0 it will write**, whatever the CPU put there
+   meanwhile (the GPU would overwrite it);
+3. guest memory.
+
+A condition with an unknown operand **draws**: only an evaluated condition is a reason to skip (nxnative found that
+skipping unknown blocks whitens a scene for good). `UpdateUniformBuffer` and `CopyBufferToBuffer` are made in stream
+order; one that covers a record whose report is on its way is the later writer, so the report then lands only the
+fields the write left alone.
+
+Departs from nxnative: no occlusion counts (its `SAMPLES_PASSED` reports are real and a condition on a landed one is
+evaluated; here such a condition always draws, which costs GPU time and is otherwise right); no tracking of counters
+written by shaders (storage buffer writes over a record: nxnative's GPU epochs).
+
 ## Window origin, depth mode, and what the shader chain must emit
 
 nxnative (Metal): lower-left origin = negative-height viewport, reversed winding, present flipped; depth mode = a

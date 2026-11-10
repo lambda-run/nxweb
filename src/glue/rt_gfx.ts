@@ -23,6 +23,8 @@ export interface GfxOptions {
   requestDevice?: () => Promise<any>;
   // Tests, null replayer only: while it returns true the "GPU" does not finish (fences stay pending until releaseFences())
   holdFences?: () => boolean;
+  // The game profile's graphics switches (rt_process.ts gfxSettingsFor: the bits of src/gfx/profile.ts). Omitted: none
+  profile?: { bits: number };
 }
 // nvnSyncWait's timeout is in nanoseconds; games pass ~0 (NVN's "wait forever") or values of years: no timer then
 const SYNC_FOREVER = 1n << 62n;
@@ -53,7 +55,8 @@ export class RtGfx implements HleGfx {
   constructor(rt: Runtime, module: WebAssembly.Module, opts: GfxOptions = {}) {
     this.rt = rt; this.opts = opts; this.live = !!opts.device;
     const dec = new TextDecoder();
-    this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l), requestDevice: this.live ? opts.requestDevice : undefined });
+    this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l), requestDevice: this.live ? opts.requestDevice : undefined,
+      now: () => rt.guestNs() });
     const env = {
       memory: rt.memory,
       log: (p: number, n: number) => rt.log(dec.decode(rt.u8().slice(p >>> 0, (p >>> 0) + n))),
@@ -71,6 +74,7 @@ export class RtGfx implements HleGfx {
     if (rt.r.rt_static_check(99, BigInt(st.lo), BigInt(st.hi), BigInt(end))) throw new Error("runtime: the gfx module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
     if (need > arena.hi - arena.lo) throw new Error(`runtime: the gfx arena needs ${need} bytes, the range has ${arena.hi - arena.lo}`);
     if (!this.x.gfx_init(arena.lo, need)) throw new Error("runtime: gfx_init failed");
+    if (opts.profile?.bits) this.x.gfx_set_profile(opts.profile.bits);
     this.abi = rt.u8().slice(this.x.nvn_abi_table() >>> 0, (this.x.nvn_abi_table() >>> 0) + this.x.nvn_count());
     // The replayer's reports arrive through its hooks; guest threads wait on host.fence(n) promises (Runtime.waitFor
     // wakes the run loop when one resolves)
@@ -95,6 +99,7 @@ export class RtGfx implements HleGfx {
   captureFrame(o: { png?: boolean } = { png: true }): Promise<Capture> | null { return this.live ? this.host.captureFrame(o) : null; }
   // Null replayer: everything submitted so far is "done" (called at once unless a test holds the fences)
   releaseFences(): void {
+    this.x.gfx_reports_flush(BigInt.asUintN(64, this.rt.guestNs()));   // counter reports land before the fences behind them complete
     for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
     this.rt.requestWake();
   }
@@ -152,6 +157,8 @@ export class RtGfx implements HleGfx {
     switch (name) {
       // a game asks the device for every other entry point by name
       case "nvnDeviceGetProcAddress": return cpu => this.stubOfName(cpu.cstr(cpu.x(1), 128));
+      // the guest clock, which the recorder does not have (counter reports are stamped on the same clock)
+      case "nvnDeviceGetCurrentTimestampInNanoseconds": return cpu => { x.gfx_set_now(BigInt.asUintN(64, this.rt.guestNs())); return this.call(id, cpu.argsX()); };
       // nvnProgramSetShaders(program, count, NVNshaderData[]): every stage's key is looked up (library, in-page
       // translation) before the recorder notes the keys
       case "nvnProgramSetShaders": return cpu => {

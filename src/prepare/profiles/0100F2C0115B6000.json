@@ -22,18 +22,14 @@
   "package": "v720896",
   "modules": "main subsdk0 sdk",
   "romfs_marker": "Pack/ZsDic.pack.zs",
-  "app_pool": "0xCD500000"
+  "app_pool": "0xCD500000",
+  "render_cond": "on"
  },
  "needs": [
   {
    "key": "tex_flush_upload",
    "value": "on",
    "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
-  },
-  {
-   "key": "render_cond",
-   "value": "on",
-   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
   },
   {
    "key": "tex_dirty_upload",

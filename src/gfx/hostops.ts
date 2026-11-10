@@ -41,6 +41,8 @@ export const H_IMG: u32 = 29;              // +8 u32 stage, +12 u32 slot, +16 u6
 export const H_BEGIN_COMPUTE: u32 = 30;    // a compute pass begins (H_END_PASS ends it)
 export const H_DISPATCH: u32 = 31;         // +8 u32 pipeline id, +12 u32 x, y, z work groups
 export const H_BUF_READBACK: u32 = 32;     // +8 u64 address, +16 u32 size: a storage range the GPU wrote goes back to guest memory (lands when the GPU is done)
+export const H_REPORT: u32 = 33;           // +8 u32 id: a counter report at this point of the stream (report.ts). The replayer notes the segment it lies in
+export const H_REPORT_COMMIT: u32 = 34;    // the reports since the last one land together, when the GPU has finished the segment this record is in: gfx_report_land(id, start, end, done) each
 
 const CAP: usize = 1 << 20;
 let BUF: usize = 0;

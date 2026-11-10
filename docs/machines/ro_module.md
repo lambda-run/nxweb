@@ -14,7 +14,7 @@ stateDiagram-v2
     Finalizing --> Empty: Unmap
 ```
 
-Machine id 32. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 33. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

@@ -52,7 +52,7 @@
   "0100152000022000": {
    "name": "Mario Kart 8 Deluxe",
    "builds": 2,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "010016100A186000": {
@@ -238,7 +238,7 @@
   "010049900F546000": {
    "name": "Super Mario 3D All-Stars",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "010049900F546001": {
@@ -412,7 +412,7 @@
   "01006F8002326000": {
    "name": "Animal Crossing: New Horizons",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "01006FE013472000": {
@@ -694,7 +694,7 @@
   "0100B99019412000": {
    "name": "Mario vs. Donkey Kong",
    "builds": 1,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "0100BA4026E94000": {
@@ -826,7 +826,7 @@
   "0100F2C0115B6000": {
    "name": "The Legend of Zelda: Tears of the Kingdom",
    "builds": 1,
-   "needs": 5,
+   "needs": 4,
    "cuts": 0
   },
   "0100F43008C44000": {
@@ -862,7 +862,7 @@
   "0400380020056000": {
    "name": "Splatoon Raiders",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "04003F40232DE000": {
@@ -874,13 +874,13 @@
   "0400486024DEC000": {
    "name": "The Legend of Zelda: Ocarina of Time",
    "builds": 1,
-   "needs": 6,
+   "needs": 5,
    "cuts": 0
   },
   "040074A01BF12000": {
    "name": "Donkey Kong Bananza",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 0
   },
   "040077201BE50000": {
@@ -904,13 +904,13 @@
   "0400C3F00006E000": {
    "name": "Mario Kart World",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 0
   },
   "0400D4201C6EA000": {
    "name": "Mario Tennis Fever",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "0400E88025B1A000": {

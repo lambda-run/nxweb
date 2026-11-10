@@ -28,19 +28,14 @@
   "title_id": "0100152000022000",
   "program_id": "0100152000022000",
   "name": "Mario Kart 8 Deluxe",
+  "render_cond": "on",
   "package": "v1507328",
   "modules": "main subsdk0 sdk",
   "romfs_marker": "UI/cmn/movie/StaffCredits.mp4",
   "app_pool": "0xCD500000",
   "sys_resource": "0x0"
  },
- "needs": [
-  {
-   "key": "render_cond",
-   "value": "on",
-   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",

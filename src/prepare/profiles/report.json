@@ -511,19 +511,19 @@
   }
  },
  "pairs_per_class": {
-  "a": 1489,
+  "a": 1499,
   "b": 1432,
-  "c": 119
+  "c": 109
  },
  "keys_per_class": {
-  "a": 20,
+  "a": 21,
   "b": 20,
-  "c": 19
+  "c": 18
  },
  "keys_set_per_class": {
-  "a": 17,
+  "a": 18,
   "b": 18,
-  "c": 19
+  "c": 18
  },
  "top_c": [
   {
@@ -541,10 +541,6 @@
   {
    "key": "tex_dirty_upload",
    "profiles": 11
-  },
-  {
-   "key": "render_cond",
-   "profiles": 10
   },
   {
    "key": "present_interval",
@@ -723,6 +719,12 @@
    "note": "input setting: which controls the game needs (simple / full / touch), a hint for the page's on-screen controls",
    "what": "",
    "profiles": 83
+  },
+  "render_cond": {
+   "class": "a",
+   "note": "gfx_set_profile bit 1 (src/gfx/report.ts): SetRenderEnable / SetRenderEnableConditional evaluated when a submission is lowered, a timestamp report's counter field 0",
+   "what": "",
+   "profiles": 10
   },
   "ipa": {
    "class": "b",
@@ -903,12 +905,6 @@
    "note": "hle_nvn.c nvn_ft_written (page write tracking)",
    "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages).",
    "profiles": 11
-  },
-  "render_cond": {
-   "class": "c",
-   "note": "nvn_mtl.m OP_RENDER_COND",
-   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong.",
-   "profiles": 10
   },
   "tex_dyn_slots": {
    "class": "c",

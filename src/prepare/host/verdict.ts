@@ -25,7 +25,6 @@ const GAP: Record<string, string> = {
   tex_flush_upload: "Some pictures may be missing or wrong: a way this game updates textures is not built yet.",
   tex_dirty_upload: "Some pictures may be missing or wrong: a way this game updates textures is not built yet.",
   tex_dyn_slots: "Some pictures may be missing or wrong: a kind of texture array is not built yet.",
-  render_cond: "Some things may be drawn that should be hidden: conditional drawing is not built yet.",
   gpu_timestamps: "Its own performance scaling may misbehave: GPU timing reports are not built yet.",
   screen_aspect: "The picture's shape may be wrong: its screen-shape patch is not built yet.",
   render_base: "The picture may be drawn at the wrong size: its render-scale patch is not built yet.",

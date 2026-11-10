@@ -18,6 +18,7 @@
   "title_id": "010049900F546000",
   "program_id": "010049900F546000",
   "name": "Super Mario 3D All-Stars",
+  "render_cond": "on",
   "package": "v393216",
   "modules": "main subsdk0 sdk",
   "romfs_marker": "MovieData/BgMovieGalaxy.mp4",
@@ -25,11 +26,6 @@
   "sys_resource": "0x0"
  },
  "needs": [
-  {
-   "key": "render_cond",
-   "value": "on",
-   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
-  },
   {
    "key": "programs",
    "value": "1=010049900F546001 2=010049900F546002",

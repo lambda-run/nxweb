@@ -20,7 +20,7 @@ stateDiagram-v2
     LiftedAgain --> DownNew: Report
 ```
 
-Machine id 36. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 37. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|
