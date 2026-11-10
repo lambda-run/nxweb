@@ -1,0 +1,13 @@
+{
+  "id": 0,
+  "name": "button_latch",
+  "doc": "One controller button as the Home-button quit machine sees it (home_quit.ts keeps three: Home, A, B). Armed: the button has been seen up, so its next press counts. Spent: it is down, or it was down when it could not count (held while the prompt opened, held through a focus loss), and must be let go before it counts again.",
+  "states": ["Armed", "Spent"],
+  "initial": "Armed",
+  "events": ["Press", "Release", "Suppress"],
+  "transitions": [
+    ["Armed", "Press", "Spent"],
+    ["Spent", "Release", "Armed"],
+    ["Armed", "Suppress", "Spent"]
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": 2,
+  "name": "thread",
+  "doc": "Lifecycle of one guest thread. Only the machine: no scheduler decides here which thread gets Schedule. Created is the slot before CreateThread has published the thread; HeldBeforeStart is a published thread waiting for StartThread.",
+  "states": ["Created", "HeldBeforeStart", "Runnable", "Running", "Waiting", "Paused", "Exited"],
+  "initial": "Created",
+  "final": ["Exited"],
+  "data": {
+    "Waiting": { "name": "waitKind", "values": ["lock", "condvar", "address", "sync", "sleep"] }
+  },
+  "events": ["CreateThread", "Start", "PauseRequest", "Resume", "Schedule", "Yield", "Block", "Wake", "Exit"],
+  "transitions": [
+    ["Created", "CreateThread", "HeldBeforeStart"],
+    ["HeldBeforeStart", "Start", "Runnable"],
+    ["Runnable", "Schedule", "Running"],
+    ["Running", "Yield", "Runnable"],
+    ["Running", "Block", "Waiting"],
+    ["Waiting", "Wake", "Runnable"],
+    ["Runnable", "PauseRequest", "Paused"],
+    ["Running", "PauseRequest", "Paused"],
+    ["Paused", "Resume", "Runnable"],
+    ["Running", "Exit", "Exited"]
+  ]
+}

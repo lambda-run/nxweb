@@ -1,0 +1,25 @@
+{
+  "id": 1,
+  "name": "home_quit",
+  "doc": "Quit with the Home button (port of nxnative dm/host/home_quit.h). Holding Home for 2 s opens a prompt: A quits, B or a new press of Home closes it. Losing the focus closes whatever is shown. The buttons' memory is in three button_latch instances; see src/kit/home_quit.ts for the guards that turn button levels and time into these events.",
+  "states": ["Idle", "Holding", "Prompt", "Settle", "Quit"],
+  "initial": "Idle",
+  "final": ["Quit"],
+  "data": {
+    "Holding": { "name": "since", "type": "f64 seconds: the time of the press that started the hold" }
+  },
+  "events": ["HomePress", "HomeRelease", "HoldElapsed", "BPress", "APress", "AllUp", "FocusLost"],
+  "transitions": [
+    ["Idle", "HomePress", "Holding"],
+    ["Holding", "HomeRelease", "Idle"],
+    ["Holding", "HoldElapsed", "Prompt"],
+    ["Prompt", "BPress", "Settle"],
+    ["Prompt", "HomePress", "Settle"],
+    ["Prompt", "APress", "Quit"],
+    ["Settle", "AllUp", "Idle"],
+    ["Idle", "FocusLost", "Idle"],
+    ["Holding", "FocusLost", "Idle"],
+    ["Prompt", "FocusLost", "Idle"],
+    ["Settle", "FocusLost", "Idle"]
+  ]
+}
