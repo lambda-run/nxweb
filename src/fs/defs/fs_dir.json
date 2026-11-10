@@ -1,0 +1,15 @@
+{
+  "name": "fs_dir",
+  "doc": "One slot of the directory handle table. Open: a directory of a save, listed from the snapshot of its entries taken at open. OpenImage: a directory of a RomFS image, listed by walking its child chains. Stale: the save was rebuilt from its committed version while the handle was open.",
+  "states": ["Closed", "Open", "OpenImage", "Stale"],
+  "initial": "Closed",
+  "events": ["Open", "OpenImage", "Close", "Invalidate"],
+  "transitions": [
+    ["Closed", "Open", "Open"],
+    ["Closed", "OpenImage", "OpenImage"],
+    ["Open", "Close", "Closed"],
+    ["OpenImage", "Close", "Closed"],
+    ["Stale", "Close", "Closed"],
+    ["Open", "Invalidate", "Stale"]
+  ]
+}

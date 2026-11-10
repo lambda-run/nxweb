@@ -1,0 +1,12 @@
+{
+  "name": "fs_mount",
+  "doc": "One entry of the mount-name table (512 entries, as nxnative). Entries are permanent: Unmount changes nothing, except that an add-on content mount releases its name (Released: no name lookup matches it, handles opened through it keep working) and a later mount of the same add-on takes the entry back under the new name.",
+  "states": ["Free", "Mounted", "Released"],
+  "initial": "Free",
+  "events": ["Mount", "Release", "Remount"],
+  "transitions": [
+    ["Free", "Mount", "Mounted"],
+    ["Mounted", "Release", "Released"],
+    ["Released", "Remount", "Mounted"]
+  ]
+}

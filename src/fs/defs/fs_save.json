@@ -1,0 +1,29 @@
+{
+  "name": "fs_save",
+  "doc": "One save backing (account save, device save, a cache storage, temporary storage) and its transaction. nxnative encodes this in which fields of a mount are set (commit, txn_root, ro) plus an atomic poison flag (dm/host/hle_fs.c); here it is one state. Recovering reads the container: at mount, after a refused commit (the working copy is discarded and rebuilt from the committed version) and when the outcome of a commit is not known. Clean: the working copy is the committed version. Dirty: it differs. Committing: the new manifest is written and the first barrier is awaited; nothing committed has changed yet. Sealing: the superblock slot is written (the one atomic step) and the second barrier is awaited. Poisoned: a storage write failed in this transaction; the next commit is refused. ReadOnly: the container could not be opened or read; every write fails, commits are no-ops.",
+  "states": ["Unmounted", "Recovering", "Clean", "Dirty", "Committing", "Sealing", "Poisoned", "ReadOnly"],
+  "initial": "Unmounted",
+  "data": {
+    "Poisoned": { "name": "err", "type": "errno of the first failed write of the transaction (28 no space, 5 I/O)" }
+  },
+  "events": ["Mount", "Recovered", "Unusable", "StillPoisoned", "Write", "WriteFailed", "Commit", "DataDurable", "CommitFailed", "Sealed", "SealUncertain", "Discard"],
+  "transitions": [
+    ["Unmounted", "Mount", "Recovering"],
+    ["Recovering", "Recovered", "Clean"],
+    ["Recovering", "Unusable", "ReadOnly"],
+    ["Recovering", "StillPoisoned", "Poisoned"],
+    ["Clean", "Write", "Dirty"],
+    ["Dirty", "Write", "Dirty"],
+    ["Poisoned", "Write", "Poisoned"],
+    ["Clean", "WriteFailed", "Poisoned"],
+    ["Dirty", "WriteFailed", "Poisoned"],
+    ["Poisoned", "WriteFailed", "Poisoned"],
+    ["Clean", "Commit", "Clean"],
+    ["Dirty", "Commit", "Committing"],
+    ["Committing", "DataDurable", "Sealing"],
+    ["Committing", "CommitFailed", "Dirty"],
+    ["Sealing", "Sealed", "Clean"],
+    ["Sealing", "SealUncertain", "Recovering"],
+    ["Poisoned", "Discard", "Recovering"]
+  ]
+}

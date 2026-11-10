@@ -1,0 +1,16 @@
+{
+  "name": "fs_pend",
+  "doc": "One call context of the file system: a guest call that needs storage. Running: the call is executing. Waiting: a storage call did not finish at once; fs_call returned 'pending' with this context's token, the guest thread is parked, and fs_complete(token, status) resumes the call where it stopped. In synchronous mode a context goes Free, Running, Free.",
+  "states": ["Free", "Running", "Waiting"],
+  "initial": "Free",
+  "data": {
+    "Waiting": { "name": "waitFor", "values": ["open", "read", "flush", "remove"] }
+  },
+  "events": ["Begin", "Park", "Resume", "Finish"],
+  "transitions": [
+    ["Free", "Begin", "Running"],
+    ["Running", "Park", "Waiting"],
+    ["Waiting", "Resume", "Running"],
+    ["Running", "Finish", "Free"]
+  ]
+}

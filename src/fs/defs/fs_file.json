@@ -1,0 +1,21 @@
+{
+  "name": "fs_file",
+  "doc": "One slot of the file handle table. nxnative keeps the open mode and the transaction of a file in arrays indexed by host fd and tells an image entry by a bit of the handle; here the slot's state says what the handle is. OpenRead, OpenWrite (write only: opened with Write or AllowAppend and without Read) and OpenReadWrite are files of a save; OpenImageEntry is a file of a RomFS image (read only, no storage object of its own). Stale: the save was rebuilt from its committed version while the handle was open (a refused commit); every operation fails until it is closed.",
+  "states": ["Closed", "OpenRead", "OpenWrite", "OpenReadWrite", "OpenImageEntry", "Stale"],
+  "initial": "Closed",
+  "events": ["OpenRead", "OpenWrite", "OpenReadWrite", "OpenImage", "Close", "Invalidate"],
+  "transitions": [
+    ["Closed", "OpenRead", "OpenRead"],
+    ["Closed", "OpenWrite", "OpenWrite"],
+    ["Closed", "OpenReadWrite", "OpenReadWrite"],
+    ["Closed", "OpenImage", "OpenImageEntry"],
+    ["OpenRead", "Close", "Closed"],
+    ["OpenWrite", "Close", "Closed"],
+    ["OpenReadWrite", "Close", "Closed"],
+    ["OpenImageEntry", "Close", "Closed"],
+    ["Stale", "Close", "Closed"],
+    ["OpenRead", "Invalidate", "Stale"],
+    ["OpenWrite", "Invalidate", "Stale"],
+    ["OpenReadWrite", "Invalidate", "Stale"]
+  ]
+}

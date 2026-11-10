@@ -1,0 +1,15 @@
+{
+  "name": "fs_image",
+  "doc": "One RomFS image (the game's, an add-on content's, a system data archive's). Opening: the storage device is being opened. Loading: the header and the four tables are being read and checked. Ready: every table reference was checked, lookups and reads need no further checks. Bad: the image was refused (damaged or cut short); it stays refused.",
+  "states": ["Absent", "Opening", "Loading", "Ready", "Bad"],
+  "initial": "Absent",
+  "final": ["Bad"],
+  "events": ["Open", "Opened", "Missing", "Loaded", "Damaged"],
+  "transitions": [
+    ["Absent", "Open", "Opening"],
+    ["Opening", "Opened", "Loading"],
+    ["Opening", "Missing", "Absent"],
+    ["Loading", "Loaded", "Ready"],
+    ["Loading", "Damaged", "Bad"]
+  ]
+}
