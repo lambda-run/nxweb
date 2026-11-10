@@ -2,71 +2,128 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>nxweb: prepare a game</title>
+<title>nxweb: open a game</title>
 <style>
-  :root { color-scheme: light dark; --fg: #1b1b1f; --bg: #fafafa; --mute: #666a73; --line: #d7d9de; --ok: #1a7f37; --run: #0969da; --bad: #cf222e; --skip: #6e7781; --card: #fff; }
-  @media (prefers-color-scheme: dark) { :root { --fg: #e6e6ea; --bg: #131417; --mute: #9a9ea8; --line: #2c2f36; --ok: #3fb950; --run: #58a6ff; --bad: #ff7b72; --skip: #8b949e; --card: #1b1d22; } }
-  body { font: 15px/1.45 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; }
-  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
-  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 22px 0 8px; }
-  p.lead { color: var(--mute); margin: 0 0 14px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
-  #drop { border: 2px dashed var(--line); text-align: center; padding: 22px 14px; }
-  #drop.over { border-color: var(--run); }
-  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
-  button.primary { background: var(--run); border-color: var(--run); color: #fff; }
-  button:disabled { opacity: .5; cursor: default; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; margin-top: 10px; }
-  table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; } tr:first-child td { border-top: 0; }
-  td.st { width: 92px; font-weight: 600; } td.act { width: 60px; text-align: right; }
-  [data-state=done] .st { color: var(--ok); } [data-state=running] .st { color: var(--run); } [data-state=failed] .st, [data-state=cancelled] .st { color: var(--bad); } [data-state=pending] .st { color: var(--mute); }
-  [data-skipped="1"] .st { color: var(--skip); }
-  .mute { color: var(--mute); } .bad { color: var(--bad); } code, pre { font: 12.5px/1.4 ui-monospace, monospace; }
-  pre#log { max-height: 180px; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-  ul { margin: 6px 0; padding-left: 20px; } dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 0; } dt { color: var(--mute); } dd { margin: 0; overflow-wrap: anywhere; }
+  :root { color-scheme: dark; --bg: #11151c; --panel: #1a202b; --raise: #263044; --line: #2b3444; --text: #d7dde8; --dim: #8b96a8; --red: #ff6b6b; --acc: #6cb6ff; --ok: #4cc38a; --warn: #e3b341; --accbg: #1f6feb; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font: 15px/1.45 system-ui, sans-serif; color: var(--text); background: var(--bg); }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 40px; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+  html.embedded body { background: transparent; } html.embedded main { padding: 0; max-width: none; } html.embedded h1 { display: none; }
+  h1 { font-size: 20px; margin: 0; } h2 { font-size: 15px; margin: 0; font-weight: 600; }
+  p { margin: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+  html.embedded .card { background: #151a23; }
+  .mute { color: var(--dim); } .small { font-size: 13px; } .bad { color: var(--red); }
+  code, pre { font: 12.5px/1.45 ui-monospace, monospace; overflow-wrap: anywhere; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--raise); color: var(--text); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--acc); }
+  button.primary { background: var(--accbg); border-color: var(--accbg); color: #fff; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: #388bfd; }
+  button.quiet { padding: 2px 8px; font-size: 12px; background: transparent; color: var(--dim); }
+  button:disabled { opacity: .45; cursor: default; }
+  :focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .between { justify-content: space-between; }
   [hidden] { display: none !important; }
+
+  #drop { border: 2px dashed #3a465c; text-align: center; padding: 26px 16px 18px; display: grid; gap: 12px; justify-items: center; transition: border-color .15s, background-color .15s; }
+  #drop.over { border-color: var(--acc); background: #172236; }
+  #drop .big { font-size: 18px; font-weight: 600; }
+  #drop .row { justify-content: center; }
+  #drop details { text-align: left; justify-self: stretch; } summary { cursor: pointer; color: var(--dim); }
+  #drop details > div { margin-top: 6px; }
+
+  #explain { border-color: #6b5a1c; background: #221d0e; display: grid; gap: 6px; }
+  #explain h2 { color: var(--warn); }
+
+  #verdict { display: grid; gap: 10px; border-left: 4px solid var(--line); }
+  #verdict[data-level=ok] { border-left-color: var(--ok); } #verdict[data-level=maybe] { border-left-color: var(--warn); } #verdict[data-level=no] { border-left-color: var(--red); }
+  .vhead { display: flex; gap: 12px; align-items: center; min-width: 0; }
+  #gameicon { width: 64px; height: 64px; border-radius: 12px; object-fit: cover; background: #000; flex: none; }
+  #gamename { font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+  #verdicthead { font-weight: 700; }
+  #verdict[data-level=ok] #verdicthead { color: var(--ok); } #verdict[data-level=maybe] #verdicthead { color: var(--warn); } #verdict[data-level=no] #verdicthead { color: var(--red); }
+  #gaps { margin: 0; padding-left: 20px; color: var(--dim); font-size: 14px; } #gaps:empty { display: none; }
+  #tech > div, #tech > ul { margin-top: 8px; }
+  dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px; margin: 0; } dt { color: var(--dim); } dd { margin: 0; overflow-wrap: anywhere; }
+  @media (max-width: 480px) { dl { grid-template-columns: minmax(0, 1fr); } dt { margin-top: 6px; } }
+  ul { margin: 6px 0; padding-left: 20px; }
+  select { font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+
+  #progress { display: grid; gap: 10px; }
+  .stage { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .stage:first-child { border-top: 0; padding-top: 0; }
+  .sthead { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .sthead .label { font-weight: 600; flex: 1 1 180px; min-width: 0; }
+  .sthead .st { font-size: 13px; } .sthead .time { font-size: 13px; color: var(--dim); font-variant-numeric: tabular-nums; min-width: 3.5em; text-align: right; }
+  [data-state=done] .st { color: var(--ok); } [data-state=running] .st { color: var(--acc); } [data-state=failed] .st, [data-state=cancelled] .st { color: var(--red); } [data-state=pending] .st, [data-state=pending] .label { color: var(--dim); }
+  [data-skipped="1"] .st { color: var(--dim); }
+  .info { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; } .info:empty { display: none; }
+  .bar { height: 6px; border-radius: 3px; background: var(--raise); overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--acc); border-radius: 3px; }
+  .bar.busy > i { width: 35%; animation: slide 1.2s ease-in-out infinite alternate; }
+  @keyframes slide { from { margin-left: 0; } to { margin-left: 65%; } }
+  @media (prefers-reduced-motion: reduce) { .bar.busy > i { animation: none; width: 100%; opacity: .45; } #drop { transition: none; } }
+  #errorbox { border: 1px solid #6b1f25; background: #2a1215; border-radius: 8px; padding: 10px; display: grid; gap: 4px; }
+  #errorsentence { font-weight: 600; }
+  pre#log { max-height: 200px; overflow: auto; margin: 8px 0 0; white-space: pre-wrap; }
 </style>
 <main>
-  <h1>Prepare a game</h1>
-  <p class="lead">Pick the folder of a game you own, already extracted to files. Everything happens in this page, on your files: nothing is uploaded.
-    This step does not open game packages: no NSP, XCI or NCA decryption, and no keys. Extract the game with your own tools first.</p>
+  <h1>Open a game</h1>
 
-  <div id="drop" class="card">
-    <div>Drop the game's folder here, or</div>
+  <section id="drop" class="card" aria-label="Open a game">
+    <p class="big">Drop a <b>.nup</b> file or a game folder here</p>
     <div class="row">
-      <button id="pick" class="primary">Choose game folder</button>
-      <button id="resume" hidden>Resume</button>
-      <label class="mute" id="dirlabel">or <input id="dirinput" type="file" webkitdirectory></label>
+      <button id="pickfile" class="primary">Choose file</button>
+      <button id="pick">Choose folder</button>
+      <button id="resume" hidden>Continue</button>
     </div>
-    <p class="mute" style="margin:12px 0 0">Expected: <code>base/exefs/</code> (main, main.npdm, sdk, subsdk*) and <code>base/romfs/</code>; optionally <code>updates/&lt;version&gt;/exefs</code> and <code>romfs</code> (the newest is used),
-      <code>dlc/&lt;title id&gt;/&lt;n&gt;/romfs</code>. <code>exefs/</code> and <code>romfs/</code> directly in the folder work too.</p>
-  </div>
+    <p class="mute small">Everything stays on this computer: nothing is uploaded. nxweb opens games you own that are already unpacked. It has no keys and does not decrypt game packages.</p>
+    <details class="small"><summary>What can I open?</summary>
+      <div><b>A .nup file</b>: one file that holds an unpacked game (the base game, its updates and add-ons). The newest update in it is started.</div>
+      <div><b>A game folder</b>: <code>base/exefs/</code> (main, main.npdm, sdk, subsdk*) and <code>base/romfs/</code>; optionally <code>updates/&lt;version&gt;/exefs</code> and <code>romfs</code> (the newest is used) and
+        <code>dlc/&lt;title id&gt;/&lt;n&gt;/romfs</code>. <code>exefs/</code> and <code>romfs/</code> directly in the folder work too.</div>
+      <div><b>Not yet</b>: .nsp, .xci, .nsz and .xcz packages. Convert them to a .nup or a folder with the tool you dumped them with.</div>
+    </details>
+    <input id="fileinput" type="file" hidden>
+    <input id="dirinput" type="file" webkitdirectory hidden>
+  </section>
 
-  <h2>Stages <span id="machine" class="mute" data-state="Idle">Idle</span></h2>
-  <div class="card">
-    <table id="stages"></table>
-    <div class="row" style="justify-content:flex-start">
-      <button id="cancel" disabled>Cancel</button>
-      <button id="forget" disabled title="Delete what this page stored for this folder">Forget this folder</button>
-      <span id="error" class="bad"></span>
+  <section id="explain" class="card" role="alert" hidden>
+    <h2 id="explaintitle"></h2>
+    <p id="explaintext"></p>
+    <p id="explaindev" class="mute small"></p>
+    <details class="small" id="explainmore"><summary>Technical detail</summary><code id="explaintech"></code></details>
+  </section>
+
+  <section id="verdict" class="card" data-level="pending" hidden>
+    <div class="vhead">
+      <img id="gameicon" alt="" hidden>
+      <div style="min-width:0"><div id="gamename"></div><div id="gamesub" class="mute small"></div></div>
     </div>
-  </div>
+    <p id="verdictline"><span id="verdicthead"></span> <span id="verdictreason"></span></p>
+    <ul id="gaps"></ul>
+    <div class="row"><button id="play" class="primary" disabled>Play</button><span id="handoff" class="mute small"></span></div>
+    <details id="tech" class="small"><summary>Technical details</summary>
+      <div id="game"></div>
+      <div id="needsbox" hidden><b>What will not work for this game</b><ul id="needs"></ul><div id="unconverted" class="mute"></div></div>
+      <ul id="vdetails" class="mute"></ul>
+      <div class="mute">This is a prediction from the game's settings and files. nxweb has not run the game to find out.</div>
+    </details>
+  </section>
 
-  <h2>Game</h2>
-  <div class="card" id="game"><span class="mute">No folder yet.</span></div>
+  <section id="progress" class="card" hidden>
+    <div class="row between">
+      <h2>Getting it ready <span id="machine" class="mute small" data-state="Idle">Idle</span></h2>
+      <span class="row"><span id="elapsed" class="mute small"></span><button id="cancel" disabled>Cancel</button></span>
+    </div>
+    <div id="stages"></div>
+    <div id="errorbox" role="alert" hidden><p id="errorsentence"></p><code id="error"></code></div>
+    <div class="row"><button id="forget" class="quiet" disabled title="Delete what this page stored for this game (not the game itself)">Forget this game</button></div>
+  </section>
 
-  <div id="needsbox" hidden>
-    <h2>What will not work for this game</h2>
-    <div class="card"><ul id="needs"></ul><div id="unconverted" class="mute"></div></div>
-  </div>
-
-  <div class="row" style="justify-content:flex-start; margin-top:18px">
-    <button id="play" class="primary" disabled>Play</button>
-    <span id="handoff" class="mute"></span>
-  </div>
-
-  <h2>Log</h2>
-  <div class="card"><pre id="log"></pre></div>
+  <details id="logbox" class="small"><summary>Log</summary><pre id="log"></pre></details>
 </main>
 <script src="prepare.js"></script>
 </html>

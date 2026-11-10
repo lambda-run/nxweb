@@ -13,6 +13,12 @@ export interface PrepTree {
   readSync?(path: string, off: number, dst: Uint8Array): number;
   // Browser: the File behind a path, to hand to a Worker (structured clone keeps it a reference to the user's file)
   blob?(path: string): Blob | undefined;
+  // A container (nup.ts): the records a Worker needs to read these files from the user's one File
+  pack?(paths: string[]): import("./nup.ts").NupPack;
+  // A container: the control data of the version at `root` (the NACP's name and display version, the icon)
+  control?(root: string): Promise<import("./nup.ts").NupControl | null>;
+  // What the source has to say about itself (a container without a base game, a package kind that is not used)
+  readonly notes?: string[];
   close?(): void;
 }
 export const sortListing = (l: TreeListing): TreeListing => {
@@ -60,6 +66,8 @@ abstract class FileTree implements PrepTree {
   constructor(name: string) { this.name = name; }
   abstract list(onProgress?: (n: number) => void): Promise<TreeListing>;
   blob(path: string): Blob | undefined { return this.got.get(path); }
+  // the listed files by a test of their path (the page: a folder that holds one .nup)
+  filesMatching(re: RegExp): { path: string; file: File }[] { return [...this.got].filter(([p]) => re.test(p)).map(([path, file]) => ({ path, file })); }
   async read(path: string, off: number, len: number): Promise<Uint8Array> {
     const f = this.got.get(path);
     if (!f) throw new Error(`no file ${path} in ${this.name}`);

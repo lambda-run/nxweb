@@ -17,6 +17,8 @@ import { ROOT } from "../../src/prepare/host/build.mts";
 import { buildPreparePage, servePrepare } from "../../web/prepare_build.mts";
 import * as rth from "../runtime/harness.mts";
 import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, type Files } from "./synth.mts";
+import { writeNup, tlv, nacp, KIND, T, STANDALONE } from "./nup_synth.mts";
+import { writeFileSync, mkdirSync } from "node:fs";
 
 process.chdir(ROOT);
 try {
@@ -86,7 +88,7 @@ try {
   const state = () => page.evaluate(() => document.getElementById("machine")!.dataset.state);
   // the run the page started has returned (the machine reaches its end state a moment before the page has the result)
   const until = (...states: string[]) => page.waitForFunction((s: string[]) => s.includes(document.getElementById("machine")!.dataset.state!) && !!(window as any).nxwebLastRun, states, { timeout: 60000 });
-  const stages = () => page.evaluate(() => [...document.querySelectorAll("#stages tr")].map(r => `${(r as HTMLElement).dataset.stage}:${(r as HTMLElement).dataset.state}${(r as HTMLElement).dataset.skipped === "1" ? "(kept)" : ""}`));
+  const stages = () => page.evaluate(() => [...document.querySelectorAll("#stages .stage")].map(r => `${(r as HTMLElement).dataset.stage}:${(r as HTMLElement).dataset.state}${(r as HTMLElement).dataset.skipped === "1" ? "(kept)" : ""}`));
   const lastRun = () => page.evaluate(() => { const r = (window as any).nxwebLastRun; return r ? { state: r.state, ran: r.ran, skipped: r.skipped, reason: r.reason } : null; });
   const manifest = (dir: string) => page.evaluate(async (dir: string) => {
     try { const d = await (await (navigator as any).storage.getDirectory()).getDirectoryHandle(dir); return JSON.parse(await (await (await d.getFileHandle("manifest.json")).getFile()).text()); } catch { return null; }
@@ -102,12 +104,12 @@ try {
     eq(await page.evaluate(() => (window as any).pickerCalls), 1, "picker calls");
     eq(await stages(), ["detect:done", "index:done", "profile:done", "code:done", "shaders:done"], "stages");
     eq([await page.textContent("#titleid"), (await page.textContent("#version"))!.trim(), await page.textContent("#profile")], [APP_HEX, "65536 of 0, 65536", "no profile: provisional"], "game");
-    const rows = await page.evaluate(() => [...document.querySelectorAll("#stages tr td.info")].map(td => td.textContent));
+    const rows = await page.evaluate(() => [...document.querySelectorAll("#stages .stage .info")].map(td => td.textContent));
     if (!/^base layout; 2 code modules; versions 0, 65536; 1 add-on contents$/.test(rows[0]!)) throw new Error("detect row: " + rows[0]);
     if (!/^2 files, 3 directories, [\d.]+ KB, read in place; 1 add-on contents$/.test(rows[1]!)) throw new Error("index row: " + rows[1]);
     if (rows[3] !== "main, sdk; 0 cuts applied") throw new Error("code row: " + rows[3]);
     const m = await manifest(storeDir);
-    eq([m.format, m.folder, m.machine, Object.values(m.stages).map((s: any) => s.state), m.stages.detect.output.titleId, m.stages.detect.output.version], [2, folder, "Ready", ["done", "done", "done", "done", "done"], APP_HEX, 65536], "manifest");
+    eq([m.format, m.folder, m.machine, Object.values(m.stages).map((s: any) => s.state), m.stages.detect.output.titleId, m.stages.detect.output.version], [3, folder, "Ready", ["done", "done", "done", "done", "done"], APP_HEX, 65536], "manifest");
     eq(await storeFiles(storeDir), [`aoc2.index`, `aoc2.tables`, "manifest.json", "rom.index", "rom.tables"], "what is stored: tables and the manifest, no copy of any game file");
     eq(await page.evaluate(() => !(document.getElementById("play") as HTMLButtonElement).disabled), true, "Play is enabled");
     return `manifest in OPFS ${storeDir}: 5 stages done, input hashes ${Object.values(m.stages).map((s: any) => s.input.slice(0, 8)).join(" ")}`;
@@ -150,9 +152,9 @@ try {
       const w = await h.createWritable(); await w.write(b); await w.close();
     }, { root: folder });
     await open("?hold=code:work"); await fakePicker(folder);
-    eq(await page.textContent("#resume"), "Resume " + folder, "the resume button");
+    eq(await page.textContent("#resume"), "Continue with " + folder, "the resume button");
     await page.click("#pick");
-    await page.waitForFunction(() => document.querySelector('#stages tr[data-stage="code"]')?.getAttribute("data-state") === "running", null, { timeout: 60000 });
+    await page.waitForFunction(() => document.querySelector('#stages [data-stage="code"]')?.getAttribute("data-state") === "running", null, { timeout: 60000 });
     eq(await state(), "Code", "held in Code");
     const during = await manifest(storeDir);
     eq([during.machine, Object.values(during.stages).map((s: any) => s.state)], ["Code", ["done", "done", "done", "running", "done"]], "the manifest while Code runs");
@@ -172,7 +174,7 @@ try {
     await putGame(f2, prefixed("base/", version({ programId: APP, blob: b0 })));
     await open("?hold=index:work"); await fakePicker(f2);
     await page.click("#pick");
-    await page.waitForFunction(() => document.querySelector('#stages tr[data-stage="index"]')?.getAttribute("data-state") === "running", null, { timeout: 60000 });
+    await page.waitForFunction(() => document.querySelector('#stages [data-stage="index"]')?.getAttribute("data-state") === "running", null, { timeout: 60000 });
     const during = await manifest("nxweb-prepare-" + f2);
     eq([during.machine, during.stages.detect.state, during.stages.index.state, during.stages.code.state], ["Index", "done", "running", "pending"], "manifest");
     await open(); await page.click("#resume"); await until("Ready", "Failed");
@@ -180,7 +182,7 @@ try {
     return "resumed from the handle in IndexedDB without the picker";
   });
 
-  await run("a dropped directory (a drop event whose item gives a FileSystemDirectoryHandle): prepared like a picked one; a dropped file is refused", async () => {
+  await run("a dropped directory (a drop event whose item gives a FileSystemDirectoryHandle): prepared like a picked one; a dropped code file is explained, not prepared", async () => {
     const f3 = folder + "-c";
     await putGame(f3, version({ programId: APP, blob: b0 }));
     await open();
@@ -192,7 +194,8 @@ try {
       document.getElementById("drop")!.dispatchEvent(ev);
     }, { root, kind });
     await drop(f3, "file");
-    await page.waitForFunction(() => document.getElementById("log")!.textContent!.includes("that is a file: drop the game's folder"));
+    await page.waitForFunction(() => (window as any).nxwebExplained === "nso");
+    eq([await page.isVisible("#explain"), await page.textContent("#explaintitle")], [true, "This is one code file of a game, not the whole game"], "a single code file is explained");
     eq(await state(), "Idle", "a file changes nothing");
     await drop(f3, "directory");
     await until("Ready", "Failed");
@@ -231,7 +234,7 @@ try {
     await putGame(f4, version({ programId: APP, blob: b0 }));
     await open(); await fakePicker(f4);
     // cancel as soon as Code is running: the click is queued by the page before the stage's next step
-    await page.evaluate(() => { new MutationObserver(() => { if (document.querySelector('#stages tr[data-stage="code"]')?.getAttribute("data-state") === "running") (document.getElementById("cancel") as HTMLButtonElement).click(); }).observe(document.getElementById("stages")!, { childList: true, subtree: true }); });
+    await page.evaluate(() => { new MutationObserver(() => { if (document.querySelector('#stages [data-stage="code"]')?.getAttribute("data-state") === "running") (document.getElementById("cancel") as HTMLButtonElement).click(); }).observe(document.getElementById("stages")!, { childList: true, subtree: true }); });
     await page.click("#pick");
     await until("Ready", "Failed", "Cancelled");
     eq(await state(), "Cancelled", "state");
@@ -239,6 +242,140 @@ try {
     eq([m.machine, m.stages.code.state, m.stages.profile.state], ["Cancelled", "cancelled", "done"], "manifest");
     await open(); await page.click("#resume"); await until("Ready", "Failed");
     eq(await lastRun(), { state: "Ready", ran: ["code", "shaders"], skipped: ["detect", "index", "profile"] }, "after the cancel");
+  });
+
+
+  // ---- a NUP container: one file, chosen through the page ----
+  const nupDir = join(SCRATCH, "browser-nup"); mkdirSync(nupDir, { recursive: true });
+  const part = (v: Files, prefix: string) => Object.fromEntries(Object.entries(v).filter(([k]) => k.startsWith(prefix)).map(([k, x]) => [k.slice(prefix.length), x]));
+  const pkg = (kind: number, v: Files, more: object = {}) => ({ kind, titleId: APP, exefs: part(v, "exefs/"), romfs: part(v, "romfs/"), ...more });
+  const ICON = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64"));   // a 1x1 PNG
+  const nupName = `Container-${tag}.nup`, nupFile = join(nupDir, nupName);
+  const nupOut = writeNup([pkg(KIND.base, version({ programId: APP, blob: b0 }), { meta: tlv([[T.NACP, nacp("Container Test", "", "2.5.0", "nxweb tests")], [T.ICON, ICON]]) }),
+    pkg(KIND.update, version({ programId: APP, blob: b1, extra: { "exefs/sdk": guest("two_lib") } }), { version: 65536 }),
+    { kind: KIND.addon, titleId: APP + 0x1002n, romfs: { "pack/a.bin": blob(3000, 3), "pack/b.bin": blob(17, 4), "c.txt": "dlc" } }]);
+  writeFileSync(nupFile, nupOut.bytes);
+  const explained = () => page.evaluate(() => ({ kind: (window as any).nxwebExplained, shown: !document.getElementById("explain")!.hidden, title: document.getElementById("explaintitle")!.textContent, text: document.getElementById("explaintext")!.textContent }));
+
+  await run("a .nup chosen through the page (<input type=file>): the container is prepared like a folder, the verdict card shows the name and 'Might start' before Play; Play: in the Worker the guest reads its RomFS out of the container (zstd frames decompressed there, checked against their SHA-256) and runs; the DLC reads back", async () => {
+    await open();
+    await page.setInputFiles("#fileinput", nupFile);
+    await until("Ready", "Failed");
+    eq(await state(), "Ready", "state: " + await page.textContent("#error"));
+    eq(await stages(), ["detect:done", "index:done", "profile:done", "code:done", "shaders:done"], "stages");
+    eq([await page.textContent("#titleid"), (await page.textContent("#version"))!.trim(), await page.getAttribute("#verdict", "data-level"), (await page.textContent("#verdictline"))!.trim(), await page.textContent("#play")],
+      [APP_HEX, "65536 of 0, 65536", "maybe", "Might start: no profile for this game, running with defaults.", "Play"], "the verdict card");
+    eq(await page.isVisible("#verdict"), true, "the card is shown");
+    const r = await page.evaluate(async () => {
+      const got = new Promise<any>(res => window.addEventListener("nxweb:handoff", ev => res((ev as CustomEvent).detail), { once: true }));
+      document.getElementById("play")!.click();
+      const msg = await got;
+      const w = new Worker("/test-worker.js");
+      const out = await new Promise<any>((res, rej) => { w.onmessage = ev => res(ev.data); w.onerror = e => rej(new Error(e.message)); w.postMessage({ handoff: msg }); });
+      w.terminate();
+      return { out, shape: { modules: msg.modules.map((m: any) => [m.name, m.file instanceof Blob]), blobs: msg.rom.files.length, files: msg.rom.sizes.length, nup: [msg.rom.nup.name, msg.rom.nup.file instanceof File, msg.rom.nup.file.size], aoc: msg.aoc.map((a: any) => [a.index, !!a.image.nup]) } };
+    });
+    if (!r.out.ok) throw new Error(r.out.error);
+    eq(r.shape, { modules: [["main", true], ["sdk", true]], blobs: 0, files: 2, nup: [nupName, true, nupOut.bytes.length], aoc: [[2, true]] }, "message: the container's one File, no copy of any game file");
+    eq([r.out.kind, r.out.code, r.out.red, r.out.romSync, r.out.lines], ["exit", 0, [], true, []], "run");
+    eq(r.out.stdout, "lib: DT_INIT\nlib: init_array[0]\nlib: init_array[1]\n" + fsgOut(b1) + "lib: fini_array[0]\nlib: DT_FINI\n", "stdout");
+    let sum = 0; for (const f of ["c.txt", "pack/a.bin", "pack/b.bin"]) { const b = gameFiles[`dlc/${dlcId}/0/romfs/${f}`]; for (const v of typeof b === "string" ? Buffer.from(b) : b) sum = (sum * 31 + v) >>> 0; }
+    eq(r.out.aoc, [{ index: 2, files: 3, bytes: 3020, sum, sync: true }], "add-on content");
+    if (!(r.out.reader.inflated >= 1 && r.out.reader.verified >= 1)) throw new Error("the Worker's reader: " + JSON.stringify(r.out.reader));
+    // version 0 from the card's picker: the base game, with the name, version and icon of its control data
+    await page.selectOption("#versionpick", "0");
+    await page.waitForFunction(() => (window as any).nxwebLastRun && document.getElementById("version")!.textContent!.trim().startsWith("0 "), null, { timeout: 60000 });
+    await page.waitForFunction(() => !document.getElementById("gameicon")!.hidden && (document.getElementById("gameicon") as HTMLImageElement).naturalWidth === 1);
+    eq([await page.textContent("#gamename"), (await page.textContent("#gamesub"))!.includes("version 2.5.0")], ["Container Test", true], "the NACP's name and display version");
+    return `${nupName} (${nupOut.bytes.length} bytes): the guest printed the update's blob checksum; reader in the Worker ${JSON.stringify(r.out.reader)}`;
+  });
+
+  await run("a .nup dropped on the page (a file handle): prepared, its handle kept, and after a reload 'Continue with' opens it again without a picker and keeps all five stages; showOpenFilePicker gives the same", async () => {
+    // the container as a file of OPFS: the stand-in for a file handle from a drop or the picker
+    const b64 = Buffer.from(nupOut.bytes).toString("base64");
+    const put = () => page.evaluate(async ({ name, b64 }: { name: string; b64: string }) => { const top = await (navigator as any).storage.getDirectory(); const w = await (await top.getFileHandle(name, { create: true })).createWritable(); await w.write(Uint8Array.from(atob(b64), c => c.charCodeAt(0))); await w.close(); }, { name: nupName, b64 });
+    await open(); await put();
+    await page.evaluate(async (name: string) => {
+      const h = await (await (navigator as any).storage.getDirectory()).getFileHandle(name);
+      const ev = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, "dataTransfer", { value: { items: [{ kind: "file", getAsFileSystemHandle: async () => h }] } });
+      document.body.dispatchEvent(ev);
+    }, nupName);
+    await until("Ready", "Failed");
+    eq(await state(), "Ready", "the dropped container");
+    await open();
+    eq([await page.isVisible("#resume"), await page.textContent("#resume")], [true, "Continue with " + nupName], "after the reload");
+    await page.click("#resume");
+    await until("Ready", "Failed");
+    eq(await lastRun(), { state: "Ready", ran: [], skipped: ["detect", "index", "profile", "code", "shaders"] }, "continued: nothing is done twice");
+    await open();
+    await page.evaluate((name: string) => { (window as any).showOpenFilePicker = async () => [await (await (navigator as any).storage.getDirectory()).getFileHandle(name)]; }, nupName);
+    await page.click("#pickfile");
+    await until("Ready", "Failed");
+    eq(await state(), "Ready", "through showOpenFilePicker");
+  });
+
+  await run("where the pickers are refused (a sandboxed frame: they throw SecurityError) or missing, each button falls back to its file input by itself; closing a picker (AbortError) does nothing", async () => {
+    await open();
+    const clicks = () => page.evaluate(() => (window as any).inputClicks);
+    await page.evaluate(() => {
+      (window as any).inputClicks = [];
+      for (const id of ["fileinput", "dirinput"]) document.getElementById(id)!.addEventListener("click", ev => { (window as any).inputClicks.push(id); ev.preventDefault(); });
+      const refuse = async () => { throw new DOMException("Cross origin sub frames aren't allowed to show a file picker.", "SecurityError"); };
+      (window as any).showOpenFilePicker = refuse; (window as any).showDirectoryPicker = refuse;
+    });
+    await page.click("#pickfile"); await page.waitForFunction(() => (window as any).inputClicks.length === 1);
+    await page.click("#pick"); await page.waitForFunction(() => (window as any).inputClicks.length === 2);
+    eq(await clicks(), ["fileinput", "dirinput"], "refused pickers");
+    await page.evaluate(() => { (window as any).inputClicks = []; const abort = async () => { throw new DOMException("The user aborted a request.", "AbortError"); }; (window as any).showOpenFilePicker = abort; (window as any).showDirectoryPicker = abort; });
+    await page.click("#pickfile"); await page.click("#pick"); await page.waitForTimeout(150);
+    eq(await clicks(), [], "a closed picker");
+    await page.evaluate(() => { (window as any).showOpenFilePicker = undefined; (window as any).showDirectoryPicker = undefined; });
+    await page.click("#pickfile"); await page.click("#pick"); await page.waitForFunction(() => (window as any).inputClicks.length === 2);
+    eq(await clicks(), ["fileinput", "dirinput"], "no pickers");
+    eq(await state(), "Idle", "nothing was started");
+  });
+
+  await run("what is not a game is explained in plain words instead of failing: an encrypted package (.nsp), a zip, an nxnative RomFS.img, a damaged and a truncated .nup, an update without its game; a folder that holds one .nup opens it; a profile that does not fit a tab's memory gives 'Can't run in a browser yet' with 'Try anyway'", async () => {
+    const f = (name: string, bytes: Uint8Array | string) => { const p = join(nupDir, name); writeFileSync(p, bytes); return p; };
+    const head = (s: string, at = 0) => { const b = new Uint8Array(4096); b.set(Buffer.from(s, "latin1"), at); return b; };
+    const cases: [string, string, RegExp, RegExp][] = [
+      [f("Game.nsp", head("PFS0")), "package", /^This is an encrypted game package$/, /^nxweb can't open those yet\. Convert it to a \.nup or an extracted folder with the tool you dumped it with\.$/],
+      [f("Game.xci", head("HEAD", 0x100)), "package", /encrypted game package/, /Convert it/],
+      [f("Game.zip", head("PK\u0003\u0004")), "zip", /zip archive/, /Unpack it first/],
+      [f("RomFS.img", head("DMROMFS1")), "nxnative-romfs", /made by nxnative/, /not its code/],
+      [f("readme.txt", "hello"), "unknown", /doesn't know this kind of file/, /opens \.nup files and folders/],
+      [f("damaged.nup", (() => { const b = nupOut.bytes.slice(); b[nupOut.tocOff + 60] ^= 1; return b; })()), "bad-nup", /This \.nup file can't be opened/, /damaged or incomplete\. Copy or download it again/],
+      [f("truncated.nup", nupOut.bytes.subarray(0, nupOut.bytes.length - 5000)), "bad-nup", /can't be opened/, /damaged or incomplete/],
+      [f("update-only.nup", writeNup([pkg(KIND.update, version({ programId: APP }), { version: 65536 })]).bytes), "bad-nup", /can't be opened/, /update or add-on without the game itself/],
+    ];
+    await open();
+    const seen: string[] = [];
+    for (const [path, kind, title, text] of cases) {
+      await page.evaluate(() => { (window as any).nxwebExplained = null; });
+      await page.setInputFiles("#fileinput", path);
+      await page.waitForFunction(() => !!(window as any).nxwebExplained);
+      const x = await explained();
+      if (x.kind !== kind || !x.shown || !title.test(x.title!) || !text.test(x.text!)) throw new Error(`${path}: ${JSON.stringify(x)}`);
+      eq(await state(), "Idle", path);
+      seen.push(`${path.split("/").pop()}: ${x.title}`);
+    }
+    // a folder with one .nup in it
+    const holder = join(nupDir, "holder"); rmSync(holder, { recursive: true, force: true }); mkdirSync(holder, { recursive: true }); writeFileSync(join(holder, nupName), nupOut.bytes); writeFileSync(join(holder, "notes.txt"), "x");
+    await page.setInputFiles("#dirinput", holder);
+    await until("Ready", "Failed");
+    eq(await state(), "Ready", "the folder's container: " + await page.textContent("#error") + " | " + await page.textContent("#log"));
+    eq([await state(), await page.textContent("#titleid"), await page.isVisible("#explain")], ["Ready", APP_HEX, false], "the folder's container");
+    // a title whose profile reserves a 9 GB pool
+    const big = BigInt("0x0400A3A01EE4C000");
+    const short = f("TooBig.nup", writeNup([{ kind: KIND.update, titleId: big, version: 131072, flags: STANDALONE, exefs: part(version({ programId: big }), "exefs/"), romfs: { "a.bin": "a" } }]).bytes);
+    await open(); await page.setInputFiles("#fileinput", short);
+    await until("Ready", "Failed");
+    eq([await page.getAttribute("#verdict", "data-level"), (await page.textContent("#verdictline"))!.trim(), await page.textContent("#play"), await page.isEnabled("#play"), await page.getAttribute("#layout", "data-fit")],
+      ["no", "Can't run in a browser yet. This game needs about 9 GB of memory. A browser tab can give it 4 GB.", "Try anyway", true, "short"], "the verdict");
+    const notes = await page.textContent("#warnings");
+    if (!/no base game in this NUP/.test(notes!)) throw new Error("notes: " + notes);
+    return seen.join(" | ");
   });
 
   const N = Number(process.env.PREPARE_BROWSER_FILES ?? 5000);
@@ -286,7 +423,7 @@ try {
 
   if (errors.length) { failed++; console.log(`[RED] page errors: ${errors.join(" | ")}`); }
   // what the tests stored
-  await page.evaluate(async (tag: string) => { const top = await (navigator as any).storage.getDirectory(); const names: string[] = []; for await (const [n] of top.entries()) if (n.includes(tag) || n === "nxweb-prepare-DarkGame" || n === "nxweb-prepare-exefs") names.push(n); for (const n of names) await top.removeEntry(n, { recursive: true }); }, tag);
+  await page.evaluate(async (tag: string) => { const top = await (navigator as any).storage.getDirectory(); const names: string[] = []; for await (const [n] of top.entries()) if (n.includes(tag) || /^nxweb-prepare-(DarkGame|exefs|holder|Game\.|RomFS|readme|damaged|truncated|update-only|TooBig)/.test(n)) names.push(n); for (const n of names) await top.removeEntry(n, { recursive: true }); }, tag);
 } finally { await browser.close().catch(() => {}); server.close(); rmSync(profileDir, { recursive: true, force: true }); }
 console.log(`\nprepare:browser: ${ran} tests, ${failed} failed`);
 process.exit(failed ? 1 : 0);

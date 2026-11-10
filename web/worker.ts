@@ -20,6 +20,7 @@ import { OUT_S } from "../src/glue/audio_host.ts";
 import { handoffOptions, type HandoffOptions } from "../src/glue/rt_handoff.ts";
 import { layoutFor, nsoImageBytes, CODE_SPARE, SPACE } from "../src/glue/rt_process.ts";
 import { storageFromMessage, type HandOffMessage } from "../src/prepare/host/prepare.ts";
+import { PrepWasm } from "../src/prepare/host/wasm.ts";
 import { moduleRows, takeovers, machineRows, refusedTotal, reportText, type KitPart, type ModuleRow, type TakeoverSummary } from "../src/glue/rt_report.ts";
 
 const post = (m: any, t: Transferable[] = []) => (self as any).postMessage(m, t);
@@ -132,6 +133,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   go(me);
 }
 let ctrlAnswer: ((ok: boolean) => void) | null = null;
+let prepWasm: PrepWasm | undefined;
 const sources = new Map<number, PadState | null>();
 let runDone: Promise<void> = Promise.resolve();
 // what the process translated is stored, then it is killed and everything it held is released
@@ -272,9 +274,13 @@ self.onmessage = async (ev: MessageEvent) => {
       const msg = m.msg as HandOffMessage, files: { name: string; bytes: Uint8Array }[] = [];
       for (const mod of msg.modules) files.push({ name: mod.name, bytes: new Uint8Array(await mod.file.arrayBuffer()) });
       let saves: FsStorage;
-      try { const st = new OpfsStorage(msg.saveId); await st.preopen(FS_KIND.SAVE); await st.preopen(FS_KIND.DEVICE_SAVE); saves = st; fsNote = `saves in OPFS under ${msg.saveId}, RomFS of ${msg.rom?.files.length ?? 0} files from the folder, ${msg.aoc.length} add-on contents`; }
+      // a container's files are checked against their SHA-256 as they are first read: the prepare module's hash
+      const nup = msg.rom?.nup ?? msg.aoc.find(a => a.image.nup)?.image.nup;
+      if (nup) { try { prepWasm ??= new PrepWasm(await WebAssembly.compileStreaming(fetch("wasm/prepare.wasm"))); } catch (e: any) { log(`[RED] page: the prepare module could not be loaded (${e?.message ?? e}): the files of ${nup.name} are read unchecked`); } }
+      const from = nup ? `out of ${nup.name} (${(nup.file.size / 2 ** 20).toFixed(1)} MB, read in place)` : "from the folder";
+      try { const st = new OpfsStorage(msg.saveId); await st.preopen(FS_KIND.SAVE); await st.preopen(FS_KIND.DEVICE_SAVE); saves = st; fsNote = `saves in OPFS under ${msg.saveId}, RomFS of ${msg.rom?.sizes.length ?? 0} files ${from}, ${msg.aoc.length} add-on contents`; }
       catch (e: any) { saves = new MemStorage(); fsNote = `no OPFS here (${e?.message ?? e}): saves are kept in memory`; }
-      await load(files, [], undefined, { name: `${msg.name} (${msg.titleId}, ${msg.displayVersion ?? "v" + msg.version})`, game: handoffOptions(msg, { codeBytes: files.reduce((a, f) => a + nsoImageBytes(f.bytes) + 0x1000, 0) }), storage: storageFromMessage(msg, saves),
+      await load(files, [], undefined, { name: `${msg.name} (${msg.titleId}, ${msg.displayVersion ?? "v" + msg.version})`, game: handoffOptions(msg, { codeBytes: files.reduce((a, f) => a + nsoImageBytes(f.bytes) + 0x1000, 0) }), storage: storageFromMessage(msg, saves, { sha256: prepWasm ? b => prepWasm!.sha256(b) : undefined, log: l => log(l) }),
         hooks: me => me.register({ name: "demo_frames", fn: () => 0 }) });
     }
     else if (m.type === "pause") rt?.requestPause();

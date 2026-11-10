@@ -9,9 +9,10 @@ import type { PrepStore } from "./store.ts";
 import type { ProfileSource, Profile, ProfileNeed, SdkCuts } from "./profiles.ts";
 import { PrepError, detectLayout, pickVersion, identityDir, checkDlc, loadOrder, type Layout } from "./detect.ts";
 import { DirRomDevice, PrepStorage, treeSource, blobSource, type RomIndex } from "./romdev.ts";
+import { packSource, type NupPack, type NupOptions } from "./nup.ts";
 import type { FsDevice, FsStorage } from "../../glue/fs_host.ts";
 
-export const PREPARE_FORMAT = 2;                        // in every input hash: a change of this file's outputs bumps it
+export const PREPARE_FORMAT = 3;                        // in every input hash: a change of this file's outputs bumps it
 export const SHADER_CHAIN = "nxweb-shaders-1/page";     // src/glue/rt_shaders.ts SHADER_CHAIN (checked by the tests)
 export const SHADER_STORE = "nxweb-shaders";            // webShaderStore()'s default name
 export const DEFAULT_APP_POOL = "0xCD500000";           // a 4 GB Switch's application pool (nxnative profile_guess.py APP_POOL)
@@ -32,6 +33,24 @@ export interface DetectOut {
   modules: { name: string; size: number; buildId: string }[];    // every NSO of the version's exefs, in load order
   other: string[];                                                // exefs files that are not code modules
   dlc: { titleId: string; index: number; root: string }[];
+  // a container's control data for this version (a dump folder has none): the NACP's name and display version
+  control: { name: string | null; publisher: string | null; displayVersion: string | null; icon: boolean } | null;
+  notes: string[];                                                // what the source says about itself (tree.notes)
+}
+// Which graphics interface the game's main module imports (nxnative profile_guess.py: nvnBootstrapLoader, Vulkan
+// functions, OpenGL through EGL). nxweb draws NVN only.
+export type GraphicsApi = "nvn" | "vulkan" | "gl" | "unknown";
+const API_NAMES: [GraphicsApi, string[]][] = [["nvn", ["nvnBootstrapLoader"]], ["vulkan", ["vkCreateInstance", "vkCreateDevice"]], ["gl", ["eglInitialize", "eglGetDisplay", "eglCreateContext"]]];
+// From the bytes of a module written with stored segments (PrepWasm.cut with no cuts): the names its string table holds
+export function graphicsOf(plain: Uint8Array): { api: GraphicsApi; names: string[] } {
+  const found: string[] = [], dec = new TextDecoder("latin1"), STEP = 8 << 20, LAP = 64;
+  const all = API_NAMES.flatMap(([, n]) => n);
+  for (let at = 0; at < plain.length; at += STEP) {
+    const s = dec.decode(plain.subarray(at, Math.min(plain.length, at + STEP + LAP)));
+    for (const n of all) if (!found.includes(n) && s.includes("\0" + n + "\0")) found.push(n);
+  }
+  const has = (api: GraphicsApi) => API_NAMES.find(a => a[0] === api)![1].some(n => found.includes(n));
+  return { api: has("nvn") ? "nvn" : has("vulkan") ? "vulkan" : has("gl") ? "gl" : "unknown", names: found };
 }
 export interface TreeOut { root: string; files: number; dirs: number; bytes: number; size: number; tables: string; index: string; tablesSha: string }
 export interface IndexOut { rom: TreeOut; aoc: (TreeOut & { index_: number; titleId: string })[] }
@@ -48,6 +67,8 @@ export interface ProfileOut {
   // (tools/prepare/layout_verdict.mts: "profile" as reserved, "pool" what the pool lets the game commit, "short" not)
   space: { heap_region: number; alias_region: number; stack_region: number } | null;
   layout: { fit: "profile" | "pool" | "short"; note: string } | null;
+  pool: number;                                      // the application pool the game is given (the profile's, or the default)
+  graphics: { api: GraphicsApi; names: string[] };   // what main imports to draw with
   warnings: string[];
 }
 export interface CodeOut {
@@ -84,11 +105,14 @@ export interface HandOffMessage {
   modules: { name: string; buildId: string; cuts: number; file: Blob }[];
   rom: RomMessage | null; aoc: { index: number; image: RomMessage }[];
 }
-export interface RomMessage { tables: Uint8Array; starts: Float64Array; sizes: Float64Array; size: number; files: Blob[] }
-// In the Worker: the devices of a message
-export const romFromMessage = (m: RomMessage): DirRomDevice => new DirRomDevice({ tables: m.tables, starts: m.starts, sizes: m.sizes, size: m.size }, blobSource(m.files));
-export function storageFromMessage(m: HandOffMessage, saves: FsStorage): FsStorage {
-  return new PrepStorage(m.rom ? romFromMessage(m.rom) : null, new Map(m.aoc.map(a => [a.index, romFromMessage(a.image)])), saves);
+// files: one Blob per file of a folder; a container sends none and `nup` instead (its one File and the files' records)
+export interface RomMessage { tables: Uint8Array; starts: Float64Array; sizes: Float64Array; size: number; files: Blob[]; nup?: NupPack }
+// In the Worker: the devices of a message. For a container, `o.sha256` (PrepWasm.sha256) is what its files are
+// checked with as they are first read; without it they are read unchecked.
+export const romFromMessage = (m: RomMessage, o: Partial<NupOptions> = {}): DirRomDevice =>
+  new DirRomDevice({ tables: m.tables, starts: m.starts, sizes: m.sizes, size: m.size }, m.nup ? packSource(m.nup, m.sizes, o) : blobSource(m.files));
+export function storageFromMessage(m: HandOffMessage, saves: FsStorage, o: Partial<NupOptions> = {}): FsStorage {
+  return new PrepStorage(m.rom ? romFromMessage(m.rom, o) : null, new Map(m.aoc.map(a => [a.index, romFromMessage(a.image, o)])), saves);
 }
 
 export interface Snapshot { state: PrepState; reason: string; error: string; counts: Counts; stages: Record<StageName, StageRecord["state"]>; manifest: Manifest }
@@ -178,7 +202,7 @@ export class Prepare {
       this.changed();
       // the listing: what every stage's input hash is made from
       try { this.listing = await this.o.tree.list(n => { this.w.setCount("files", n); this.changed(); }); }
-      catch (e) { throw new PrepError("read", `the folder could not be listed: ${(e as Error).message}`); }
+      catch (e) { throw e instanceof PrepError ? e : new PrepError("read", `the folder could not be listed: ${(e as Error).message}`); }
       this.w.setCount("files", this.listing.files.length);
       const stage = async <T>(name: StageName, input: string, work: () => Promise<T>, counts: (out: T) => void): Promise<T> => {
         current = name;
@@ -222,7 +246,7 @@ export class Prepare {
       const profile = pid ? await this.o.profiles.game(pid) : null;
       const sdk = await this.o.profiles.sdk();
       const sdkCuts = [det.modules.map(m => sdk.cuts[m.buildId] ? [m.buildId, sdk.cuts[m.buildId]] : null).filter(x => x), det.modules.map(m => sdk.match_cuts?.[m.name] ?? null)];
-      const prof = await stage<ProfileOut>("profile", this.hash(["profile", det.titleId, det.version, det.modules.map(m => [m.name, m.buildId]), det.npdm, profile, sdkCuts, idx.rom.tablesSha]),
+      const prof = await stage<ProfileOut>("profile", this.hash(["profile", det.titleId, det.version, det.modules.map(m => [m.name, m.buildId]), det.npdm, det.control, profile, sdkCuts, idx.rom.tablesSha]),
         () => this.profile(det, l, profile, pid === det.titleId ? "title" : pid ? "build" : null, sdk), () => {});
       // ---- Code ----
       const loadFiles = prof.load.map(n => l.files.find(f => f.path === det.exefs + n)!);
@@ -290,8 +314,10 @@ export class Prepare {
     const order = ["rtld", ...loadOrder(modules.map(m => m.name))];
     modules.sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
     const dlc = checkDlc(layout, id.programId);
+    let control: DetectOut["control"] = null;
+    if (this.o.tree.control) { const c = await this.o.tree.control(root); if (c) control = { name: c.name, publisher: c.publisher, displayVersion: c.displayVersion, icon: !!c.icon }; }
     return { layout: layout.kind, titleId: id.titleId, programId: id.titleId, version: root.startsWith("updates/") ? Number(root.split("/")[1]) : 0, versions: [...(layout.base ? [0] : []), ...layout.updates.map(u => u.version)],
-      root, exefs, romfs: root + "romfs/", npdm: { sysResource: own.sysResource, stackSize: own.stackSize, is64: own.is64, name: own.name }, modules, other, dlc };
+      root, exefs, romfs: root + "romfs/", npdm: { sysResource: own.sysResource, stackSize: own.stackSize, is64: own.is64, name: own.name }, modules, other, dlc, control, notes: [...(this.o.tree.notes ?? [])] };
   }
 
   private async index(det: DetectOut, trees: { root: string; name: string; files: TreeFile[]; dirs: string[] }[]): Promise<IndexOut> {
@@ -348,7 +374,17 @@ export class Prepare {
       if (!c && (own.length || wide.length)) match.push({ module: m, buildId: b, sets: [own, wide] });
     }
     const sp = p?.address_space;
-    return { found: !!p, by, id: p?.title_id ?? null, name: p?.name ?? det.npdm.name, provisional: !p, registered, unregistered, display, apply, needs: p?.needs ?? [], unconverted: p?.unconverted ?? [], load, cuts, match,
+    // what main draws with: its imports, read from the module with its segments unpacked (a module that cannot be
+    // unpacked is Code's to refuse)
+    let graphics: ProfileOut["graphics"] = { api: "unknown", names: [] };
+    try {
+      const m = det.modules.find(m => m.name === "main")!, r = this.w.cut(await this.readAll(det.exefs + "main", m.size), []);
+      if ("bytes" in r) graphics = graphicsOf(r.bytes);
+    } catch (e) { if (!(e instanceof PrepError)) throw e; }
+    if (graphics.api === "vulkan" || graphics.api === "gl") warnings.push(`main draws with ${graphics.api === "gl" ? "OpenGL (through EGL)" : "Vulkan"} (it imports ${graphics.names.join(", ")}): nxweb implements NVN only`);
+    for (const n of det.notes ?? []) warnings.push(n);
+    return { found: !!p, by, id: p?.title_id ?? null, name: p?.name ?? det.control?.name ?? det.npdm.name, provisional: !p, registered, unregistered, display: display ?? det.control?.displayVersion ?? null, apply,
+      pool: Number(apply.app_pool ?? DEFAULT_APP_POOL), graphics, needs: p?.needs ?? [], unconverted: p?.unconverted ?? [], load, cuts, match,
       space: sp ? { heap_region: sp.heap_region, alias_region: sp.alias_region, stack_region: sp.stack_region } : null, layout: sp?.fit ? { fit: sp.fit, note: sp.note ?? "" } : null, warnings };
   }
 
@@ -419,6 +455,7 @@ export class Prepare {
       return b;
     };
     const romMsg = async (r: { index: RomIndex; paths: string[] }): Promise<RomMessage> => {
+      if (tree.pack) return { tables: r.index.tables, starts: r.index.starts, sizes: r.index.sizes, size: r.index.size, files: [], nup: tree.pack(r.paths) };
       if (!tree.blob) throw new Error("prepare: this folder's files cannot be sent to a Worker (no Blobs)");
       return { tables: r.index.tables, starts: r.index.starts, sizes: r.index.sizes, size: r.index.size, files: r.paths.map(p => tree.blob!(p)!) };
     };
