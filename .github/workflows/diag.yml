@@ -1,0 +1,34 @@
+name: rt-diag
+on:
+  push:
+    branches: [devin/1794339914-ci-rttest]
+jobs:
+  rt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+      - run: pip install unicorn capstone backports.zstd
+      - run: npm ci
+      - run: free -m; nproc; cat /proc/sys/vm/overcommit_memory; ulimit -a | head -20
+      - name: rt:test one mode at a time under /usr/bin/time -v
+        run: |
+          for m in 32 64 64hi; do
+            echo "::group::NX_MEM=$m"
+            NX_MEM=$m /usr/bin/time -v node --expose-gc test/runtime/run.mts > out_$m.log 2> time_$m.log; echo "NX_MEM=$m exit=$?"
+            tail -3 out_$m.log; tail -40 time_$m.log
+            echo "::endgroup::"
+            sudo dmesg -T | tail -15
+          done
+      - name: rt:test as npm test runs it (all modes)
+        run: |
+          /usr/bin/time -v npm run -s rt:test > all.log 2> all_time.log; echo "exit=$?"
+          tail -6 all.log; tail -40 all_time.log; sudo dmesg -T | grep -iE "oom|killed|out of memory" | tail -20
