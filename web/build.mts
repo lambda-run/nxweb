@@ -87,4 +87,4 @@ function writeStamp(): void {
   writeFileSync(join(WEB, "build.json"), JSON.stringify(stamp));
   console.error(`web:build: ${buildLine(stamp)}`);
 }
-export const buildLine = (b: { commit: string; dirty: boolean; date: string; md5: string }) => `${b.commit}${b.dirty ? "+changes" : ""} · ${b.date.slice(0, 16).replace("T", " ")} UTC · md5 ${b.md5.slice(0, 8)}`;
+export function buildLine(b: { commit: string; dirty: boolean; date: string; md5: string }): string { return `${b.commit}${b.dirty ? "+changes" : ""} · ${b.date.slice(0, 16).replace("T", " ")} UTC · md5 ${b.md5.slice(0, 8)}`; }
