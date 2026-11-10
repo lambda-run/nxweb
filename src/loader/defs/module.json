@@ -1,0 +1,26 @@
+{
+  "id": 3,
+  "name": "module",
+  "doc": "Lifecycle of a guest code module (NSO or NRO) in src/loader/module.ts. A module record always refers to the file bytes it was parsed from, in every state except the two final ones: mapping (the first time or again after an unload) decompresses the segments from those bytes and zeroes the bss, so a reload cannot find its pristine copy missing. Pin is the only event that lets go of the file, and a pinned module can no longer be unloaded. Refused carries the reason; a refused module is never mapped or relocated.",
+  "states": ["New", "Parsed", "Mapped", "Relocated", "Active", "Pinned", "Unloaded", "Refused"],
+  "initial": "New",
+  "final": ["Pinned", "Refused"],
+  "data": {
+    "Refused": { "name": "refuseReason", "values": ["header", "layout", "decompress", "hash", "mod0", "dynamic", "symbols", "relocs", "arena"] }
+  },
+  "events": ["ParseOk", "Map", "Relocate", "Activate", "Pin", "Unload", "Refuse"],
+  "transitions": [
+    ["New", "ParseOk", "Parsed"],
+    ["New", "Refuse", "Refused"],
+    ["Parsed", "Map", "Mapped"],
+    ["Parsed", "Refuse", "Refused"],
+    ["Mapped", "Relocate", "Relocated"],
+    ["Mapped", "Unload", "Unloaded"],
+    ["Relocated", "Activate", "Active"],
+    ["Relocated", "Unload", "Unloaded"],
+    ["Active", "Pin", "Pinned"],
+    ["Active", "Unload", "Unloaded"],
+    ["Unloaded", "Map", "Mapped"],
+    ["Unloaded", "Refuse", "Refused"]
+  ]
+}

@@ -42,3 +42,11 @@ Initial state: all registers 0, sp = stack_top, x30 = 0xFFFF_FFF0. Guest I/O is 
 - `svc #0x07` ExitProcess: stop; exit code in x0 is NOT standard Horizon, tests use `svc #0x07` with w0 = code.
 - `svc #0x1E` GetSystemTick: returns a deterministic counter in x0 (starts 0, +1000 per call).
 Returning from the entry function to 0xFFFF_FFF0 also ends the run with exit code w0.
+
+### Clarifications (settled with the guest corpus, tools/ref_run.py is the reference)
+- The `.bin` does not contain bss. The embedder zero-fills from the end of the image up to `stack_top`.
+- "All registers 0" includes NZCV, FPCR, FPSR, `tpidr_el0` and `tpidrro_el0`.
+- GetSystemTick: the first call returns 0, then 1000, 2000, ...
+- `svc #0x27` returns 0 in x0.
+- Sidecar numbers (`base`, `entry`, `bss_end`, `stack_top`) are JSON numbers. Sidecars also carry `exit_code` and `insn_count`.
+- Assembly-only programs produce one variant named `asm`.

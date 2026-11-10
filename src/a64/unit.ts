@@ -23,6 +23,7 @@ let entryPtr: usize = 0;
 let metaPtr: usize = 0;
 let outP: usize = 0;
 const ENTRY_CAP = 4096;
+let unitInsns: u32 = 0;
 
 export function init(): void {
   initEmit();
@@ -253,7 +254,7 @@ function translateFunction(entry: u64): bool {
     evStart[k] = nEv;
     let pc = blkPc[k];
     while (true) {
-      translateInsn(pc, insnAt(pc));
+      translateInsn(pc, insnAt(pc)); unitInsns++;
       pc += 4;
       if (term) break;
       if (!inCode(pc)) break;
@@ -304,7 +305,7 @@ export function translate(nEntries: i32): u32 {
   resetFns();
   setFnLimit(optMaxFuncs > nEntries ? optMaxFuncs : nEntries);
   for (let i = 0; i < nEntries; i++) addFn(load<u64>(entryPtr + (<usize>i << 3)), true);
-  csP = csBase + HDR_MAX;
+  csP = csBase + HDR_MAX; unitInsns = 0;
   for (let f = 0; f < nFn; f++) {
     let ok = translateFunction(fnPc[f]);
     store<u8>(metaPtr + 8 + 4096 * 8 + f, ok ? 0 : 1);
@@ -350,7 +351,7 @@ export function translate(nEntries: i32): u32 {
   outP = csBase + HDR_MAX - hlen;
   memory.copy(outP, hdrTmp, hlen);
   // meta
-  store<u32>(metaPtr, nFn);
+  store<u32>(metaPtr, nFn); store<u32>(metaPtr + 4, unitInsns);
   for (let f = 0; f < nFn; f++) store<u64>(metaPtr + 8 + (<usize>f << 3), fnPc[f]);
   return <u32>(codeEnd - outP);
 }

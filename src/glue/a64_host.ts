@@ -44,6 +44,7 @@ export class A64Host {
   readonly memory: WebAssembly.Memory;
   translateNs = 0;        // time spent in translator + wasm compile (ns)
   translatedFuncs = 0;
+  translatedInsns = 0;    // guest instructions translated
   moduleBytes = 0;
   private tr: any;
   private opts: A64Options;
@@ -116,6 +117,7 @@ export class A64Host {
       if (off >= 0 && off < mapSize) map.setUint32(pcmapBase + off, base + i, true);
     }
     this.translatedFuncs += n;
+    this.translatedInsns += dv.getUint32(meta + 4, true);
     this.moduleBytes += len;
     this.translateNs += (performance.now() - t0) * 1e6;
     return entries.map((_, i) => base + i);
