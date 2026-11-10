@@ -1105,6 +1105,15 @@ src/gfx/window.ts	D	1	store<i32>(w, load<i32>(b, O.WB_nactive), O.WIN_nactive)
 src/gfx/window.ts	D	1	store<i32>(w, load<i32>(b, O.WB_ntex), O.WIN_ntex)
 src/gfx/window.ts	D	1	store<i32>(w, next + 1, O.WIN_next)
 src/gfx/window.ts	D	1	store<u32>(w, O.MAGIC_WIN)
+src/glue/a64_scan.ts	B	1	async scan(text: Uint8Array, textOff = 0, functions: ArrayLike<number> | null = null, tick?: (done: number, total: number) => Promise<void> | void): Promise<Mod
+src/glue/a64_scan.ts	B	1	const firsts = (r: number) => Array.from({ length: x.scanFirstCount(k, r) }, (_, i) => x.scanFirst(k, r, i) >>> 0);
+src/glue/a64_scan.ts	B	1	const nfn = functions ? functions.length >> 1 : 0;
+src/glue/a64_scan.ts	B	1	const x = this.x, words = text.length >>> 2;
+src/glue/a64_scan.ts	B	1	if (!functions) each(0, n >>> 2, textOff + at, 0);
+src/glue/a64_scan.ts	B	1	if (fs > p) { const e = Math.min(fs, hi); each(p - lo, (e - p) >>> 2, p, 1); p = e; }
+src/glue/a64_scan.ts	B	1	if (p < hi && fi < nfn && p >= functions[2 * fi]) { const e = Math.min(fe, hi); each(p - lo, (e - p) >>> 2, p, 0); p = e; }
+src/glue/a64_scan.ts	B	1	implemented(word: number): boolean { return !!this.x.probe(word >>> 0); }
+src/glue/a64_scan.ts	B	1	this.mem = new WebAssembly.Memory({ initial: Math.ceil((A64.translatorEnd + (32 << 20)) / 65536) });
 src/glue/audio_device.ts	B	1	const a = (m as { audio?: Record<string, unknown> } | null)?.audio;
 src/glue/audio_device.ts	B	1	const n = (wr - this.sent) >>> 0;
 src/glue/audio_device.ts	B	1	for (let i = 0; i < n; i++) { const p = (((this.sent + i) >>> 0) & (cap - 1)) << 1; pcm[2 * i] = d[p]; pcm[2 * i + 1] = d[p + 1]; }
@@ -2357,6 +2366,7 @@ web/prepare.ts	B	1	const esc = (s: string) => s.replace(/[&<>" "&" "&amp;" "<" "
 web/prepare.ts	B	1	const fmtBytes = (n: number) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(2) + " " : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + " " : n >= 1024 ? (n / 1024).toFix
 web/prepare.ts	B	1	const inside = res.state === " " && res.reason === " " ? (tree as { filesMatching?: (re: RegExp) => { path: string; file: File }[] }).filesMatching?.(/^[^/]+\.n
 web/prepare.ts	B	1	const started: Partial<Record<StageName, number>> = {};
+web/prepare.ts	B	1	let scannerP: Promise<{ scan: A64Scanner; key: string } | undefined> | undefined;
 web/prepare.ts	B	1	storeDir = " " + tree.name.replace(/[^A-Za-z0-9._-]/g, " ").slice(0, 80);
 web/prepare_build.mts	B	1	const path = normalize(decodeURIComponent(url)).replace(/^(\.\.[/\\])+/, "");
 web/prepare_build.mts	B	1	export function servePrepare(port: number, extra?: (url: string) => { body: Buffer | string; type: string } | null): Promise<{ server: Server; url: string }> {
