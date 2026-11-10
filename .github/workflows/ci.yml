@@ -29,7 +29,7 @@ jobs:
       - run: pip install unicorn capstone
       - run: npm ci
       - name: nxnative (reference checkout; the tests that need it skip without it)
-        run: git clone --depth 1 https://github.com/seedds/nxnative "$NXNATIVE" || echo "::warning::nxnative could not be cloned; the tests that need it are skipped"
+        run: (git init -q "$NXNATIVE" && git -C "$NXNATIVE" fetch -q --depth 1 https://github.com/seedds/nxnative "$(cat NXNATIVE_REF)" && git -C "$NXNATIVE" checkout -q FETCH_HEAD) || echo "::warning::nxnative could not be fetched at the pinned commit; the tests that need it are skipped"
       - name: generated files are up to date
         run: npm run kit:check
       # test/guests/out is not in the repository: `npm test` builds the guest corpus first (clang + Unicorn).
@@ -79,7 +79,7 @@ jobs:
       - name: Chromium for Playwright
         run: npx playwright install --with-deps chromium
       - name: nxnative (reference checkout; the tests that need it skip without it)
-        run: git clone --depth 1 https://github.com/seedds/nxnative "$NXNATIVE" || echo "::warning::nxnative could not be cloned; the tests that need it are skipped"
+        run: (git init -q "$NXNATIVE" && git -C "$NXNATIVE" fetch -q --depth 1 https://github.com/seedds/nxnative "$(cat NXNATIVE_REF)" && git -C "$NXNATIVE" checkout -q FETCH_HEAD) || echo "::warning::nxnative could not be fetched at the pinned commit; the tests that need it are skipped"
       - name: the guest corpus (test/guests/out is not in the repository)
         run: npm run guests:build
       - run: npm run a64:browser
