@@ -5,13 +5,14 @@ import { tableOf, dataMax, validate, NONE, type MachineDef } from "../../src/kit
 import { readTrace, formatRecord, unexercised } from "../../src/kit/host/reader.mts";
 import { check, diagramSource, tablesSource } from "../../src/kit/host/gen.mts";
 
-const TH = def("thread");
+// The example machine of these tests is the kernel's thread machine (src/kernel/defs/kthread.json)
+const TH = def("kthread");
 const th = { id: TH.id, s: (n: string) => S(TH, n), e: (n: string) => E(TH, n) };
 
 // A thread in slot 0 taken to Running
 function running(k = fresh(), id = 7) {
   k.x.m_init(0, th.id, id);
-  for (const e of ["CreateThread", "Start", "Schedule"]) assert.equal(k.x.m_step(0, th.e(e), 0), 1);
+  for (const e of ["Create", "Start", "Schedule"]) assert.equal(k.x.m_step(0, th.e(e), 0), 1);
   return k;
 }
 
@@ -43,11 +44,11 @@ test("kit: init puts an instance in the initial state; an unknown machine id is 
 test("kit: an accepted step changes the state and is traced", () => {
   const k = fresh();
   k.x.m_init(0, th.id, 41);
-  assert.equal(k.x.m_step(0, th.e("CreateThread"), 0), 1);
-  assert.equal(k.x.m_state(0), th.s("HeldBeforeStart"));
+  assert.equal(k.x.m_step(0, th.e("Create"), 0), 1);
+  assert.equal(k.x.m_state(0), th.s("Dormant"));
   assert.equal(k.x.kit_trace_total(), 1);
-  assert.deepEqual(readTrace(k.x), [{ seq: 0, machine: th.id, instance: 41, from: th.s("Created"), to: th.s("HeldBeforeStart"), event: th.e("CreateThread"), refused: false, reason: 0 }]);
-  assert.equal(formatRecord(readTrace(k.x)[0], k.machines), "thread#41 Created -CreateThread-> HeldBeforeStart");
+  assert.deepEqual(readTrace(k.x), [{ seq: 0, machine: th.id, instance: 41, from: th.s("Created"), to: th.s("Dormant"), event: th.e("Create"), refused: false, reason: 0 }]);
+  assert.equal(formatRecord(readTrace(k.x)[0], k.machines), "kthread#41 Created -Create-> Dormant");
   assert.deepEqual(k.logs, []);
   assert.equal(k.x.kit_refused_total(), 0);
 });
@@ -57,12 +58,12 @@ test("kit: refusal, no transition: state unchanged, false, a red line, counted, 
   const before = k.x.kit_trace_total();
   assert.equal(k.x.m_step(0, th.e("Start"), 0), 0);
   assert.equal(k.x.m_state(0), th.s("Running"));
-  assert.deepEqual(k.logs, ["[RED] kit: thread#7 refused Start in Running (no transition)"]);
+  assert.deepEqual(k.logs, ["[RED] kit: kthread#7 refused Start in Running (no transition)"]);
   assert.equal(k.x.kit_refused_total(), 1);
   assert.equal(k.x.kit_trace_total(), before + 1);
   const r = readTrace(k.x).at(-1)!;
   assert.deepEqual(r, { seq: before, machine: th.id, instance: 7, from: th.s("Running"), to: th.s("Running"), event: th.e("Start"), refused: true, reason: 1 });
-  assert.equal(formatRecord(r, k.machines), "thread#7 Running x Start (refused: no transition)");
+  assert.equal(formatRecord(r, k.machines), "kthread#7 Running x Start (refused: no transition)");
 });
 
 test("kit: refusal, unknown event id", () => {
@@ -71,7 +72,7 @@ test("kit: refusal, unknown event id", () => {
     assert.equal(k.x.m_step(0, ev, 0), 0);
     assert.equal(k.x.m_can(0, ev), 0);
     assert.equal(k.x.m_state(0), th.s("Running"));
-    assert.equal(k.logs.at(-1), `[RED] kit: thread#7 refused event ${ev} in Running (unknown event)`);
+    assert.equal(k.logs.at(-1), `[RED] kit: kthread#7 refused event ${ev} in Running (unknown event)`);
     const r = readTrace(k.x).at(-1)!;
     assert.equal(r.refused, true); assert.equal(r.reason, 2); assert.equal(r.event, ev); assert.equal(r.to, r.from);
   }
@@ -80,11 +81,11 @@ test("kit: refusal, unknown event id", () => {
 
 test("kit: refusal, a value the target state does not carry", () => {
   const k = running();
-  for (const kind of [0, 6, 0xffffffff]) {
+  for (const kind of [0, 7, 0xffffffff]) {
     assert.equal(k.x.m_step(0, th.e("Block"), kind), 0);
     assert.equal(k.x.m_state(0), th.s("Running"));
     assert.equal(k.x.m_data(0), 0);
-    assert.equal(k.logs.at(-1), "[RED] kit: thread#7 refused Block in Running (bad data)");
+    assert.equal(k.logs.at(-1), "[RED] kit: kthread#7 refused Block in Running (bad data)");
     assert.equal(readTrace(k.x).at(-1)!.reason, 3);
   }
   assert.equal(k.x.kit_refused_total(), 3);
@@ -183,9 +184,9 @@ test("kit: the trace is a ring: the newest records stay, in order", () => {
 test("kit: thousands of instances of one definition are independent", () => {
   const k = fresh(), n = 8192;
   for (let i = 0; i < n; i++) k.x.m_init(i, th.id, 100000 + i);
-  for (let i = 0; i < n; i += 2) assert.equal(k.x.m_step(i, th.e("CreateThread"), 0), 1);
+  for (let i = 0; i < n; i += 2) assert.equal(k.x.m_step(i, th.e("Create"), 0), 1);
   for (let i = 0; i < n; i += 4) assert.equal(k.x.m_step(i, th.e("Start"), 0), 1);
-  for (let i = 0; i < n; i++) assert.equal(k.x.m_state(i), i % 4 === 0 ? th.s("Runnable") : i % 2 === 0 ? th.s("HeldBeforeStart") : th.s("Created"));
+  for (let i = 0; i < n; i++) assert.equal(k.x.m_state(i), i % 4 === 0 ? th.s("Runnable") : i % 2 === 0 ? th.s("Dormant") : th.s("Created"));
   assert.equal(readTrace(k.x).at(-1)!.instance, 100000 + n - 4);
   assert.equal(k.x.kit_refused_total(), 0);
 });
@@ -210,22 +211,22 @@ test("kit: the coverage rule sees a transition no test exercised", () => {
   const all = defs.reduce((n, d) => n + d.transitions.length, 0);
   assert.equal(unexercised(k.machines, k.machines.map(m => m.hits)).length, all, "nothing exercised: every transition is reported");
   k.x.m_init(0, th.id, 1);
-  k.x.m_step(0, th.e("CreateThread"), 0);
+  k.x.m_step(0, th.e("Create"), 0);
   assert.equal(unexercised(k.machines, k.machines.map(m => m.hits)).length, all, "coverage off: no hits");
   k.x.kit_cover_enable(1);
   k.x.m_step(0, th.e("Start"), 0);
   k.x.m_step(0, th.e("Start"), 0);   // refused: not a hit
   const missing = unexercised(k.machines, k.machines.map(m => m.hits));
   assert.equal(missing.length, all - 1);
-  assert.ok(missing.includes("thread: Created -CreateThread-> HeldBeforeStart"));
-  assert.ok(!missing.includes("thread: HeldBeforeStart -Start-> Runnable"));
+  assert.ok(missing.includes("kthread: Created -Create-> Dormant"));
+  assert.ok(!missing.includes("kthread: Dormant -Start-> Runnable"));
   assert.equal(k.machines[th.id].hits.reduce((a, b) => a + b, 0), 1);
 });
 
 test("generator: the check passes on the committed files and sees a changed definition", () => {
   assert.deepEqual(check(), []);
-  const changed: MachineDef[] = defs.map(d => d.name !== "thread" ? d : { ...d, transitions: [...d.transitions, ["Waiting", "Exit", "Exited"]] });
-  assert.deepEqual(check(changed), ["src/kit/gen/tables.ts: out of date", "docs/machines/thread.md: out of date"]);
+  const changed: MachineDef[] = defs.map(d => d.name !== "kthread" ? d : { ...d, transitions: [...d.transitions, ["Waiting", "Exit", "Exited"]] });
+  assert.deepEqual(check(changed), ["src/kit/gen/tables.ts: out of date", "docs/machines/kthread.md: out of date"]);
   const extra: MachineDef[] = [...defs, { ...defs[0], id: defs.length, name: "extra" }];
   assert.deepEqual(check(extra), ["src/kit/gen/tables.ts: out of date", "docs/machines/extra.md: missing"]);
   const gone = defs.slice(2).map(d => `docs/machines/${d.name}.md: no machine of this name is defined any more`).sort();
@@ -238,11 +239,11 @@ test("generator: the diagram and the constants come from the table", () => {
   for (const [f, e, to] of TH.transitions) assert.ok(md.includes(`    ${f} --> ${to}: ${e}\n`));
   assert.equal(md.split("\n").filter(l => / --> /.test(l)).length, TH.transitions.length + 2, "initial, each transition, final");
   assert.ok(md.includes("    Exited --> [*]\n"));
-  assert.ok(md.includes("    note right of Waiting: carries waitKind (lock, condvar, address, sync, sleep)\n"));
+  assert.ok(md.includes("    note right of Waiting: carries waitKind (lock, condvar, address, sync, sleep, clock)\n"));
   const src = tablesSource(defs);
-  assert.ok(src.includes("export const THREAD: u8 = 2;"));
-  assert.ok(src.includes("export namespace ThreadS {\n  export const Created: u8 = 0;"));
-  assert.ok(src.includes("export namespace ThreadWaitKind {\n  export const lock: u64 = 1;"));
+  assert.ok(src.includes(`export const KTHREAD: u8 = ${TH.id};`));
+  assert.ok(src.includes("export namespace KthreadS {\n  export const Created: u8 = 0;"));
+  assert.ok(src.includes("export namespace KthreadWaitKind {\n  export const lock: u64 = 1;"));
 });
 
 test("generator: a definition that is not sound is rejected", () => {

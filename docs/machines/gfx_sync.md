@@ -18,7 +18,7 @@ stateDiagram-v2
     note right of PendingAcquire: carries fence
 ```
 
-Machine id 7. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 6. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

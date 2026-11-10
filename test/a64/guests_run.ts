@@ -17,6 +17,7 @@ o.budget = Number(opt("--budget", String(o.budget)));
 o.maxInsns = Number(opt("--maxinsns", String(o.maxInsns)));
 o.maxFuncs = Number(opt("--maxfuncs", String(o.maxFuncs)));
 o.depthLimit = Number(opt("--depth", String(o.depthLimit)));
+o.chunk = Number(opt("--chunk", String(o.chunk)));
 o.fma = !argv.includes("--nofma");
 o.nanFix = !argv.includes("--nonan");
 o.tailCalls = !argv.includes("--notail");
@@ -40,6 +41,7 @@ for (const dir of dirs) {
     } catch (e) { r = { name, ok: false, why: "runner: " + String(e), insns: 0, runMs: 0, trMs: 0, trOnlyMs: 0, trInsns: 0, funcs: 0, bytes: 0, slices: 0, tableLen: 0 }; }
     results.push(r);
     if (speed) console.log(speedLine(r));
+    if (argv.includes("--mem")) console.log(`     modules=${r.modules} largest=${r.maxModule} B total wasm=${r.bytes} B (${(r.bytes / Math.max(1, r.trInsns)).toFixed(1)} B/insn) table=${r.tableLen} translator memory=${((r.trMem ?? 0) / 1048576).toFixed(0)} MB process rss=${(process.memoryUsage().rss / 1048576).toFixed(0)} MB`);
     else if (!quiet || !r.ok) console.log(`${r.ok ? "ok  " : "[RED] FAIL"} ${r.name}${r.ok ? "" : "  " + r.why}`);
   }
 }

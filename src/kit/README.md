@@ -28,8 +28,8 @@ checks, compiles `test/kit/entry.ts`, runs `test/kit/*.test.mts` and fails if a 
 3. `npm run kit:diagrams`, and commit `gen/tables.ts` and `docs/machines/<name>.md` with the definition.
 4. In AssemblyScript: `import { Inst } from ".../kit/machine"` and the constants from `.../kit/gen/tables`. An `Inst`
    is 16 unmanaged bytes that you place yourself (static memory, a pool, a field range of your own record:
-   `Inst.at(ptr)`); `inst.init(THREAD, threadIndex)` puts it in the initial state.
-5. `inst.step(ThreadE.Block, ThreadWaitKind.lock)` is the only way the state changes. It returns false, leaves
+   `Inst.at(ptr)`); `inst.init(KTHREAD, threadIndex)` puts it in the initial state.
+5. `inst.step(KthreadE.Block, KthreadWaitKind.lock)` is the only way the state changes. It returns false, leaves
    everything as it was and logs a `[RED] ` line when the table has no entry. Read `inst.state` and `inst.data` freely;
    never write them.
 6. Where an event is one of several things that may or may not apply, ask first with `inst.can(event)` (a pure
@@ -46,7 +46,7 @@ checks, compiles `test/kit/entry.ts`, runs `test/kit/*.test.mts` and fails if a 
   data, and clears `data` to 0 when it does not; a transition from a state to itself keeps it. For an enumerated value
   an argument outside 1..n is refused. So data also changes only through `step`, and only as the table declares.
 - **Refusals**, three classes, all leave state and data untouched, return false, add to `kit_refused_total()` and log
-  `[RED] kit: thread#7 refused Start in Running (no transition)`: no table entry (this includes every event in a final
+  `[RED] kit: kthread#7 refused Start in Running (no transition)`: no table entry (this includes every event in a final
   state), `(unknown event)` for an event id the machine does not have, `(bad data)` for an enumerated value out of range.
   `init` with an unknown machine id logs red and traps.
 - **Trace.** A ring of 4096 records of 16 bytes at `kit_trace_ptr()`; `kit_trace_total()` counts all records ever
@@ -86,15 +86,3 @@ checks, compiles `test/kit/entry.ts`, runs `test/kit/*.test.mts` and fails if a 
   traced transition `Idle -FocusLost-> Idle`.
 - Not ported, because they are not part of the machine: `hq_enabled` (an environment switch), `hq_text_line`
   (the front end's texts), `hq_in_app_name` (a macOS setting's log word).
-
-## The thread machine: what is decided and what is open
-
-`defs/thread.json` has the states and events that were asked for; the table is a first reading, to be confirmed by
-whoever writes the scheduler:
-
-- `Created` is the slot before `CreateThread` completed; `CreateThread` leads to `HeldBeforeStart`, `Start` to `Runnable`.
-- `PauseRequest` is accepted in `Runnable` and `Running` only; `Resume` always leads to `Runnable`. A pause of a
-  `Waiting` thread is refused: `Paused` carries nothing, so the wait kind would be lost. If the scheduler needs it,
-  that is a new state or a second resume event, not a flag beside the machine.
-- `Exit` is accepted in `Running` only (a thread exits itself). Tearing down a process with threads in other states
-  will need more entries.

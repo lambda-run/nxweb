@@ -208,6 +208,21 @@ function mapArguments(dst: u64, src: u64, size: u64): u64 {
   return contains(stackBase, stackCap, dst, size) ? R_OK : R_BAD_REGION;
 }
 
+// A stack the embedder maps for a thread it starts itself (the main thread's: on Horizon the process creator maps it
+// in the stack region before the first instruction runs). It is a MapMemory entry with no source: the source field
+// holds an address above 4 GB that no guest range can overlap, so nothing counts as borrowed and UnmapMemory cannot
+// match it. The memory reads zero. Returns false when the range is not pages inside the stack region, overlaps a
+// mapping, the table is full or the linear memory cannot grow.
+export const NO_SOURCE: u64 = 0xFFFFFFFF00000000;
+export function hostStackMap(dst: u64, size: u64): bool {
+  if (!size || ((dst | size) & 0xFFF) || !contains(stackBase, stackCap, dst, size)) return false;
+  if (mapFind(dst, size) || nmap == MAX_MAP || !commit(dst + size)) return false;
+  memory.fill(<usize>dst, 0, <usize>size);
+  const p = mapP(nmap++);
+  store<u64>(p, dst); store<u64>(p, size, 8); store<u64>(p, NO_SOURCE + dst, 16);
+  return true;
+}
+
 // ---- alias pages ----
 function aliasUnmapped(off: u64, size: u64): u64 {
   let c: u64 = 0;

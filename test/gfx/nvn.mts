@@ -1,6 +1,6 @@
 // What a small game's graphics layer looks like, on the fake guest: every line is an NVN call through nvn_call
 // (Guest.call). Objects are allocated at the sizes NVN reserves for them (include/nvn.h), as a game's are.
-import { Guest } from "./guest.ts";
+import { Guest } from "./guest.mts";
 
 export const SIZEOF = { DEVICE: 0x3000, DEVICE_BUILDER: 0x40, QUEUE: 0x2000, QUEUE_BUILDER: 0x40, MEMORY_POOL: 0x100, MEMORY_POOL_BUILDER: 0x40, TEXTURE_POOL: 0x20, SAMPLER_POOL: 0x20,
   BUFFER: 0x30, BUFFER_BUILDER: 0x40, TEXTURE: 0xC0, TEXTURE_BUILDER: 0x80, TEXTURE_VIEW: 0x28, SAMPLER: 0x30, SAMPLER_BUILDER: 0x60, PROGRAM: 0xC0, SYNC: 0x40, WINDOW: 384, WINDOW_BUILDER: 0x40,

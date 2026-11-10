@@ -8,7 +8,7 @@ import {
   locTy, nLoc, regLocalRaw, resetLocals, newLocal, L_STATE, L_BUD,
   EV_R, EV_W, EV_WB, EV_RELOAD, evBuf, nEv, insPos, insKind, insMI, insMV, nIns, fbBase, overflow,
   rollback, blkPc, succ0, succ1, nBlk, setNBlk, setCurBlk, term, setTerm, gotoPc, emitTrap,
-  fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, beginFunction, FB_CAP,
+  fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, beginFunction, FB_CAP, optChunk, stateAt, S_DONE, S_ENTRY, codeLen, fnLimit,
 } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
@@ -321,10 +321,23 @@ export function translate(nEntries: i32): u32 {
   resetFns();
   setFnLimit(optMaxFuncs > nEntries ? optMaxFuncs : nEntries);
   for (let i = 0; i < nEntries; i++) addFn(load<u64>(entryPtr + (<usize>i << 3)), true);
+  if (optChunk != 0) {
+    // region mode: take along the untranslated BL targets of each entry's chunk
+    for (let i = 0; i < nEntries; i++) {
+      let e = load<u64>(entryPtr + (<usize>i << 3));
+      if (!inCode(e)) continue;
+      let lo = (e - codeBase) & ~(<u64>optChunk - 1), hi = lo + optChunk;
+      if (hi > <u64>codeLen) hi = codeLen;
+      for (let off = lo; off < hi && nFn < fnLimit; off += 4) {
+        if (load<u8>(stateAt(codeBase + off)) == S_ENTRY) addFn(codeBase + off, true);
+      }
+    }
+  }
   csP = csBase + HDR_MAX; unitInsns = 0;
   for (let f = 0; f < nFn; f++) {
     let ok = translateFunction(fnPc[f]);
     store<u8>(metaPtr + 8 + 4096 * 8 + f, ok ? 0 : 1);
+    if (ok) store<u8>(stateAt(fnPc[f]), load<u8>(stateAt(fnPc[f])) | S_DONE);
     if (!ok) stubFunction(fnPc[f]);
   }
   let codeEnd = csP;

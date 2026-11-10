@@ -1,7 +1,7 @@
 // The module the kit's tests drive (AssemblyScript): the kit's exports plus pools of instances.
 import { Inst } from "../../src/kit/machine";
 import { HomeQuit, hqBlocksInput } from "../../src/kit/home_quit";
-import { THREAD, ThreadE } from "../../src/kit/gen/tables";
+import { KTHREAD, KthreadE } from "../../src/kit/gen/tables";
 export * from "../../src/kit/exports";
 
 // ---- any machine: SLOTS instances ----
@@ -17,17 +17,17 @@ export function m_can(i: u32, ev: u32): i32 { return slot(i).can(<u8>ev) ? 1 : 0
 export function m_state(i: u32): u32 { return slot(i).state; }
 export function m_data(i: u32): u32 { return <u32>slot(i).data; }
 
-// n threads through Schedule and Yield, rounds times each: the hot path. Returns the number of accepted steps
+// n threads (the kernel's `kthread` machine) through Schedule and Yield, rounds times each: the hot path. Returns the number of accepted steps
 export function m_bench(n: u32, rounds: u32): u32 {
   let ok: u32 = 0;
   for (let i: u32 = 0; i < n; i++) {
     const t = slot(i);
-    t.init(THREAD, i); t.step(ThreadE.CreateThread); t.step(ThreadE.Start);
+    t.init(KTHREAD, i); t.step(KthreadE.Create); t.step(KthreadE.Start);
   }
   for (let r: u32 = 0; r < rounds; r++) {
     for (let i: u32 = 0; i < n; i++) {
       const t = slot(i);
-      ok += <u32>t.step(ThreadE.Schedule) + <u32>t.step(ThreadE.Yield);
+      ok += <u32>t.step(KthreadE.Schedule) + <u32>t.step(KthreadE.Yield);
     }
   }
   return ok;

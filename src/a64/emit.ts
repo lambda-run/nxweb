@@ -8,10 +8,11 @@ export let optPcmapBase: u32 = 0;   // linear-memory address of the pc map (u32 
 export let optCodeLo: u32 = 0;      // first guest address covered by the pc map
 export let optMapSize: u32 = 0;     // bytes covered by the pc map
 export let optMaxInsns: i32 = 1500; // function size cap
-export let optMaxFuncs: i32 = 48;   // functions per unit (entries + auto-added BL targets)
+export let optMaxFuncs: i32 = 1024; // functions per unit (entries + region entries + auto-added BL targets)
 export let optFma: bool = true;     // relaxed-simd fused multiply-add
 export let optTail: bool = true;    // wasm tail calls for jumps
 export let optNan: bool = true;     // ARM NaN generation/propagation fix-up on FP arithmetic
+export let optChunk: u32 = 65536;        // region mode: a unit also takes the untranslated BL targets in the entry's chunk (bytes, power of two; 0 = off)
 export let optDepth: i32 = 160;     // nested guest calls before a call unwinds through the run loop (0 = off)
 
 export function setOpt(id: i32, v: u32): void {
@@ -25,6 +26,7 @@ export function setOpt(id: i32, v: u32): void {
     case 6: optTail = v != 0; break;
     case 7: optNan = v != 0; break;
     case 8: optDepth = <i32>v; break;
+    case 9: optChunk = v; break;
   }
 }
 
@@ -36,6 +38,9 @@ export let codeLen: u32 = 0;
 let codeCap: u32 = 0;
 export let markPtr: usize = 0;   // u16 per insn: discovery flags + block index
 export let fnMarkPtr: usize = 0; // u16 per insn: unit function index + 1
+export let statePtr: usize = 0;  // u8 per insn, persistent: 1 = already translated (in the pc map), 2 = BL target
+export const S_DONE: u8 = 1;
+export const S_ENTRY: u8 = 2;
 
 export function codeBuf(len: u32): usize {
   if (len > codeCap) {
@@ -43,12 +48,35 @@ export function codeBuf(len: u32): usize {
     codePtr = heap.alloc(codeCap);
     markPtr = heap.alloc(codeCap >> 1);
     fnMarkPtr = heap.alloc(codeCap >> 1);
+    statePtr = heap.alloc(codeCap >> 2);
     memory.fill(markPtr, 0, codeCap >> 1);
     memory.fill(fnMarkPtr, 0, codeCap >> 1);
   }
   return codePtr;
 }
-export function setCode(base: u64, len: u32): void { codeBase = base; codeLen = len & ~3; }
+export function setCode(base: u64, len: u32): void {
+  codeBase = base; codeLen = len & ~3;
+  memory.fill(statePtr, 0, codeLen >> 2);
+  // every BL target is a function entry
+  for (let off: u32 = 0; off < codeLen; off += 4) {
+    let insn = load<u32>(codePtr + off);
+    if ((insn & 0xFC000000) == 0x94000000) {
+      let t = <i64>off + (<i64>((<i32>(insn << 6)) >> 6) << 2);
+      if (t >= 0 && t < <i64>codeLen) store<u8>(statePtr + <usize>(t >> 2), S_ENTRY);
+    }
+    // heuristics for functions only reached through pointers: code right after a RET, and
+    // aligned 8-byte words that point into the window
+    if (insn == 0xD65F03C0 && off + 8 <= codeLen && load<u32>(codePtr + off + 4) != 0) store<u8>(statePtr + ((off + 4) >> 2), S_ENTRY);
+    if ((off & 7) == 0 && off + 8 <= codeLen) {
+      let v = load<u64>(codePtr + off) - base;
+      if (v < <u64>codeLen && (v & 3) == 0 && load<u64>(codePtr + off) != 0) store<u8>(statePtr + <usize>(v >> 2), S_ENTRY);
+    }
+  }
+}
+// forget which pcs are translated (the glue cleared the pc map)
+export function resetDone(): void { for (let i: u32 = 0, n = codeLen >> 2; i < n; i++) store<u8>(statePtr + i, load<u8>(statePtr + i) & ~S_DONE); }
+// @ts-ignore
+@inline export function stateAt(pc: u64): usize { return statePtr + (<usize>(pc - codeBase) >> 2); }
 // @ts-ignore
 @inline export function inCode(pc: u64): bool { return pc - codeBase < <u64>codeLen && (pc & 3) == 0; }
 // @ts-ignore
@@ -363,6 +391,7 @@ export function addFn(pc: u64, force: bool): i32 {
     let m = load<u16>(p);
     if (m != 0) return <i32>m - 1;
     if (nFn >= (force ? FN_CAP : fnLimit)) return -1;
+    if (!force && (load<u8>(stateAt(pc)) & S_DONE) != 0) return -1;   // already has a translation: go through the pc map
     store<u16>(p, <u16>(nFn + 1));
   } else {
     if (!force) return -1;

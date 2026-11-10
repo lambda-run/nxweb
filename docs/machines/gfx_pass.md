@@ -33,7 +33,7 @@ stateDiagram-v2
     Open --> TargetsSet: Submit
 ```
 
-Machine id 5. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 4. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

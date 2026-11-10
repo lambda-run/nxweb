@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, guest, reference, pairs, ROOT, haveReference, NXNATIVE } from "./harness.mts";
-import { Game, SIZEOF, FMT, PRIM, STAGE } from "./nvn.ts";
+import { Game, SIZEOF, FMT, PRIM, STAGE } from "./nvn.mts";
 
 const mine = new Map<string, bigint>();
 for (const m of readFileSync(join(ROOT, "src/gfx/obj.ts"), "utf8").matchAll(/^export const (\w+): \w+ = (\w+);/gm)) mine.set(m[1], BigInt(m[2]));

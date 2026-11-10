@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>nxweb gfx scenes</title>
+<body style="font: 14px system-ui; margin: 2em">
+<p>nxweb graphics scenes: run by <code>npm run gfx:test</code>. Results below when opened by hand (needs WebGPU).</p>
+<pre id="out">running…</pre>
+<script type="module">
+import "/build/gfx/page.js";
+const r = await window.__gfx;
+document.getElementById("out").textContent = r.fatal ?? r.results.map(s => `${s.error ? "FAIL" : "ok  "} ${s.name} (${s.checks} checks, ${s.ms} ms)${s.error ? "\n" + s.error : ""}`).join("\n");
+</script>

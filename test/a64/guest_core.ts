@@ -2,11 +2,11 @@
 // through the translator per the contract's test ABI and compare stdout + exit code.
 import { A64Host } from "../../src/glue/a64_host.ts";
 
-export interface GuestOpts { budget: number; maxInsns: number; maxFuncs: number; fma: boolean; nanFix: boolean; tailCalls: boolean; depthLimit: number }
-export const defaultOpts: GuestOpts = { budget: 1 << 30, maxInsns: 1500, maxFuncs: 48, fma: true, nanFix: true, tailCalls: true, depthLimit: 160 };
+export interface GuestOpts { budget: number; maxInsns: number; maxFuncs: number; fma: boolean; nanFix: boolean; tailCalls: boolean; depthLimit: number; chunk: number }
+export const defaultOpts: GuestOpts = { budget: 1 << 30, maxInsns: 1500, maxFuncs: 1024, fma: true, nanFix: true, tailCalls: true, depthLimit: 160, chunk: 65536 };
 export interface Result {
   name: string; ok: boolean; why: string; insns: number; runMs: number; trMs: number; trOnlyMs: number; trInsns: number;
-  funcs: number; bytes: number; slices: number; tableLen: number;
+  funcs: number; bytes: number; slices: number; tableLen: number; modules?: number; maxModule?: number; trMem?: number;
 }
 
 function eq(a: Uint8Array, b: Uint8Array): boolean {
@@ -29,7 +29,7 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
   let fault = "";
   const host: A64Host = new A64Host(translator, helpers, {
     memory, pcmapBase, codeLo: base, mapSize, maxInsns: o.maxInsns, maxFuncs: o.maxFuncs, fma: o.fma, nanFix: o.nanFix,
-    tailCalls: o.tailCalls, depthLimit: o.depthLimit,
+    tailCalls: o.tailCalls, depthLimit: o.depthLimit, chunk: o.chunk,
     imports: {
       svc: (n: number) => {
         const c = host.core as any;
@@ -83,7 +83,7 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
   } else if (side.exit_code !== undefined && exitCode !== side.exit_code) why = `exit code ${exitCode}, expected ${side.exit_code}`;
   const trMs = host.translateNs / 1e6;
   return { name, ok: why === "", why, insns: side.insn_count ?? 0, runMs: total - trMs, trMs, trOnlyMs: host.translatorNs / 1e6,
-           trInsns: host.translatedInsns, funcs: host.translatedFuncs, bytes: host.moduleBytes, slices, tableLen: host.table.length };
+           trInsns: host.translatedInsns, funcs: host.translatedFuncs, bytes: host.moduleBytes, slices, tableLen: host.table.length, modules: host.modules, maxModule: host.maxModuleBytes, trMem: host.translatorMemoryBytes };
 }
 
 export function speedLine(r: Result): string {

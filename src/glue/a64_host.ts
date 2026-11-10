@@ -20,6 +20,7 @@ export interface A64Options {
   fma?: boolean;                // relaxed-simd fused multiply-add (default true)
   tailCalls?: boolean;          // wasm tail calls (default true)
   nanFix?: boolean;             // ARM NaN generation/propagation on FP arithmetic (default true)
+  chunk?: number;               // region mode: a unit also takes the untranslated BL targets in the same chunk of this many bytes (0 = off)
   depthLimit?: number;          // nested guest calls before a call unwinds through run() (default 160, 0 = off)
   // called by the index-0 trampoline when a pc has no translation yet; returns a table index.
   // Default: translate a unit starting at pc. Return A64Host.STOP to stop execution instead.
@@ -36,7 +37,7 @@ export interface CoreExports {
   [name: string]: unknown;
 }
 
-const OPT = { pcmapBase: 0, codeLo: 1, mapSize: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8 };
+const OPT = { pcmapBase: 0, codeLo: 1, mapSize: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8, chunk: 9 };
 
 export class A64Host {
   static readonly TRAMPOLINE = 0;
@@ -49,6 +50,8 @@ export class A64Host {
   translatedFuncs = 0;
   translatedInsns = 0;    // guest instructions translated
   moduleBytes = 0;
+  modules = 0;
+  maxModuleBytes = 0;
   private tr: any;
   private opts: A64Options;
   private unitImports: WebAssembly.Imports;
@@ -85,6 +88,7 @@ export class A64Host {
     if (o.tailCalls !== undefined) t.setOpt(OPT.tail, o.tailCalls ? 1 : 0);
     if (o.nanFix !== undefined) t.setOpt(OPT.nan, o.nanFix ? 1 : 0);
     if (o.depthLimit !== undefined) t.setOpt(OPT.depth, o.depthLimit);
+    if (o.chunk !== undefined) t.setOpt(OPT.chunk, o.chunk);
   }
 
   // give the translator the guest code bytes for [base, base + bytes.length)
@@ -127,13 +131,18 @@ export class A64Host {
     this.translatedFuncs += n;
     this.translatedInsns += dv.getUint32(meta + 4, true);
     this.moduleBytes += len;
+    this.modules++;
+    if (len > this.maxModuleBytes) this.maxModuleBytes = len;
     this.translateNs += (performance.now() - t0) * 1e6;
     return entries.map((_, i) => base + i);
   }
+
+  get translatorMemoryBytes(): number { return this.tr.memory.buffer.byteLength; }
 
   // forget every translation (the table slots are simply abandoned)
   invalidate(): void {
     const { mapSize, pcmapBase } = this.opts;
     new Uint8Array(this.memory.buffer, pcmapBase, mapSize).fill(0);
+    this.tr.resetDone();
   }
 }

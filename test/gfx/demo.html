@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>nxweb gfx demo: NVN recorded, WebGPU replayed</title>
+<style>
+  body { background: #101216; color: #cfd6e4; font: 14px/1.5 system-ui, sans-serif; margin: 24px; }
+  canvas { display: block; width: 640px; height: 400px; border: 1px solid #2a3140; }
+  code { color: #9fc1ff; }
+</style>
+<h3>nxweb graphics: a spinning textured cube</h3>
+<canvas id="canvas" width="640" height="400"></canvas>
+<p id="status"></p>
+<p>Every frame a fake guest calls NVN (<code>nvn_call</code>): it records commands into its command memory, submits and presents.
+The recorder (AssemblyScript) lowers them to render passes; the replayer (TypeScript) issues the WebGPU calls and blits the window texture to this canvas.
+Start with <code>npm run gfx:demo</code>.</p>
+<script type="module" src="/build/gfx/demo.js"></script>

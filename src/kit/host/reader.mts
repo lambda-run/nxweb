@@ -50,7 +50,7 @@ export function readMachines(x: KitExports): WasmMachine[] {
   return out;
 }
 
-// One trace record as text: "thread#3 Running -Yield-> Runnable" or "thread#3 Exited x Start (refused: no transition)"
+// One trace record as text: "kthread#3 Running -Yield-> Runnable" or "kthread#3 Exited x Start (refused: no transition)"
 export function formatRecord(r: TraceRecord, machines: WasmMachine[]): string {
   const m = machines[r.machine];
   if (!m) return `machine${r.machine}#${r.instance} ${r.from} -${r.event}-> ${r.to}`;

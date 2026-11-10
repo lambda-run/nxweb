@@ -1,13 +1,12 @@
 // Node side of the graphics tests: builds the recorder (build/gfx/gfx.wasm), the reference values compiled from
-// nxnative's own headers, and gives a fake guest (guest.ts) whose host stream goes nowhere, for everything that
+// nxnative's own headers, and gives a fake guest (guest.mts) whose host stream goes nowhere, for everything that
 // needs no GPU: layouts, record sizes, recording behaviour, lookup.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { check } from "../../src/kit/host/gen.mts";
-import { generate, OUT as NAMES_OUT } from "../../src/gfx/host/gen_names.mts";
-import { Guest } from "./guest.ts";
+import { build } from "../../src/gfx/host/build.mts";
+import { Guest } from "./guest.mts";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const OUT = join(ROOT, "build", "gfx");
@@ -15,15 +14,7 @@ export const WASM = join(OUT, "gfx.wasm");
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 const NVN_DIR = join(NXNATIVE, "dm", "gfx", "nvn");
 
-export function buildWasm(): void {
-  const stale = check();
-  if (stale.length) throw new Error(stale.map(b => `[RED] gfx: ${b} (run \`npm run kit:diagrams\`)`).join("\n"));
-  const g = generate();
-  if (!existsSync(NAMES_OUT) || readFileSync(NAMES_OUT, "utf8") !== g.source) writeFileSync(NAMES_OUT, g.source);
-  mkdirSync(OUT, { recursive: true });
-  execFileSync(process.execPath, [join(ROOT, "node_modules", "assemblyscript", "bin", "asc.js"), "src/gfx/index.ts", "-o", "build/gfx/gfx.wasm", "--runtime", "stub", "-O2",
-    "--importMemory", "--memoryBase", "65536"], { cwd: ROOT, stdio: "inherit" });
-}
+export function buildWasm(): void { build(); }
 // name=value lines printed by a C program compiled against nxnative's headers
 export function reference(src: string, extra: string[] = [], input?: string): string {
   const exe = join(OUT, src.replace(/\.c$/, ""));

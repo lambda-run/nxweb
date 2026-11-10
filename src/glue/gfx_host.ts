@@ -96,7 +96,7 @@ export class GfxHost {
       this.canvasFormat = (globalThis as any).navigator.gpu.getPreferredCanvasFormat();
       this.context.configure({ device, format: this.canvasFormat, alphaMode: "opaque" });
     }
-    device.addEventListener?.("uncapturederror", (e: any) => { this.stats.errors++; this.log(`[RED] WebGPU: ${e.error?.message ?? e}`); });
+    device.onuncapturederror = (e: any) => { this.stats.errors++; this.log(`[RED] WebGPU: ${String(e.error?.message ?? e).split("\n")[0]}`); };
   }
 
   // The recorder's imports that belong to the replayer; the embedder adds env.log, env.gfx_guest_call, env.gfx_proc_address

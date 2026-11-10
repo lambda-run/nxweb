@@ -158,6 +158,19 @@ export function kernel_module_remove(base: u64): i32 { kLock(); const r = mem.mo
 // Guest memory a device maps (share != 0) or no longer maps: it is not unmapped while registered
 export function kernel_device_share(addr: u64, size: u64, share: i32): void { kLock(); mem.deviceShare(addr, size, share != 0); kUnlock(); }
 
+// A stack for a thread the embedder starts itself (the main thread): [base, base + size) in the stack region becomes
+// a mapped stack (QueryMemory: state 0xB, read/write) of zeroes. 1 = mapped, 0 = refused.
+export function kernel_map_stack(base: u64, size: u64): i32 { kLock(); const r = mem.hostStackMap(base, size); kUnlock(); return r ? 1 : 0; }
+// svcQueryMemory for the embedder (fault reports, stack checks): the segment around addr.
+// out (32 bytes): +0 base u64, +8 size u64, +16 state u32, +20 attribute u32, +24 permission u32
+export function kernel_query_memory(addr: u64, out: usize): void {
+  kLock();
+  mem.queryMemory(addr);
+  store<u64>(out, mem.qBase, 0); store<u64>(out, mem.qSize, 8);
+  store<u32>(out, mem.qState, 16); store<u32>(out, mem.qAttr, 20); store<u32>(out, mem.qPerm, 24); store<u32>(out, 0, 28);
+  kUnlock();
+}
+
 // ---- events for the embedder's services ----
 // A new kernel event: returns its readable handle; its writable handle is stored (u32) at writeOut unless that is 0
 export function kernel_event_new(writeOut: usize): u32 { kLock(); const r = hostEventNew(writeOut); kUnlock(); return r; }
