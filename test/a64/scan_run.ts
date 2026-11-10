@@ -84,9 +84,10 @@ await test("the answer is the decoder's: words the translator translates and wor
     0x1EE22820 /* fadd h0, h1, h2 */, 0x1FC20C20 /* fmadd h0, h1, h2, h3 */, 0x1EE22020 /* fcmp h1, h2 */, 0x1EE70020 /* fmov h0, w1 */,
     0x1EF80020 /* fcvtzs w0, h1 */, 0x4E421420 /* fadd v0.8h, v1.8h, v2.8h */, 0x0E420C20 /* fmla v0.4h, v1.4h, v2.4h */,
     0x6EF9F820 /* fsqrt v0.8h, v1.8h */, 0x4F121020 /* fmla v0.8h, v1.8h, v2.h[1] */, 0x0E30C820 /* fmaxnmv h0, v1.4h */,
-    0x4E22EC20 /* fmlal v0.4s, v1.4h, v2.4h */, 0x2F82C020 /* fmlsl2 v0.2s, v1.2h, v2.h[0] */];
+    0x4E22EC20 /* fmlal v0.4s, v1.4h, v2.4h */, 0x2F82C020 /* fmlsl2 v0.2s, v1.2h, v2.h[0] */,
+    0x4E829420 /* sdot v0.4s, v1.16b, v2.16b */, 0x2E829484 /* udot v4.2s */, 0x6FB1E820 /* udot v0.4s, v1.16b, v17.4b[3] */, 0x0FA2E023 /* sdot v3.2s, .., v2.4b[1] */];
   const fp16Rejected = [0x1EE2B820 /* fp16 2-source opcode 11 */, 0x0EC01C20 /* fp16 three-same U0 a1 opc 3 */];
-  const no = [SVE1, ERETAA, HVC, MRS_SCTLR, UDF, JUNK, 0xCE608000 /* sha512h */];
+  const no = [SVE1, ERETAA, HVC, MRS_SCTLR, UDF, JUNK, 0xCE608000 /* sha512h */, 0x4E429420 /* dot with size 01 */, 0x0F62E023 /* dot by element, size 01 */];
   for (const w of yes) if (!scanner.implemented(w)) throw new Error(`0x${w.toString(16)} is said not to be implemented`);
   for (const w of no) if (scanner.implemented(w)) throw new Error(`0x${w.toString(16)} is said to be implemented`);
   for (const w of fp16Rejected) if (scanner.implemented(w)) throw new Error(`0x${w.toString(16)} (unallocated) is said to be implemented`);
