@@ -704,7 +704,7 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 | `load` | the loader or the kernel refused a file | none |
 | `host` | an exception in glue or in a host function | last written back |
 
-## Verified (`npm run rt:test`: 55 tests under Node; `npm run rt:browser`: 66 in Chromium)
+## Verified (`npm run rt:test`: 58 tests under Node; `npm run rt:browser`: 69 in Chromium)
 
 Large module files (`more_cases.ts`, `large_nso.ts`, `src/large.c`; Node and Chromium): a synthetic NSO of 41.6 MB
 made in the test (text and 24 MB of data LZ4 compressed, 40 MB of read-only data stored, three hashes checked,
@@ -731,7 +731,16 @@ New in the integration round (`test/runtime/int_cases.ts` and the cases named):
   budgets 100000 and 50, identical slices, units and clock on a second run; pointers into host static data read under
   the guard; the wall clock (60 buffers in 0.30 s). Audio in Chromium: the same guest with the page's AudioContext and
   AudioWorklet (`sab` transport): about 3 s of 440 Hz at amplitude 0.5 reach the device, fitted sine above 60 dB, no
-  gap, no device underrun (waived, and said, when the run loop came back more than 25 ms late).
+  gap, no device underrun (waived, and said, when the run loop came back more than 25 ms late). The test browsers
+  play through Chromium's fake output stream (`--disable-audio-output`; `RT_BROWSER_AUDIO=device` for the system's):
+  on this machine (no sound device, a PulseAudio server with a null sink) every new output stream through PulseAudio
+  plays about 3 quanta, then calls back no more for about 1.9 s, then 375 a second (a bare worklet, no nxweb code, a
+  fresh context each time: 400 quanta in 3 s where 1125 are due, the first report after 1947 ms; a context opened while
+  the stream is still up does not stall, one opened 5 s after the last one closed stalls again; the fake stream: 1128
+  quanta, the first report after 1 to 2 ms, every time). The tone case and the page's audio demo met it every run:
+  Live, then the module's stall watchdog (no callback for 200 ms) moved the output to the silent sink, retried 1 s
+  later, about 1.2 of the 3 s reached the device, and the page test failed on the watchdog's red line. The module did
+  what it is for; the tests were measuring the system's output stream.
 - Audio renderer (`audren.c` and its stand-in SDK `ren_sdk.h`): the host's take-overs open the guest SDK's renderer
   for CPU / manual rendering and run it from a render thread the SDK starts for them; two voices come out at the sink
   as the expected signal sample for sample, one block per 5 ms of guest time; the wave buffers come back consumed;
@@ -833,7 +842,9 @@ Earlier:
   same hash on a second run, a different one with `4:Right~6` (twice the same) and another with the left stick.
   `build/runtime/cube.png`, `triangle.png`, `cube_turned.png` are the presented textures read back.
 - Wall clock with `requestAnimationFrame`: 40 frames at the display rate, the run loop busy about 5 % of the time,
-  the Worker's event loop serving timers meanwhile.
+  the Worker's event loop serving timers meanwhile; each of the 39 acquires after the first parked for its display
+  frame or counted late (`acquireLate`: the frame before it took past its slot, so it is not held), at most 4 late.
+  The test used to want exactly 39 parked and failed once on 38 (one slow SwiftShader frame).
 - The page: opened in Chromium, demo started by a click, `Running`, frames advancing, ArrowRight seen in the pad
   readout, Pause (frames stop), Resume, Stop (`Stopped`, killed); then started and stopped five more times without
   a reload (take-over table, file system on OPFS and shader lookup attached each time), the later runs starting
