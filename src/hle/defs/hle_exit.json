@@ -1,0 +1,17 @@
+{
+  "id": 0,
+  "name": "hle_exit",
+  "doc": "The exit path of the process as the take-overs see it (port of nxnative hle_lifecycle.c dm_host_shutdown_then, and its callers: SIGTERM / the front end, oe::ExecuteProgram, nn::diag aborts). The first request wins and carries its reason; later ones change nothing. Exiting: the embedder was told (import hle_exit_request) and is stopping audio, graphics and the run loop; Done when it reports back (hle_exit_done).",
+  "states": ["Running", "Exiting", "Exited"],
+  "initial": "Running",
+  "final": ["Exited"],
+  "data": {
+    "Exiting": { "name": "reason", "values": ["hostShutdown", "executeProgram", "abort"] },
+    "Exited": { "name": "reason", "values": ["hostShutdown", "executeProgram", "abort"] }
+  },
+  "events": ["Request", "Done"],
+  "transitions": [
+    ["Running", "Request", "Exiting"],
+    ["Exiting", "Done", "Exited"]
+  ]
+}

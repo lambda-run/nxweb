@@ -223,7 +223,7 @@ test("the kernel's machines never refuse an event in any of the scenarios above 
 test("the embedder's entries: a counter read that waits without touching x0 / x1, CloseHandle for host events, kill", () => {
   const k = new Kernel(), m = k.main, x = k.x as any;
   k.tick(1_000_000_000);
-  m.setX(0, 0x1111); m.setX(1, 0x2222);
+  k.run(m); m.setX(0, 0x1111); m.setX(1, 0x2222);
   assert.equal(x.kernel_clock_wait(m.ctx), ACT.CONTINUE, "the clock runs: no wait");
   k.x.kernel_clock_freeze(1, 1);
   assert.equal(x.kernel_clock_wait(m.ctx), ACT.SWITCH);
@@ -231,7 +231,6 @@ test("the embedder's entries: a counter read that waits without touching x0 / x1
   k.x.kernel_clock_freeze(1, 0);
   assert.equal(m.state, "Runnable");
   assert.deepEqual([m.x(0), m.x(1)], [0x1111n, 0x2222n], "the wake wrote no result");
-  assert.equal(k.schedule(), m);
   k.x.kernel_clock_freeze(1, 1);
   assert.equal(k.svc(m, 0x1E), ACT.SWITCH);
   k.x.kernel_clock_freeze(1, 0);
@@ -247,12 +246,12 @@ test("the embedder's entries: a counter read that waits without touching x0 / x1
   assert.equal(x.kernel_handle_close(0x1FFF), 0);
   // kill: as ExitProcess, by the embedder
   const t = k.thread(44, 1);
-  assert.equal(k.count("threads"), 2);
+  assert.equal(k.count("alive"), 2);
   x.kernel_kill();
   assert.equal(k.x.kernel_stop_reason(), 3);
-  assert.equal(k.count("threads"), 0);
+  assert.equal(k.count("alive"), 0);
   assert.equal(k.schedule(), null);
-  assert.equal(k.svc(t, 0x0B, 0), ACT.STOP);
+  assert.equal(k.x.kernel_svc(0x0B, t.ctx), ACT.STOP);
   x.kernel_kill();
   k.check();
 });

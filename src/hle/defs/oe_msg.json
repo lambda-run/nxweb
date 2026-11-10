@@ -1,0 +1,13 @@
+{
+  "id": 0,
+  "name": "oe_msg",
+  "doc": "One coalescing kind of nn::oe notification (port of nxnative hle_oe.c mq_push_). Three instances: 15 focus change, 30 operation mode change, 31 performance mode change. These only say \"query the current state\", so while one is queued and not yet popped a second Post keeps the first queue position and adds nothing. Other message numbers are per-occurrence and go to the ring without a machine.",
+  "states": ["Idle", "Queued"],
+  "initial": "Idle",
+  "events": ["Post", "Pop"],
+  "transitions": [
+    ["Idle", "Post", "Queued"],
+    ["Queued", "Post", "Queued"],
+    ["Queued", "Pop", "Idle"]
+  ]
+}

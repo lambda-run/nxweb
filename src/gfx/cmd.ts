@@ -256,10 +256,10 @@ export function bindTexture(c: usize, st: i32, slot: i32, h: u64): void {
   const r = rec(c, O.OP_BIND_TEX1, O.P_BIND_TEX1_tbase);
   if (r) { store<i32>(r, st | O.BIND_TEX1_NOBASE); store<i32>(r, slot, 4); store<u64>(r, h, 8); }
 }
-export function bindTextures(c: usize, st: i32, first: i32, n: i32, h: usize): void {
+export function bindTextures(c: usize, st: i32, first: i32, n: i32, h: usize, op: u32 = O.OP_BIND_TEX): void {
   st = stHost(st);
   if (n < 0 || n > 32) { L.red("bind handle count "); L.i(n); L.end(); return; }
-  const r = rec(c, O.OP_BIND_TEX, O.P_BIND_HANDLES_h + (<usize>n << 3));
+  const r = rec(c, op, O.P_BIND_HANDLES_h + (<usize>n << 3));
   if (!r) return;
   store<i32>(r, st); store<i32>(r, first, 4); store<i32>(r, n, 8);
   const tb = <u64>load<i32>(c, O.CMD_tex_base), sb = <u64>load<i32>(c, O.CMD_samp_base);
@@ -339,4 +339,29 @@ export function drawArraysIndirect(c: usize, prim: i32, ind: u64, cnt: u64, i: i
 export function drawElementsIndirect(c: usize, prim: i32, itype: i32, ibuf: u64, ind: u64, cnt: u64, i: i32): void {
   const r = rec(c, O.OP_DRAW_IDX, O.P_DRAW_IDX_SIZE);
   if (r) { store<i32>(r, prim); store<i32>(r, itype, 4); store<i32>(r, 1, 20); store<u64>(r, ibuf, 24); store<u64>(r, ind, O.P_DRAW_IDX_ind); store<u64>(r, cnt, O.P_DRAW_IDX_ind + 8); store<i32>(r, i, O.P_DRAW_IDX_ind + 16); }
+}
+
+// Storage buffers (the UBO record's long form), images (texture handles: the same record as BindTextures), compute dispatch, depth clamp
+export function bindStorageBuffer(c: usize, st: i32, i: i32, addr: u64, n: u64): void {
+  st = stHost(st);
+  if (<u32>i >= 16) { L.red("storage buffer bound at slot "); L.i(i); L.str(": the host keeps 16 a stage, the bind is dropped"); L.end(); return; }
+  const r = rec(c, O.OP_BIND_SSBO, O.P_BIND_BUF_SIZE);
+  if (r) { store<i32>(r, st); store<i32>(r, i, 4); store<u64>(r, addr, 8); store<u64>(r, n, 16); }
+}
+// ind != 0: DispatchComputeIndirect, the three group counts are read from that address at submit
+export function dispatch(c: usize, x: i32, y: i32, z: i32, ind: u64): void {
+  const r = rec(c, O.OP_DISPATCH, O.P_DISPATCH_SIZE);
+  if (r) { store<i32>(r, x); store<i32>(r, y, 4); store<i32>(r, z, 8); store<u64>(r, ind, O.P_DISPATCH_ind); }
+}
+export function depthClamp(c: usize, on: bool): void { const r = rec(c, O.OP_DEPTH_CLAMP, 4); if (r) store<i32>(r, on ? 1 : 0); }
+// Downsample: a multisample resolve of the whole texture, recorded as a texture copy with COPY_RESOLVE (as nxnative)
+export function downsample(c: usize, s: usize, sv: usize, d: usize, dv: usize): void {
+  const r = rec(c, O.OP_COPY_T2T, snapOff(O.P_COPY_T2T_SIZE) + 2 * O.TEX_SIZE);
+  if (!r) return;
+  const ss = <usize>texSnap(r, snapOff(O.P_COPY_T2T_SIZE), 0, s), ds = <usize>texSnap(r, snapOff(O.P_COPY_T2T_SIZE), 1, d);
+  store<u64>(r, ss, O.P_COPY_T2T_src); store<u64>(r, ds, O.P_COPY_T2T_dst);
+  copyView(r + O.P_COPY_T2T_sv, r + O.P_COPY_T2T_has_sv, sv); copyView(r + O.P_COPY_T2T_dv, r + O.P_COPY_T2T_has_dv, dv);
+  if (s) { store<i32>(r, load<i32>(s, O.TEX_d + O.TD_width), O.P_COPY_T2T_sr + 12); store<i32>(r, load<i32>(s, O.TEX_d + O.TD_height), O.P_COPY_T2T_sr + 16); store<i32>(r, 1, O.P_COPY_T2T_sr + 20); }
+  if (d) { store<i32>(r, load<i32>(d, O.TEX_d + O.TD_width), O.P_COPY_T2T_dr + 12); store<i32>(r, load<i32>(d, O.TEX_d + O.TD_height), O.P_COPY_T2T_dr + 16); store<i32>(r, 1, O.P_COPY_T2T_dr + 20); }
+  store<i32>(r, O.COPY_RESOLVE, O.P_COPY_T2T_flags);
 }

@@ -1,0 +1,19 @@
+{
+  "id": 0,
+  "name": "web_session",
+  "doc": "The one offline HTML page of nn::web (port of nxnative hle_web.c g_web_state: 0 none, 1 started, 2 shown, 3 ended). Start replaces whatever was there. Ended: the exit event is signalled and WaitForExit takes the result (Return). Return from Started is the synchronous form giving up when no page could be shown.",
+  "states": ["None", "Started", "Shown", "Ended"],
+  "initial": "None",
+  "events": ["Start", "Show", "End", "Return"],
+  "transitions": [
+    ["None", "Start", "Started"],
+    ["Started", "Start", "Started"],
+    ["Shown", "Start", "Started"],
+    ["Ended", "Start", "Started"],
+    ["Started", "Show", "Shown"],
+    ["Started", "End", "Ended"],
+    ["Shown", "End", "Ended"],
+    ["Ended", "Return", "None"],
+    ["Started", "Return", "None"]
+  ]
+}

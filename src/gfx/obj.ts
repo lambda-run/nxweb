@@ -382,6 +382,10 @@ export const P_COPY_T2T_flags: usize = 100;
 export const P_COPY_T2T_SIZE: usize = 104;
 export const P_BLEND_COLOR_SIZE: usize = 16;
 export const P_SET_POOL_SIZE: usize = 8;
+export const P_DISPATCH_caller: usize = 16;
+export const P_DISPATCH_ind: usize = 24;
+export const P_DISPATCH_SIZE: usize = 32;
+export const COPY_RESOLVE: i32 = 0x40000000;   // host-only bit in a texture copy's flags: a Downsample (nxnative DM_COPY_RESOLVE)
 
 // NVN enums the module decides by (include/nvn.h)
 export const TEXF_LINEAR: i32 = 0x10;

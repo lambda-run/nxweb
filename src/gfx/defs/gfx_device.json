@@ -1,0 +1,12 @@
+{
+  "name": "gfx_device",
+  "doc": "The host GPU device (GPUDevice) as the recorder knows it (src/gfx/device.ts). Lose: the replayer saw GPUDevice.lost; submissions are still lowered, the replayer executes them against the dead device (nothing is drawn), fences complete. Restore: the embedder gave the replayer a new device: host textures, pipelines and buffers are made again from guest state (gfx_texture Lost, gfx_pipeline Reset). A device lost again before it is restored stays Lost.",
+  "states": ["Live", "Lost"],
+  "initial": "Live",
+  "events": ["Lose", "Restore"],
+  "transitions": [
+    ["Live", "Lose", "Lost"],
+    ["Lost", "Lose", "Lost"],
+    ["Lost", "Restore", "Live"]
+  ]
+}

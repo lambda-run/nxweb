@@ -1,0 +1,16 @@
+{
+  "id": 0,
+  "name": "oe_focus",
+  "doc": "nn::oe focus state (port of nxnative dm/host/hle_oe.c: g_focus and g_seen). Two instances: #0 is what the front end reported (dm_focus_set), #1 is what the game sees (GetCurrentFocusState), which is OutOfFocus while a library applet is open over a front end that is InFocus. The state's number + 1 is the SDK's FocusState (1 InFocus, 2 OutOfFocus, 3 Background). A change of instance #1 is one notification 15 when the game's focus handling mode asks for them. The guard is focusSync in src/hle/oe.ts.",
+  "states": ["InFocus", "OutOfFocus", "Background"],
+  "initial": "InFocus",
+  "events": ["ToInFocus", "ToOutOfFocus", "ToBackground"],
+  "transitions": [
+    ["InFocus", "ToOutOfFocus", "OutOfFocus"],
+    ["InFocus", "ToBackground", "Background"],
+    ["OutOfFocus", "ToInFocus", "InFocus"],
+    ["OutOfFocus", "ToBackground", "Background"],
+    ["Background", "ToInFocus", "InFocus"],
+    ["Background", "ToOutOfFocus", "OutOfFocus"]
+  ]
+}

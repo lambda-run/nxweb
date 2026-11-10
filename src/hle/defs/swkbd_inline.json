@@ -1,0 +1,17 @@
+{
+  "id": 0,
+  "name": "swkbd_inline",
+  "doc": "One nn::swkbd::InlineKeyboard (port of nxnative hle_swkbd.c g_ikb[].state and .pending). Unstarted: Calc returns 0 until the Calc after Initialize. Hidden: Calc returns 1. Shown: Appear armed a request, Calc returns 3; the next Calc asks for the text. Asking: that Calc waits for the embedder's answer (nxnative blocks in the input box here); it then calls the game's callbacks and the keyboard is Hidden.",
+  "states": ["Unstarted", "Hidden", "Shown", "Asking"],
+  "initial": "Unstarted",
+  "events": ["InitDone", "Appear", "Disappear", "Ask", "Decided"],
+  "transitions": [
+    ["Unstarted", "InitDone", "Hidden"],
+    ["Unstarted", "Appear", "Shown"],
+    ["Hidden", "Appear", "Shown"],
+    ["Shown", "Appear", "Shown"],
+    ["Shown", "Disappear", "Hidden"],
+    ["Shown", "Ask", "Asking"],
+    ["Asking", "Decided", "Hidden"]
+  ]
+}

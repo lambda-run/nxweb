@@ -1,13 +1,15 @@
 {
   "name": "gfx_pipeline",
-  "doc": "One entry of the render pipeline cache (src/gfx/pipeline.ts). The key is program + vertex layout + blend, depth-stencil and raster state + target formats. Request is the first draw that needs the key: the replayer starts createRenderPipelineAsync and reports Built or Error (gfx_pipeline_done). A draw in Building is still issued: the replayer creates the pipeline synchronously for it. A draw in Failed is skipped.",
+  "doc": "One entry of the render pipeline cache (src/gfx/pipeline.ts). The key is program + vertex layout + blend, depth-stencil and raster state + target formats. Request is the first draw that needs the key: the replayer starts createRenderPipelineAsync and reports Built or Error (gfx_pipeline_done). A draw in Building is still issued: the replayer creates the pipeline synchronously for it. A draw in Failed is skipped. Compute pipelines (one shader) use the same cache. Reset is the GPU device having been lost and replaced: every pipeline is requested again from the new device.",
   "states": ["Missing", "Building", "Ready", "Failed"],
   "initial": "Missing",
-  "final": ["Ready", "Failed"],
-  "events": ["Request", "Built", "Error"],
+  "events": ["Request", "Built", "Error", "Reset"],
   "transitions": [
     ["Missing", "Request", "Building"],
     ["Building", "Built", "Ready"],
-    ["Building", "Error", "Failed"]
+    ["Building", "Error", "Failed"],
+    ["Building", "Reset", "Building"],
+    ["Ready", "Reset", "Building"],
+    ["Failed", "Reset", "Building"]
   ]
 }

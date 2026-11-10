@@ -1,0 +1,16 @@
+{
+  "id": 0,
+  "name": "swkbd_request",
+  "doc": "One request for text to the embedder's input box (what nxnative's front_text_input blocks in, hle_swkbd.c). Ask: the import hle_text_request was called. Answer: the embedder called hle_text_answer (inside the import or any time later) with 1 OK, 2 cancel or 3 no window. Take: the take-over that asked read the answer. One request at a time, as one applet.",
+  "states": ["Idle", "Asking", "Answered"],
+  "initial": "Idle",
+  "data": {
+    "Answered": { "name": "result", "values": ["ok", "cancel", "noWindow"] }
+  },
+  "events": ["Ask", "Answer", "Take"],
+  "transitions": [
+    ["Idle", "Ask", "Asking"],
+    ["Asking", "Answer", "Answered"],
+    ["Answered", "Take", "Idle"]
+  ]
+}

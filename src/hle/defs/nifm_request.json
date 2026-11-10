@@ -1,0 +1,14 @@
+{
+  "id": 0,
+  "name": "nifm_request",
+  "doc": "The one nn::nifm network request of an offline console (port of nxnative hle_net.c g_nifm_hold): SubmitNetworkRequest puts it on hold, the first IsNetworkRequestOnHold after that still answers true and settles it (as unavailable), CancelNetworkRequest drops it. Idle is both \"none\" and \"settled\".",
+  "states": ["Idle", "OnHold"],
+  "initial": "Idle",
+  "events": ["Submit", "Query", "Cancel"],
+  "transitions": [
+    ["Idle", "Submit", "OnHold"],
+    ["OnHold", "Submit", "OnHold"],
+    ["OnHold", "Query", "Idle"],
+    ["OnHold", "Cancel", "Idle"]
+  ]
+}

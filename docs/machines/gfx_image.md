@@ -16,7 +16,7 @@ stateDiagram-v2
     OnScreen --> Free: Retire
 ```
 
-Machine id 9. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 10. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

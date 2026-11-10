@@ -1,13 +1,10 @@
 {
   "name": "gfx_sync",
-  "doc": "An NVN sync object, kept inside the guest's NVNsync (src/gfx/sync.ts; nxnative sync_t.fenced and fence). The pending states carry the fence number they wait for: PendingFence from nvnQueueFenceSync, PendingAcquire from nvnWindowAcquireTexture. Complete is nvnSyncWait finding the fence done (gfx_fence_done). A fenced sync is fenced again through Reset.",
-  "states": ["Unfenced", "PendingFence", "PendingAcquire", "Signaled"],
+  "doc": "An NVN sync object, kept inside the guest's NVNsync (src/gfx/sync.ts; nxnative sync_t.fenced and fence). The pending states carry the fence number they wait for: PendingFence from nvnQueueFenceSync, PendingAcquire from nvnWindowAcquireTexture. Complete is nvnSyncWait finding the fence done (gfx_fence_done). A fenced sync is fenced again through Reset. Parked: nvnSyncWait with a non-zero timeout found the fence not done; the recorder never blocks, it returns TIMEOUT_EXPIRED and the embedder parks the thread (src/gfx/README.md, nvnSyncWait). The call made again after the park is Wake (the fence is done: CONDITION_SATISFIED) or, with timeout 0, Expire (TIMEOUT_EXPIRED).",
+  "states": ["Unfenced", "PendingFence", "PendingAcquire", "Signaled", "Parked"],
   "initial": "Unfenced",
-  "data": {
-    "PendingFence": { "name": "fence", "type": "fence number" },
-    "PendingAcquire": { "name": "fence", "type": "fence number" }
-  },
-  "events": ["Fence", "Acquire", "Complete", "Reset"],
+  "data": {"PendingFence": {"name": "fence", "type": "fence number"}, "PendingAcquire": {"name": "fence", "type": "fence number"}, "Parked": {"name": "fence", "type": "fence number"}},
+  "events": ["Fence", "Acquire", "Complete", "Reset", "Park", "Wake", "Expire"],
   "transitions": [
     ["Unfenced", "Fence", "PendingFence"],
     ["Unfenced", "Acquire", "PendingAcquire"],
@@ -15,6 +12,12 @@
     ["PendingAcquire", "Complete", "Signaled"],
     ["PendingFence", "Reset", "Unfenced"],
     ["PendingAcquire", "Reset", "Unfenced"],
-    ["Signaled", "Reset", "Unfenced"]
+    ["Signaled", "Reset", "Unfenced"],
+    ["PendingFence", "Park", "Parked"],
+    ["PendingAcquire", "Park", "Parked"],
+    ["Parked", "Park", "Parked"],
+    ["Parked", "Wake", "Signaled"],
+    ["Parked", "Expire", "PendingFence"],
+    ["Parked", "Reset", "Unfenced"]
   ]
 }

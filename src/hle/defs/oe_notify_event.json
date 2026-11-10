@@ -1,0 +1,15 @@
+{
+  "id": 0,
+  "name": "oe_notify_event",
+  "doc": "The event nn::oe::GetNotificationMessageEvent hands out (port of nxnative hle_oe.c g_mq_ev / mq_ev_sync): bound once, on the first call, then it follows the queue as the am service's does: signalled while a notification is queued, cleared when the last one is popped (also a pop that found the queue empty clears a signal left behind). Before it is bound nothing is signalled.",
+  "states": ["Unbound", "Clear", "Signaled"],
+  "initial": "Unbound",
+  "events": ["Bind", "QueueHolds", "QueueEmpty"],
+  "transitions": [
+    ["Unbound", "Bind", "Clear"],
+    ["Clear", "QueueHolds", "Signaled"],
+    ["Signaled", "QueueHolds", "Signaled"],
+    ["Signaled", "QueueEmpty", "Clear"],
+    ["Clear", "QueueEmpty", "Clear"]
+  ]
+}

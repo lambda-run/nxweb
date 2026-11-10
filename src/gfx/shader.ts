@@ -14,17 +14,22 @@ import { PROG_nstage, PROG_sd, PROG_serial } from "./obj";
 import { progEntry, PE_ok, PE_key, PE_shader } from "./tables";
 import { arenaAlloc } from "./arena";
 
-// Reflection record (32 bytes), as the embedder passes it
-export const RF_stage: usize = 0;       // u32: 0 vertex, 1 fragment
-export const RF_ubo: usize = 4;         // u32: bit i = uniform buffer binding i of this stage is read
+// Reflection record (144 bytes), as the embedder passes it (GfxHost.registerShader fills it from the shader chain's record)
+export const RF_stage: usize = 0;       // u32: 0 vertex, 1 fragment, 2 compute
+export const RF_ubo: usize = 4;         // u32: bit i = uniform buffer binding i of this stage is read (0..13 the game's slots, 14 the translator's support buffer)
 export const RF_tex: usize = 8;         // u32: bit s = texture slot s of this stage is sampled
 export const RF_io: usize = 12;         // u32: vertex: attribute locations read; fragment: colour outputs written
-export const RF_dim: usize = 16;        // u64: 2 bits a slot: 0 2D, 1 2D array, 2 cube, 3 3D
-export const RF_depth: usize = 24;      // u32: bit s = slot s is a depth (comparison) texture
-export const RF_SIZE: usize = 32;
-
+export const RF_depth: usize = 16;      // u32: bit s = slot s is a depth (comparison) texture
+export const RF_ssbo: usize = 20;       // u32: bit i = storage buffer i of this stage is used
+export const RF_ssbo_w: usize = 24;     // u32: bit i = and written
+export const RF_img: usize = 28;        // u32: bits 0..7 image slot i is used, bits 8..15 and written
+export const RF_dim: usize = 32;        // u8[32] per texture slot: 0 2D, 1 2D array, 2 cube, 3 3D, 4 cube array, 5 multisampled 2D
+export const RF_ubo_size: usize = 64;   // u32[16]: bytes the WGSL type of uniform binding i covers (0: not known, the bound size is used)
+export const RF_vin: usize = 128;       // u64, vertex: 2 bits a location: the class the input is declared with (0 float, 1 sint, 2 uint)
+export const RF_flags: usize = 136;     // u32: 1 = RF_vin is known (a shader without it is taken to match whatever is bound)
+export const RF_SIZE: usize = 144;
 const LIB_N: u32 = 4096;
-const LE_SIZE: usize = 40;              // u64 key, reflection record
+const LE_SIZE: usize = 152;              // u64 key, reflection record
 let LIB: usize = 0;
 export function shaderInit(): void { LIB = arenaAlloc(<usize>LIB_N * LE_SIZE); }
 let libCount: u32 = 0;
@@ -90,7 +95,7 @@ function reportMissing(key: u64): void {
   L.end();
 }
 
-// The library id of the stage with shader stage number `want` (0 vertex, 1 fragment) of the program object at `prog`,
+// The library id of the stage with shader stage number `want` (0 vertex, 1 fragment, 2 compute) of the program object at `prog`,
 // -1 when the program has no such stage or its shader is not in the library (reported red once a key).
 // A program's stages are in the order the game passed them: the stage of each is the library's to say, so every stage
 // whose key is known is tried.
