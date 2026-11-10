@@ -305,7 +305,7 @@ npm run a64:extra            # feature tests: fault pcs, code ranges, cntpct yie
 npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py), then 30,000
                              #         cases in memory64 and 30,000 with code and memory window above 4 GB
     python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N] [--mem64 | --hi] [--total N]
-npm run a64:fuzz:mem64       # the full 428,000 cases in memory64, and again above 4 GB
+npm run a64:fuzz:mem64       # the full 432,000 cases in memory64, and again above 4 GB
 npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out, then again with
                              #         budget=50, without wasm tail calls, on a shared memory; in memory64; in
                              #         memory64 with the images linked at 0x1_8000_0000 (test/a64/guests/out_hi,
@@ -436,7 +436,8 @@ state still coming from Unicorn.
   FMLS/FMAX/FMIN/FMAXNM/FMINNM and their pairwise forms, FRECPS/FRSQRTS, FCMEQ/FCMGE/FCMGT/FACGE/FACGT), the
   two-register group (FRINT*, FCVT*, SCVTF/UCVTF, FCM*#0, FABS/FNEG/FSQRT, FRECPE/FRSQRTE, FRECPX), FMAXV/FMINV/
   FMAXNMV/FMINNMV, scalar FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP, FMLA/FMLS/FMUL/FMULX by element, fixed-point
-  SCVTF/UCVTF/FCVTZS/FCVTZU. Each instruction is one call of `hlp.vop` (case 31) with FPCR.RMode read at run time;
+  SCVTF/UCVTF/FCVTZS/FCVTZU; FHM: FMLAL/FMLSL/FMLAL2/FMLSL2, vector and by element (half products added to single
+  lanes, fused, rounded by FPCR.RMode). Each instruction is one call of `hlp.vop` (case 31) with FPCR.RMode read at run time;
   the helper computes in f64 exactly (add, sub, mul, conversions), with innocuous double rounding (div, sqrt) or
   rounded to odd (the fused forms) and rounds once to half, with ARM's NaN rules: bit-exact against Unicorn,
   NaNs included. FPCR.FZ16 / DN / AHP are not modelled, FPSR flags are not set (as for S and D).
@@ -444,7 +445,7 @@ state still coming from Unicorn.
 ## Known gaps
 
 Not translated (compile to `unimpl`, reported only if executed):
-- FMLAL/FMLSL (FHM: half to single multiply-add), FCVTXN, FJCVTZS.
+- FCVTXN, FJCVTZS.
 - ERETAA/ERETAB (EL1), LSE128,
   MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, SHA-512/SHA-3/SM3/SM4, any system register not
   listed above.
@@ -472,7 +473,7 @@ Behavioural differences:
 
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
-- Gate 1: 214 classes x 2000 cases = 428000 cases, 0 failures (the 32 FP16 classes, 64000 cases, also with
+- Gate 1: 216 classes x 2000 cases = 432000 cases, 0 failures (the 34 FP16 and FHM classes, 68000 cases, also with
   `--strictnan --shared --seed 5`, `--mem64`, `--hi` and `--nonan --nofma --seed 9`: 0 failures).
 - Gate 2 (Node, with FP16): 88 guest images (61 shared, 27 own, `a64_fp16` among them), 88 pass in each of
   default, `--budget 50`, `--notail`, `--shared`, `--mem64` and the four above-4 GB runs.

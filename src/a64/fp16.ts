@@ -8,7 +8,7 @@ import {
 
 const ADD = 0, SUB = 1, MUL = 2, DIV = 3, MAX = 4, MIN = 5, MAXNM = 6, MINNM = 7, NMUL = 8, MULX = 9, ABD = 10, RECPS = 11,
   RSQRTS = 12, FMA = 13, CMEQ = 14, CMGE = 15, CMGT = 16, ACGE = 17, ACGT = 18, SQRT = 19, RINT = 20, RECPE = 21, RSQRTE = 22,
-  RECPX = 23, ABS = 24, NEG = 25, TOINT = 26, FROMINT = 27, CMP = 28;
+  RECPX = 23, ABS = 24, NEG = 25, TOINT = 26, FROMINT = 27, CMP = 28, FMLAL = 29;
 const NONE = 99;
 // lane codes (op bits 8..9)
 const L1 = 0, L4 = 1, L8 = 2, LGP = 3;
@@ -238,10 +238,31 @@ function fixedConv(insn: u32, scalar: bool): bool {
   return true;
 }
 
+// FMLAL / FMLSL / FMLAL2 / FMLSL2 (FHM: half to single, fused), vector and by element (Vm v0..v15, index H:L:M)
+function fhm(insn: u32): i32 {
+  let Q = (insn >> 30) & 1, U = (insn >> 29) & 1;
+  let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31);
+  if ((insn & 0x9F60DC00) == 0x0E20CC00 && ((insn >> 13) & 1) == (U ^ 1)) {
+    op(FMLAL, Q ? L8 : L4, ((insn >> 23) & 1) | (U << 1));
+    vget(rn); vget(<i32>((insn >> 16) & 31)); vget(rd); call(); vset(rd);
+    return 1;
+  }
+  if ((insn & 0x9FC00400) == 0x0F800000) {
+    let opc = (insn >> 12) & 15;
+    if (U ? (opc != 8 && opc != 12) : (opc != 0 && opc != 4)) return -1;
+    let idx = (((insn >> 11) & 1) << 2) | (((insn >> 21) & 1) << 1) | ((insn >> 20) & 1);
+    op(FMLAL, Q ? L8 : L4, ((opc >> 2) & 1) | (U << 1));
+    vget(rn); vget(<i32>((insn >> 16) & 15)); simd(0x19); b(idx); simd(0x10); vget(rd); call(); vset(rd);
+    return 1;
+  }
+  return -1;
+}
+
 // the Advanced SIMD FP16 encodings; -1 when insn is none of them
 export function trFp16Simd(insn: u32): i32 {
   let scalar = (insn & 0x10000000) != 0;
   if (scalar ? (insn >>> 30) != 1 : (insn >>> 31) != 0) return -1;
+  if (!scalar) { let f = fhm(insn); if (f >= 0) return f; }
   let w = insn;
   if ((w & 0x9F60C400) == 0x0E400400 || (w & 0xDF60C400) == 0x5E400400) return threeSame(insn, scalar) ? 1 : 0;
   if ((w & 0x9F7E0C00) == 0x0E780800 || (w & 0xDF7E0C00) == 0x5E780800) return twoReg(insn, scalar) ? 1 : 0;

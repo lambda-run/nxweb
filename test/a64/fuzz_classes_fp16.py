@@ -85,3 +85,15 @@ def _h_only(c, st, post, mem0, mem1):
 
 
 E("simd_fp16_fixed_conv_scalar", "01 U:1 111110 001 i:4 111 k:1 k2:1 1 Rn:5 Rd:5", fix={"k2": lambda r, f, pc: f["k"]}, post=_h_only)
+
+
+# ------------------------------------------------------------------------------ FHM: FMLAL / FMLSL (half to single)
+def _fhm_vals(r, f, pre):
+    import fuzz_lib
+    pre["v%d" % f["Rd"]] = fuzz_lib.rnd_v(r, 32)
+    if r.random() < 0.3:
+        pre["fpcr"] = r.randrange(4) << 22
+
+
+E("simd_fhm", "0 Q:1 U:1 01110 S:1 0 1 Rm:5 1 1 b13:1 0 1 1 Rn:5 Rd:5", fix={"b13": lambda r, f, pc: f["U"] ^ 1}, setup=_fhm_vals)
+E("simd_fhm_indexed", "0 Q:1 U:1 01111 1 0 L:1 M:1 Rm:4 o:1 S:1 0 0 H:1 0 Rn:5 Rd:5", fix={"o": lambda r, f, pc: f["U"]}, setup=_fhm_vals)

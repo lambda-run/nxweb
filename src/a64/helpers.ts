@@ -375,7 +375,7 @@ function hRsqrte(a: u32): u32 {
 // FP16 operation kinds (vop case 31, bits 12..17)
 const HK_ADD = 0, HK_SUB = 1, HK_MUL = 2, HK_DIV = 3, HK_MAX = 4, HK_MIN = 5, HK_MAXNM = 6, HK_MINNM = 7, HK_NMUL = 8, HK_MULX = 9,
   HK_ABD = 10, HK_RECPS = 11, HK_RSQRTS = 12, HK_FMA = 13, HK_CMEQ = 14, HK_CMGE = 15, HK_CMGT = 16, HK_ACGE = 17, HK_ACGT = 18,
-  HK_SQRT = 19, HK_RINT = 20, HK_RECPE = 21, HK_RSQRTE = 22, HK_RECPX = 23, HK_ABS = 24, HK_NEG = 25, HK_TOINT = 26, HK_FROMINT = 27, HK_CMP = 28;
+  HK_SQRT = 19, HK_RINT = 20, HK_RECPE = 21, HK_RSQRTE = 22, HK_RECPX = 23, HK_ABS = 24, HK_NEG = 25, HK_TOINT = 26, HK_FROMINT = 27, HK_CMP = 28, HK_FMLAL = 29;
 function hMaxMin(a: u32, b: u32, isMax: bool): u32 {
   if (isNaNH(a) || isNaNH(b)) return n2h(a, b);
   if (isZeroH(a) && isZeroH(b)) return isMax ? a & b : a | b;
@@ -488,6 +488,24 @@ function hop(k: i32, sub: u32, mode: u32, a: u64, b: u32, c: u32, fbits: i32, bi
   }
   return 0;
 }
+// FMLAL / FMLSL lane: addend single c + (half a) * (half b), fused, rounded to single by mode (FPMulAddH)
+function fmlal(c: u32, a: u32, b: u32, mode: u32): u32 {
+  if (isNaN32(c) || isNaNH(a) || isNaNH(b)) {
+    let infz = (isInfH(a) && isZeroH(b)) || (isInfH(b) && isZeroH(a));
+    if (isNaN32(c) && !isSNaN32(c) && infz) return DN32;
+    let h: u32 = 0xFFFF;
+    if (isSNaN32(c)) return c | Q32;
+    if (isSNaNH(a)) h = a; else if (isSNaNH(b)) h = b;
+    else if (isNaN32(c)) return c;
+    else h = isNaNH(a) ? a : b;
+    return ((h & 0x8000) << 16) | 0x7FC00000 | ((h & 0x3FF) << 13);
+  }
+  if ((isInfH(a) && isZeroH(b)) || (isInfH(b) && isZeroH(a))) return DN32;
+  let p = f16ToF64(a) * f16ToF64(b), z = <f64>reinterpret<f32>(c);
+  let r: f64 = isFinite(p) && isFinite(z) ? addOdd(p, z, mode) : p + z;
+  if (r != r) return DN32;
+  return reinterpret<u32>(mode == 0 ? <f32>r : f64ToF32(r, mode));
+}
 // vop case 31: bits 8..9 lanes (0: one, 1: four, 2: eight, 3: one general register value in lane 0: 32 or 64 bits by
 // bit 31), bit 10 pairwise, bit 11 reduce (lanes 0 with it: the two lanes of a scalar pairwise form), 12..17 kind,
 // 18..21 sub, 22..23 FPCR.RMode, 24..30 fbits
@@ -496,6 +514,15 @@ function hlanes(op: i32): void {
   let sub: u32 = (op >> 18) & 15, mode: u32 = (op >> 22) & 3, fb = (op >> 24) & 127;
   let gp = lc == 3, bits: i32 = gp ? ((op >>> 31) != 0 ? 64 : 32) : 16;
   let n = lc == 0 || gp ? 1 : lc == 1 ? 4 : 8;
+  if (k == HK_FMLAL) {   // n / 2 single lanes; sub bit 0 negate the Vn element, bit 1 the upper half of the sources
+    let m = n >> 1, base = (sub & 2) ? m : 0;
+    for (let i = 0; i < m; i++) {
+      let x: u32 = load<u16>(PA + 2 * (base + i));
+      if (sub & 1) x ^= 0x8000;
+      store<u32>(PR + 4 * i, fmlal(load<u32>(PC + 4 * i), x, load<u16>(PB + 2 * (base + i)), mode));
+    }
+    return;
+  }
   if (red) {
     let m = lc == 0 ? 2 : n;
     for (let i = 0; i < m; i++) store<u16>(TMP + 2 * i, load<u16>(PA + 2 * i));
