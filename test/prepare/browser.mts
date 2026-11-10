@@ -336,7 +336,7 @@ try {
     eq(await state(), "Idle", "nothing was started");
   });
 
-  await run("what is not a game is explained in plain words instead of failing: an encrypted package (.nsp), a zip, an nxnative RomFS.img, a damaged and a truncated .nup, an update without its game; a folder that holds one .nup opens it; a profile that does not fit a tab's memory gives 'Can't run in a browser yet' with 'Try anyway'", async () => {
+  await run("what is not a game is explained in plain words instead of failing: an encrypted package (.nsp), a zip, an nxnative RomFS.img, a damaged and a truncated .nup, an update without its game; a folder that holds one .nup opens it; a profile with a 9 GB pool, which does not fit a 32-bit memory, is said to run in the 64-bit memory mode with what that may cost, and Play starts it on a 64-bit memory", async () => {
     const f = (name: string, bytes: Uint8Array | string) => { const p = join(nupDir, name); writeFileSync(p, bytes); return p; };
     const head = (s: string, at = 0) => { const b = new Uint8Array(4096); b.set(Buffer.from(s, "latin1"), at); return b; };
     const cases: [string, string, RegExp, RegExp][] = [
@@ -368,11 +368,30 @@ try {
     eq([await state(), await page.textContent("#titleid"), await page.isVisible("#explain")], ["Ready", APP_HEX, false], "the folder's container");
     // a title whose profile reserves a 9 GB pool
     const big = BigInt("0x0400A3A01EE4C000");
-    const short = f("TooBig.nup", writeNup([{ kind: KIND.update, titleId: big, version: 131072, flags: STANDALONE, exefs: part(version({ programId: big }), "exefs/"), romfs: { "a.bin": "a" } }]).bytes);
+    const short = f("TooBig.nup", writeNup([{ kind: KIND.update, titleId: big, version: 131072, flags: STANDALONE, exefs: part(version({ programId: big, main: "big" }), "exefs/"), romfs: { "a.bin": "a" } }]).bytes);
     await open(); await page.setInputFiles("#fileinput", short);
     await until("Ready", "Failed");
-    eq([await page.getAttribute("#verdict", "data-level"), (await page.textContent("#verdictline"))!.trim(), await page.textContent("#play"), await page.isEnabled("#play"), await page.getAttribute("#layout", "data-fit")],
-      ["no", "Can't run in a browser yet. This game needs about 9 GB of memory. A browser tab can give it 4 GB.", "Try anyway", true, "short"], "the verdict");
+    // it does not fit a 32-bit memory; by the same layout rule it fits a 64-bit one: the verdict says the mode and
+    // what it may cost, and Play starts it there
+    eq([await page.getAttribute("#verdict", "data-level"), (await page.textContent("#verdictline"))!.trim(), await page.textContent("#play"), await page.isEnabled("#play"), await page.getAttribute("#layout", "data-fit"), await page.getAttribute("#layout", "data-mem64")],
+      ["ok", "Should start. nxweb has settings for this game, but some things it uses are not built yet.", "Play", true, "short", "profile"], "the verdict");
+    const mem = (await page.textContent("#layout"))!, all = (await page.textContent("#gaps"))!;
+    if (!/runs in 64-bit memory mode: heap 8\.9 GB, alias 0\.3 GB, pool 9\.0 GB \(as the profile reserves them\); the tab may come to use up to 9\.\d GB of real memory/.test(mem)) throw new Error("the Memory row: " + mem);
+    if (!/It needs more memory than most games: it runs in 64-bit memory mode, and the tab may come to use up to 9\.\d GB of real memory/.test(all)) throw new Error("the verdict's list: " + all);
+    const played = await page.evaluate(async () => {
+      const got = new Promise<any>(res => window.addEventListener("nxweb:handoff", ev => res((ev as CustomEvent).detail), { once: true }));
+      document.getElementById("play")!.click();
+      const msg = await got, w = new Worker("/test-worker.js");
+      const out = await new Promise<any>((res, rej) => { w.onmessage = ev => res(ev.data); w.onerror = e => rej(new Error(e.message)); w.postMessage({ handoff: msg, layout: true }); });
+      w.terminate();
+      return out;
+    });
+    if (!played.ok) throw new Error(played.error);
+    eq([played.kind, played.code, played.red, played.mem64, /\.m64\./.test(played.cacheKey)], ["exit", 0, [], true, true], "the game started from the hand-off: a 64-bit memory, and a translation cache key of its own");
+    const lines = (played.stdout as string).split("\n");
+    eq([lines[1].replace(/base=.*/, "base"), lines[4], lines[6], lines[7]], ["SetHeapSize(0x18ce00000): rc=0x0 base", "heap top (+0x18cdff000): 0 of 512 words wrong; 4 GB lower reads 0x0",
+      "MapPhysicalMemory at the alias region's end - 64 MB (above 8 GB: yes): rc=0x0", "alias mapping: 0 of 2048 words wrong; 4 GB lower reads 0x0"], "what the guest did with its 9 GB pool");
+    seen.push(`a 9 GB-pool title: ${played.choice}; played on a linear memory of ${(played.memoryBytes / 2 ** 30).toFixed(2)} GB of address space`);
     const notes = await page.textContent("#warnings");
     if (!/no base game in this NUP/.test(notes!)) throw new Error("notes: " + notes);
     return seen.join(" | ");

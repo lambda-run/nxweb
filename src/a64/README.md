@@ -353,9 +353,8 @@ Behavioural differences:
 - After a wasm trap the registers cached in locals are lost unless `preciseFaults: 2` is on; the fault pc is exact
   either way. The stack-frame format is V8's (Node, Chromium); other engines get `undefined` from `faultFromError`.
 - No self-modifying-code detection: the embedder calls `removeCode`/`addCode` (or `invalidate()`) when code changes.
-- memory64: see its section for the limits (16 GB, static data below 4 GB). The other AssemblyScript modules and the
-  runtime are wasm32 still; only the translator, its helpers and their glue have the mode (`src/runtime/README.md`,
-  "memory64, for the 14").
+- memory64: see its section for the limits (16 GB, static data below 4 GB). The runtime and every other module have
+  the mode too (`src/runtime/README.md`, "memory64, for the 14").
 - Code and cache blobs are tied to the load address. At most 64 code ranges; a unit holds at most 250k instructions
   and 8 MB of wasm (more is split over further units).
 - Multi-structure LD2/3/4 and ST2/3/4 and everything behind `hlp.vop` are lane-by-lane (correct, slow).

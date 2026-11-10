@@ -6,7 +6,7 @@
 import { AudioDeviceMain } from "../src/glue/audio_device_main.ts";
 
 const $ = (id: string) => document.getElementById(id)!;
-const worker = new Worker("worker.js");
+const worker = new Worker("worker.js" + location.search);   // (?mem64=1 reaches the worker: every program in the 64-bit memory mode)
 const canvas = ($("canvas") as HTMLCanvasElement).transferControlToOffscreen();
 worker.postMessage({ type: "init", canvas }, [canvas]);
 // The audio device's page side: the context is made when a process first uses nn::audio and runs from the first user

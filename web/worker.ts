@@ -55,7 +55,7 @@ const requestDevice = async (): Promise<any> => {
 // a game whose profile does not fit a 32-bit memory (rt_process.ts layoutChoice; the hand-off's options say so), or
 // any program when the page was opened with ?mem64=1 (for measuring the mode)
 let mods64: Promise<RuntimeModules> | undefined;
-const forceMem64 = /[?&]mem64=1\b/.test(self.location?.search ?? "");
+const forceMem64 = new URLSearchParams(self.location?.search ?? "").get("mem64") === "1";
 function modules64(): Promise<RuntimeModules> {
   return mods64 ??= (async () => {
     const mod = async (n: string) => WebAssembly.compileStreaming(fetch(`wasm/${n}64.wasm`));
