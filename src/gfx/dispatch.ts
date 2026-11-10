@@ -144,6 +144,7 @@ let nowNs: u64 = 0;
 export function setNow(ns: u64): void { nowNs = ns; }
 
 const ARGS2: usize = memory.data(64);   // the arguments of a call one function makes to another
+const SD_PLAIN: usize = memory.data(6 * 16);   // nvnProgramSetShadersExt's stages as plain { data, control } pairs
 export function call(fn: i32, a: usize): u64 {
   switch (fn) {
     // ---------- Device ----------
@@ -433,6 +434,15 @@ export function call(fn: i32, a: usize): u64 {
       store<u64>(p, e ? load<u64>(e) : 0, O.PROG_serial);
       if (e) progSetKeys(e, n, sd);
       return 1;
+    }
+
+    // NVN 55: each stage is 0x18 bytes, { data, control } plus an extension field the host does not use (as nxnative): SetShaders on the pairs
+    case F.nvnProgramSetShadersExt: {
+      const n = I(a, 1), sd = P(a, 2);
+      if (n < 0 || n > 6) { L.red("ProgramSetShadersExt stage count "); L.i(n); L.end(); return 0; }
+      for (let i = 0; i < n; i++) memory.copy(SD_PLAIN + (<usize>i << 4), sd + <usize>i * 24, 16);
+      store<u64>(ARGS2, X(a, 0)); store<u64>(ARGS2, <u64>n, 8); store<u64>(ARGS2, <u64>SD_PLAIN, 16);
+      return call(F.nvnProgramSetShaders, ARGS2);
     }
 
     // ---------- Sync, queue ----------
