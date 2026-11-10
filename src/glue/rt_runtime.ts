@@ -159,6 +159,17 @@ function regsModule(m64: boolean): Uint8Array {
     ...sec(10, [3, ...body(fx), ...body([...fx, ...fd]), ...body(setd)])]);
 }
 const hex = (v: number | bigint) => "0x" + v.toString(16);
+// "NintendoSDK_nnSdk-10_4_0" (SDK 12 spells it NintendoSdk_; Switch 2 SDKs put a variant first: "nnSdk-Generic_20_5_19")
+export function sdkVersionIn(b: Uint8Array): { major: number; text: string } | undefined {
+  const pat = [0x5f, 0x6e, 0x6e, 0x53, 0x64, 0x6b, 0x2d];   // "_nnSdk-"
+  for (let i = b.indexOf(0x5f); i >= 0 && i + 7 < b.length; i = b.indexOf(0x5f, i + 1)) {
+    if (!pat.every((c, k) => b[i + k] === c)) continue;
+    let e = i + 7; while (e < b.length && e - i < 48 && b[e] > 0x20 && b[e] < 0x7f) e++;
+    const text = String.fromCharCode(...b.subarray(i + 7, e)), m = /(?:^|_)(\d+)_\d+/.exec(text) ?? /^(\d+)/.exec(text);
+    if (m) return { major: Number(m[1]), text };
+  }
+  return undefined;
+}
 const pageUp = (v: number) => Math.ceil(v / 0x1000) * 0x1000;   // an address or a size up to a page (no 32-bit operator: docs/CONTRACT.md "Addresses")
 const toHex = (b: Uint8Array) => Array.from(b, v => v.toString(16).padStart(2, "0")).join("");
 const dec = new TextDecoder();
@@ -429,7 +440,13 @@ export class Runtime {
   // Tells the translator about a relocated module: its image is a code range, its text the part that holds
   // instructions, and what the loader knows to be function entries (function symbols, init and fini functions,
   // relocation targets in the text) is passed along, so that those functions are translated with their neighbours.
+  // The game's SDK major version (0: not known), from the version string the sdk module keeps in its read-only data
+  sdkMajor = 0;
   private addModuleCode(m: ModuleInfo): void {
+    if (!this.sdkMajor && m.ro.size) {
+      const v = sdkVersionIn(this.u8().subarray(m.ro.addr, m.ro.addr + m.ro.size));
+      if (v) { this.sdkMajor = v.major; this.log(`sdk: NintendoSDK nnSdk-${v.text} (major ${v.major}), from ${m.name}`); }
+    }
     const st = range("file staging"), out = Math.ceil(this.nextFile / 4) * 4;
     const entries = this.ld.codeEntries(m.handle, out, Math.floor((st.hi - out) / 4));
     this.a64.addCode(m.base, m.imageSize, { text: { lo: m.text.addr, hi: m.text.addr + m.text.size }, entries });

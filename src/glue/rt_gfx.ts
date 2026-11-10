@@ -85,7 +85,7 @@ export class RtGfx implements HleGfx {
     this.host.onImage = (_w, _i, what) => { if (what === 1) this.imageShown(); };
     this.host.onDeviceLost = () => { this.stats.deviceLosses++; rt.requestWake(); };
     this.host.onDeviceRestored = () => { this.stats.deviceRestores++; this.lastPresentDone = null; rt.requestWake(); };
-    rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => this.stubOfName(cpu.cstr(cpu.x(0), 128)) });
+    rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => { this.setApiOnce(rt); return this.stubOfName(cpu.cstr(cpu.x(0), 128)); } });
     this.registerNv(rt);
     rt.onDispose(() => this.dispose());
   }
@@ -94,6 +94,17 @@ export class RtGfx implements HleGfx {
   // nn::gsv::BootWithRemoteMemory asks nn::am for a graphics supervisor nxweb never has: Zelda faulted there at
   // sdk+0x1dd76c, x0 = 0). The allocators and the pool are recorded; GetGraphicsMemoryInfo reports the pool.
   readonly nv = { alloc: [] as bigint[], devtoolsAlloc: [] as bigint[], pool: 0n, poolSize: 0n, inited: false };
+  // The NVN API version nvnDeviceGetInteger reports follows the game's SDK, as its own driver's would: 53.313 up to
+  // SDK 10, 55.15 from SDK 11 (nxnative nvn_api). Games compare it with the version they were built against
+  private apiSet = false;
+  private setApiOnce(rt: Runtime): void {
+    if (this.apiSet) return;
+    this.apiSet = true;
+    const m = this.opts.sdkMajor ?? rt.sdkMajor;
+    const api = m > 0 && m <= 10 ? [53, 313] : [55, 15];
+    this.x.gfx_set_api(api[0], api[1]);
+    rt.log(`nvn: device API ${api[0]}.${api[1]} (SDK ${m || "unknown"})`);
+  }
   private registerNv(rt: Runtime): void {
     const nv = this.nv, mb = (n: bigint) => (Number(n) / 1048576).toFixed(2);
     const reg = (name: string, fn: (cpu: HostCpu) => HostResult) => rt.register({ name, forced: true, fn });
@@ -106,7 +117,7 @@ export class RtGfx implements HleGfx {
     reg("_ZN2nv16FinalizeGraphicsEv", () => { nv.pool = 0n; nv.poolSize = 0n; nv.inited = false; });
     reg("_ZN2nv9InitCheckEv", cpu => { if (!nv.inited) cpu.log("[RED] nv::InitCheck: graphics not initialised (nv::InitializeGraphics was not called)"); });
     reg("_ZN2nv21GetGraphicsMemoryInfoEPNS_10MemoryInfoE", cpu => {
-      const rec = new Uint8Array((this.opts.sdkMajor ?? 99) <= 10 ? 0x20 : 0x40), dv = new DataView(rec.buffer);
+      const rec = new Uint8Array((this.opts.sdkMajor ?? (rt.sdkMajor || 99)) <= 10 ? 0x20 : 0x40), dv = new DataView(rec.buffer);
       if (nv.inited) { dv.setBigUint64(0, nv.poolSize, true); dv.setBigUint64(16, nv.poolSize, true); }   // total, used 0, free
       cpu.write(cpu.x(0), rec);
     });
