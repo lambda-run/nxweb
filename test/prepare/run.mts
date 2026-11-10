@@ -32,7 +32,9 @@ import { loadDefs } from "../../src/kit/host/defs.mts";
 import * as rth from "../runtime/harness.mts";
 import { nupTests } from "./nup_tests.mts";
 import { A64Scanner, scanHeadline, scanLines } from "../../src/glue/a64_scan.ts";
-import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, synthTree, lsRows, python, bnsh, unwindModules, matchImage, withImport, A64, MATCH_TEXT_END, type Files } from "./synth.mts";
+import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, synthTree, lsRows, python, bnsh, unwindModules, matchImage, withImport, withSymbols, nsoOf, A64, MATCH_TEXT_END, type Files } from "./synth.mts";
+import { dynSymbols, hleGaps, hleHeadline, hleLines } from "../../src/glue/hle_scan.ts";
+import { NOT_ANSWERED } from "../../src/hle/gen/coverage.ts";
 
 process.chdir(ROOT);
 try {
@@ -1046,6 +1048,58 @@ test("the instruction scan of the Code stage: every test source compiled with un
   const plain = prepare(game("scan-none", files())); assert.equal((await plain.prep.run()).state, "Ready");
   assert.equal(plain.prep.out<CodeOut>("code").scan, undefined); assert.deepEqual((await plain.prep.handoff()).scan, []); plain.tree.close();
   info.push(...scanLines("main (planted)", s.scan));
+  return info;
+});
+
+// =================================================================================================== the take-over scan
+test("the take-over scan of the Code stage: a synthetic game's dynamic symbols against the list of what nxnative takes over and nxweb does not answer: an HLE_FORCE name is a gap where a module defines or imports it, an HLE name where it is imported and defined nowhere, an answered name never; recorded in the Code stage's output and logged, not red; npm run prepare:scan prints the same and exits 1", async () => {
+  const info: string[] = [];
+  const forced = NOT_ANSWERED.filter(e => e[3] === 1), weak = NOT_ANSWERED.filter(e => e[3] === 0);
+  assert.ok(forced.length >= 2 && weak.length >= 2, "the list has forced and weak names");
+  const [f1, f2] = forced, [w1, w2] = weak, answered = "_ZN2nn2fs8MountRomEPKcPvm";
+  assert.ok(!NOT_ANSWERED.some(e => e[0] === answered), "nn::fs::MountRom is answered (src/fs)");
+  // the parser alone: withImport's one imported symbol, then a table of our own
+  assert.deepEqual(dynSymbols(withImport(matchImage({ 0x100: [A64.RET] }), "glClear")), [{ name: "glClear", defined: false }]);
+  assert.deepEqual(dynSymbols(new Uint8Array(0x100)), [], "no MOD0: no symbols");
+  const img = (syms: { name: string; defined: boolean }[]) => withSymbols(matchImage({ 0x100: [A64.movz(0, 0), A64.RET] }), syms);
+  const main = img([{ name: f1[0], defined: false }, { name: w1[0], defined: false }, { name: w2[0], defined: false }, { name: answered, defined: false }, { name: "_ZN4game4mainEv", defined: true }]);
+  const sdk = img([{ name: f2[0], defined: true }, { name: w2[0], defined: true }, { name: answered, defined: true }]);
+  assert.deepEqual(dynSymbols(main).map(s => s.name), [f1[0], w1[0], w2[0], answered, "_ZN4game4mainEv"]);
+  const expect = [
+    { module: "main", name: f1[0], demangled: f1[1], file: f1[2], forced: true, defined: false },
+    { module: "main", name: w1[0], demangled: w1[1], file: w1[2], forced: false, defined: false },
+    { module: "sdk", name: f2[0], demangled: f2[1], file: f2[2], forced: true, defined: true },
+  ].sort((a, b) => a.module.localeCompare(b.module) || a.file.localeCompare(b.file) || a.demangled.localeCompare(b.demangled));
+  const direct = hleGaps([{ module: "main", symbols: dynSymbols(main) }, { module: "sdk", symbols: dynSymbols(sdk) }]);
+  assert.deepEqual(direct, expect, "w2 is defined by sdk: the game's own; the answered name is no gap");
+  assert.equal(hleHeadline(direct), "3 SDK functions nxnative replaces are not answered here yet");
+  assert.equal(hleHeadline(direct.slice(0, 1)), "1 SDK function nxnative replaces is not answered here yet");
+  assert.equal(hleHeadline([]), ""); assert.deepEqual(hleLines([]), []);
+  // the same through the Code stage of a synthetic game
+  const other = "0100CCCC0000F000";
+  const files = () => ({ "base/exefs/main": nsoOf(main, 0x51), "base/exefs/sdk": nsoOf(sdk, 0x52), "base/exefs/main.npdm": npdm({ programId: BigInt("0x" + other) }), "base/romfs/a.txt": "a" });
+  const r = prepare(game("hle-scan", files()));
+  const res = await r.prep.run(); r.tree.close(); assert.equal(res.state, "Ready", res.error);
+  const c = r.prep.out<CodeOut>("code");
+  assert.deepEqual(c.modules.map(m => m.name).sort(), ["main", "sdk"]);
+  assert.deepEqual(c.hle, expect);
+  assert.ok(r.lines.includes("prepare: hle: 3 SDK functions nxnative replaces are not answered here yet:"), r.lines.join("\n"));
+  assert.ok(r.lines.some(l => l.startsWith("prepare: hle: main ") && l.includes(f1[1]) && l.includes("dm/" + f1[2].split(",")[0])));
+  assert.ok(!r.lines.some(l => l.startsWith("[RED]")), "the scan predicts, it does not fail the prepare");
+  const again = prepare(dirOf("hle-scan")); assert.deepEqual((await again.prep.run()).skipped, [...STAGES]); again.tree.close();
+  // a game without any: an empty list
+  const clean = prepare(game("hle-clean", { ...files(), "base/exefs/main": nsoOf(img([{ name: answered, defined: false }]), 0x53), "base/exefs/sdk": nsoOf(img([]), 0x54) }));
+  assert.equal((await clean.prep.run()).state, "Ready"); assert.deepEqual(clean.prep.out<CodeOut>("code").hle, []); clean.tree.close();
+  // the CLI: the game folder (the version the prepare picks), the exefs folder, one module
+  const cli = (args: string[]) => { try { return { code: 0, out: execFileSync(process.execPath, [join(ROOT, "src", "prepare", "host", "scan.mts"), ...args], { cwd: ROOT, encoding: "utf8" }) }; } catch (e) { const x = e as { status: number; stdout: string; stderr: string }; return { code: x.status, out: x.stdout + x.stderr }; } };
+  const a = cli([dirOf("hle-scan")]);
+  assert.equal(a.code, 1, a.out); assert.ok(a.out.includes("3 SDK functions nxnative replaces are not answered here yet:"), a.out);
+  for (const g of expect) assert.ok(a.out.split("\n").some(l => l.includes(g.demangled) && l.trimStart().startsWith(g.module)), `${g.module} ${g.demangled}: ${a.out}`);
+  assert.equal(cli([join(dirOf("hle-scan"), "base", "exefs")]).out.split("\n").filter(l => l.includes("not answered here yet")).length, 1);
+  const one = cli([join(dirOf("hle-scan"), "base", "exefs", "main")]);
+  assert.ok(one.out.includes("3 SDK functions"), "main alone: w2 is defined nowhere it can see");
+  const none = cli([dirOf("hle-clean")]); assert.equal(none.code, 0, none.out);
+  info.push(`${NOT_ANSWERED.length} names nxnative takes over that nxweb does not answer (${forced.length} forced); the synthetic game:`, ...hleLines(c.hle));
   return info;
 });
 
