@@ -16,15 +16,15 @@ through NVN in the browser, and so does one real third-party program built the s
 | State machine kit (`src/kit`) | Working: 40 machines, `kit:test` 99 tests, 397 of 397 transitions exercised |
 | ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs (61 images) |
 | ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), 75 test images pass in four configurations in Node and in Chromium; translation cache; an option that makes guest accesses to host memory trap |
-| Module loader (`src/loader`) | Working, 68 tests (no real game file tried) |
+| Module loader (`src/loader`) | Working, 84 tests: NSO segments stored, LZ4 or ZBIC compressed (system 22.0.0 on; the decoder is checked against the reference codec), NRO. No real game file was loaded yet: the first one tried stopped at its ZBIC segments, which are decoded since |
 | Kernel core (`src/kernel`) | Working, 63 tests |
-| Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 52 end-to-end tests under Node, 62 in Chromium: multi-threaded NSO modules, module files of any size (a 40 MB one in the tests), run-time modules (NRO), faults with exact pcs (host memory guarded by default), restart without reload, a per-game address-space layout, a robustness sweep (64 threads for 30 s of guest time, 500 module reloads, 2000 frames) |
+| Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 55 end-to-end tests under Node, 66 in Chromium: multi-threaded NSO modules (LZ4 and ZBIC), module files of any size (a 40 MB one in the tests), run-time modules (NRO), faults with exact pcs (host memory guarded by default), restart without reload, a per-game address-space layout, a robustness sweep (64 threads for 30 s of guest time, 500 module reloads, 2000 frames) |
 | NVN on WebGPU (`src/gfx`) | Working for 333 of 743 NVN functions (14 Node tests, 46 browser scenes); a translated guest draws through it in the page |
 | Shaders (`tools/shaders`, `src/shaders`) | Chain works on hand-assembled Maxwell programs, offline and in the page (translated in a Worker, cached); no game shader has been through it |
 | File system (`src/fs`) | Working and attached: RomFS images, crash-safe saves on OPFS; 66 tests, 7 in the browser |
 | SDK take-overs (`src/hle`) | The names nxnative answers on the host (1,113 in scope: 985 implemented, 128 cut stubs for movies; `hle:test` 97 tests), attached to the runtime with one answer per name: controllers (several players, vibration), display layer, run-time modules; guests call a spread of them |
 | Audio (`src/audio`) | Working and attached: 118 names, the audio renderer as nxnative has it (the SDK's own renderer driven by the host; tested with stand-in SDKs); a guest plays a tone on a sample-exact silent sink and through an AudioWorklet, another two voices through the renderer; `audio:test` 97 tests, 11 in the browser |
-| Prepare (`src/prepare`) | A NUP container (one `.nup` file, read in place) or a folder of extracted game files becomes a hand-off the page starts: 153 profiles converted from nxnative, code cuts applied, a verdict in plain words before the long stages; `prepare:test` 30 tests, 13 in the browser. No encrypted package (NSP / XCI) is opened |
+| Prepare (`src/prepare`) | A NUP container (one `.nup` file, read in place) or a folder of extracted game files becomes a hand-off the page starts: 153 profiles converted from nxnative, code cuts applied, a verdict in plain words before the long stages; `prepare:test` 32 tests, 14 in the browser. No encrypted package (NSP / XCI) is opened |
 
 ## Doom
 

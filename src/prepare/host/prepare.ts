@@ -124,9 +124,14 @@ export interface PrepareOptions {
   // Tests: called at "<stage>:begin", "<stage>:work" (in the middle of its work) and "<stage>:end" (work done,
   // record not written). May wait; what it throws ends the run without another manifest write (a tab that died).
   at?: (point: string) => void | Promise<void>;
+  // How many bytes of a code module are unpacked or hashed between two looks at the page (a redraw, a Cancel):
+  // 4 MB when not given, some tens of milliseconds. Between the steps `at` is called with "<stage>:unpack".
+  unpackStep?: number;
 }
 class Cancelled extends Error {}
 const enc = new TextEncoder(), dec = new TextDecoder();
+// Let the page draw and take input (a Cancel) before the next piece of a long computation: a task, not a microtask
+const breathe = (): Promise<void> => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); r(); }; c.port2.postMessage(0); });
 const fileKey = (f: TreeFile) => [f.path, f.size, f.mtime];
 
 export class Prepare {
@@ -378,8 +383,13 @@ export class Prepare {
     // unpacked is Code's to refuse)
     let graphics: ProfileOut["graphics"] = { api: "unknown", names: [] };
     try {
-      const m = det.modules.find(m => m.name === "main")!, r = this.w.cut(await this.readAll(det.exefs + "main", m.size), []);
-      if ("bytes" in r) graphics = graphicsOf(r.bytes);
+      const m = det.modules.find(m => m.name === "main")!, file = await this.readAll(det.exefs + "main", m.size);
+      try {
+        // unpacked in steps: a main module is tens of megabytes, compressed (LZ4, or ZBIC from system 22.0.0 on)
+        const info = await this.w.open(file, async () => { await breathe(); await this.point("profile:unpack"); }, this.o.unpackStep);
+        const r = "error" in info ? info : this.w.cut(file, []);
+        if ("bytes" in r) graphics = graphicsOf(r.bytes);
+      } finally { this.w.close(); }
     } catch (e) { if (!(e instanceof PrepError)) throw e; }
     if (graphics.api === "vulkan" || graphics.api === "gl") warnings.push(`main draws with ${graphics.api === "gl" ? "OpenGL (through EGL)" : "Vulkan"} (it imports ${graphics.names.join(", ")}): nxweb implements NVN only`);
     for (const n of det.notes ?? []) warnings.push(n);
@@ -395,7 +405,15 @@ export class Prepare {
     for (const m of mods) {
       await this.point("code:work");
       const path = det.exefs + m.name, file = await this.readAll(path, m.size);
-      const info = this.w.nsoCheck(file);
+      try {
+      // unpacked and hashed in steps, with the progress row moving inside the module and a Cancel taken between them;
+      // the function matching and the cuts below then work on that image instead of unpacking the file again
+      const before = this.w.count("bytesDone");
+      const info = await this.w.open(file, async (done, total) => {
+        this.w.setCount("bytesDone", before + Math.floor(m.size * Math.min(1, done / Math.max(1, total)) * 0.9)); this.changed();
+        await breathe(); await this.point("code:unpack");
+      }, this.o.unpackStep);
+      this.w.setCount("bytesDone", before);
       if ("error" in info) throw new PrepError("module", `${path}: ${info.error.replace(/^\[RED\] (loader|prepare): /, "")}`);
       if (info.buildId !== m.buildId) throw new PrepError("module", `${path} changed while it was read`);
       let c: { cuts: Cut[] } | undefined = prof.cuts.find(c => c.module === m.name);
@@ -425,6 +443,7 @@ export class Prepare {
         out.cuts += r.applied; this.w.addCount("cuts", r.applied);
       } else out.modules.push({ name: m.name, buildId: m.buildId, from: "folder", path, size: m.size, sha256: this.w.sha256(file), imageSize: info.imageSize, cuts: 0 });
       this.w.addCount("done", 1); this.w.addCount("bytesDone", m.size); this.changed();
+      } finally { this.w.close(); }
     }
     return out;
   }

@@ -3,6 +3,7 @@ import * as L from "./module";
 import { errorPtr, errorLen, errorClear } from "./util";
 import { sha256 } from "./sha256";
 import { lz4Decompress } from "./lz4";
+import { zbicDecompress, zbicBegin, zbicStep, zbicProduced, zbicStat, zbicStatsClear, xxh64 } from "./zbic";
 export * from "../kit/exports";
 
 export function ld_init(arena: u32, arenaLen: u32, stubBase: u32, stubCap: u32): i32 { return L.init(arena, arenaLen, stubBase, stubCap); }
@@ -56,3 +57,13 @@ export function ld_heap_base(): u32 { return <u32>__heap_base; }
 // the pieces on their own (tests, tools)
 export function ld_sha256(ptr: u32, len: u32, out: u32): void { sha256(ptr, len, out); }
 export function ld_lz4(src: u32, srcLen: u32, dst: u32, dstCap: u32): i32 { return lz4Decompress(src, srcLen, dst, dstCap); }
+// ZBIC (zbic.ts): the bytes produced, or a negative reason (ZE_*). The output is at most 2 GB.
+export function ld_zbic(src: u32, srcLen: u32, dst: u32, dstCap: u32): i32 { return <i32>zbicDecompress(src, srcLen, dst, dstCap < 0x7FFFFFFF ? dstCap : <u32>0x7FFFFFFF); }
+// The same in steps of at least `budget` bytes of output: 1 there is more, 0 done (ld_zbic_produced bytes), negative refused
+export function ld_zbic_begin(src: u32, srcLen: u32, dst: u32, dstCap: u32): void { zbicBegin(src, srcLen, dst, dstCap); }
+export function ld_zbic_step(budget: u32): i32 { return zbicStep(budget); }
+export function ld_zbic_produced(): u32 { return <u32>zbicProduced(); }
+// What the streams decoded since the last clear used (the ZS_* indices of zbic.ts)
+export function ld_zbic_stat(i: u32): u32 { return zbicStat(i); }
+export function ld_zbic_stats_clear(): void { zbicStatsClear(); }
+export function ld_xxh64(ptr: u32, len: u32): u64 { return xxh64(ptr, len); }

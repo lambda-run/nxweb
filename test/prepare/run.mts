@@ -18,6 +18,8 @@ import { MemStore } from "../../src/prepare/host/store.ts";
 import { NodeStore } from "../../src/prepare/host/store_node.ts";
 import { memProfiles, type Profile, type ProfileSource } from "../../src/prepare/host/profiles.ts";
 import { nodeProfiles } from "../../src/prepare/host/profiles_node.ts";
+import { nsoImageBytes } from "../../src/glue/rt_process.ts";
+import { graphicsOf } from "../../src/prepare/host/prepare.ts";
 import { Prepare, STAGES, SHADER_CHAIN, type StageName, type DetectOut, type ProfileOut, type CodeOut, type IndexOut, type Manifest } from "../../src/prepare/host/prepare.ts";
 import { detectLayout, pickVersion } from "../../src/prepare/host/detect.ts";
 import { DirRomDevice, treeSource } from "../../src/prepare/host/romdev.ts";
@@ -37,7 +39,7 @@ try {
   // the runtime's modules and test guests: its own harness builds them (and refuses stale ones)
   let fresh = true; try { rth.loadEnv; (await import("../../src/runtime/host/build.mts")).checkBuilt(); } catch { fresh = false; }
   if (!fresh || process.env.PREPARE_RT_BUILD === "1") rth.build();
-  if (!existsSync(join(rth.GUESTS, "fsg.nso")) || !existsSync(join(rth.GUESTS, "hello.nso")) || process.env.PREPARE_RT_BUILD === "1") rth.buildModules();
+  if (!existsSync(join(rth.GUESTS, "fsg.nso")) || !existsSync(join(rth.GUESTS, "hello.nso")) || !existsSync(join(rth.GUESTS, "fsg_zbic.nso")) || process.env.PREPARE_RT_BUILD === "1") rth.buildModules();
 } catch (e) { console.error(e instanceof Error ? e.message : e); console.error("[RED] prepare:test: the build failed"); process.exit(1); }
 mkdirSync(SCRATCH, { recursive: true });
 const module = new WebAssembly.Module(readFileSync(WASM));
@@ -366,6 +368,81 @@ test("the whole pipeline on a folder: Detect, Index, Profile (by title ID, with 
   assert.match(prof2.warnings[0], /^no profile: provisional/);
   r.tree.close(); r2.tree.close();
   return [`states ${states.join(" > ")}`, `the guest printed ${JSON.stringify(p.stdout.split("\n")[0])} and read ${b.length} bytes of rom:/data/blob.bin through ${p.reads} file reads of the folder device`];
+});
+
+test("ZBIC modules (NSO flag bit 7, the segment compression of system 22.0.0 on): build ID, check, unpacked bytes and what main draws with are those of the LZ4 build of the same program; opened in steps a module is unpacked and verified once, with progress, and a Cancel between two steps frees it; the whole pipeline on a folder whose main and sdk are ZBIC: the cut main is stored uncompressed, the uncut sdk is handed to the loader as the ZBIC file it is, the game runs with the cut; a damaged ZBIC main is refused in Code with the loader's reason", async () => {
+  const w = newWasm(), z = guest("fsg_zbic"), l = guest("fsg"), flags = (d: Uint8Array) => new DataView(d.buffer, d.byteOffset, d.byteLength).getUint32(0x0C, true);
+  assert.equal(flags(z) & 0xBF, 0xBF, "fsg_zbic.nso: three ZBIC segments, three hashes"); assert.equal(flags(l), 0x3F);
+  for (let i = 0; i < 3; i++) assert.equal(Buffer.from(z.subarray(new DataView(z.buffer, z.byteOffset).getUint32(0x10 + 16 * i, true)).subarray(0, 4)).toString(), "ZBIC");
+  assert.equal(w.nsoBuildId(z.subarray(0, 0x100)), w.nsoBuildId(l.subarray(0, 0x100)));
+  const cz = w.nsoCheck(z), cl = w.nsoCheck(l);
+  assert.ok(!("error" in cz) && !("error" in cl), JSON.stringify(cz));
+  assert.deepEqual({ ...cz, flags: 0 }, { ...cl, flags: 0 });
+  assert.equal(nsoImageBytes(z), cz.imageSize, "the layout's image size, from the header alone");
+  // unpacked (a cut list of none): the same stored module from both, and so the same imports for the graphics check
+  const uz = w.cut(z, []), ul = w.cut(l, []);
+  assert.ok("bytes" in uz && "bytes" in ul);
+  assert.equal(flags(uz.bytes), 0x38, "the module written again is stored: no compression flag, no ZBIC flag");
+  assert.equal(Buffer.compare(uz.bytes, ul.bytes), 0, "the unpacked module");
+  assert.deepEqual(graphicsOf(uz.bytes), graphicsOf(ul.bytes));
+  // in steps: several ticks with the work counted up, then match and cut work on the image already unpacked
+  const ticks: number[] = [];
+  const info = await w.open(z, (done, total) => { ticks.push(done / total); }, 1000);
+  assert.deepEqual(info, cz);
+  assert.ok(ticks.length > 4 && ticks.every((t, i) => t > 0 && t < 1 && (!i || t >= ticks[i - 1])), `ticks: ${ticks.length}`);
+  const used0 = w.x.prep_arena_used();
+  assert.deepEqual(w.nsoCheck(z), cz);
+  const again = w.cut(z, []);
+  assert.ok("bytes" in again && Buffer.compare(again.bytes, uz.bytes) === 0);
+  assert.ok(w.x.prep_arena_used() - used0 < cz.imageSize, `a cut on the open module unpacked it again (${w.x.prep_arena_used() - used0} more bytes for an image of ${cz.imageSize})`);
+  const at = imageOffsets(w, z, ascii("MountRom: ")); assert.equal(at.length, 1);
+  const cuts = [{ off: at[0], orig: hexOf(ascii("MountRom")), new: hexOf(ascii("MountROM")), why: "test" }];
+  const c1 = w.cut(z, cuts), c2 = w.cut(z, cuts);       // the first changes the open image: the second must not see that
+  assert.ok("bytes" in c1 && "bytes" in c2 && c1.applied === 1 && Buffer.compare(c1.bytes, c2.bytes) === 0, JSON.stringify("error" in c2 ? c2 : ""));
+  w.close();
+  assert.equal(w.x.prep_arena_used(), 0, "close frees the module");
+  // a Cancel between two steps
+  class Stop extends Error {}
+  let n = 0;
+  await assert.rejects(w.open(z, () => { if (++n === 5) throw new Stop(); }, 1000), Stop);
+  assert.equal(w.x.prep_arena_used(), 0, "nothing is kept of a module whose opening was stopped");
+  assert.deepEqual(w.nsoCheck(z), cz, "and the module works as before");
+  // damaged: a bit in the middle of the text stream
+  const dv = new DataView(z.buffer, z.byteOffset, z.byteLength), bad = z.slice();
+  bad[dv.getUint32(0x10, true) + (dv.getUint32(0x60, true) >> 1)] ^= 0x04;
+  const RE = /text segment does not (decompress \(damaged ZBIC stream: [^)]+\)|match its SHA-256 in the header)/;
+  const o1 = await w.open(bad, undefined, 1000), o2 = w.nsoCheck(bad);
+  assert.ok("error" in o1 && RE.test(o1.error) && "error" in o2 && RE.test(o2.error), JSON.stringify([o1, o2]));
+  assert.equal(w.x.prep_arena_used(), 0);
+  // the pipeline
+  const b = blob();
+  const profiles = memProfiles([profileFor(z, APP_HEX, cuts, {}, { sdk: "00".repeat(16) })]);
+  const dir = game("zbic", prefixed("base/", version({ programId: APP, blob: b, main: "fsg_zbic", extra: { "exefs/sdk": guest("two_lib_zbic") } })));
+  const r = prepare(dir, { profiles });
+  const res = await r.prep.run();
+  assert.deepEqual([res.state, res.ran], ["Ready", [...STAGES]], res.error);
+  const code = r.prep.out<CodeOut>("code"), prof = r.prep.out<ProfileOut>("profile");
+  assert.deepEqual(code.modules.map(m => [m.name, m.from, m.cuts]), [["main", "store", 1], ["sdk", "folder", 0]]);
+  assert.deepEqual([prof.graphics.api, r.prep.out<DetectOut>("detect").modules.map(m => m.buildId)], ["unknown", [cz.buildId, w.nsoBuildId(guest("two_lib").subarray(0, 0x100))]]);
+  const h = await r.prep.handoff(), handed = await Promise.all(h.modules.map(m => m.bytes()));
+  assert.deepEqual(handed.map(flags).map(f => f & 0x87), [0, 0x87], "main as the stored module the cut wrote, sdk as the ZBIC file of the folder");
+  const p = await play(r);
+  assert.deepEqual([p.kind, p.code, p.red], ["exit", 0, []]);
+  assert.equal(p.stdout, "lib: DT_INIT\nlib: init_array[0]\nlib: init_array[1]\n" + fsgFirst(b, "MountROM: ") + "lib: fini_array[0]\nlib: DT_FINI\n");
+  // without a profile both modules reach the loader as ZBIC files
+  freshStore(dir);
+  const r2 = prepare(dir); assert.equal((await r2.prep.run()).state, "Ready");
+  assert.deepEqual(r2.prep.out<CodeOut>("code").modules.map(m => [m.name, m.from]), [["main", "folder"], ["sdk", "folder"]]);
+  const p2 = await play(r2);
+  assert.deepEqual([p2.kind, p2.code, p2.red], ["exit", 0, []]);
+  // a damaged main stops the Code stage
+  const dir3 = game("zbic-damaged", prefixed("base/", { ...version({ programId: APP, blob: b }), "exefs/main": bad }));
+  const r3 = prepare(dir3), res3 = await r3.prep.run();
+  assert.deepEqual([res3.state, res3.reason], ["Failed", "module"]);
+  assert.match(res3.error, /^base\/exefs\/main: text segment does not (decompress \(damaged ZBIC stream: [^)]+\)|match its SHA-256 in the header)/);
+  r.tree.close(); r2.tree.close(); r3.tree.close();
+  return [`fsg_zbic.nso: ${z.length} bytes (LZ4: ${l.length}) for an image of ${cz.imageSize}; ${rth.haveZbic() ? "compressed by the reference codec (the zbic package)" : "the zbic package is not installed: compressed by elf2nso.py itself (--zbic-own)"}`,
+    `opened in ${ticks.length + 1} steps of 1000 bytes; the damaged file: ${"error" in o1 ? o1.error.replace(/^\[RED\] (loader|prepare): /, "") : ""}`];
 });
 
 test("update layering and DLC: the newest update's RomFS is what the game reads (whole, never over the base's); each DLC's RomFS is an add-on content device at its index, checked by mkromfs.py's reader", async () => {

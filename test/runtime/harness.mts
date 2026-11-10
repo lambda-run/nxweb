@@ -1,7 +1,7 @@
 // Builds the runtime's test modules (clang aarch64 -> ld.lld -> tools/elf2nso.py, LZ4 compressed with hashes: the
 // loader's toolchain and linker script) into build/runtime/guests, and loads everything a test run needs.
-import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, mkdirSync, existsSync, writeFileSync, statSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { readFileSync, readdirSync, mkdirSync, existsSync, writeFileSync, statSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT, OUT, build } from "../../src/runtime/host/build.mts";
 import type { CorpusGuest } from "./cases.ts";
@@ -64,6 +64,14 @@ export function shaderArtifacts(): { library: boolean; translator: boolean; why:
 }
 export const haveNvn = (): boolean => existsSync(join(NVN_INCLUDE, "nvn.h"));
 
+// Modules also written with ZBIC segments (NSO flag bit 7, system 22.0.0 on) as <name>_zbic.nso: by the reference
+// codec when the `zbic` Python package is installed, else by elf2nso.py's own small compressor (--zbic-own).
+// hello_zbicfix.nso is test/runtime/fixtures/hello_zbic.nso, a file the reference codec made that is committed, so
+// that a stream with ZBIC's own table coding and Huffman literals is loaded and run where the package is missing.
+export const ZBIC_MODULES = ["hello", "two_main", "two_lib", "fsg"];
+export const ZBIC_FILES = [...ZBIC_MODULES.map(n => n + "_zbic"), "hello_zbicfix"];
+let zbicPackage: boolean | undefined;
+export const haveZbic = (): boolean => zbicPackage ??= spawnSync("python3", [join(ROOT, "test", "loader", "zbic_ref.py"), "check"], { cwd: ROOT }).status === 0;
 // modules stored without compression (elf2nso.py's own LZ4 is Python: too slow for tens of megabytes). large: the
 // module far larger than the fixed file staging range; the test fills and compresses it (large_nso.ts)
 export const STORED_MODULES: Record<string, [src: string, ...flags: string[]]> = { large: ["large.c"], wide: ["wide.c"] };
@@ -81,7 +89,9 @@ export function buildModules(): void {
     run("clang", [...CFLAGS, ...flags, "-c", join(SRC, src), "-o", o(name + ".o")]);
     run("ld.lld", [...LDFLAGS, o("crt0.o"), o(name + ".o"), o("svc.o"), "-o", o(name + ".so")]);
     run("python3", [join(ROOT, "tools", "elf2nso.py"), o(name + ".so"), o(name + ".nso"), "--lz4"]);
+    if (ZBIC_MODULES.includes(name)) run("python3", [join(ROOT, "tools", "elf2nso.py"), o(name + ".so"), o(name + "_zbic.nso"), "--zbic", ...(haveZbic() ? [] : ["--zbic-own"])]);
   }
+  copyFileSync(join(ROOT, "test", "runtime", "fixtures", "hello_zbic.nso"), o("hello_zbicfix.nso"));
   for (const [name, [src, ...flags]] of Object.entries(STORED_MODULES)) {
     if (existsSync(o(name + ".nso")) && statSync(o(name + ".nso")).mtimeMs > Math.max(...[src, "rt.h", "crt0.S", "svc.S"].map(f => statSync(join(SRC, f)).mtimeMs))) continue;   // 64 MB: built once
     run("clang", [...CFLAGS, ...flags, "-c", join(SRC, src), "-o", o(name + ".o")]);
