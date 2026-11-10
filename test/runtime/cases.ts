@@ -194,6 +194,16 @@ export function cases(env: Env): Case[] {
     return rt.modules.map(m => `${m.name}: ${hex(m.base)} + ${hex(m.imageSize)}, DT_INIT ${hex(m.init)}, ${m.initArray.length} init_array entries`);
   });
 
+  // ---- (sdk) ----
+  test("sdk start: a program with nnosInitialize and nnMain starts in nn::init::Start's order (os first, each module's DT_INIT only, in load order, then nnMain)", () => {
+    const rt = boot(["sdk_main", "two_lib"]);
+    exited(rt.run(), 7, rt);
+    eq(rt.stdout(), "_init_libc0 (os not up)\nnnosInitialize main thread handle=0x1001 x1=0\n_init_libc1 (os up)\nnninitInitializeSdkModule (os up)\n" +
+      "nninitStartup (os up)\n_init_libc2 (os up)\nmain: DT_INIT (os up)\nlib: DT_INIT\nnnMain (os up)\nlib_counter (5 + 1 by the library's DT_INIT only) = 6\n", "stdout");
+    noRed(rt);
+    return ["os, libc, nninitStartup, then DT_INIT of sdk_main and two_lib, then nnMain"];
+  });
+
   // ---- ZBIC: the segment compression of system 22.0.0 on (src/loader/zbic.ts) ----
   test("zbic: programs whose segments are ZBIC compressed (NSO flag bit 7) load with their hashes checked and run as their LZ4 builds do; the committed file of the reference codec too; a damaged one is a load fault", () => {
     const flags = (n: string) => new DataView(env.nso(n).buffer).getUint32(0x0C, true);
