@@ -2,7 +2,7 @@
 // Each case builds its own Runtime (translator + loader + kernel + runtime core on one linear memory), loads real NSO
 // files built from test/runtime/src and checks what the guest printed and how the process ended.
 import { Runtime, type RuntimeModules, type RuntimeOptions, type RunResult, type HostCpu } from "../../src/glue/rt_runtime.ts";
-import { RANGES, HOST_END, PCMAP, STUBS, GUEST } from "../../src/glue/rt_layout.ts";
+import { RANGES, HOST_END, STUBS, GUEST } from "../../src/glue/rt_layout.ts";
 
 export interface CorpusGuest { name: string; side: any; image: Uint8Array; expected: Uint8Array }
 export interface Env {
@@ -373,4 +373,4 @@ export function runCases(env: Env, only: string | undefined, report: (r: CaseRes
 export function formatResult(r: CaseResult): string {
   return (r.ok ? `ok   ${r.name} (${r.ms.toFixed(0)} ms)` : `[RED] FAIL ${r.name}\n${r.why}`) + r.info.map(l => "\n       " + l).join("");
 }
-export { PCMAP, STUBS };
+export { STUBS };

@@ -1,6 +1,6 @@
 // nxweb a64: scalar floating point and SIMD&FP register loads/stores.
 import {
-  b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, vmem, mem, fc, ar, cm, cst,
+  b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, vmem, mem, aw, moff, fc, ar, cm, cst,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, tf32, tf64, tv, emitCond, killCmp, optFma, optNan, gget,
   G_FPCR, F_NAN1S, F_NAN2S, F_NAN3S, F_RND, F_RARS, optRmArith,
   R_N, R_Z, R_C, R_V, R_V0, T_I32,
@@ -341,17 +341,17 @@ const A = 8;
 function loadVec(rt: i32, scale: u32): void {
   let a = t64(A);
   switch (scale) {
-    case 4: lget(a); b(0xA7); vmem(0x00); break;
-    case 3: lget(a); b(0xA7); vmem(0x5D); break;
-    case 2: lget(a); b(0xA7); vmem(0x5C); break;
-    case 1: v128c(0, 0); lget(a); b(0xA7); mem(0x2F); simd(0x1C); b(0); break;
-    default: v128c(0, 0); lget(a); b(0xA7); mem(0x2D); simd(0x1C); b(0); break;
+    case 4: lget(a); aw(); vmem(0x00); break;
+    case 3: lget(a); aw(); vmem(0x5D); break;
+    case 2: lget(a); aw(); vmem(0x5C); break;
+    case 1: v128c(0, 0); lget(a); aw(); mem(0x2F); simd(0x1C); b(0); break;
+    default: v128c(0, 0); lget(a); aw(); mem(0x2D); simd(0x1C); b(0); break;
   }
   vset(rt);
 }
 function storeVec(rt: i32, scale: u32): void {
   let a = t64(A);
-  lget(a); b(0xA7); vget(rt);
+  lget(a); aw(); vget(rt);
   if (scale == 4) vmem(0x0B); else { vmem(0x58 + scale); b(0); }
 }
 
@@ -373,13 +373,13 @@ function structLoadStore(insn: u32): bool {
     }
     let bytes: i32 = Q ? 16 : 8;
     if (selem > 1 && size == 3 && !Q) return false;
-    getXsp(rn, true); ltee(a); b(0xA7); lset(a32);
+    getXsp(rn, true); ltee(a); aw(); lset(a32);
     total = n * selem * bytes;
     if (selem == 1) {
       for (let i = 0; i < n; i++) {
         let r = (rt + i) & 31;
-        if (L) { lget(a32); simd(Q ? 0x00 : 0x5D); b(0); leb(i * bytes); vset(r); }
-        else { lget(a32); vget(r); if (Q) { simd(0x0B); b(0); leb(i * bytes); } else { simd(0x5B); b(0); leb(i * bytes); b(0); } }
+        if (L) { lget(a32); simd(Q ? 0x00 : 0x5D); b(0); moff(i * bytes); vset(r); }
+        else { lget(a32); vget(r); if (Q) { simd(0x0B); b(0); moff(i * bytes); } else { simd(0x5B); b(0); moff(i * bytes); b(0); } }
       }
     } else {
       let elems: i32 = bytes >> size, eb: i32 = 1 << size;
@@ -387,10 +387,10 @@ function structLoadStore(insn: u32): bool {
         let r = (rt + s) & 31;
         if (L) {
           v128c(0, 0); lset(T);
-          for (let e = 0; e < elems; e++) { lget(a32); lget(T); simd(0x54 + size); b(0); leb((e * selem + s) * eb); b(e); lset(T); }
+          for (let e = 0; e < elems; e++) { lget(a32); lget(T); simd(0x54 + size); b(0); moff((e * selem + s) * eb); b(e); lset(T); }
           lget(T); vset(r);
         } else {
-          for (let e = 0; e < elems; e++) { lget(a32); vget(r); simd(0x58 + size); b(0); leb((e * selem + s) * eb); b(e); }
+          for (let e = 0; e < elems; e++) { lget(a32); vget(r); simd(0x58 + size); b(0); moff((e * selem + s) * eb); b(e); }
         }
       }
     }
@@ -413,15 +413,15 @@ function structLoadStore(insn: u32): bool {
     }
     let eb: i32 = 1 << scale;
     total = selem * eb;
-    getXsp(rn, true); ltee(a); b(0xA7); lset(a32);
+    getXsp(rn, true); ltee(a); aw(); lset(a32);
     for (let s = 0; s < selem; s++) {
       let r = (rt + s) & 31;
       if (repl) {
-        lget(a32); simd(0x07 + scale); b(0); leb(s * eb);
+        lget(a32); simd(0x07 + scale); b(0); moff(s * eb);
         if (!Q) { v128c(~(<u64>0), 0); simd(0x4E); }
         vset(r);
-      } else if (L) { lget(a32); vget(r); simd(0x54 + scale); b(0); leb(s * eb); b(index); vset(r); }
-      else { lget(a32); vget(r); simd(0x58 + scale); b(0); leb(s * eb); b(index); }
+      } else if (L) { lget(a32); vget(r); simd(0x54 + scale); b(0); moff(s * eb); b(index); vset(r); }
+      else { lget(a32); vget(r); simd(0x58 + scale); b(0); moff(s * eb); b(index); }
     }
   }
   if (post) {

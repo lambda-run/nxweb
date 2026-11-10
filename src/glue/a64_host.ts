@@ -35,6 +35,7 @@ export interface A64Options {
   shared?: boolean;             // memory is shared: modules import it as shared, exclusives and LDAR/STLR are atomic
   cntYield?: boolean;           // `mrs cntpct_el0` is a yield point (see README)
   preciseFaults?: 0 | 1 | 2;    // 1: pc written before every memory instruction; 2: registers too (default 0: side table)
+  guardBase?: number;           // guest data accesses below this address trap (default 0 = off): the embedder's host area
   // called by the index-0 trampoline when a pc has no translation yet; returns a table index.
   // Default: translate (or take from the cache) a unit for pc. Return A64Host.STOP to stop instead.
   onTranslate?: (pc: bigint) => number;
@@ -63,7 +64,7 @@ export interface A64Unit {
 export interface A64Fault { pc: number; unit: A64Unit; funcPc: number; offset: number }
 
 const OPT = { pcmapBase: 0, entryBase: 1, regionLo: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8, chunk: 9, rmArith: 10,
-              regionSize: 11, shared: 12, cntYield: 13, precise: 14 };
+              regionSize: 11, shared: 12, cntYield: 13, precise: 14, guard: 15 };
 const L1_BYTES = 0x40000, LEAF = 0x10000;
 export const A64_CACHE_VERSION = 3;   // bump when the translator's output changes
 
@@ -145,6 +146,7 @@ export class A64Host {
     if (o.shared !== undefined) t.setOpt(OPT.shared, o.shared ? 1 : 0);
     if (o.cntYield !== undefined) t.setOpt(OPT.cntYield, o.cntYield ? 1 : 0);
     if (o.preciseFaults !== undefined) t.setOpt(OPT.precise, o.preciseFaults);
+    if (o.guardBase !== undefined) t.setOpt(OPT.guard, o.guardBase);
     Object.assign(this.opts, o);
   }
 
@@ -152,7 +154,7 @@ export class A64Host {
   optionsKey(): string {
     const o = this.opts, l = this.lay;
     return [A64_CACHE_VERSION, l.pcmapBase, o.maxInsns ?? "", o.maxFuncs ?? "", o.chunk ?? "", o.fma ?? "", o.tailCalls ?? "", o.nanFix ?? "",
-            o.rmodeArith ?? "", o.depthLimit ?? "", o.shared ?? "", o.cntYield ?? "", o.preciseFaults ?? ""].join(".");
+            o.rmodeArith ?? "", o.depthLimit ?? "", o.shared ?? "", o.cntYield ?? "", o.preciseFaults ?? "", o.guardBase ?? ""].join(".");
   }
 
   // ---- pc map (two levels: 64 KB leaves, allocated on demand) ----

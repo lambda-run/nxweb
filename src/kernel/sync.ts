@@ -54,7 +54,7 @@ export function wake(t: KThread, res: u64): void {
     t.setX(0, res); t.setX(1, t.widx >= 0 ? <u64>t.widx : 0);
     const n = t.wn; t.wn = 0;
     for (let i = 0; i < n; i++) syncClose(t.wobj(i));
-  } else if (kind == WK_CLOCK) { t.setX(0, guestTicks()); t.setX(1, guestTicks()); }
+  } else if (kind == WK_CLOCK) { if (!t.quiet) { t.setX(0, guestTicks()); t.setX(1, guestTicks()); } t.quiet = false; }
   else if (kind != WK_SLEEP) t.setX(0, res);
   t.deadline = FOREVER; t.wowner = -1;
   t.m.step(KthreadE.Wake);

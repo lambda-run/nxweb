@@ -4,7 +4,7 @@
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
 import { A64Host } from "./a64_host.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
-import { RANGES, HOST_END, GUEST, PCMAP, STUBS, A64, range } from "./rt_layout.ts";
+import { RANGES, HOST_END, GUEST, STUBS, A64, range } from "./rt_layout.ts";
 
 export interface RuntimeModules {
   rt: WebAssembly.Module; kernel: WebAssembly.Module; loader: WebAssembly.Module;
@@ -16,7 +16,7 @@ export interface RuntimeOptions {
   clock?: "deterministic" | "wall";   // deterministic (default): guest time is a function of executed budget
   nsPerUnit?: number;                 // deterministic clock: ns per budget unit (default 100)
   mainStackSize?: number;             // default 1 MB
-  codeBase?: number;                  // where the modules are mapped from (default 0x0800_0000; tests move it past the pc map)
+  codeBase?: number;                  // where the modules are mapped from (default 0x0800_0000)
   reserve4g?: boolean;                // allocate the whole 4 GB at once instead of growing on demand (default false)
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
@@ -117,7 +117,6 @@ export class Runtime {
   private unresolvedSeen = new Set<string>();
   private pending = new Map<number, (r: WaitResult, cpu: HostCpu) => HostResult>();   // thread index -> the resume of its host-call wait
   private text: { lo: number; hi: number }[] = [];
-  private far = new Map<number, number>();    // translated entry pcs the pc map does not cover
   private thunk = 0;
   private cur = 0;                    // context block of the thread in core
   private curIndex = -1;
@@ -366,8 +365,6 @@ export class Runtime {
   private onTranslate(pc: bigint): number {
     const p = Number(pc & M32);
     if (pc <= M32 && p >= STUBS.base && p < HOST_END) return this.thunk;
-    const known = this.far.get(p);
-    if (known !== undefined && pc <= M32) return known;
     if (pc > M32 || (p & 3) || !this.inText(p)) {
       this.fault(FAULT.jump, `${hex(pc)} is not in the text of a loaded module (called or returned to from near x30=${hex(this.core.x30.value)})`, pc);
       return A64Host.STOP;

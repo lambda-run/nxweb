@@ -13,7 +13,7 @@ import { guestTicks, clockReasons, entropy64, REASON_BACKGROUND } from "./clock"
 import * as mem from "./mem";
 
 // ---- the process ----
-export const STOP_NONE: i32 = 0, STOP_EXIT: i32 = 1, STOP_BREAK: i32 = 2;
+export const STOP_NONE: i32 = 0, STOP_EXIT: i32 = 1, STOP_BREAK: i32 = 2, STOP_KILL: i32 = 3;
 export let stopReason: i32 = STOP_NONE;
 export let exitCode: i32 = 0;
 export let programId: u64 = 0;
@@ -389,17 +389,7 @@ export function svc(t: KThread, n: i32): void {
       if (s.waitKind == WK_SYNC) wake(s, R_CANCELLED); else s.cancel = true;
       break;
     }
-    case 0x16: {  // CloseHandle(w0): always success, as nxnative
-      const h = <u32>x0, ty = hType(h);
-      if (ty == O_EVENT_R || ty == O_EVENT_W) { evRelease(<i32>hObj(h)); hFree(h); }
-      else if (ty == O_THREAD) {
-        const s = thr(<i32>hObj(h));
-        hFree(h);
-        s.closed = true;
-        if (s.exited && !s.syncRefs) threadFree(s);
-      } else if (ty == O_SESSION) hFree(h);
-      break;
-    }
+    case 0x16: closeHandle(<u32>x0); break;   // CloseHandle(w0): always success, as nxnative
 
     default:
       if (once(n)) {
@@ -412,6 +402,27 @@ export function svc(t: KThread, n: i32): void {
 
 // ---- what the embedder's services do with events (nxnative hle_new_event, hle_dup_readable_handle) ----
 // A new event: its readable handle; its writable handle is stored at writeOut unless that is 0
+// CloseHandle, for the SVC and for the embedder (kernel_handle_close). False when h is no handle.
+export function closeHandle(h: u32): bool {
+  const ty = hType(h);
+  if (ty == O_EVENT_R || ty == O_EVENT_W) { evRelease(<i32>hObj(h)); hFree(h); }
+  else if (ty == O_THREAD) {
+    const s = thr(<i32>hObj(h));
+    hFree(h);
+    s.closed = true;
+    if (s.exited && !s.syncRefs) threadFree(s);
+  } else if (ty == O_SESSION) hFree(h);
+  else return false;
+  return true;
+}
+// A counter read (`mrs cntpct_el0`) by running thread t while the app is in the background: the thread waits for the
+// clock as GetSystemTick does, but its wake writes no result (the embedder runs the read again). False: no wait.
+export function clockWait(t: KThread): bool {
+  if (!(clockReasons() & (1 << REASON_BACKGROUND))) return false;
+  t.quiet = true;
+  block(t, WK_CLOCK, -1);
+  return true;
+}
 export function hostEventNew(writeOut: usize): u32 {
   const e = evNew(writeOut ? 2 : 1);
   if (e < 0) return 0;

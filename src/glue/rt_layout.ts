@@ -54,5 +54,4 @@ export const A64 = {
   entryBitsBase: range("a64 entry bits").lo, codeRegionLo: GUEST.codeBase, codeRegionSize: 0x1000_0000,
   pcmapBase: range("pc map").lo, pcmapEnd: range("pc map").hi,
 };
-export const PCMAP = { base: range("pc map").lo, codeLo: range("host stubs").lo, size: range("pc map").hi - range("pc map").lo };
 export const STUBS = { base: range("host stubs").lo, cap: (range("host stubs").hi - range("host stubs").lo) >>> 2 };

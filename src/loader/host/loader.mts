@@ -17,6 +17,7 @@ export interface LoaderExports extends KitExports {
   ld_module_count(): number; ld_loaded_count(): number; ld_loaded_at(i: number): number;
   ld_lookup(name: number, len: number): bigint; ld_lookup_in(h: number, name: number, len: number): bigint; ld_lookup_module(): number;
   ld_unresolved(h: number, out: number, cap: number): number;
+  ld_code_entries(h: number, out: number, cap: number): number;
   ld_error_ptr(): number; ld_error_len(): number; ld_error_clear(): void;
   ld_faults(): number; ld_arena_used(): number; ld_heap_base(): number;
   ld_sha256(ptr: number, len: number, out: number): void;
@@ -157,6 +158,13 @@ export class Loader {
     const n = this.check(this.x.ld_unresolved(h, this.scratch, cap));
     const ids = Array.from({ length: Math.min(n, cap) }, (_, i) => this.dv.getUint32(this.scratch + 4 * i, true));
     return ids.map(id => this.hostFunction(id));
+  }
+
+  // The function entries the loader knows of a relocated module (function symbols, init / fini functions, relative
+  // relocations into the text), for the translator's addCode({ entries }). out/cap: free linear memory for the list.
+  codeEntries(h: number, out: number, cap: number): Uint32Array {
+    const n = this.check(this.x.ld_code_entries(h, out, cap));
+    return new Uint32Array(this.x.memory.buffer, out, Math.min(n, cap)).slice();
   }
 
   // Load a set of modules as at process start: parse all, map all in the given order (the symbol lookup order; on the

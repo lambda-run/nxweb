@@ -9,8 +9,8 @@ import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, sch
 import { syncInit, expire, nextDeadline, wakeClockWaiters } from "./sync";
 import { clockInit, clockSetNow, clockFreeze, clockReasons, guestNs, guestTicks, hostTimeOf, entropySeed, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
-import { svc, procInit, setMainThread, isMainThread, threadExit, stopProcess, stopReason, exitCode, STOP_NONE, STOP_EXIT,
-  hostEventNew, hostDupReadable, hostEventSignal, hostEventClear } from "./svc";
+import { svc, procInit, setMainThread, isMainThread, threadExit, stopProcess, stopReason, exitCode, STOP_NONE, STOP_EXIT, STOP_KILL,
+  hostEventNew, hostDupReadable, hostEventSignal, hostEventClear, closeHandle, clockWait } from "./svc";
 
 export const KERNEL_ACT_CONTINUE: i32 = ACT_CONTINUE;
 export const KERNEL_ACT_SWITCH: i32 = ACT_SWITCH;
@@ -148,6 +148,18 @@ export function kernel_guest_ns(): u64 { kLock(); const v = guestNs(); kUnlock()
 // guest read must wait: make the thread yield instead of reading.
 export function kernel_guest_ticks(): u64 { kLock(); const v = guestTicks(); kUnlock(); return v; }
 export function kernel_seed_entropy(seed: u64): void { entropySeed(seed); }
+// `mrs cntpct_el0` of the running thread whose context block is at ctx (saved with pc = the instruction itself, the
+// translator's cntYield): while the background freeze holds, the thread waits for the clock and KERNEL_ACT_SWITCH is
+// returned; its wake changes no register, so the embedder resumes it at the read. Otherwise KERNEL_ACT_CONTINUE.
+export function kernel_clock_wait(ctx: usize): i32 {
+  kLock();
+  let act = ACT_CONTINUE;
+  const t = threadOfCtx(ctx);
+  if (stopReason != STOP_NONE) act = ACT_STOP;
+  else if (t != null && t.state == KthreadS.Running && clockWait(t)) act = ACT_SWITCH;
+  kUnlock();
+  return act;
+}
 
 // ---- memory the embedder tells the kernel about ----
 // A loaded image: [base, base+ro) code, [base+ro, base+data) read-only data, [base+data, base+size) data and bss.
@@ -179,8 +191,15 @@ export function kernel_event_dup_readable(h: u32): u32 { kLock(); const r = host
 export function kernel_event_signal(h: u32): i32 { kLock(); const r = hostEventSignal(h); kUnlock(); return r ? 1 : 0; }
 export function kernel_event_clear(h: u32): i32 { kLock(); const r = hostEventClear(h); kUnlock(); return r ? 1 : 0; }
 
+// CloseHandle by the embedder, for the handles its services made (kernel_event_new, kernel_event_dup_readable) or
+// took over: 1 = closed, 0 = no such handle. An event goes away with its last handle and wait.
+export function kernel_handle_close(h: u32): i32 { kLock(); const r = closeHandle(h); kUnlock(); return r ? 1 : 0; }
+// The embedder ends the process (the page's stop): every thread leaves whatever it was doing, as at ExitProcess.
+// kernel_stop_reason() is 3 afterwards; nothing runs any more. No effect on a process that has ended.
+export function kernel_kill(): void { kLock(); if (stopReason == STOP_NONE) stopProcess(STOP_KILL, 0); kUnlock(); }
+
 // ---- state for the embedder, tests and dumps ----
-export function kernel_stop_reason(): i32 { return stopReason; }   // 0 running, 1 ExitProcess, 2 Break
+export function kernel_stop_reason(): i32 { return stopReason; }   // 0 running, 1 ExitProcess, 2 Break, 3 killed by the embedder
 export function kernel_exit_code(): i32 { return exitCode; }
 // The thread index of a thread handle, -1 when it is none
 export function kernel_thread_index(h: u32): i32 { return hPeek(h, O_THREAD); }

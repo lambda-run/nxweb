@@ -745,6 +745,42 @@ export function unresolved(h: i32, out: u32, cap: u32): i32 {
   return <i32>count;
 }
 
+// The function entries the loader knows of a relocated module, for a translator: defined dynamic symbols of type
+// FUNC, DT_INIT / DT_FINI, the init and fini arrays, and every relative relocation (RELA and RELR) whose value points
+// into the text. Guest addresses (u32, 4-byte aligned, inside the text; not deduplicated) are written to out, at most
+// cap; returns how many there are.
+export function codeEntries(h: i32, out: u32, cap: u32): i32 {
+  const m = modOf(h);
+  if (!changetype<usize>(m) || !inMemory(out, <u64>cap * 4)) return ERR_ARG;
+  if (!m.relocated) return 0;
+  const base = <u64>m.base, lo = base + <u64>m.mo0, hi = lo + <u64>m.sz0;
+  let count: u32 = 0;
+  for (let pass: u32 = 0; pass < 5; pass++) {
+    let n: u64 = 0;
+    if (pass == 0) n = m.nsym; else if (pass == 1) n = m.relaN; else if (pass == 2) n = m.relrN; else if (pass == 3) n = <u64>m.initArrayN + <u64>m.finiArrayN; else n = 2;
+    let where: u64 = 0, started = false;
+    for (let i: u64 = 0; i < n; i++) {
+      let v: u64 = 0, bits: u64 = 0;
+      if (pass == 0) { if (!i || (symInfo(m, <u32>i) & 15) != 2 || !symShndx(m, <u32>i) || symShndx(m, <u32>i) == SHN_ABS) continue; v = symAddr(m, <u32>i); }
+      else if (pass == 1) { const e = <u64>m.rela + i * RELA; if (<u32>rd64(m, e + 8) != R_RELATIVE) continue; v = base + rd64(m, e + 16); }
+      else if (pass == 2) {
+        const e = rd64(m, <u64>m.relr + i * 8);
+        if (!(e & 1)) { v = rd64(m, e); where = e + 8; started = true; }
+        else { if (!started) continue; bits = e; }
+      }
+      else if (pass == 3) v = i < <u64>m.initArrayN ? rd64(m, <u64>m.initArray + i * 8) : rd64(m, <u64>m.finiArray + (i - <u64>m.initArrayN) * 8);
+      else { if (!(m.have & (i ? HAVE_FINI : HAVE_INIT))) continue; v = base + <u64>(i ? m.fini : m.init); }
+      for (let b: u64 = 0; ; b++) {
+        if (bits) { bits >>= 1; if (!bits) break; if (!(bits & 1)) continue; v = rd64(m, where + b * 8); }
+        if (v >= lo && v < hi && !(v & 3)) { if (count < cap) store<u32>(<usize>out + (<usize>count << 2), <u32>v); count++; }
+        if (!bits) break;
+      }
+      if (pass == 2 && (rd64(m, <u64>m.relr + i * 8) & 1) && started) where += 63 * 8;
+    }
+  }
+  return <i32>count;
+}
+
 // Facts about a module. Addresses are guest addresses (0 when the module has no such thing or is not mapped).
 export namespace Info {
   export const Kind: u32 = 0;             // 1 NSO, 2 NRO

@@ -11,7 +11,7 @@
     "guests:build": "python3 tools/build_guests.py",
     "guests:check": "python3 tools/build_guests.py --check",
     "guests:run": "python3 tools/ref_run.py",
-    "a64:build": "asc src/a64/index.ts -o build/a64/translator.wasm -O2 --runtime stub --enable simd --importMemory --zeroFilledMemory --memoryBase 87031808 && asc src/a64/helpers.ts -o build/a64/helpers.wasm -O2 --runtime stub --enable simd --importMemory --zeroFilledMemory --memoryBase 103809024 --enable relaxed-simd --disableWarning 112 && asc src/a64/index.ts -o build/a64/translator.shared.wasm -O2 --runtime stub --enable simd --importMemory --zeroFilledMemory --memoryBase 87031808 --sharedMemory --maximumMemory 65536 --enable threads && asc src/a64/helpers.ts -o build/a64/helpers.shared.wasm -O2 --runtime stub --enable simd --importMemory --zeroFilledMemory --memoryBase 103809024 --sharedMemory --maximumMemory 65536 --enable threads --enable relaxed-simd --disableWarning 112",
+    "a64:build": "node src/a64/host/build.mts",
     "a64:fuzz": "npm run -s a64:build && python3 test/a64/fuzz.py",
     "a64:guests:build": "python3 test/a64/guests/build.py",
     "a64:guests": "npm run -s a64:build && npm run -s a64:guests:build && node test/a64/guests_run.ts; a=$?; echo '--- again with budget=50 (forced preemption) ---'; node test/a64/guests_run.ts --budget 50 --quiet; b=$?; echo '--- again without wasm tail calls ---'; node test/a64/guests_run.ts --notail --quiet; c=$?; echo '--- again on a shared memory (atomic exclusives) ---'; node test/a64/guests_run.ts --shared --quiet; d=$?; echo '--- translator feature tests ---'; node test/a64/extra_run.ts; e=$?; exit $((a|b|c|d|e))",

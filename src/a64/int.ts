@@ -3,7 +3,7 @@ import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, mem, ar, cm, cst, fc,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, tw, ifVoid, ifT, els, end,
   flagsAddSub, addCarry, flagsNZ, setNZCVconst, emitCond, killCmp,
-  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield,
+  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield, optGuard, aw, moff,
   R_N, R_Z, R_C, R_V, G_FPCR, G_FPSR, G_TPIDR, G_TPIDRRO, G_EXADDR, G_EXVAL, G_EXVAL2,
   F_BRK, F_CNTPCT, F_CRC, T_I32, T_I64,
 } from "./emit";
@@ -468,6 +468,7 @@ export function trBranchSys(pc: u64, insn: u32): bool {
   if ((insn & 0xFFF80000) == 0xD5080000) { // SYS
     let key = (insn >> 5) & 0x3FFF;      // op1 CRn CRm op2
     if (key == 0x1BA1) {                 // DC ZVA  (op1=3 C7 C4 1)
+      if (optGuard) { getX(rt, true); i64c(-64); b(0x83); aw(); mem(0x2D); b(0x1A); }
       getX(rt, true); i64c(-64); b(0x83); b(0xA7); i32c(0); i32c(64); fc(11); b(0);
       return true;
     }
@@ -483,7 +484,7 @@ export function trBranchSys(pc: u64, insn: u32): bool {
 const A = 8;   // temp slot for address
 // stack: (i64 addr on stack) -> value loaded into rt
 function loadInt(rt: i32, size: u32, sgn: bool, to64: bool): void {
-  b(0xA7);
+  aw();
   if (!sgn) { mem(size == 0 ? 0x31 : size == 1 ? 0x33 : size == 2 ? 0x35 : 0x29); }
   else if (to64) { mem(size == 0 ? 0x30 : size == 1 ? 0x32 : 0x34); }
   else { mem(size == 0 ? 0x2C : 0x2E); b(0xAD); }
@@ -491,7 +492,7 @@ function loadInt(rt: i32, size: u32, sgn: bool, to64: bool): void {
 }
 // stack: i64 addr ; then value pushed by this fn -> store
 function storeInt(rt: i32, size: u32): void {
-  b(0xA7); getX(rt, true); mem(size == 0 ? 0x3C : size == 1 ? 0x3D : size == 2 ? 0x3E : 0x37);
+  aw(); getX(rt, true); mem(size == 0 ? 0x3C : size == 1 ? 0x3D : size == 2 ? 0x3E : 0x37);
 }
 
 function exclusive(insn: u32): bool {
@@ -506,9 +507,9 @@ function exclusive(insn: u32): bool {
     if (o1) return false; // CAS family
     getXsp(rn, true);
     if (!optShared) { if (L) loadInt(rt, size, false, true); else storeInt(rt, size); return true; }
-    b(0xA7);
-    if (L) { b(0xFE); b(ald); b(size); b(0); setX(rt, true); }
-    else { getX(rt, true); b(0xFE); b(ast); b(size); b(0); }
+    aw();
+    if (L) { b(0xFE); b(ald); b(size); moff(0); setX(rt, true); }
+    else { getX(rt, true); b(0xFE); b(ast); b(size); moff(0); }
     return true;
   }
   let ld: u32 = size == 0 ? 0x31 : size == 1 ? 0x33 : size == 2 ? 0x35 : 0x29;
@@ -518,10 +519,10 @@ function exclusive(insn: u32): bool {
   getXsp(rn, true); lset(a);
   if (L) {
     lget(a); gset(G_EXADDR);
-    lget(a); b(0xA7); if (optShared) { b(0xFE); b(ald); b(size); b(0); } else mem(ld);
+    lget(a); aw(); if (optShared) { b(0xFE); b(ald); b(size); moff(0); } else mem(ld);
     let v = t64(0); ltee(v); gset(G_EXVAL);
     if (o1) {
-      lget(a); i64c(step); b(0x7C); b(0xA7); if (optShared) { b(0xFE); b(ald); b(size); b(0); } else mem(ld);
+      lget(a); i64c(step); b(0x7C); aw(); if (optShared) { b(0xFE); b(ald); b(size); moff(0); } else mem(ld);
       let v2 = t64(1); ltee(v2); gset(G_EXVAL2);
       lget(v); setX(rt, true); lget(v2); setX(rt2, true);
     } else { lget(v); setX(rt, true); }
@@ -534,16 +535,16 @@ function exclusive(insn: u32): bool {
     if (o1) { getX(rt2, true); lset(s2); }
     lget(a); gget(G_EXADDR); b(0x51);
     b(0x04); b(T_I32);
-    lget(a); b(0xA7); gget(G_EXVAL); lget(s1); b(0xFE); b(acx); b(size); b(0); gget(G_EXVAL); b(0x51);
+    lget(a); aw(); gget(G_EXVAL); lget(s1); b(0xFE); b(acx); b(size); moff(0); gget(G_EXVAL); b(0x51);
     b(0x05); i32c(0); b(0x0B);
     lset(ok);
     if (o1) {
       // second word; a pair cannot be one atomic operation: if the second exchange loses, the first is put back
       lget(ok);
       b(0x04); b(0x40);
-      lget(a); i64c(step); b(0x7C); b(0xA7); gget(G_EXVAL2); lget(s2); b(0xFE); b(acx); b(size); b(0); gget(G_EXVAL2); b(0x52);
+      lget(a); i64c(step); b(0x7C); aw(); gget(G_EXVAL2); lget(s2); b(0xFE); b(acx); b(size); moff(0); gget(G_EXVAL2); b(0x52);
       b(0x04); b(0x40);
-      lget(a); b(0xA7); lget(s1); gget(G_EXVAL); b(0xFE); b(acx); b(size); b(0); b(0x1A);
+      lget(a); aw(); lget(s1); gget(G_EXVAL); b(0xFE); b(acx); b(size); moff(0); b(0x1A);
       i32c(0); lset(ok);
       b(0x0B);
       b(0x0B);
@@ -556,8 +557,8 @@ function exclusive(insn: u32): bool {
   let ok = t32(0);
   lget(a); gget(G_EXADDR); b(0x51);
   b(0x04); b(T_I32);
-  lget(a); b(0xA7); mem(ld); gget(G_EXVAL); b(0x51);
-  if (o1) { lget(a); i64c(step); b(0x7C); b(0xA7); mem(ld); gget(G_EXVAL2); b(0x51); b(0x71); }
+  lget(a); aw(); mem(ld); gget(G_EXVAL); b(0x51);
+  if (o1) { lget(a); i64c(step); b(0x7C); aw(); mem(ld); gget(G_EXVAL2); b(0x51); b(0x71); }
   b(0x05); i32c(0); b(0x0B);
   lset(ok);
   // values to store are read unconditionally, the store itself is conditional
@@ -566,8 +567,8 @@ function exclusive(insn: u32): bool {
   if (o1) { getX(rt2, true); lset(s2); }
   lget(ok);
   b(0x04); b(0x40);
-  lget(a); b(0xA7); lget(s1); mem(st);
-  if (o1) { lget(a); i64c(step); b(0x7C); b(0xA7); lget(s2); mem(st); }
+  lget(a); aw(); lget(s1); mem(st);
+  if (o1) { lget(a); i64c(step); b(0x7C); aw(); lget(s2); mem(st); }
   b(0x0B);
   i64c(-1); gset(G_EXADDR);
   lget(ok); b(0x45); b(0xAD); setX(rs, true);
@@ -600,7 +601,7 @@ export function trLoadStoreInt(pc: u64, insn: u32): bool {
     lset(a);
     if (L) {
       let v = t64(0);
-      lget(a); b(0xA7); mem(sz == 3 ? 0x29 : opc == 1 ? 0x34 : 0x35); lset(v);
+      lget(a); aw(); mem(sz == 3 ? 0x29 : opc == 1 ? 0x34 : 0x35); lset(v);
       lget(a); i64c(<i64>1 << sz); b(0x7C); loadInt(rt2, sz, opc == 1, true);
       if (rt != rt2) { lget(v); setX(rt, true); }
     } else {

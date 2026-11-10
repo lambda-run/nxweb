@@ -50,6 +50,7 @@ export class KThread {
   handle: u32;        // the handle CreateThread returned (for logs)
   index: i32;
   used: bool; cancel: bool; closed: bool; yieldAny: bool;
+  quiet: bool;        // the clock wait in progress was made by the embedder for a counter read: its wake leaves x0 / x1 alone
 
   // @ts-ignore: decorator
   @inline get m(): Inst { return Inst.at(changetype<usize>(this)); }

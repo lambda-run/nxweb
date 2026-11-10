@@ -42,6 +42,7 @@ export function ld_lookup(name: u32, len: u32): u64 { return L.lookup(name, len)
 export function ld_lookup_in(h: i32, name: u32, len: u32): u64 { return L.lookupIn(h, name, len); }
 export function ld_lookup_module(): i32 { return L.lookupModule(); }
 export function ld_unresolved(h: i32, out: u32, cap: u32): i32 { return L.unresolved(h, out, cap); }
+export function ld_code_entries(h: i32, out: u32, cap: u32): i32 { return L.codeEntries(h, out, cap); }
 
 // diagnostics
 export function ld_error_ptr(): u32 { return <u32>errorPtr(); }

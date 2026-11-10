@@ -38,6 +38,7 @@ export let optRmArith: bool = true; // scalar FADD/FSUB/FMUL/FDIV/FSQRT honour F
 export let optDepth: i32 = 160;     // nested guest calls before a call unwinds through the run loop (0 = off)
 export let optShared: bool = false; // modules import a shared memory; exclusives and LDAR/STLR are atomic
 export let optCntYield: bool = false; // `mrs cntpct_el0` is a yield point (write back, pc = the instruction, pc check after the import)
+export let optGuard: u32 = 0;       // guest data accesses below this address trap (0 = off): the host area of the shared memory
 export let optPrecise: i32 = 0;     // 1: pc is written before every memory instruction; 2: dirty registers too
 
 export function setOpt(id: i32, v: u32): void {
@@ -57,6 +58,7 @@ export function setOpt(id: i32, v: u32): void {
     case 12: optShared = v != 0; break;
     case 13: optCntYield = v != 0; break;
     case 14: optPrecise = <i32>v; break;
+    case 15: optGuard = v; break;
   }
 }
 
@@ -181,8 +183,13 @@ export function lset(i: u32): void { b(0x21); leb(i); }
 export function ltee(i: u32): void { b(0x22); leb(i); }
 export function gget(i: u32): void { b(0x23); leb(i); }
 export function gset(i: u32): void { b(0x24); leb(i); }
-export function mem(op: u32): void { b(op); b(0); b(0); }
-export function vmem(op: u32): void { simd(op); b(0); b(0); }
+export function mem(op: u32): void { b(op); b(0); leb(optGuard); }
+export function vmem(op: u32): void { simd(op); b(0); leb(optGuard); }
+// Guest data address on the stack: i64 -> i32. With optGuard the address is biased by -optGuard and every memory
+// instruction carries the offset optGuard (mem, vmem, moff): an address below optGuard wraps to 4 GB or more and
+// the access traps (the effective address is computed without wrapping), at the cost of one subtraction.
+export function aw(): void { b(0xA7); if (optGuard) { i32c(<i32>optGuard); b(0x6B); } }
+export function moff(o: u32): void { leb(o + optGuard); }
 export function fc(op: u32): void { b(0xFC); leb(op); }
 // @ts-ignore
 @inline export function op(x: u32): void { b(x); }
