@@ -123,6 +123,7 @@ try {
         const why = await text("why"), red = await q.locator("#log .red").count(), more = await text("more");
         if (why !== "killed") throw new Error("why: " + why);
         if (!/\d+ translated units from the cache/.test(more)) throw new Error("the later runs did not start from the translation cache: " + more);
+        if (/read-only|no OPFS/.test(more)) throw new Error("the save containers of the run before were not released: " + more);
         if (red) throw new Error(red + " red log lines: " + (await q.locator("#log .red").allTextContents()).join(" | "));
         if (errors.length) throw new Error("page errors: " + errors.join(" | "));
         console.log(`ok   ${name} (${Date.now() - t0} ms)\n       ${fps.toFixed(1)} frames/s; instructions/s readout: ${ips}\n       per frame: ${split}\n       ${gpu}; canvas ${await shot()}; screenshot build/runtime/web.png\n       last run: ${more}`);

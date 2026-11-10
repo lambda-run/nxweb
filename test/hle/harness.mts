@@ -64,7 +64,7 @@ export class Hle {
   // a loaded module of the fake loader: its exports, the guest functions to call for init and fini
   nros = new Map<bigint, { image: bigint; size: number; sha: string; alone: boolean; syms: Map<string, bigint>; init: bigint[]; fini: bigint[]; active: boolean }>();
   nroPlan: ((image: bigint, size: number, sha: string, alone: boolean) => { syms?: Record<string, bigint>; init?: bigint[]; fini?: bigint[] } | null) | null = null;
-  roLog: string[] = [];
+  roLog: string[] = []; nroSerial = 0;
   jit = { allocs: [] as { rx: bigint; ro: bigint; rxSize: bigint; roSize: bigint }[], written: [] as [bigint, bigint, bigint][], freed: [] as bigint[], fail: false };
   private base: number; private top: number;
 
@@ -104,7 +104,7 @@ export class Hle {
         const hex = Buffer.from(sha).toString("hex"), plan = t.nroPlan ? t.nroPlan(image, size, hex, alone) : {};
         t.roLog.push(`load ${hex.slice(0, 8)}${alone ? " alone" : ""}`);
         if (!plan) return 0n;
-        const token = 0x7100_0000n + BigInt(t.nros.size + 1) * 0x10000n;
+        const token = 0x7100_0000n + BigInt(++t.nroSerial) * 0x10000n;
         t.nros.set(token, { image, size, sha: hex, alone, syms: new Map(Object.entries(plan.syms ?? {})), init: plan.init ?? [], fini: plan.fini ?? [], active: false });
         return token;
       },

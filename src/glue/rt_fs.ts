@@ -55,7 +55,8 @@ export class RtFs {
     this.x.fs_set_account_save(-1);
     this.stats.names = names.length;
     // the storage's handles (OPFS access handles are exclusive) go with the process
-    rt.onDispose(() => this.host.closeDevices());
+    // (and the storage's own: a container opened ahead of its mount is the storage's until something mounts it)
+    rt.onDispose(() => { this.host.closeDevices(); (storage as { close?: () => void }).close?.(); });
   }
   private call(id: number, cpu: HostCpu): HostResult {
     this.stats.calls++;

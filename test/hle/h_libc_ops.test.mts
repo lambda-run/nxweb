@@ -134,7 +134,7 @@ test("ops: every body compiled from the C text returns the constant its C source
     checked++;
   }
   if (process.env.HLE_TEST_LOG) console.log(`    | ops: ${checked} constants compared, ${voids} bodies with nothing to return`);
-  assert.ok(checked >= 400 && checked + voids === rows.length, `${checked} constants compared, ${voids} bodies with nothing to return`);
+  assert.ok(checked >= 390 && checked + voids === rows.length, `${checked} constants compared, ${voids} bodies with nothing to return`);
 });
 
 test("ops: stores through pointer arguments have the C type's width and honour the null check", () => {

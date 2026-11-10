@@ -108,7 +108,7 @@ npm test             # the fast tier: kit, loader, kernel, a64 guest programs (4
 npm run fs:test      # file system; npm run hle:test: take-over table; npm run shaders:test; npm run audio:test
 npm run a64:fuzz     # instruction fuzz against Unicorn (338,000 cases; minutes)
 npm run rt:browser   # the runtime's cases in headless Chromium: WebGPU pixels, the page, OPFS, in-page shaders
-npm run a64:browser  # the translator's gates in Chromium;  npm run fs:browser;  npm run gfx:test (30 scenes)
+npm run a64:browser  # the translator's gates in Chromium;  npm run fs:browser;  npm run gfx:test (42 scenes)
 npm run web          # the page, http://localhost:8080
 ```
 

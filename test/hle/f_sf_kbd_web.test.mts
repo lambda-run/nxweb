@@ -292,14 +292,14 @@ test("web: a page in the embedder's web view: messages both ways, the input held
   assert.equal(h.w0(WS + "24TryReceiveContentMessageEPmPcm", 0, n, buf, 8), 1); assert.equal(h.u64(n), 7n); assert.equal(h.cstr(buf), "end_sou", "cut to the buffer less its terminator; the size is what was copied");
   assert.equal(h.w0(WS + "24TryReceiveContentMessageEPmPcm", 0, n, 0, 0), 1); assert.equal(h.u64(n), 0n, "no buffer: taken, size 0");
   assert.equal(h.w0(WS + "6AppearEv", 0), 1);
-  assert.equal(h.web.shows, 1); assert.deepEqual(h.web.holds, [true], "shown: the page holds the input");
+  assert.equal(h.web.shows, 1); assert.deepEqual(h.web.holds, [true], "shown: the page holds the input"); assert.deepEqual(h.host.holds, ["web"], "for the reason \"web\" (hid.ts)");
   assert.equal(h.w0(WS + "21TrySendContentMessageEPKcm", 0, h.str("resume\0junk"), 32), 1); assert.deepEqual(h.web.sent, ["resume"], "the C string, at most the size");
   let r = h.call(WS + "11WaitForExitEPNS0_26OfflineHtmlPageReturnValueE", 0, rv);
   assert.ok(r.wait && r.wait.timeoutNs === -1n, "the page is still up: the caller waits");
   r = h.resume("cancelled"); assert.ok(r.wait);
   h.host.webEnded(3, "http://localhost/done?a=1");
   assert.ok(h.ev(r.wait!.handle).signaled); assert.ok(h.ev(h.x.hle_event_handle(Number(h.u64(evp)))).signaled, "the exit event fires");
-  assert.deepEqual(h.web.holds, [true, false], "the input is given back");
+  assert.deepEqual(h.web.holds, [true, false], "the input is given back"); assert.deepEqual(h.host.holds, []);
   assert.equal(h.resume("signaled").x0, 0n);
   assert.equal(h.u64(rv), 3n); assert.equal(h.cstr(rv + 8), "http://localhost/done?a=1"); assert.equal(h.u64(rv + 0x1008), 26n, "the URL's size with its terminator");
   assert.equal(h.web.closes, 1);

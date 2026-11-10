@@ -388,7 +388,7 @@ def cut_ops(e):
         m = re.search(r"if \(!d\) return (0x[0-9a-fA-F]+)", body)
         if m:
             return RET(int(m.group(1), 16))
-        m = re.search(r"return (0x[0-9a-fA-F]+|\d+);\s*$", body.strip() + ";")
+        m = re.search(r"return (0x[0-9a-fA-F]+|\d+);\s*$", body.strip())
         return RET(int(m.group(1), 0) if m else 0)
     if re.match(r"h_cv_pref", c) or c in ("h_cv_rgbahdr", "h_cv_rgba", "h_cv_nv12", "h_spt_holder", "h_spt_cancel", "h_spt_trywait", "h_spt_destroy"):
         return None

@@ -427,7 +427,7 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 | `load` | the loader or the kernel refused a file | none |
 | `host` | an exception in glue or in a host function | last written back |
 
-## Verified (`npm run rt:test`: 39 tests under Node; `npm run rt:browser`: RTB_COUNT in Chromium)
+## Verified (`npm run rt:test`: 39 tests under Node; `npm run rt:browser`: 46 in Chromium)
 
 - The range table and each module's static end; a broken table is refused.
 - (a) hello: output, x0 and x1 at entry, exit code by return.

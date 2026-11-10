@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { test, fresh, def, S, E, type Kit } from "../kit/harness.mts";
 import type { MachineDef } from "../../src/kit/host/defs.mts";
 
-const NAMES = ["oe_focus", "oe_msg", "oe_notify_event", "hle_exit", "nifm_request", "swkbd_request", "swkbd_inline", "web_session"];
+const NAMES = ["oe_focus", "oe_msg", "oe_notify_event", "hle_exit", "nifm_request", "swkbd_request", "swkbd_inline", "web_session",
+  "pad_slot", "input_hold", "touch_finger", "six_shake", "ctrl_prompt", "ro_module", "jit_env"];
 
 // The events that lead from the initial state to `state` (breadth first over the table)
 function route(M: MachineDef, state: string): string[] {
@@ -100,4 +101,61 @@ test("nifm_request and web_session: the numbers the C code used", () => {
   assert.deepEqual(N.states, ["Idle", "OnHold"]);
   assert.deepEqual(W.states, ["None", "Started", "Shown", "Ended"], "g_web_state 0, 1, 2, 3");
   for (const s of W.states) assert.ok(W.transitions.some(([f, e, t]) => f === s && e === "Start" && t === "Started"), `Start replaces a page in ${s}`);
+});
+
+test("pad_slot, input_hold, six_shake: a slot is kept for the source that left; a holder holds once; a shake finishes its cycle", () => {
+  const k = fresh(), P = def("pad_slot"), H = def("input_hold"), K = def("six_shake");
+  k.x.m_init(0, P.id, 3);
+  assert.equal(k.x.m_step(0, E(P, "Free"), 5), 0, "a slot nobody holds cannot be freed");
+  assert.equal(k.x.m_step(0, E(P, "Take"), 0xA001), 1); assert.equal(k.x.m_data(0), 0xA001, "Held carries the source");
+  assert.equal(k.x.m_step(0, E(P, "Take"), 0xB002), 0, "a held slot is not taken"); assert.equal(k.x.m_data(0), 0xA001);
+  assert.equal(k.x.m_step(0, E(P, "Free"), 0xA001), 1); assert.deepEqual([k.x.m_state(0), k.x.m_data(0)], [S(P, "Kept"), 0xA001], "Kept remembers who left");
+  assert.equal(k.x.m_step(0, E(P, "Take"), 0xB002), 1); assert.equal(k.x.m_data(0), 0xB002);
+  assert.ok(!P.transitions.some(([, , to]) => to === "Unused"), "a slot never forgets that it was held");
+  k.x.m_init(1, H.id, 1);
+  assert.equal(k.x.m_step(1, E(H, "Release"), 0), 0); assert.equal(k.x.m_step(1, E(H, "Take"), 0), 1); assert.equal(k.x.m_step(1, E(H, "Take"), 0), 0, "the guard asks first: taking twice is not offered");
+  k.x.m_init(2, K.id, 0);
+  assert.equal(k.x.m_can(2, E(K, "Settle")), 0); assert.equal(k.x.m_step(2, E(K, "Press"), 0), 1); assert.equal(k.x.m_can(2, E(K, "Press")), 0);
+  assert.equal(k.x.m_step(2, E(K, "Release"), 1234), 1); assert.equal(k.x.m_data(2), 1234, "Finishing carries the cycle's end");
+  assert.equal(k.x.m_step(2, E(K, "Press"), 0), 1); assert.equal(k.x.m_data(2), 0, "held again: no end");
+  assert.ok(!K.transitions.some(([f, , to]) => f === "Held" && to === "Rest"), "a held shake always finishes its cycle");
+});
+
+test("touch_finger: a finger is reported with Start once and with End once, whatever happens between two reads", () => {
+  const M = def("touch_finger");
+  // every path from Empty back to Empty: Start is the Report out of a ...New state, End the Report out of Lifted / LiftedAgain
+  const starts = new Set(["DownNew", "LiftedNew"]), ends = new Set(["Lifted", "LiftedAgain"]);
+  let paths = 0;
+  const walk = (state: string, opened: boolean, depth: number) => {
+    if (depth > 9) return;
+    for (const [f, e, to] of M.transitions) {
+      if (f !== state) continue;
+      let o = opened;
+      if (e === "Report") {
+        if (starts.has(f)) { assert.ok(!o, `${f}: Start is not reported twice`); o = true; }
+        if (ends.has(f)) { assert.ok(o, `${f}: End only after Start`); o = false; }
+      }
+      if (to === "Empty") { assert.ok(!o, "a finger is gone only after its End"); paths++; continue; }
+      walk(to, o, depth + 1);
+    }
+  };
+  walk("Empty", false, 0);
+  assert.ok(paths > 20, `${paths} paths`);
+  assert.ok(!M.transitions.some(([f, e]) => f === "Empty" && e !== "Press"), "nothing but a press starts a finger");
+});
+
+test("ctrl_prompt, ro_module, jit_env: the answers a prompt can carry; a module's and an environment's life", () => {
+  const C = def("ctrl_prompt"), R = def("ro_module"), J = def("jit_env"), k = fresh();
+  assert.deepEqual(C.data.Answered.values, ["ok", "closed", "noWindow"]);
+  k.x.m_init(0, C.id, 0);
+  assert.equal(k.x.m_step(0, E(C, "Answer"), 1), 0, "no prompt waiting"); assert.equal(k.x.m_step(0, E(C, "Ask"), 0), 1); assert.equal(k.x.m_step(0, E(C, "Ask"), 0), 0, "one prompt at a time");
+  assert.equal(k.x.m_step(0, E(C, "Answer"), 4), 0, "an answer is one of the three"); assert.equal(k.x.m_step(0, E(C, "Answer"), 3), 1); assert.equal(k.x.m_data(0), 3);
+  assert.equal(k.x.m_step(0, E(C, "Take"), 0), 1);
+  k.x.m_init(1, R.id, 0);
+  for (const e of ["Ready", "Fini", "Unmap", "Refuse"]) assert.equal(k.x.m_can(1, E(R, e)), 0, `an empty slot takes no ${e}`);
+  for (const [e, to] of [["Map", "Mapped"], ["Ready", "Loaded"], ["Fini", "Finalizing"], ["Unmap", "Empty"], ["Map", "Mapped"], ["Refuse", "Empty"]]) { assert.equal(k.x.m_step(1, E(R, e), 0), 1); assert.equal(k.x.m_state(1), S(R, to)); }
+  assert.ok(!R.transitions.some(([f, e]) => f === "Loaded" && e === "Unmap"), "a loaded module is not unmapped before its fini");
+  k.x.m_init(2, J.id, 0);
+  for (const [e, to] of [["Create", "Created"], ["Fail", "None"], ["Create", "Created"], ["Prepared", "Ready"], ["Destroy", "None"]]) { assert.equal(k.x.m_step(2, E(J, e), 0), 1); assert.equal(k.x.m_state(2), S(J, to)); }
+  assert.equal(k.x.m_can(2, E(J, "Destroy")), 0);
 });
