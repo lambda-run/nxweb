@@ -24,7 +24,7 @@ stateDiagram-v2
     note right of Refused: carries refuseReason (header, layout, decompress, hash, mod0, dynamic, symbols, relocs, arena)
 ```
 
-Machine id 37. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 41. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

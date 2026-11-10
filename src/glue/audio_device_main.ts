@@ -94,19 +94,25 @@ export class AudioDeviceMain {
     else if (this.ran) { this.ran = false; this.state(DEV.LOST); }   // the browser suspended, interrupted or closed it
     else this.state(DEV.STARTING);
   }
+  // A suspend() the last stop asked for and the browser has not finished: until then the context still says
+  // "running". A start that believed it reported a running device, and the suspension that followed was taken for
+  // the browser taking the device away (an output closed and opened again at once: one second of silence, in red)
+  private suspending: Promise<void> | null = null;
   private start(): void {
     this.wanted = true;
     const ctx = this.ctx;
     if (!ctx) return;   // open() goes on from here
     this.ran = false;
-    if (ctx.state === "running") { this.ran = true; this.state(DEV.RUNNING); return; }
+    if (ctx.state === "running" && !this.suspending) { this.ran = true; this.state(DEV.RUNNING); return; }
     this.state(DEV.STARTING);
     // Pending until the browser allows audio (a user gesture); statechange reports the rest
-    ctx.resume().then(() => this.report(), () => { if (this.wanted) this.state(DEV.FAILED); });
+    const resume = () => { if (this.wanted && this.ctx === ctx) ctx.resume().then(() => this.report(), () => { if (this.wanted) this.state(DEV.FAILED); }); };
+    if (this.suspending) void this.suspending.then(resume); else resume();
   }
   private stop(): void {
     this.wanted = false; this.ran = false;
-    void this.ctx?.suspend().catch(() => { /* closed */ });
+    const ctx = this.ctx;
+    if (ctx) { const p: Promise<void> = ctx.suspend().catch(() => { /* closed */ }).then(() => { if (this.suspending === p) this.suspending = null; }); this.suspending = p; }
     this.state(DEV.NONE);
   }
   // A user gesture happened: a context that waits for one may run now

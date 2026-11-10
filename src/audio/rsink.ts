@@ -24,22 +24,23 @@ class Sink {
   cqHead: u32; cqTail: u32;
   upPos: u32;
   updated: u32;
+  lastBlock: u32; lastN: u32;   // the block last given to the output and its frames
   frames: u64; nonsilent: u64; updates: u64; renders: u64; catchups: u64; lastR: u64; played: u64; discarded: u64;
   // @ts-ignore: decorator
-  @inline get freeList(): usize { return changetype<usize>(this) + 104; }         // NBUF u8
+  @inline get freeList(): usize { return changetype<usize>(this) + 112; }         // NBUF u8
   // @ts-ignore: decorator
-  @inline get cqN(): usize { return changetype<usize>(this) + 112; }              // CQ u32
+  @inline get cqN(): usize { return changetype<usize>(this) + 120; }              // CQ u32
   // @ts-ignore: decorator
-  @inline get frame(): usize { return changetype<usize>(this) + 128; }
+  @inline get frame(): usize { return changetype<usize>(this) + 136; }
   // @ts-ignore: decorator
-  @inline cq(i: u32): usize { return changetype<usize>(this) + 128 + FRAME_BYTES * (1 + <usize>(i % CQ)); }
+  @inline cq(i: u32): usize { return changetype<usize>(this) + 136 + FRAME_BYTES * (1 + <usize>(i % CQ)); }
   // @ts-ignore: decorator
-  @inline pcm(i: u32): usize { return changetype<usize>(this) + 128 + FRAME_BYTES * (1 + CQ + <usize>i); }
+  @inline pcm(i: u32): usize { return changetype<usize>(this) + 136 + FRAME_BYTES * (1 + CQ + <usize>i); }
   // @ts-ignore: decorator
-  @inline get upBuf(): usize { return changetype<usize>(this) + 128 + FRAME_BYTES * (1 + CQ + NBUF); }   // 2 * (15 + FRAME_MAX) i32
+  @inline get upBuf(): usize { return changetype<usize>(this) + 136 + FRAME_BYTES * (1 + CQ + NBUF); }   // 2 * (15 + FRAME_MAX) i32
 }
-const SINK_SIZE: usize = 128 + 4096 * 9 + 8320;   // 45312
-const SINKS: usize = memory.data(181248);          // AR_MAX * SINK_SIZE
+const SINK_SIZE: usize = 136 + 4096 * 9 + 8320;   // 45320
+const SINKS: usize = memory.data(181280);          // AR_MAX * SINK_SIZE
 const ST: usize = memory.data(8192);               // the stereo downmix before clamping, FRAME_MAX stereo i32
 // @ts-ignore: decorator
 @inline function at(i: i32): Sink { return changetype<Sink>(SINKS + <usize>i * SINK_SIZE); }
@@ -75,6 +76,8 @@ export function close(i: i32): void {
 }
 export function releaseEvent(i: i32): u32 { const s = sinkOf(i); return s == null ? 0 : outOf(s).hostEvent; }
 export function cqEvent(i: i32): u32 { const s = sinkOf(i); return s == null ? 0 : s.cqEvent; }
+export function playedPtr(i: i32): usize { const s = sinkOf(i); return s == null ? 0 : <usize>s.lastBlock; }
+export function playedFrames(i: i32): u32 { const s = sinkOf(i); return s == null ? 0 : s.lastN; }
 export function outIndex(i: i32): i32 { const s = sinkOf(i); return s == null ? -1 : <i32>s.out; }
 export function stat(i: i32, which: i32): u64 {
   const s = sinkOf(i);
@@ -96,7 +99,7 @@ function play(s: Sink, src: usize, got: u32): void {
   const b = <u32>load<u8>(s.freeList + --s.nfree), p = s.pcm(b);
   if (got) memory.copy(p, src, <usize>n * 4); else memory.fill(p, 0, <usize>n * 4);
   if (!out.append(outOf(s), 0, <u32>p, n * 4, b)) { s.nfree++; return; }
-  s.played++;
+  s.played++; s.lastBlock = <u32>p; s.lastN = n;
 }
 // With a block free: a queued catch-up frame is played in place of a render (returns 0); otherwise the caller
 // renders one frame with the SDK (which ends in capture(i, 0, ...)) and then calls rendered(i) (returns 1)

@@ -1,0 +1,18 @@
+{
+  "id": 0,
+  "name": "audio_render",
+  "doc": "One render of one frame (src/audio/ren.ts; nxnative render_once), made of calls into the SDK that the calling guest thread runs one after the other and that may block or be preempted in between. Queued: another thread's render is in progress (nxnative's g_render_mu: the two callers, render thread and catch-up, share the SDK's command buffer); it waits for the turn. Locking: the SDK's update lock is being taken (command generation must exclude the game's RequestUpdate). Generating: AudioRenderSystem::GenerateCommand. Unlocking: the update lock is given back. Processing: CommandListProcessor::Process, outside the lock; when it returns the host walks the command list and takes the DeviceSink's mix buffers.",
+  "states": ["Idle", "Queued", "Locking", "Generating", "Unlocking", "Processing"],
+  "initial": "Idle",
+  "events": ["Begin", "Busy", "StillBusy", "Turn", "Locked", "Generated", "Unlocked", "Processed"],
+  "transitions": [
+    ["Idle", "Begin", "Locking"],
+    ["Idle", "Busy", "Queued"],
+    ["Queued", "StillBusy", "Queued"],
+    ["Queued", "Turn", "Locking"],
+    ["Locking", "Locked", "Generating"],
+    ["Generating", "Generated", "Unlocking"],
+    ["Unlocking", "Unlocked", "Processing"],
+    ["Processing", "Processed", "Idle"]
+  ]
+}

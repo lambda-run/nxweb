@@ -426,7 +426,10 @@ the run loop: on the deterministic clock a slice's budget is cut to end there an
 a silent sink releases its buffer at exactly that guest time; on the wall clock the idle loop wakes then, the
 catch-up limit is 100 ms, and while an output plays on a device the loop wakes every 4 ms to feed the ring.
 `audio_event_bind` of a guest SystemEvent goes to the take-over table (`sysevent.ts`); the module's own events are
-bare kernel events. The page hosts `AudioDeviceMain` and passes `{ audio }` messages both ways; the context is made
+bare kernel events. A renderer take-over that runs SDK code answers with requests (src/audio/README.md, "The
+requests"): the glue sends the calling thread into the SDK function with x30 = its `<audio.co>` stub (a `lateStub`),
+whose host function resumes the module with x0 / x1, or blocks the thread on the module's event (`cpu.block`); the
+render thread's function, given to the SDK's `CreateThread`, is the `<audio.render>` stub. The page hosts `AudioDeviceMain` and passes `{ audio }` messages both ways; the context is made
 at the first nn::audio call of a process, closed when the process is disposed of, and starts on the first user
 gesture (`AudioDeviceMain` listens itself; the click that starts a program is one).
 
@@ -583,6 +586,11 @@ New in the integration round (`test/runtime/int_cases.ts` and the cases named):
   the guard; the wall clock (60 buffers in 0.30 s). Audio in Chromium: the same guest with the page's AudioContext and
   AudioWorklet (`sab` transport): about 3 s of 440 Hz at amplitude 0.5 reach the device, fitted sine above 60 dB, no
   gap, no device underrun (waived, and said, when the run loop came back more than 25 ms late).
+- Audio renderer (`audren.c` and its stand-in SDK `ren_sdk.h`): the host's take-overs open the guest SDK's renderer
+  for CPU / manual rendering and run it from a render thread the SDK starts for them; two voices come out at the sink
+  as the expected signal sample for sample, one block per 5 ms of guest time; the wave buffers come back consumed;
+  budgets 100000 and 50; the render thread blocked on the SDK's update lock for 12 ms; 12 open / close rounds. In
+  Chromium the same guest through the AudioWorklet, six rounds, each stretch of sound equal to the expected signal.
 - The NVN waits with a "GPU" the test holds back (wall clock): SyncWait never fenced 2, timeout 0 2, 30 ms timeout 2
   after 30 ms, a fence met 15 ms into a 5 s wait 1, again 0, infinite 1, QueueFinish returning when its fence
   completed: 3 parked, 1 timed out; float arguments and results by the ABI table. The same guest on WebGPU.
@@ -724,7 +732,7 @@ translator's own runner because of the slices (budget 100000 instead of 2^30) an
   "fits" for the other 139 is arithmetic, no game has run. A profile's `mem_reserve`-style keys beyond the split,
   frame-step patches and the other "needs" of a profile are listed by the page and not applied.
 - **nn::jit** has not run with a real plugin; a module asked for "alone" is linked like any other (red once).
-- **Audio**: the audio renderer's SDK-driving half is not there (src/audio/README.md); on the wall clock a host
+- **Audio**: the audio renderer's take-overs have driven stand-in SDKs only (src/audio/README.md); on the wall clock a host
   timer that comes late lets two buffers come back in one tick. One device context per process, made at the first
   nn::audio call.
 - **Controllers**: no motion source (the Gamepad API has none), no touch from the page yet, Joy-Con pairs are not

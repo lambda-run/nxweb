@@ -1,11 +1,11 @@
 # audio: nn::audio and nn::codec
 
-Port of nxnative `dm/host/hle_audio.c` (AudioOut, AudioIn, SDK 21's OutputStream and input streams), the sink and
-timing part of `hle_audren.c` (the audio renderer runs the game's own SDK code; the host supplies where a frame goes
-and when the next is due) and `hle_codec.c` (hardware Opus decoders). The entries of nxnative
+Port of nxnative `dm/host/hle_audio.c` (AudioOut, AudioIn, SDK 21's OutputStream and input streams), `hle_audren.c`
+(the audio renderer: the game's own SDK renders, the host opens it for CPU rendering, drives it from a render thread
+and takes the DeviceSink's samples) and `hle_codec.c` (hardware Opus decoders). The entries of nxnative
 `docs/reference/audio.md` are the requirements; the tests name the entry they cover.
 
-Logic is AssemblyScript (`build/audio/audio.wasm`, 62 KB, `--runtime stub`, no allocation outside the arena it is
+Logic is AssemblyScript (`build/audio/audio.wasm`, 84 KB, `--runtime stub`, no allocation outside the arena it is
 given). The device is TypeScript glue. Nothing in the module reads a clock, calls a browser API or blocks.
 
 | File | What |
@@ -18,8 +18,10 @@ given). The device is TypeScript glue. Nothing in the module reads a clock, call
 | `mix.ts` | PCM16 to stereo f32, volume, downmix, the mix of up to 8 outputs, the resampler, the pacing against the device |
 | `stream.ts` | SDK 21's OutputStream on an output of the host's own |
 | `rsink.ts` | The audio renderer's sink: block pool, pacing, catch-up queue, DeviceSink capture, 3:2 upsampler, the service's work buffer budget |
+| `ren.ts` | The audio renderer's SDK-driving half: open / close, the render thread's loop, one render, the update's catch-up rule, the update lock and the system's offset read off the SDK's code; four machines |
+| `cmdlist.ts` | The SDK's command list: header layouts of SDK 4 to 21, the DeviceSink scan |
 | `opus.ts` | The Opus decoder manager (`opus_req` machine) and the forwards of the synchronous decoders to the SDK |
-| `defs/*.json` | The three machines (diagrams: `docs/machines/audio_out.md`, `audio_buf.md`, `opus_req.md`) |
+| `defs/*.json` | The seven machines (diagrams: `docs/machines/audio_out.md`, `audio_buf.md`, `opus_req.md`, `audio_ren.md`, `audio_ren_thread.md`, `audio_render.md`, `audio_ren_update.md`) |
 | `src/glue/audio_host.ts` | Instantiation, imports, the argument block of a call. No browser or Node API |
 | `src/glue/audio_device.ts` | The device, runtime side (usually a Worker): transports of the ring, device reports |
 | `src/glue/audio_device_main.ts` | The device, page side: AudioContext, AudioWorkletNode, gesture, visibility |
@@ -27,8 +29,8 @@ given). The device is TypeScript glue. Nothing in the module reads a clock, call
 | `src/glue/audio_opus_webcodecs.ts` | An Opus decoder for the manager on WebCodecs' AudioDecoder |
 
 ```
-npm run audio:test [-- <filter>]     # Node, no device: a fake device the tests drive (55 tests)
-npm run audio:browser [-- <filter>]  # headless Chromium (Playwright): real AudioContext and AudioWorklet (10 tests, about 50 s)
+npm run audio:test [-- <filter>]     # Node, no device: a fake device and a fake SDK the tests drive (97 tests)
+npm run audio:browser [-- <filter>]  # headless Chromium (Playwright): real AudioContext and AudioWorklet (11 tests, about 55 s)
 npm run audio:build                  # build/audio/audio.wasm with a memory of its own
 npm run audio:names                  # regenerate names.ts from the nxnative clone
 npm run kit:test                     # includes test/audio/audio.machine.test.mts
@@ -52,8 +54,9 @@ three nxnative files resolves. `audio_call(fnId, argsPtr)` makes the call. The b
 
 The result says where the function's result is: `0` none, `1` x0 (written to +0), `3` x0 and x1 (+0, +8:
 `GetInputStreamFormat` returns 12 bytes in registers), `4` a float in v0 (bits at +64: the three volume / gain getters).
-The first 8 words are the layout the runtime already builds for NVN calls (`rt_nvn_args`). A call never blocks and
-never answers "pending": a guest thread that waits for a buffer waits on its event in the kernel.
+The first 8 words are the layout the runtime already builds for NVN calls (`rt_nvn_args`). A call never blocks: a
+guest thread that waits for a buffer waits on its event in the kernel. Five of the six renderer take-overs can answer
+`16`, "the call goes on": see "Audio renderer", the requests.
 
 **Time.** `audio_tick(guestNs, hostNs)` is the module's only notion of time: the silent sinks consume up to `guestNs`
 (the guest clock), the device watchdog and the retry timers run on `hostNs` (any monotonic host clock), the mixer
@@ -67,7 +70,8 @@ clock (see "Silent sink").
 4 lost)`, `audio_ring_ptr() / audio_ring_data() / audio_ring_cap()`, `audio_suspend(1 | 0)` for a hidden / visible
 page. See "The device".
 
-**Audio renderer sink.** `audio_rs_*`, see "Audio renderer". **Opus.** `audio_opus_backend`, `audio_opus_out`,
+**Audio renderer.** `audio_co_thread`, `audio_co_req`, `audio_co_resume`, `audio_co_enter` (the requests),
+`audio_ren_stat`, `audio_ren_frames`; the sink by itself `audio_rs_*`; see "Audio renderer". **Opus.** `audio_opus_backend`, `audio_opus_out`,
 `audio_opus_complete`, see "Opus".
 
 **Report and tests.** `audio_fn_count / audio_fn_name / audio_fn_is_stub`, `audio_out_state(slot)`,
@@ -85,7 +89,9 @@ of silence, bytes consumed, ...), `audio_buf_state(slot, n)`, `audio_out_machine
 | `audio_event_release(token)` | The module will not signal this token again (the output, stream, sink or manager closed) |
 | `audio_dev_start()`, `audio_dev_stop()` | Ask the device to run / to stop. Both return at once; the answer comes through `audio_device_state` and the ring's callback counter |
 | `audio_guest_fn(namePtr, len) -> u64` | The address of a function of the game's SDK by mangled name: the module's own code even where the name is taken over; 0 when there is none |
-| `audio_guest_call(fn, argsPtr) -> u64` | Call it with x0..x7 from the block, return x0. Used for the SDK's software Opus decoders, `GetAudioRendererWorkBufferSize` and `UpsamplerManager::Allocate` |
+| `audio_guest_call(fn, argsPtr) -> u64` | Call it with x0..x7 from the block, return x0, inside the module's step: for functions that cannot block. Used for the SDK's software Opus decoders, `GetAudioRendererWorkBufferSize`, `UpsamplerManager::Allocate`, and the renderer's short ones (the system's getters, `CommandListProcessor::Setup`, nn::os SystemEvent functions) |
+| `audio_thread_entry() -> u64` | The address of the embedder's render-thread stub: the function the SDK's `nn::os::CreateThread` is given for a renderer's render thread. The host function behind it calls `audio_co_enter(x0, x30)` on that thread and serves the requests. 0: none (no render thread, red) |
+| `audio_handle_dup(readable) -> u32` | A second read end of the kernel event behind a readable handle (nxnative `hle_dup_readable_handle`) |
 | `audio_opus_open(dec, rate, ch)`, `audio_opus_decode(dec, req, in, len, out, cap)`, `audio_opus_reset(dec)`, `audio_opus_close(dec)` | The embedder's own Opus decoder for the manager; see "Opus" |
 
 ## The machines
@@ -214,43 +220,126 @@ reported at once; the context runs when the browser allows it. `AudioDeviceMain`
 and `touchend` and resumes a context that waits. A context that is not wanted is suspended (where autoplay is
 allowed a new context runs at once). `visibilitychange` becomes `audio_suspend`.
 
+**An output closed and another started at once** (a renderer closed and opened again; found with the renderer guest
+in Chromium, where it cost a second of silence and a red "the browser took the device away" in most runs). The last
+output's stop asks the page to suspend the context and the next start asks it to resume; both answers come later.
+Two things went wrong in between: the module still had the device as "running" with callbacks arriving, so the new
+output went Live and then took the page's answer to the *stop* for a loss; and the page's start found the context
+still "running" (a `suspend()` not finished), reported it running, and the suspension that followed looked like a
+loss as well. Now `AudioDevice` tells the module "none" after a stop and "starting" after the start that follows one
+by itself, at the next tick, and `AudioDeviceMain` resumes after the pending `suspend()` has finished and does not
+report "running" before. A start while the device is wanted already (a second output) changes nothing.
+
 ## Audio renderer
 
-nxnative does not implement a renderer: it switches the game's `AudioRendererParameter` to CPU rendering with manual
-execution, calls the SDK's own `OpenAudioRenderer`, and drives the SDK's `ExecuteAudioRendererRendering` from a guest
-thread. What the host takes over is (1) the work buffer size and the open / close, (2) a render thread paced by a PCM
-output, (3) `AudioRendererImpl::` / `AudioRenderSystem::ExecuteAudioRendererRendering`, where it generates commands
-under the SDK's update lock, runs `CommandListProcessor` and takes the DeviceSink's mix buffers as the output,
+nxnative does not implement a renderer: no voices, no mixer. It switches the game's `AudioRendererParameter` to CPU
+rendering with manual execution (+0x2c device = 1, +0x30 mode = 1), calls the SDK's own `OpenAudioRenderer`, and
+drives the SDK's `ExecuteAudioRendererRendering` from a guest thread. Voices, wave buffers, ADPCM and PCM decoding,
+pitch, volume, mixes, effects and the report of consumed wave buffers are all the SDK's code, in the game. What the
+host takes over is (1) the work buffer size and the open / close, (2) a render thread paced by a PCM output,
+(3) `AudioRendererImpl::` / `AudioRenderSystem::ExecuteAudioRendererRendering`, where it generates commands under the
+SDK's update lock, runs `CommandListProcessor` and takes the DeviceSink's mix buffers as the output,
 (4) `AudioRenderSystem::Update`, which renders a catch-up frame when none was rendered since the last update.
+That, and nothing more, is ported here: all of it.
 
-**Here, implemented and tested** (with a stand-in for the SDK's renderer):
+### The requests: a take-over that runs SDK code
 
-- The sink (`audio_rs_*`): an output of the host's own with 4 blocks in flight, so one render per 5 ms block handed
-  back; the frame of a render that produced nothing is 5 ms of silence. `audio_rs_ready` (is a block free; else wait
-  on `audio_rs_event`, at most 10 ms), `audio_rs_next` (plays a queued catch-up frame in place of a render, or says
-  "render now"), `audio_rs_capture(sink, dest, mix, samples, rate, idx, nIn, idxSize)` (the DeviceSink's int32 mix
-  buffers to stereo PCM16: 6 -> 2 downmix, clamp, 32 kHz upsampled 3:2 with nxnative's `up_3_2`; `idxSize` 1 for SDK
-  4's byte indices), `audio_rs_rendered`, `audio_rs_count_render`.
-- The catch-up rule: `audio_rs_update_begin(sink, waited)` answers 0 (go on), 1 (render a catch-up frame into the
-  queue), 2 (the queue of 4 is full: wait on `audio_rs_cq_event`, at most 50 ms, and ask again), 3 (still full: render
-  and discard); `audio_rs_update_end`. A queued frame signals the catch-up event only, never the game's renderer event.
-- Up to 4 renderers, each with its own blocks, queue and upsampler history.
-- `GetAudioRendererWorkBufferSize`: the DSP service's budget through revision 15 (`ar_service_work_size`), checked
-  against nxnative's fixtures from Horizon's own sizing routine; a revision or device the model does not cover goes
-  to the SDK's own function with the CPU / manual copy of the parameter.
+In nxnative a take-over is a C function on the guest thread's stack; it calls the SDK and the call may block (the
+update lock is held by the game's `RequestUpdate`) or take long (`CommandListProcessor::Process` is the whole DSP).
+Here a take-over is a call into this module, which cannot be suspended in the middle and whose `audio_guest_call`
+cannot block. So each renderer take-over is a **frame** with explicit steps (`ren.ts`), and a step ends either in
+the take-over's result or in a request to the embedder, `audio_call` answering `16`:
+
+| Request (`audio_co_req()`: +0 kind) | The embedder |
+|---|---|
+| CALL (2): +8 an SDK function, +24 x0..x7 | sends the calling guest thread into the function as ordinary guest code (it can block on the SDK's lock, be preempted, call other take-overs) and, when it returns, calls `audio_co_resume(x0, x1)` |
+| WAIT (3): +8 an event token of the module's, +16 a timeout in ns | lets the thread wait on the kernel event; `audio_co_resume(0, 0)` signalled, `(1, 0)` timed out |
+
+`audio_co_resume` answers `16` again (the next request) or `0` / `1`: the take-over is over, its result at +8 and the
+address it returns to at +88. `audio_co_thread(t)` names the guest thread before each entry: frames are per thread
+and nest (the render loop calls the SDK's `ExecuteAudioRendererRendering`, which calls the take-over of
+`AudioRendererImpl`'s, which calls `GenerateCommand`). 16 frames exist; a seventeenth call in progress fails red.
+
+In the runtime (`rt_audio.ts`) a CALL is a jump of the guest thread to the function with x30 = a stub of the glue's
+(`<audio.co>`), whose host function is the resume; nothing nests on the host's stack, so the thread can wait in the
+kernel in the middle of a take-over. A WAIT is `cpu.block` on the event.
+
+### The four machines
+
+| Machine | What | States |
+|---|---|---|
+| `audio_ren` | one renderer the host opened (nxnative `ar_t`), 4 slots | `Free`, `Opening` (the SDK's open), `StackAlloc` / `ThreadCreate` / `ThreadStart` (the render thread, made with the SDK's `malloc`, `nn::os::CreateThread`, `StartThread` as nxnative's `dm_guest_thread_spawn` makes it), `Running`, `Stopping` (`WaitThread`: the join), `ThreadDestroy`, `StackFree`, `Closing` (the SDK's close) |
+| `audio_ren_thread` | the render thread's loop (`render_main`) | `Idle`, `Ready`, `Waiting` (for a block, at most 10 ms), `Rendering` (inside `ExecuteAudioRendererRendering`) |
+| `audio_render` | one render (`render_once`), per frame | `Idle`, `Queued` (another thread renders: nxnative's `g_render_mu`), `Locking`, `Generating`, `Unlocking`, `Processing` |
+| `audio_ren_update` | one `AudioRenderSystem::Update` (`h_ars_Update`), per frame | `Idle`, `Waiting` (the catch-up queue is full, at most 50 ms), `Rendering` (the catch-up frame), `Sdk` |
+
+`NoThread` (the SDK lacks a thread function, has no memory, or refuses) leaves a renderer `Running` without a render
+thread: red, and only the game's updates render. `CloseNoThread` closes such a renderer without the join.
+
+### What each take-over does
+
+- **`OpenAudioRenderer`, both forms** (`ar_open`): a copy of 0x40 bytes of the parameter with device and mode set
+  (SDK 8's revision at +0x38 is in the copy). A game that asked for the DSP: its work buffer must cover the DSP
+  service's budget (`ar_service_work_size`, else the open fails red), and when the SDK's CPU renderer needs more than
+  the game gave, the host supplies a page-aligned block of the arena (freed after the SDK's close). The SDK is given
+  an event of the host's own (four exist, 0x80 bytes each in the arena) and not the game's: the CPU / manual open
+  keeps the pointer and signals it after every render, and a game may have its event on its stack. After the open the
+  SDK's local event in it is destroyed, it is bound as a kernel event (auto-clear: a kernel event wakes every
+  waiter), and a copy of its read end is attached to the game's object, managed (`AttachReadableHandleToSystemEvent`).
+  A game that opens a CPU renderer itself keeps the SDK's contract. An `OpenAudioRenderer` made from inside the SDK's
+  open (SDK 17's event form opens through the other form's PLT entry) goes straight to the SDK. Then the output is
+  opened (nxnative's thread opens it; here the open does, so that an update before the thread's first slice has the
+  renderer's counters) and the render thread is started. A fifth renderer is opened by the SDK and not rendered (red).
+- **The render thread** (`render_main`): while the renderer is open: wait for a free block (the output's release
+  event), then play a queued catch-up frame or run the SDK's `ExecuteAudioRendererRendering(handle)` and give the
+  captured frame (5 ms of silence if the render produced nothing) to the output. Its function returns into the SDK's
+  thread wrapper when the renderer is no longer `Running`, after closing its output.
+- **`CloseAudioRenderer`**: `WaitThread`, `DestroyThread`, `free` of the stack, the SDK's close, then the host's
+  storage and event (`DestroySystemEvent`; the game's copied read end stays the game's).
+- **`AudioRendererImpl::ExecuteAudioRendererRendering`**, and SDK 20's `AudioRenderSystem::` (reached through the
+  PLT): one render. On the render thread into the sink's frame; on any other thread (a game executing its own CPU
+  renderer) into nothing. The system's offset in the Impl (+0x60, +0x50 in SDK 3.4) is read off the SDK's code.
+- **One render** (`render_once`): mode and device must be 1 (else 0x40299, the SDK's own answer); the SDK's update
+  lock, `GenerateCommand`, unlock, `SetProcessTimeMax(0xffffffff)`, `Setup`, `Process`, then the command list walk.
+  Two layouts of `AudioRenderSystem`: SDK 16 (getters, `GenerateCommand(void*, size_t)`) and SDK 20 (fields at +0x48,
+  +0x4c, +0xf8, +0x100; `GenerateCommand(Span)` returning a span in x0, x1; recognized by that symbol). The update
+  lock's offset and kind (`SdkMutexType` or `nn::os::MutexType`) are read off the first instructions of `Update`, else
+  `UpdateImpl` (`update_lock`, `lock_in`, `plt_target`): a miss keeps +0x1f0 / +0x2d0 and is a red line.
+- **The command list** (`cmdlist.ts`, nxnative `capture`): three header layouts (SDK 6 and below, SDK 8 to 20, SDK 21
+  without a magic) and four DeviceSink layouts (SDK 4, 5, 8 to 20, 21), the header taken from the first list that
+  walks in exactly one layout, the sink by its ID or, when that ID is absent, by being the one command of the sink's
+  size with 1 to 6 inputs. Every command is validated before anything is taken from a list. Then `rsink.capture`:
+  6 -> 2 downmix, clamp, 32 kHz upsampled 3:2.
+- **`AudioRenderSystem::Update`**: the catch-up rule of `rsink` (`audio_rs_update_begin`): 0 go on, 1 render a
+  catch-up frame into the queue first, 2 the queue of 4 is full: wait at most 50 ms for the render thread to play
+  one, 3 still full: render and discard. A queued frame never signals the game's event. Then the SDK's `Update`.
+- `GetAudioRendererWorkBufferSize`: the DSP service's budget through revision 15, checked against nxnative's
+  fixtures; a revision or device the model does not cover goes to the SDK's own function with the CPU / manual copy.
 - `UpsamplerManager::Allocate`: null manager -> no upsampler; else the SDK's own.
 - The device name, channel count, volume, auto-tune and notification calls.
 
-**Not implemented: six names resolve, log one red line each and fail**: `OpenAudioRenderer` (both forms),
-`CloseAudioRenderer`, the two `ExecuteAudioRendererRendering` take-overs, `AudioRenderSystem::Update`. They are the
-part that runs SDK code and need things the runtime does not have yet: a guest thread started by the host whose body
-is host code (the render loop), nested guest calls that may block (the SDK's update lock), `guest_sym` for a name that
-is itself taken over, system events bound and re-attached (`ar_open`'s renderer event), and reading the SDK's code
-(the update lock's offset, the `AudioRenderSystem` offset, the PLT). Also not ported: the command list walk that
-finds the DeviceSink (`capture`'s first half: header layouts of SDK 4 to 21, the sink scan); it is pure and can be
-ported with nxnative's `t_audren_layout` fixtures when the rest exists. Until then a game that uses the audio
-renderer has no sound and, if it does not tolerate a failed open, does not start. None of this can be tested here:
-there is no SDK module in the tree.
+### The sink (`audio_rs_*`)
+
+An output of the host's own with 4 blocks in flight, so one render per 5 ms block handed back. `audio_rs_ready` (is a
+block free), `audio_rs_next` (plays a queued catch-up frame in place of a render, or says "render now"),
+`audio_rs_capture(sink, dest, mix, samples, rate, idx, nIn, idxSize)`, `audio_rs_rendered`, `audio_rs_count_render`,
+`audio_rs_update_begin / _end`, `audio_rs_played_ptr / _frames` (the block last given to the output: tests, a
+recorder). Up to 4 renderers, each with its own blocks, queue and upsampler history.
+
+### Differences from nxnative, and what is not ported
+
+- nxnative's two callers of a render swap their frames in one case (the render thread is waiting for the render lock
+  while an update renders a catch-up frame: the thread's later frame is played before the queued one). The same here.
+- A render from a thread that is not the render thread goes nowhere (nxnative writes the renderer's frame, which
+  nothing plays unless the render thread is between its render and its append).
+- The histogram line of the first full command list shows at most 24 IDs (nxnative: 512 bytes of text).
+- Not ported: the render time statistics (mean / max every 2000 frames) and `DM_AUDREN_TRACE`.
+- `audio_guest_call` is still used for the SDK's short functions (see the imports). One of them that blocks (a
+  contended lock inside `CreateSystemEvent`, say) stops the process with the runtime's host fault.
+- **There is no SDK in this repository.** The take-overs are tested with a fake SDK in JavaScript (every step, every
+  layout the code knows) and, through the translator and the kernel, with a stand-in SDK in C that a test guest
+  carries (`test/runtime/src/ren_sdk.h`: the entry points, calling conventions and SDK 16 wire layout the host reads,
+  and behind them a renderer of its own with two-voice PCM16 mixing). No game's renderer has run.
 
 ## Opus
 
@@ -281,11 +370,11 @@ Nintendo's header is not checked; frames are assumed to be answered in the order
 
 ## Verified
 
-`npm run audio:test`: **55 tests, 0 failed; 31 of 31 transitions of `audio_buf`, `audio_out`, `opus_req` taken by
-the module** (the run fails otherwise).
+`npm run audio:test`: **97 tests, 0 failed; 68 of 68 transitions of the seven machines taken by the module** (the
+run fails otherwise).
 
 - Names: `names.ts` against the three nxnative files (118 = 64 + 22 + 32); every name resolves, others do not; every
-  id answers; the six stubs log red once each.
+  id answers; no name is a stub; without an SDK the renderer take-overs fail with one red line per missing function.
 - Silent sink: 5 ms buffers back at exactly +5, +10, +15, +20 ms, nothing one nanosecond early; sample-exact times
   for odd sizes; 200,000 buffers with no drift; a late tick; the catch-up limit.
 - Every transition of `audio_out` and `audio_buf` through the module with the fake device: gesture wait of 5 s, first
@@ -316,10 +405,29 @@ the module** (the run fails otherwise).
 - Render sink: one render per 5 ms at exact guest times; frames in order on a device; silence frames keep the pace;
   the catch-up rule with a full queue; capture (clamp, 6 -> 2, one input, byte indices); 3:2 upsampler 84.8 dB; four
   renderers with separate blocks; the work size fixtures.
+- Audio renderer with a fake SDK (`i_ren.test.mts`; the test is the embedder and the scheduler, a guest thread is a
+  generator): the open (the SDK sees device 1 / mode 1 and the host's event; destroy, bind, attach; malloc,
+  CreateThread with the page-aligned stack, 64 KB, priority 9, the embedder's entry; StartThread), four renders at
+  once and then one per 5 ms of guest time for 200 frames, the order lock / generate / unlock / process with the lock
+  at the offset read off the code, the join at close and everything given back, 20 open / close rounds with the arena
+  unchanged; the update lock held (the render thread stops inside the SDK's `Lock`, an update queues for its turn and
+  renders when the other is done); the catch-up rule end to end (queued frames played in order in place of renders
+  and without the game's event, the wait on a full queue, the discard); the form without an event; SDK 17's nested
+  open; a game's own CPU renderer; the host-backed work buffer and the buffer below the service's budget; every way
+  of having no thread; four renderers and a fifth; which renderer a system belongs to; the SDK 20 layout;
+  `nn::os::MutexType`; the update lock fixtures of nxnative's `t_audren_layout` (PLT stub, straight `bl`, UpdateImpl,
+  the two misses); a renderer that is not CPU + manual; missing symbols.
+- Command list (nxnative's `t_audren_layout` fixtures, at an odd address): SDK 4, 5, 6, 16 and 21 lists to stereo
+  PCM16, each also after start-up lists with a zeroed command; SDK 5's first list that walks in two layouts; 15
+  malformed-list cases (no PCM from a list with a damaged command, the sink scan left for the next whole list);
+  truncation at every byte; impossible sizes; the sink by size (SDK 8's ID 0x10); no sink (red); disabled, no inputs,
+  44.1 kHz; six inputs downmixed against computed samples; 32 kHz; the bounded histogram line.
 - Opus: the manager with the SDK stand-in, a synchronous and an asynchronous embedder decoder (abandon on reset,
   late answers, generations); every forward of the synchronous interfaces.
 
-`npm run audio:browser`: **10 tests** (Chromium 153, full build, headless; the worklet records what it puts out; the
+`npm run audio:browser`: **11 tests**, the eleventh the renderer: the take-overs with an SDK in JavaScript in the
+Worker, the render thread paced by the device: 2.96 s of 440.00 Hz at 92.2 dB against a fitted sine, no gap, 608
+renders of which 2 catch-up frames, 607 blocks played, device underrun 0. The other ten (Chromium 153, full build, headless; the worklet records what it puts out; the
 figures are those of one run). With `--autoplay-policy=no-user-gesture-required`: a 440 Hz tone for 5 s, 5 ms
 buffers, four in flight, refilled on the release event, over each transport (`direct` on a shared memory, `sab`,
 `message` on a page without COOP / COEP) and on a 44.1 kHz context: 440.00 Hz by zero crossings, 92.2 dB against a
@@ -350,11 +458,24 @@ driven by the Worker's 4 ms timer and keeps 20 ms in flight), so the case now al
 timers came 15 ms or more late and says so in its line; the device must still never run dry. The runner's second
 attempt stays as a net for a machine that is busy (`AUDIO_BROWSER_RETRIES=0` turns it off).
 
-`npm run kit:test`: the three machines' tables (every transition, every refusal) in `test/audio/audio.machine.test.mts`.
+`npm run kit:test`: the seven machines' tables (every transition, every refusal) in `test/audio/audio.machine.test.mts`.
+
+`npm run rt:test`, "audio renderer": a translated guest (`test/runtime/src/audren.c` with its stand-in SDK
+`ren_sdk.h`) opens a renderer for the DSP with an event on its stack, plays two voices (three and two queued wave
+buffers, pitch 1 and 1.5, a volume per side) and lives on the renderer's event. Checked: the SDK was opened once with
+device 1 / mode 1 and keeps an event of the host's; the render thread has priority 9; the offsets read off the guest's
+code (+0x60, the lock at +0x1d8); the 9 blocks of sound at the sink equal the expected mix sample for sample (4320
+samples), with silent blocks before and after, four blocks at once and then one per 5 ms of guest time; the five wave
+buffers come back consumed in order, 3, 4 and 3 frames apart; identical on a second run; the same samples with a
+budget of 50 units per slice; with the update lock held by the game for 12 ms the render thread blocks in the
+kernel inside the SDK's `Lock` and nothing is lost; 12 open / close rounds give back every thread, stack, event and
+output. `npm run rt:browser`: the same guest on the wall clock through the page's AudioWorklet, six rounds: six
+stretches of sound in the worklet's recording, each equal to the expected signal sample for sample.
 
 ## Attached to the runtime (`src/glue/rt_audio.ts`; src/runtime/README.md "Audio")
 
-All six points are done: the "audio static" range (above the guard, because `GetAudioOutName` hands out a pointer
+The renderer's requests are served as described under "Audio renderer" (`<audio.co>`, `<audio.render>` stubs). All
+six points are done: the "audio static" range (above the guard, because `GetAudioOutName` hands out a pointer
 into it) and a host-allocated arena; the 118 names as forced take-overs with x0, x0 / x1 or v0 written back;
 `audio_tick` at slice ends and `audio_next_deadline()` as a deadline of the run loop, the catch-up limit on the wall
 clock; `audio_event_bind` through the take-over table's SystemEvents; the page hosting `AudioDeviceMain`
@@ -364,8 +485,12 @@ Chromium on the real worklet.
 
 ## Gaps
 
-- The audio renderer's SDK-driving half is not implemented (above); nothing of the renderer was run with an SDK.
-- Nothing here was run with a game; with the runtime one self-made guest (AudioOut with an event) has.
+- The audio renderer has run with a fake SDK and with a test guest's stand-in SDK only: no real SDK's
+  `OpenAudioRenderer`, `GenerateCommand` or `CommandListProcessor` has been translated and run, and the layouts of
+  SDK 3 to 22 are nxnative's findings ported, exercised with built lists and built prologues.
+- A real SDK needs more of the runtime than the stand-in: its nn::os (thread-local storage, `CreateThread` mapping the
+  stack with MapMemory), and for the DSP-side functions nothing else of the host's. Not tried.
+- Nothing here was run with a game; with the runtime two self-made guests (AudioOut with an event, the renderer) have.
 - Opus with a real SDK decoder is untested; multi-stream Opus has no decoder of ours behind it (SDK forwards only).
 - One device for all outputs: a stall or a loss moves every Live output to the silent sink at once. Frames that were
   in the ring at that moment (up to the lead) are played when the device comes back, before the new ones.

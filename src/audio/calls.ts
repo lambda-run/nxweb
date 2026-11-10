@@ -8,6 +8,7 @@ import { Out } from "./out";
 import * as stream from "./stream";
 import * as rsink from "./rsink";
 import * as opus from "./opus";
+import * as ren from "./ren";
 
 export const RET_VOID: i32 = 0, RET_X0: i32 = 1, RET_X0X1: i32 = 3, RET_V0: i32 = 4;
 
@@ -54,13 +55,11 @@ function noObject(fn: u32, what: string, key: u64): void {
   if (!once(fn)) return;
   red(); puts("audio: "); puts(unchecked(NAMES[fn - 1])); puts(" on "); puts(what); puts(" "); putx(key); puts(" the host did not open"); end();
 }
-export function isStub(fn: u32): bool {
-  switch (fn) {
-    case Fn.ar_Open: case Fn.ar_Open0: case Fn.ar_Close: case Fn.ar_ImplExec: case Fn.ars_Exec: case Fn.ars_Update: return true;
-  }
-  return false;
-}
-const NEEDS_SDK = "the audio renderer runs the game's own SDK code on a guest thread; see src/audio/README.md";
+// No name is a stub any more (the audio renderer's six were until the renderer was driven; see ren.ts)
+export function isStub(fn: u32): bool { return false; }
+// A renderer take-over: it either ends at once (its result goes where every call's result goes) or goes on with a
+// request to the embedder (ren.RET_CO; see ren.ts)
+function co(kind: i32): i32 { if (kind == 1) store<u64>(args, load<u64>(ren.reqPtr(), 8)); return kind; }
 
 // ---- AudioOut ----
 // The front of the guest AudioOut as the SDK's OpenAudioOut fills it (sample rate, channel count, sample format,
@@ -177,8 +176,12 @@ export function call(fn: u32, argsPtr: usize): i32 {
       store<i32>(PARAM, 1, 0x2c); store<i32>(PARAM, 1, 0x30);   // rendering device = CPU, execution mode = manual
       return ret(guestCall(orig, PARAM));
     }
-    case Fn.ar_Open: case Fn.ar_Open0: case Fn.ar_ImplExec: case Fn.ars_Exec: case Fn.ars_Update: return stub(fn, RES_FAIL, NEEDS_SDK);
-    case Fn.ar_Close: stub(fn, 0, NEEDS_SDK); return RET_VOID;
+    case Fn.ar_Open: return co(ren.open(X(0), X(1), X(2), X(3), X(4), lr()));    // (handle, event, parameter, work buffer, size)
+    case Fn.ar_Open0: return co(ren.open(X(0), 0, X(1), X(2), X(3), lr()));      // (handle, parameter, work buffer, size)
+    case Fn.ar_Close: return co(ren.close(X(0), X(1), lr()));                    // the handle by value: (renderer, client state)
+    case Fn.ar_ImplExec: return co(ren.implExec(X(0), lr()));
+    case Fn.ars_Exec: return co(ren.exec(X(0), lr()));
+    case Fn.ars_Update: return co(ren.update(args, lr()));
     case Fn.up_Allocate: {   // an upsampler for a DeviceSink below 48 kHz: none with CPU rendering (no manager); the sink resamples
       if (!X(0)) return ret(0);
       const orig = guestFn(unchecked(NAMES[fn - 1]));

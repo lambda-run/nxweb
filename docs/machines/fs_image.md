@@ -15,7 +15,7 @@ stateDiagram-v2
     Bad --> [*]
 ```
 
-Machine id 7. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
+Machine id 11. Any (state, event) pair not listed below is refused: the state stays, `step` returns false and a `[RED] ` line is logged.
 
 | # | State | Carries |
 |---|---|---|

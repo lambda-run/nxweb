@@ -11,11 +11,17 @@
 //     output plays on a device the loop is woken every few milliseconds to feed the ring;
 //   - events: a guest nn::os::SystemEvent is bound through the take-over table (src/hle sysevent.ts: the SDK's own
 //     CreateSystemEvent runs on the calling guest thread); the module's own events are bare kernel events;
+//   - the audio renderer: its take-overs run SDK code, which may block or take long, so the module answers them
+//     with requests (src/audio/ren.ts): CALL is served by sending the calling guest thread into the SDK function
+//     with x30 = a stub of this file's, whose host function hands x0 / x1 back to the module (the thread runs the
+//     function as ordinary guest code: it can wait on the SDK's update lock and be preempted); WAIT is a
+//     WaitSynchronization of the thread on a kernel event of the module's. The render thread is a thread the SDK's
+//     own CreateThread makes (as nxnative's is) whose function is another stub: its body is the module's loop;
 //   - the device: AudioDevice (audio_device.ts) on this side, AudioDeviceMain on the page; their { audio } messages
 //     go through `send` and handle().
 import { Runtime, FOREVER_NS, type HostCpu, type HostResult } from "./rt_runtime.ts";
 import { range } from "./rt_layout.ts";
-import { AudioHost, RET, type AudioEmbedder, type OpusBackend } from "./audio_host.ts";
+import { AudioHost, RET, REQ, type AudioEmbedder, type OpusBackend } from "./audio_host.ts";
 import { AudioDevice, type AudioDeviceOptions } from "./audio_device.ts";
 import type { HleHost } from "./hle_host.ts";
 
@@ -32,6 +38,8 @@ export interface AudioRtOptions {
   arenaBytes?: number;                 // default 16 MB
   opus?: OpusBackend;
   onSignal?: (token: number, guestNs: bigint) => void;   // tests: an event was signalled (a buffer came back)
+  // tests, a recorder: a renderer's sink gave its output a block (stereo PCM16 at 48 kHz, a view: copy it)
+  onRenderBlock?: (sink: number, pcm: Int16Array, guestNs: bigint) => void;
 }
 const ARG_BLOCK = 160, NEVER = 0xFFFF_FFFF_FFFF_FFFFn, FEED_NS = 4_000_000n;
 
@@ -40,7 +48,9 @@ export class RtAudio {
   readonly host: AudioHost;
   readonly x: AudioHost["x"];
   device: AudioDevice | null = null;
-  stats = { calls: 0, ticks: 0, signals: 0, binds: 0, guestCalls: 0 };
+  stats = { calls: 0, ticks: 0, signals: 0, binds: 0, guestCalls: 0, sdkCalls: 0, waits: 0, renderThreads: 0 };
+  private contStub = 0; private threadStub = 0; private req = 0;
+  private played = [0n, 0n, 0n, 0n];
   private inited = false;
   private depth = 0;
   private events = new Map<number, { ev: number; r: number; w: number }>();   // token -> a guest SystemEvent's address, or a bare kernel event
@@ -89,6 +99,8 @@ export class RtAudio {
         this.stats.guestCalls++;
         return rt.guestCall(fn, Array.from(xs));
       },
+      threadEntry: () => BigInt(this.threadStub),
+      handleDup: h => rt.k.kernel_event_dup_readable(h) >>> 0,
       opus: o.opus,
     };
     this.host = new AudioHost(module, embedder, rt.memory);
@@ -118,7 +130,65 @@ export class RtAudio {
     const n = this.o.arenaBytes ?? 16 << 20, base = this.rt.hostAlloc(n);
     if (!base) throw new Error(`runtime: no memory for the audio arena (${n} bytes)`);
     this.x.audio_init(base, n);
+    this.req = this.x.audio_co_req() >>> 0;
+    // where a guest function the module asked for returns to, and where a render thread starts
+    this.contStub = this.rt.lateStub("<audio.co>", cpu => this.resume(cpu, cpu.x(0), cpu.x(1)));
+    this.threadStub = this.rt.lateStub("<audio.render>", cpu => {
+      this.tick(this.rt.syncTime());
+      this.stats.renderThreads++;
+      this.x.audio_co_thread(cpu.threadIndex);
+      const kind = this.x.audio_co_enter(cpu.w(0), cpu.lr);
+      this.tap();
+      return kind === RET.CO ? this.serve(cpu) : undefined;
+    });
     this.inited = true;
+  }
+  // ---- a renderer take-over that goes on (src/audio/ren.ts) ----
+  // The request block holds what the module needs next of the calling thread
+  private serve(cpu: HostCpu): HostResult {
+    const rt = this.rt, q = this.req, dv = cpu.dv(), kind = dv.getUint32(q, true);
+    if (kind === REQ.CALL) {
+      // the thread goes into the SDK function as ordinary guest code and returns into our stub
+      for (let i = 0; i < 8; i++) cpu.setX(i, dv.getBigUint64(q + 24 + 8 * i, true));
+      rt.core.x30.value = BigInt(this.contStub);
+      this.stats.sdkCalls++;
+      return cpu.jump(dv.getBigUint64(q + 8, true));
+    }
+    const token = Number(dv.getBigUint64(q + 8, true)), ns = dv.getBigUint64(q + 16, true), e = this.events.get(token);
+    this.stats.waits++;
+    if (!e || !e.r) {
+      // no kernel event of the module's behind the token (it should not happen): the timeout alone, so that time passes
+      if (!this.redOnce.has("nowait")) { this.redOnce.add("nowait"); rt.log(`[RED] audio: a renderer call waits on token ${token}, which is no kernel event of the module's`); }
+      return cpu.waitFor(null, cpu.now() + ns, c => this.resume(c, 1n, 0n));
+    }
+    return cpu.block(e.r, ns, (how, c) => {
+      if (how === "signaled") rt.k.kernel_event_clear(e.w);   // the module's events are auto-clear for their one kind of waiter
+      return this.resume(c, how === "signaled" ? 0n : 1n, 0n);
+    });
+  }
+  private resume(cpu: HostCpu, x0: bigint, x1: bigint): HostResult {
+    this.tick(this.rt.syncTime());
+    this.x.audio_co_thread(cpu.threadIndex);
+    const kind = this.x.audio_co_resume(x0, x1);
+    this.tap();
+    if (kind === RET.CO) return this.serve(cpu);
+    const dv = cpu.dv(), lr = dv.getBigUint64(this.req + 88, true);
+    if (kind & 1) cpu.setX(0, dv.getBigUint64(this.req + 8, true));
+    if (!lr) { this.rt.log("[RED] audio: a renderer call ended with nowhere to return to: its thread ends"); return cpu.never(); }
+    return cpu.jump(lr);
+  }
+  // tests, a recorder: the blocks the render sinks gave their outputs in this entry (at most one per sink)
+  private tap(): void {
+    const fn = this.o.onRenderBlock;
+    if (!fn) return;
+    for (let i = 0; i < 4; i++) {
+      const n = BigInt.asUintN(64, this.x.audio_rs_stat(i, 5));
+      if (n === this.played[i]) continue;
+      const fresh = n > this.played[i];
+      this.played[i] = n;
+      if (!fresh || !n) continue;
+      fn(i, new Int16Array(this.rt.memory.buffer, this.x.audio_rs_played_ptr(i) >>> 0, this.x.audio_rs_played_frames(i) * 2), this.rt.guestNs());
+    }
   }
   // both clocks to the module: the guest clock (silent sinks) and a monotonic host clock (the device's watchdog and
   // retry timers; with no device it is the run loop's own time, so that a deterministic run stays one)
@@ -149,7 +219,10 @@ export class RtAudio {
     this.tick(this.rt.syncTime());   // time has moved since the last tick: the sinks are brought up to now first
     this.depth++;
     let kind: number;
+    this.x.audio_co_thread(cpu.threadIndex);
     try { kind = this.x.audio_call(id, block); } finally { this.depth--; }
+    if (this.o.onRenderBlock) this.tap();
+    if (kind === RET.CO) return this.serve(cpu);
     const d = cpu.dv();
     if (kind === RET.V0) { cpu.setD(0, BigInt(d.getUint32(block + 64, true))); return; }
     if (kind === RET.X0X1) cpu.setX(1, d.getBigUint64(block + 8, true));
