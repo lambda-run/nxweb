@@ -21,7 +21,6 @@ const GAP: Record<string, string> = {
   fps_target: "It may run at the wrong speed: its frame-rate setting is not built yet.",
   fps_max: "It will not reach its 120 frames per second mode.",
   fps_hold: "It may run at the wrong speed: frame holding is not built yet.",
-  present_interval: "Its picture may stutter: frame pacing is not built yet.",
   tex_dyn_slots: "Some pictures may be missing or wrong: a kind of texture array is not built yet.",
   screen_aspect: "The picture's shape may be wrong: its screen-shape patch is not built yet.",
   render_base: "The picture may be drawn at the wrong size: its render-scale patch is not built yet.",

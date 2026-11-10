@@ -23,7 +23,8 @@ game ──nvn_call──▶ dispatch.ts ─▶ cmd.ts ── records ──▶ 
 | `pipeline.ts` | Pipeline key and cache (render and compute). `shader.ts`: shader keys, library, reflection record. `sync.ts`, `window.ts`, `tables.ts`, `texlayout.ts` (nxnative `nvn_tex.c`), `sha256.ts`, `arena.ts`, `log.ts`. |
 | `texcontent.ts`, `fmt.ts`, `astc.ts` | Texture content from guest memory; format classes, sRGB twins and conversions of formats WebGPU lacks; the ASTC decoder. |
 | `device.ts` | The host device as a machine: loss and recovery. |
-| `defs/*.json` | The eight machines: `gfx_cmdbuf`, `gfx_pass`, `gfx_pipeline`, `gfx_image`, `gfx_sync`, `gfx_texture`, `gfx_device`, `gfx_shader` (diagrams in `docs/machines/`). |
+| `profile.ts`, `report.ts`, `texwatch.ts` | What a game's profile switches on; counter reports, timestamps and conditional rendering; textures the CPU keeps writing (flush and scanner). |
+| `defs/*.json` | The nine machines: `gfx_cmdbuf`, `gfx_pass`, `gfx_pipeline`, `gfx_image`, `gfx_sync`, `gfx_texture`, `gfx_device`, `gfx_shader`, `gfx_render_enable` (diagrams in `docs/machines/`). |
 | `src/glue/gfx_host.ts`, `gfx_formats.ts`, `gfx_capture.ts` | The replayer, its format table, and the frame capture's text and PNG writer. |
 | `names.txt`, `host/gen_names.mts`, `gen/names.ts` | The 743 NVN names (nxnative `names.txt`) and the generated lookup table. |
 
@@ -325,6 +326,31 @@ Departs from nxnative: no occlusion counts (its `SAMPLES_PASSED` reports are rea
 evaluated; here such a condition always draws, which costs GPU time and is otherwise right); no tracking of counters
 written by shaders (storage buffer writes over a record: nxnative's GPU epochs).
 
+## Frame pacing (`window.ts presentInterval`, `src/glue/rt_gfx.ts`)
+
+On the Switch the next `nvnWindowAcquireTexture` is held for as many vertical syncs (1/60 s) as the window's present
+interval, and a game whose logic counts frames relies on it. The recorder answers how many
+(`gfx_present_interval(window)`; nxnative `hle_nvn.c present_itv`), the runtime holds the acquire:
+
+| | Vsyncs a frame | `nvnWindowGetPresentInterval` answers |
+|---|---|---|
+| default (nxnative's interval mode `game`) | the game's own interval; 0 counts as 1 | the game's own |
+| profile `present_interval display` | 1, whatever the game set | 1 (nxnative `window_interval`: a game that paces itself by what it reads back would otherwise hold itself to its own interval) |
+| a present cap, `gfx_set_present_cap(30 \| 60)` | 60 / cap, in either mode | as above; in display mode the cap's interval |
+
+The acquire (`rt_gfx.ts`): on the deterministic clock the thread wakes at exactly `interval` vsyncs of guest time after
+the previous acquire, once the GPU has finished the previous present. On the wall clock with the display's frames
+(the page's `requestAnimationFrame`) it wakes at the first display frame at or after that slot (within a quarter of
+a vsync); slots are counted from the previous slot, so a 120 Hz screen shows a 60 Hz game on every second frame and
+a 144 Hz screen keeps 60 frames a second on average (nxnative's virtual 60 Hz ticks), and a game more than a frame
+late starts a new schedule instead of catching up in a burst. Before this the page showed one frame for every
+display frame whatever the interval: a 30 fps game ran at the display's rate.
+
+**The cap has no caller yet.** nxnative takes the profile's `fps_target` as the present cap only while the host
+also writes that rate into the game's own frame limiter (`hle_fpslock.c`) or steps the game through its frame-step
+stubs: a game presented at a rate it does not step by runs fast or slow. Neither is ported
+(`docs/PORTING-STATUS.md`, "Frame rate"), so `fps_target`, `fps_max` and `fps_hold` stay listed for their games.
+
 ## Window origin, depth mode, and what the shader chain must emit
 
 nxnative (Metal): lower-left origin = negative-height viewport, reversed winding, present flipped; depth mode = a
@@ -507,7 +533,7 @@ text names guest addresses, so a capture is for reading, not for replaying.
 
 ## Verified (`npm run gfx:test`, headless Chromium, WebGPU on SwiftShader; `npm run kit:test` for the tables)
 
-14 Node tests and 46 browser scenes, about 327,000 checks.
+19 Node tests and 55 browser scenes, about 387,000 checks.
 
 - **Layout**: 268 offsets and sizes equal `nvn_obj.h` compiled by gcc (`test/gfx/layout_ref.c`), except the listed
   departures; all objects fit NVN's reserved sizes; state-object bit-fields; the size of 41 recorded commands through
@@ -571,22 +597,37 @@ text names guest addresses, so a capture is for reading, not for replaying.
     device, the texture uploaded again and the same pipeline built again, same pixels;
   - frame capture: the text (matched line by line) and both PNGs, decoded by the browser and compared with the
     targets.
-- **Machines**: every transition of the seven `gfx_*` tables is walked in `test/gfx/gfx.machine.test.mts`
-  (`npm run kit:test`); the scenes themselves take 65 of the 90.
+  - profile keys: `render_cond` (a disabled block; the clear-when-needed pattern with a timestamp report: memory
+    before and after the report lands, a second condition while the report is on its way, the same without a
+    report, `UpdateUniformBuffer` over a record on its way, a condition on an occlusion query's record, the state
+    across submissions; a depth clear under a false condition before a pass with an `EQUAL` depth test, which draws
+    everywhere with the key and nothing without it); `tex_flush_upload` (fill, flush, sample; rewrite one byte no
+    probe sees, flush one byte, an unrelated submission, sample; 20 flushes beside the texture; a texture the GPU
+    wrote flushed with and without a CPU write; published, then a scissored clear); `tex_dirty_upload` (a silent
+    rewrite shown at the next draw; a texture outside the registered set; two 8 MB textures at 4 MB a submission;
+    the scanner given up); `gpu_timestamps` (both modes with a stepped clock and exact values; with timestamp
+    queries: order, anchor, a GPU time that is not 0);
+- **Counter reports without a GPU** (`d_report.test.mts`, `e_present.test.mts`): record sizes; the tick conversion
+  over long uptimes; which time each mode gives each report type and what a game computes from them (16 ms against
+  0); the counter field with and without `render_cond`; an embedder landing them; more than 4096 on their way; the
+  present interval and its readback in each mode and under a cap.
+- **Machines**: every transition of the nine `gfx_*` tables is walked in `test/gfx/gfx.machine.test.mts`
+  (`npm run kit:test`); the scenes themselves take 74 of the 111.
 - **Demo**: `npm run gfx:demo`, `test/gfx/demo.html`; the test run saves `build/gfx/demo.png`.
 
 ## NVN functions
 
-743 names: **332 implemented, 11 empty by design** (nxnative's list: debug groups, patch size, depth bounds, scratch
-memory), **400 red stubs** (`[RED] nvnXxx unimplemented` once, return 0). nxnative implements 489.
-Implemented / total by object: DeviceBuilder 3/3, Device 19/61, QueueBuilder 9/23, Queue 10/16, MemoryPoolBuilder 7/8,
+743 names: **338 implemented, 11 empty by design** (nxnative's list: debug groups, patch size, depth bounds, scratch
+memory), **394 red stubs** (`[RED] nvnXxx unimplemented` once, return 0). nxnative implements 489.
+Implemented / total by object: DeviceBuilder 3/3, Device 21/61, QueueBuilder 9/23, Queue 10/16, MemoryPoolBuilder 7/8,
 MemoryPool 9/10, TexturePool 7/9, SamplerPool 8/9, BufferBuilder 6/7, Buffer 10/11, TextureBuilder 30/44, TextureView
 11/14, Texture 21/31, SamplerBuilder 17/25, Sampler 10/15, Program 4/34, Sync 4/6, WindowBuilder 7/20, Window 9/18,
-CommandBuffer 80/214, Blend 7/15, Color 5/7, ChannelMask 2/3, Multisample 7/26, Polygon 9/9, DepthStencil 11/13,
+CommandBuffer 84/214, Blend 7/15, Color 5/7, ChannelMask 2/3, Multisample 7/26, Polygon 9/9, DepthStencil 11/13,
 VertexAttrib 5/5, VertexStream 5/5, Event(Builder) 0/11, other (NVN2, debug, raw) 0/71. The exact set is the
 `case F.` lines of `dispatch.ts`. Since the last count: the sampler getters (four return a float), TextureView
 GetFormat / GetTarget, BindStorageBuffer(s), BindImage(s), DispatchCompute(Indirect), SetDepthClamp,
-Downsample(TextureView).
+Downsample(TextureView); ReportCounter, ResetCounter, SetRenderEnable, SetRenderEnableConditional, DeviceGetTimestampInNanoseconds,
+DeviceGetCurrentTimestampInNanoseconds.
 
 ## Gaps
 
@@ -609,7 +650,10 @@ Downsample(TextureView).
 - Queues with an origin different from the device's.
 - Bindless: arrays of handles and whole pools indexed at run time, and the other kinds listed under "Bindless
   textures". Per-stage limits: a stage over the device's limits does not draw ("Limits").
-- Adjacency and patch primitives; separate textures / samplers; transform feedback; counters and events;
+- Counters: only timestamps are real. `SAMPLES_PASSED` is not counted (its record is not written, a render condition
+  on it draws); the other counters report 0; events (`SignalEvent`, `WaitForEvent`) are not there. Conditional
+  rendering needs the profile's `render_cond`. A counter record a shader writes is not tracked.
+- Adjacency and patch primitives; separate textures / samplers; transform feedback;
   tessellation, geometry; indirect counts written by the GPU.
 - One viewport and scissor (more is red once: WebGPU has one); stencil masks and reference of the front face for both
   (WebGPU has one of each); no logic op, alpha test, polygon mode line / point, advanced blend, primitive restart

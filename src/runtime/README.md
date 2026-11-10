@@ -602,10 +602,18 @@ drawn, fences and window images complete at once (Node tests, instruction counts
   `gfx_shader`), which then does not report it missing: the text filter on its red line is gone. A key registered
   again has its pipelines requested again. `GfxHost.dispose()` destroys what the replayer made (the patch of the
   device's `createTexture` / `createBuffer` is gone). `gfx.captureFrame()` is the page's F9 and button.
-- **Frame pacing.** An acquire after the first waits for the next display frame. Wall clock: the embedder's
-  `nextFrame()` (the Worker's `requestAnimationFrame`), else a timer `interval` × 16.67 ms after the previous
-  acquire. Deterministic clock: exactly `interval` refreshes of guest time after the previous acquire, and not before
-  the GPU has finished the previous present.
+- **Frame pacing.** An acquire after the first is held for `interval` vertical syncs of 1/60 s, as the Switch holds
+  it. The interval is the recorder's (`gfx_present_interval`: the game's own, 1 with the profile's `present_interval
+  display`, 60 / cap under a present cap; `src/gfx/README.md`, "Frame pacing"). Wall clock with the embedder's
+  `nextFrame()` (the Worker's `requestAnimationFrame`): the first display frame at or after the slot, slots counted
+  from the previous slot, so the rate is the game's on a screen of any refresh rate (before, one frame was shown
+  for every display frame whatever the interval). Wall clock without: a timer. Deterministic clock: exactly
+  `interval` refreshes of guest time after the previous acquire, and not before the GPU has finished the previous
+  present.
+- **The game's profile.** `RtGfx`'s `profile` option (`rt_process.ts gfxSettingsFor`, part of `settingsFor` and so
+  of `handoffOptions`) turns the profile's graphics keys into the recorder's switches (`gfx_set_profile`). Counter
+  reports are stamped with the guest clock as it is when the GPU's completion arrives (`guestNow`), and with the
+  null replayer they land at once.
 
 ## Waiting for things outside the guest, and the asynchronous outer loop
 

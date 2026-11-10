@@ -511,19 +511,19 @@
   }
  },
  "pairs_per_class": {
-  "a": 1527,
+  "a": 1535,
   "b": 1432,
-  "c": 81
+  "c": 73
  },
  "keys_per_class": {
-  "a": 24,
+  "a": 25,
   "b": 20,
-  "c": 15
+  "c": 14
  },
  "keys_set_per_class": {
-  "a": 21,
+  "a": 22,
   "b": 18,
-  "c": 15
+  "c": 14
  },
  "top_c": [
   {
@@ -533,10 +533,6 @@
   {
    "key": "address_space",
    "profiles": 14
-  },
-  {
-   "key": "present_interval",
-   "profiles": 8
   },
   {
    "key": "fps_max",
@@ -714,6 +710,12 @@
    "what": "",
    "profiles": 10
   },
+  "present_interval": {
+   "class": "a",
+   "note": "gfx_set_profile bit 16 (src/gfx/window.ts, src/glue/rt_gfx.ts): display = one frame a vsync whatever interval the game sets, which it also reads back; game = the acquire is held for the game's own interval",
+   "what": "",
+   "profiles": 8
+  },
   "gpu_timestamps": {
    "class": "a",
    "note": "gfx_set_profile bit 8 (src/gfx/report.ts): a timestamp report takes the GPU start / end of the segment it lies in (WebGPU timestamp queries where the device has them, else times estimated on the CPU)",
@@ -854,27 +856,21 @@
   },
   "fps_target": {
    "class": "c",
-   "note": "hle_fpslock.c / FRAME_STEP stubs",
+   "note": "hle_fpslock.c / FRAME_STEP stubs: the present cap is there (gfx_set_present_cap), but nxnative applies it only while the host also writes the rate into the game's own frame limiter or steps the game through its stubs; neither is ported (docs/PORTING-STATUS.md, \"Frame rate\")",
    "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate.",
    "profiles": 33
   },
   "fps_max": {
    "class": "c",
-   "note": "hle_fpslock.c",
+   "note": "hle_fpslock.c + nvn_fstep.h at 120 ticks a second: needs a frame-rate choice for the player, an engine limiter the host writes, and the frame step's controller",
    "what": "The 120 fps option is not available.",
    "profiles": 6
   },
   "fps_hold": {
    "class": "c",
-   "note": "nvn_fstep.h",
+   "note": "nvn_fstep.h / hle_nvn.c fstep_tick: whether the frame step may hold a frame longer than the cap's vsyncs; it acts only with the frame step, which needs the FRAME_STEP stubs",
    "what": "Frame holding under a frame-rate cap is not implemented.",
    "profiles": 2
-  },
-  "present_interval": {
-   "class": "c",
-   "note": "hle_nvn.c present pacing",
-   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps).",
-   "profiles": 8
   },
   "ue_fps_cvar": {
    "class": "c",

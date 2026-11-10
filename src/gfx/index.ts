@@ -14,7 +14,7 @@ import { libRegister, shaderInit, shaderPending, shaderKeyState } from "./shader
 import { arenaInit, ARENA_BYTES } from "./arena";
 import { pipelineDone, pipelineState, pipelineCount, pipelineInit } from "./pipeline";
 import { fenceDone, fenceSignal, fenceDonePtr, fenceLast, sampTablePtr, tablesInit } from "./tables";
-import { imageEvent, imageState } from "./window";
+import { imageEvent, imageState, presentInterval, presentCapSet } from "./window";
 import { syncFenceOf, syncWaitFence } from "./sync";
 import { hostFlush, hostExecs, hostInit } from "./hostops";
 import { hostSegsLent, cmdInit } from "./cmd";
@@ -121,6 +121,10 @@ export function gfx_report_stat(i: i32): u32 { return reportStat(i); }
 // GPU by a flush, 1 KB hashed by the scanner, 2 scans completed, 3 scans that found a rewrite, 4 textures published by a
 // flush, 5 textures registered, 6 bytes the scanner hashed in the last submission
 export function gfx_tex_watch_stat(i: i32): u32 { return texWatchStat(i); }
+// Frame pacing (window.ts): the vertical syncs a frame of the window stays on screen, for which the embedder holds the
+// next nvnWindowAcquireTexture; a present cap in frames a second (30, 60; 0 none) that replaces the game's interval
+export function gfx_present_interval(window: usize): i32 { return presentInterval(window); }
+export function gfx_set_present_cap(fps: i32): void { presentCapSet(fps); }
 export function gfx_render_enable_state(): i32 { return renderEnableState(); }   // gfx_render_enable: 0 Drawing, 1 Skipping
 export function gfx_static_end(): usize { return __heap_base; }
 const SCRATCH: usize = memory.data(512);

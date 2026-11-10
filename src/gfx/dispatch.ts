@@ -12,7 +12,7 @@ import { texLayout, texLevelOffset } from "./texlayout";
 import { progSetKeys } from "./shader";
 import { syncInitialize, syncFinalize, syncWait } from "./sync";
 import { fenceNew } from "./tables";
-import { windowInitialize, windowAcquire, windowPresent, windowGetCrop } from "./window";
+import { windowInitialize, windowAcquire, windowPresent, windowGetCrop, windowInterval } from "./window";
 import { submit, emitFence, passBreak, blendDefault, dsDefault } from "./lower";
 import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY, H_FENCE } from "./hostops";
 import { contentInit, noteFlush, regionCopy, writeTexels } from "./texcontent";
@@ -439,7 +439,7 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnWindowSetDebugLabel: return 0;
     case F.nvnWindowAcquireTexture: return windowAcquire(P(a, 0), P(a, 1), P(a, 2));
     case F.nvnWindowGetNativeWindow: return load<u64>(P(a, 0), O.WIN_native);
-    case F.nvnWindowGetPresentInterval: return <u64><u32>load<i32>(P(a, 0), O.WIN_interval);
+    case F.nvnWindowGetPresentInterval: return <u64><u32>windowInterval(P(a, 0));
     case F.nvnWindowSetPresentInterval: store<i32>(P(a, 0), I(a, 1), O.WIN_interval); return 0;
     case F.nvnWindowSetCrop: { const w = P(a, 0) + O.WIN_crop; store<i32>(w, I(a, 1)); store<i32>(w, I(a, 2), 4); store<i32>(w, I(a, 3), 8); store<i32>(w, I(a, 4), 12); return 0; }
     case F.nvnWindowGetCrop: windowGetCrop(P(a, 0), P(a, 1)); return 0;

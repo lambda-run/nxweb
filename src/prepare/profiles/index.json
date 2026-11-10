@@ -10,7 +10,7 @@
   "0100000011D90000": {
    "name": "Pokémon Brilliant Diamond",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "010005501E68C000": {
@@ -106,7 +106,7 @@
   "010029B0118E8000": {
    "name": "Need For Speed™ Hot Pursuit Remastered",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 1
   },
   "010029B018432000": {
@@ -274,7 +274,7 @@
   "010051701FB46000": {
    "name": "Monster Train 2",
    "builds": 1,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "01005270232F2000": {
@@ -304,7 +304,7 @@
   "010056B015FE8000": {
    "name": "NieR:Automata The End of YoRHa Edition",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 8
   },
   "010057D006492000": {
@@ -670,7 +670,7 @@
   "0100B04011742000": {
    "name": "Monster Hunter Rise",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "0100B7C00933A000": {
@@ -688,7 +688,7 @@
   "0100B8E016F76000": {
    "name": "NieR:Automata The End of YoRHa Edition",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 8
   },
   "0100B99019412000": {
@@ -736,7 +736,7 @@
   "0100C49025D3E000": {
    "name": "EA SPORTS FC 27",
    "builds": 1,
-   "needs": 4,
+   "needs": 3,
    "cuts": 0
   },
   "0100CA9002322000": {
@@ -784,7 +784,7 @@
   "0100DCA0064A6000": {
    "name": "Luigi's Mansion 3",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "0100E44016C22000": {

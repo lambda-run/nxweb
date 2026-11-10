@@ -136,6 +136,11 @@ export function cases(env: Env): Case[] {
     ok(l.aliasSize >= 0x40000000 && l.heapSize === 0x8000000, `regions: heap ${hex(l.heapSize)}, alias ${hex(l.aliasSize)}`);
     eq(o.hle, { opmode: 0, perfBoost: true, allocBigAlign: true, gameEnv: "A=1 B=2", launchSpec: "lang8", displayVersion: "1.2.3" }, "the take-over table's configuration");
     eq([Object.keys(o.cutsKey), o.notes.length], [["hello"], 2], "modules with cuts, notes");
+    // the graphics layer's switches (src/gfx/profile.ts): none for this profile; each key its bit; tex_dirty_upload only with tex_flush_upload, as nxnative demands
+    const bits = (apply: Record<string, string>) => settingsFor(apply).gfx.bits;
+    eq([o.gfx.bits, bits({ render_cond: "on" }), bits({ tex_flush_upload: "on" }), bits({ tex_flush_upload: "on", tex_dirty_upload: "on" }), bits({ tex_dirty_upload: "on" }), bits({ gpu_timestamps: "segment" }), bits({ gpu_timestamps: "submission" }),
+      bits({ present_interval: "display" }), bits({ present_interval: "game", render_cond: "off" }), bits({ render_cond: "on", tex_flush_upload: "on", tex_dirty_upload: "on", gpu_timestamps: "segment", present_interval: "display" })],
+      [0, 1, 2, 6, 0, 8, 0, 16, 0, 31], "the profile's graphics keys as the recorder's bits");
     // the process: the kernel reports what the profile says; the cache key of the cut module differs from the uncut one's
     const keys: string[] = [];
     const store = { get: async (k: string) => { keys.push(k); return null; }, put: async () => { } };
