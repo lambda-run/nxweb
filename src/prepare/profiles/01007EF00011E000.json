@@ -19,6 +19,7 @@
   "program_id": "01007EF00011E000",
   "name": "The Legend of Zelda: Breath of the Wild",
   "pad_layout": "full",
+  "gpu_timestamps": "segment",
   "package": "v1114112",
   "modules": "main subsdk0 sdk",
   "romfs_marker": "Pack/Bootup_Graphics.pack",
@@ -29,11 +30,6 @@
    "key": "render_base",
    "value": "1600x900 1280x720",
    "what": "The render scale setting is not available."
-  },
-  {
-   "key": "gpu_timestamps",
-   "value": "segment",
-   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
   },
   {
    "key": "fps_target",

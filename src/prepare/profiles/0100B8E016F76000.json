@@ -23,33 +23,17 @@
   "modules": "main subsdk0 sdk",
   "romfs_marker": "data014.cpk",
   "app_pool": "0xCD500000",
-  "sys_resource": "0x1000000"
+  "sys_resource": "0x1000000",
+  "present_interval": "display",
+  "gpu_timestamps": "segment",
+  "tex_flush_upload": "on",
+  "tex_dirty_upload": "on"
  },
  "needs": [
-  {
-   "key": "present_interval",
-   "value": "display",
-   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps)."
-  },
   {
    "key": "fps_target",
    "value": "60",
    "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
-  },
-  {
-   "key": "gpu_timestamps",
-   "value": "segment",
-   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution."
-  },
-  {
-   "key": "tex_flush_upload",
-   "value": "on",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
-  },
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
   }
  ],
  "dropped": [

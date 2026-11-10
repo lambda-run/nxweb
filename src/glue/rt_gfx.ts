@@ -23,6 +23,8 @@ export interface GfxOptions {
   requestDevice?: () => Promise<any>;
   // Tests, null replayer only: while it returns true the "GPU" does not finish (fences stay pending until releaseFences())
   holdFences?: () => boolean;
+  // The game profile's graphics switches (rt_process.ts gfxSettingsFor: the bits of src/gfx/profile.ts). Omitted: none
+  profile?: { bits: number };
 }
 // nvnSyncWait's timeout is in nanoseconds; games pass ~0 (NVN's "wait forever") or values of years: no timer then
 const SYNC_FOREVER = 1n << 62n;
@@ -53,7 +55,8 @@ export class RtGfx implements HleGfx {
   constructor(rt: Runtime, module: WebAssembly.Module, opts: GfxOptions = {}) {
     this.rt = rt; this.opts = opts; this.live = !!opts.device;
     const dec = new TextDecoder();
-    this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l), requestDevice: this.live ? opts.requestDevice : undefined });
+    this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l), requestDevice: this.live ? opts.requestDevice : undefined,
+      now: () => this.guestNow() });
     const env = {
       memory: rt.memory,
       log: (p: number, n: number) => rt.log(dec.decode(rt.u8().slice(p >>> 0, (p >>> 0) + n))),
@@ -71,6 +74,7 @@ export class RtGfx implements HleGfx {
     if (rt.r.rt_static_check(99, BigInt(st.lo), BigInt(st.hi), BigInt(end))) throw new Error("runtime: the gfx module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
     if (need > arena.hi - arena.lo) throw new Error(`runtime: the gfx arena needs ${need} bytes, the range has ${arena.hi - arena.lo}`);
     if (!this.x.gfx_init(arena.lo, need)) throw new Error("runtime: gfx_init failed");
+    if (opts.profile?.bits) this.x.gfx_set_profile(opts.profile.bits);
     this.abi = rt.u8().slice(this.x.nvn_abi_table() >>> 0, (this.x.nvn_abi_table() >>> 0) + this.x.nvn_count());
     // The replayer's reports arrive through its hooks; guest threads wait on host.fence(n) promises (Runtime.waitFor
     // wakes the run loop when one resolves)
@@ -95,6 +99,7 @@ export class RtGfx implements HleGfx {
   captureFrame(o: { png?: boolean } = { png: true }): Promise<Capture> | null { return this.live ? this.host.captureFrame(o) : null; }
   // Null replayer: everything submitted so far is "done" (called at once unless a test holds the fences)
   releaseFences(): void {
+    this.x.gfx_reports_flush(this.guestNow());   // counter reports land before the fences behind them complete
     for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
     this.rt.requestWake();
   }
@@ -152,6 +157,8 @@ export class RtGfx implements HleGfx {
     switch (name) {
       // a game asks the device for every other entry point by name
       case "nvnDeviceGetProcAddress": return cpu => this.stubOfName(cpu.cstr(cpu.x(1), 128));
+      // the guest clock, which the recorder does not have (counter reports are stamped on the same clock)
+      case "nvnDeviceGetCurrentTimestampInNanoseconds": return cpu => { x.gfx_set_now(this.guestNow()); return this.call(id, cpu.argsX()); };
       // nvnProgramSetShaders(program, count, NVNshaderData[]): every stage's key is looked up (library, in-page
       // translation) before the recorder notes the keys
       case "nvnProgramSetShaders": return cpu => {
@@ -191,28 +198,34 @@ export class RtGfx implements HleGfx {
         this.stats.finishParked++;
         return cpu.waitFor(done, undefined, () => 0);
       };
-      // nvnWindowAcquireTexture(window, sync, index*): frame pacing. The thread parks until the next display frame:
-      // `interval` refreshes after the previous acquire in guest time, and (wall clock) the browser's next frame, or
-      // (deterministic clock) the GPU having finished the previous present.
-      case "nvnWindowAcquireTexture": {
-        const getInterval = this.idOf("nvnWindowGetPresentInterval");
-        return cpu => {
-          const k = this.keep(cpu), rt = this.rt, wall = rt.opts.clock === "wall", now = cpu.now();
-          this.stats.acquires++;
-          const interval = getInterval >= 0 ? Number(this.x.nvn_call(getInterval, k.args) & 0xFFn) : 1;
-          cpu.write(k.args, k.saved);
-          const vs = this.opts.vsyncNs ?? 16_666_667n;
-          let at: bigint | undefined, done: Promise<unknown> | null = null;
-          if (this.opts.unpaced) done = this.lastPresentDone;
-          else if (interval > 0 && this.lastAcquireAt >= 0n) {
-            if (wall && this.opts.nextFrame) done = this.opts.nextFrame();
-            else { at = this.lastAcquireAt + BigInt(interval) * vs; if (!wall) done = this.lastPresentDone; }
-          }
-          if (!done && (at === undefined || at <= now)) { this.lastAcquireAt = now; return this.call(id, k.args); }
-          this.stats.acquireParked++;
-          return cpu.waitFor(done, at, cpu => { this.lastAcquireAt = wall || at === undefined ? cpu.now() : at; cpu.write(k.args, k.saved); return this.call(id, k.args); });
-        };
-      }
+      // nvnWindowAcquireTexture(window, sync, index*): frame pacing. As the Switch blocks the next acquire for the
+      // window's present interval, the thread parks until `interval` vertical syncs (1/60 s) after the previous
+      // acquire. The interval is the recorder's answer (gfx_present_interval: the game's own, 1 with the profile's
+      // present_interval display, 60 / cap under a present cap), never 0.
+      //   deterministic clock: guest time is at exactly that slot when the thread wakes, and the GPU has finished the
+      //     previous present;
+      //   wall clock with the display's frames (nextFrame, the page's requestAnimationFrame): the first display
+      //     frame at or after the slot (within a quarter of a vsync). The slots are counted from the previous slot,
+      //     not from when the frame was shown, so a 120 Hz screen shows a 60 Hz game on every second frame and a
+      //     144 Hz screen keeps 60 frames a second on average (nxnative: virtual 60 Hz ticks); a game that fell more
+      //     than a frame behind starts a new schedule instead of catching up in a burst;
+      //   wall clock without: a timer.
+      case "nvnWindowAcquireTexture": return cpu => {
+        const k = this.keep(cpu), rt = this.rt, wall = rt.opts.clock === "wall", now = cpu.now();
+        this.stats.acquires++;
+        const interval = Math.max(1, this.x.gfx_present_interval(Number(cpu.x(0))) | 0);
+        const period = BigInt(interval) * (this.opts.vsyncNs ?? 16_666_667n), quarter = (this.opts.vsyncNs ?? 16_666_667n) / 4n;
+        let at: bigint | undefined, done: Promise<unknown> | null = null, slot = now;
+        if (this.opts.unpaced) done = this.lastPresentDone;
+        else if (this.lastAcquireAt >= 0n) {
+          slot = this.lastAcquireAt + period;
+          if (wall && this.opts.nextFrame) { if (now > slot + period) slot = now; done = this.displayFrame(slot - quarter); }
+          else { at = slot; if (!wall) done = this.lastPresentDone; }
+        }
+        if (!done && (at === undefined || at <= now)) { this.lastAcquireAt = now; return this.call(id, k.args); }
+        this.stats.acquireParked++;
+        return cpu.waitFor(done, at, cpu => { this.lastAcquireAt = this.opts.unpaced || (wall && !this.opts.nextFrame) ? cpu.now() : slot; cpu.write(k.args, k.saved); return this.call(id, k.args); });
+      };
       case "nvnQueuePresentTexture": return cpu => {
         const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
         this.stats.frames++;
@@ -238,6 +251,16 @@ export class RtGfx implements HleGfx {
     if (floats) return cpu => { this.stats.floatArgCalls++; return this.call(id, cpu.args()); };
     return cpu => this.call(id, cpu.argsX());
   }
+  // The guest clock now, in nanoseconds: what counter reports are stamped with. The kernel's own reading
+  // (kernel_guest_ns) is as of its last tick, which can be a while ago when a completion arrives while every thread
+  // is parked; this is the host's time now less the guest clock's lag (the clock stands while a freeze holds)
+  private guestNow(): bigint {
+    const rt = this.rt, lag = BigInt.asUintN(64, rt.k.kernel_host_time_of(0n)), host = BigInt.asUintN(64, rt.nowNs());
+    const kernel = BigInt.asUintN(64, rt.guestNs());
+    return lag === 0xFFFF_FFFF_FFFF_FFFFn || host < lag || host - lag < kernel ? kernel : host - lag;
+  }
+  // Resolves at the first display frame at or after host time `at`
+  private async displayFrame(at: bigint): Promise<void> { do { await this.opts.nextFrame!(); } while (this.rt.nowNs() < at && !this.rt.disposed); }
   private idOf(name: string): number {
     const rt = this.rt, p = (rt.r.rt_scratch_ptr() >>> 0) + 3200;
     rt.u8().set(new TextEncoder().encode(name + "\0"), p);

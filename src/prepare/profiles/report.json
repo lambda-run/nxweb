@@ -511,19 +511,19 @@
   }
  },
  "pairs_per_class": {
-  "a": 1489,
+  "a": 1535,
   "b": 1432,
-  "c": 119
+  "c": 73
  },
  "keys_per_class": {
-  "a": 20,
+  "a": 25,
   "b": 20,
-  "c": 19
+  "c": 14
  },
  "keys_set_per_class": {
-  "a": 17,
+  "a": 22,
   "b": 18,
-  "c": 19
+  "c": 14
  },
  "top_c": [
   {
@@ -535,28 +535,8 @@
    "profiles": 14
   },
   {
-   "key": "tex_flush_upload",
-   "profiles": 12
-  },
-  {
-   "key": "tex_dirty_upload",
-   "profiles": 11
-  },
-  {
-   "key": "render_cond",
-   "profiles": 10
-  },
-  {
-   "key": "present_interval",
-   "profiles": 8
-  },
-  {
    "key": "fps_max",
    "profiles": 6
-  },
-  {
-   "key": "gpu_timestamps",
-   "profiles": 5
   },
   {
    "key": "tex_dyn_slots",
@@ -724,6 +704,36 @@
    "what": "",
    "profiles": 83
   },
+  "render_cond": {
+   "class": "a",
+   "note": "gfx_set_profile bit 1 (src/gfx/report.ts): SetRenderEnable / SetRenderEnableConditional evaluated when a submission is lowered, a timestamp report's counter field 0",
+   "what": "",
+   "profiles": 10
+  },
+  "present_interval": {
+   "class": "a",
+   "note": "gfx_set_profile bit 16 (src/gfx/window.ts, src/glue/rt_gfx.ts): display = one frame a vsync whatever interval the game sets, which it also reads back; game = the acquire is held for the game's own interval",
+   "what": "",
+   "profiles": 8
+  },
+  "gpu_timestamps": {
+   "class": "a",
+   "note": "gfx_set_profile bit 8 (src/gfx/report.ts): a timestamp report takes the GPU start / end of the segment it lies in (WebGPU timestamp queries where the device has them, else times estimated on the CPU)",
+   "what": "",
+   "profiles": 5
+  },
+  "tex_flush_upload": {
+   "class": "a",
+   "note": "gfx_set_profile bit 2 (src/gfx/texwatch.ts): textures in pools the CPU writes are registered; a pool flush over one publishes it (full check at its next use, also of a texture the GPU wrote)",
+   "what": "",
+   "profiles": 12
+  },
+  "tex_dirty_upload": {
+   "class": "a",
+   "note": "gfx_set_profile bit 4 (src/gfx/texwatch.ts): registered textures are hashed in full by a scanner, 4 MB a submission, in place of nxnative's page write tracking",
+   "what": "",
+   "profiles": 11
+  },
   "ipa": {
    "class": "b",
    "note": "iOS package file name",
@@ -846,27 +856,21 @@
   },
   "fps_target": {
    "class": "c",
-   "note": "hle_fpslock.c / FRAME_STEP stubs",
+   "note": "hle_fpslock.c / FRAME_STEP stubs: the present cap is there (gfx_set_present_cap), but nxnative applies it only while the host also writes the rate into the game's own frame limiter or steps the game through its stubs; neither is ported (docs/PORTING-STATUS.md, \"Frame rate\")",
    "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate.",
    "profiles": 33
   },
   "fps_max": {
    "class": "c",
-   "note": "hle_fpslock.c",
+   "note": "hle_fpslock.c + nvn_fstep.h at 120 ticks a second: needs a frame-rate choice for the player, an engine limiter the host writes, and the frame step's controller",
    "what": "The 120 fps option is not available.",
    "profiles": 6
   },
   "fps_hold": {
    "class": "c",
-   "note": "nvn_fstep.h",
+   "note": "nvn_fstep.h / hle_nvn.c fstep_tick: whether the frame step may hold a frame longer than the cap's vsyncs; it acts only with the frame step, which needs the FRAME_STEP stubs",
    "what": "Frame holding under a frame-rate cap is not implemented.",
    "profiles": 2
-  },
-  "present_interval": {
-   "class": "c",
-   "note": "hle_nvn.c present pacing",
-   "what": "Presents are not re-paced to the display: the game keeps the present interval it asks for (often 30 fps).",
-   "profiles": 8
   },
   "ue_fps_cvar": {
    "class": "c",
@@ -892,35 +896,11 @@
    "what": "Only 16:9 output: the game's taller-screen mode is not available.",
    "profiles": 2
   },
-  "tex_flush_upload": {
-   "class": "c",
-   "note": "hle_nvn.c ft_add",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale.",
-   "profiles": 12
-  },
-  "tex_dirty_upload": {
-   "class": "c",
-   "note": "hle_nvn.c nvn_ft_written (page write tracking)",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages).",
-   "profiles": 11
-  },
-  "render_cond": {
-   "class": "c",
-   "note": "nvn_mtl.m OP_RENDER_COND",
-   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong.",
-   "profiles": 10
-  },
   "tex_dyn_slots": {
    "class": "c",
    "note": "shader chain fallback arrays",
    "what": "Shaders that index textures by a handle computed at run time are not supported.",
    "profiles": 4
-  },
-  "gpu_timestamps": {
-   "class": "c",
-   "note": "nvn_mtl.m timestamp reports per segment",
-   "what": "GPU timestamp reports are not per segment: a game that measures its GPU time may pick a wrong dynamic resolution.",
-   "profiles": 5
   },
   "shader_key_skip": {
    "class": "c",

@@ -43,13 +43,15 @@ export async function demoShaders(): Promise<[string, ShaderInfo][]> {
 export interface Gpu { device: any; canvas?: any; nextFrame?: () => Promise<unknown>; requestDevice?: () => Promise<any>; adapter?: any }
 export interface GfxProcess { rt: Runtime; gfx: RtGfx; hle: HleHost; input: RtInput; frameNs: bigint[]; shaders?: RtShaders }
 export interface GfxBoot extends RuntimeOptions { frames: number; script?: string; gpu?: Gpu; raf?: boolean; unpaced?: boolean; nullReplayer?: boolean; shaders?: ShaderOptions; noDemoShaders?: boolean; onPresent?: (f: number, p: GfxProcess) => void;
-  holdFences?: () => boolean; hleConfig?: Parameters<HleHost["config"]>[0]; front?: HleFront; setup?: (p: GfxProcess) => void }
+  holdFences?: () => boolean; hleConfig?: Parameters<HleHost["config"]>[0]; front?: HleFront; setup?: (p: GfxProcess) => void;
+  profile?: { bits: number };              // the game profile's graphics switches (src/gfx/profile.ts)
+  display?: () => Promise<unknown> }       // a display's frames in place of the GPU's (a fake screen for the pacing tests)
 // A process with graphics, the take-over table (nn::vi, nn::hid and the rest; docked) and the demo's shader library attached
 export async function bootGfx(env: Env, files: { name: string; bytes: Uint8Array }[], o: GfxBoot): Promise<GfxProcess> {
   const rt = new Runtime(env.mods, o), frameNs: bigint[] = [];
   let p!: GfxProcess;
   const gpu = o.nullReplayer ? undefined : o.gpu;
-  const gfx = new RtGfx(rt, env.mods.gfx!, { device: gpu?.device, canvas: gpu?.canvas, nextFrame: o.raf ? gpu?.nextFrame : undefined, unpaced: o.unpaced, requestDevice: gpu?.requestDevice, holdFences: o.holdFences,
+  const gfx = new RtGfx(rt, env.mods.gfx!, { device: gpu?.device, canvas: gpu?.canvas, nextFrame: o.display ?? (o.raf ? gpu?.nextFrame : undefined), unpaced: o.unpaced, requestDevice: gpu?.requestDevice, holdFences: o.holdFences, profile: o.profile,
     onPresent: f => { frameNs.push(rt.guestNs()); o.onPresent?.(f, p); } });
   const hle = attachHle(rt, env.mods.hle!, { config: { opmode: 1, ...o.hleConfig }, gfx, front: o.front }), input = new RtInput(hle);
   gfx.onPresentQueued(f => input.frame(f));   // scripted steps are in frames
@@ -110,6 +112,48 @@ export function gfxCases(env: Env, gpu: Gpu | undefined, shots: Shot[]): GfxCase
     eq(fingerprint(again), fingerprint(p), "slices/SVCs/units/guest ns/NVN calls of a second run");
     return [`${s.nvnCalls} NVN calls through host stubs, ${p.rt.stats.hostCalls} host calls in all, ${s.syncWaits} SyncWait (${s.syncParked} parked), guest clock at the end ${(Number(p.rt.guestNs()) / 1e6).toFixed(2)} ms`,
       `identical on a second run: slices/SVCs/units/guest ns/NVN calls = ${fingerprint(p)}`];
+  });
+  // Frame pacing, on the guest clock: stress_gfx presents as fast as it can and asks for present interval 1, 2 and 3
+  // for 100 frames each. What holds it is the acquire (rt_gfx.ts), for the interval the recorder answers
+  // (src/gfx/window.ts presentInterval). Deterministic: the acquire wakes at exactly its slot of guest time
+  test(`frame pacing on the guest clock (${where}): a guest presenting as fast as it can is held to its own present interval; to one frame a vsync with the profile's present_interval display; to a present cap of 60 or 30 whatever it asks`, async () => {
+    const VS = 16_666_667;
+    const pace = async (o: { bits?: number; cap?: number }) => {
+      const p = await bootGfx(env, [{ name: "stress_gfx", bytes: env.nso("stress_gfx") }], { gpu, frames: 300, profile: o.bits ? { bits: o.bits } : undefined,
+        setup: q => { q.rt.register({ name: "stress_mark", fn: () => {} }); if (o.cap) q.gfx.x.gfx_set_present_cap(o.cap); } });
+      const r: RunResult = await p.rt.runAsync();
+      eq([r.state, r.stop?.kind, r.stop?.code], ["Stopped", "exit", 0], "how it ended: " + p.rt.red.slice(-3).join(" | ") + p.rt.stdout());
+      // guest time between one present and the next, in vsyncs; frame i's interval was set at frame floor(i / 100) * 100
+      const d = p.frameNs.slice(1).map((t, i) => Number(t - p.frameNs[i]));
+      const off = Math.max(...d.map(v => Math.abs(v - Math.round(v / VS) * VS)));
+      const out = { vsyncs: d.map(v => Math.round(v / VS)), off, ms: Number(/guest ms (\d+)/.exec(p.rt.stdout())![1]), parked: p.gfx.stats.acquireParked };
+      if (gpu) p.rt.dispose();
+      return out;
+    };
+    const runs = (v: number[]) => { const o: string[] = []; for (let i = 0, j = 0; i < v.length; i = j) { while (j < v.length && v[j] === v[i]) j++; o.push(`${j - i}x${v[i]}`); } return o.join(" "); };
+    const game = await pace({}), display = await pace({ bits: 16 }), cap60 = await pace({ cap: 60 }), cap30 = await pace({ cap: 30 }), both = await pace({ bits: 16, cap: 30 });
+    // 300 frames: the acquires of frames 1..99 wait 1 vsync, 100..199 wait 2, 200..299 wait 3
+    eq(runs(game.vsyncs), "99x1 100x2 100x3", "the game's own interval: 60, 30 and 20 frames a second of guest time");
+    eq(runs(display.vsyncs), "299x1", "present_interval display: one frame a vsync whatever the game asks");
+    eq(runs(cap60.vsyncs), "299x1", "a cap of 60: interval 1");
+    eq(runs(cap30.vsyncs), "299x2", "a cap of 30: interval 2, half the rate");
+    eq(runs(both.vsyncs), "299x2", "the cap also holds in display mode");
+    for (const [n, r] of Object.entries({ game, display, cap60, cap30 })) { ok(r.off < 1_000_000, `${n}: every present within 1 ms of a whole number of vsyncs after the one before (${r.off} ns)`); eq(r.parked, 299, `${n}: every acquire but the first parked`); }
+    eq([Math.round(game.ms / 10), Math.round(display.ms / 10), Math.round(cap30.ms / 10)], [998, 498, 997], "guest time for the 300 frames, in 10 ms: 599, 299 and 598 vsyncs");
+    return [`guest ms for 300 frames: the game's intervals ${game.ms}, display ${display.ms}, cap 60 ${cap60.ms}, cap 30 ${cap30.ms}; presents off a whole vsync by at most ${Math.max(game.off, display.off, cap30.off)} ns`];
+  });
+  // The same on the wall clock with a display that is not at 60 Hz: its frames come every 8 ms here (a 120 Hz screen
+  // stood in for by a timer). A frame is shown on the first display frame at or after its slot, so the game still
+  // gets 60 frames a second, and 30 at interval 2, not the display's 120
+  test(`frame pacing on the wall clock with a 120 Hz display (${where}): a game at present interval 1 gets 60 frames a second, not the display's rate`, async () => {
+    const display = () => new Promise<void>(r => setTimeout(r, 8));
+    const t0 = performance.now();
+    const p = await run("cube", { frames: 40, clock: "wall", display });
+    const ms = performance.now() - t0, ideal = 39 * 16.667;
+    eq(p.rt.stdout(), "cube: 40 frames, 40 pad reads, buttons seen 0x0\n", "stdout");
+    ok(ms >= ideal * 0.97, `40 frames took ${ms.toFixed(0)} ms: faster than 60 a second (${ideal.toFixed(0)} ms)`);
+    ok(ms < ideal * 2.5, `40 frames took ${ms.toFixed(0)} ms: far slower than 60 a second`);
+    return [`40 frames in ${ms.toFixed(0)} ms on a display with a frame every 8 ms = ${(39000 / ms).toFixed(1)} frames/s`];
   });
   test(`gfx input (${where}): nn::hid npad reads see scripted input (buttons, stick direction bits)`, async () => {
     const p = await run("cube", { frames: 12, script: "3:Right~4,8:L100/0~2,9:A,10:Bogus" }).catch(e => e as Error);

@@ -4,7 +4,9 @@ import { Env } from "./env.mts";
 import { scenes as scenes1, T } from "./scenes.mts";
 import { scenes2 } from "./scenes2.mts";
 import { scenes3 } from "./scenes3.mts";
-const scenes = [...scenes1, ...scenes2, ...scenes3];
+import { scenes4 } from "./scenes4.mts";
+import { scenes5 } from "./scenes5.mts";
+const scenes = [...scenes1, ...scenes2, ...scenes3, ...scenes4, ...scenes5];
 import { GfxHost } from "../../src/glue/gfx_host.ts";
 
 async function main() {

@@ -23,14 +23,10 @@
   "modules": "main subsdk0 sdk",
   "romfs_marker": "System/RegionLangMask.txt",
   "app_pool": "0x240000000",
-  "sys_resource": "0x2000000"
+  "sys_resource": "0x2000000",
+  "render_cond": "on"
  },
  "needs": [
-  {
-   "key": "render_cond",
-   "value": "on",
-   "what": "Conditional rendering (SetRenderEnableConditional) is not evaluated: some clears or draws may be wrong."
-  },
   {
    "key": "address_space",
    "value": "heap 0x130000000 alias 0x400000000 stack 0x10000000",

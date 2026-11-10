@@ -10,7 +10,7 @@
   "0100000011D90000": {
    "name": "Pokémon Brilliant Diamond",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "010005501E68C000": {
@@ -52,7 +52,7 @@
   "0100152000022000": {
    "name": "Mario Kart 8 Deluxe",
    "builds": 2,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "010016100A186000": {
@@ -106,19 +106,19 @@
   "010029B0118E8000": {
    "name": "Need For Speed™ Hot Pursuit Remastered",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 1
   },
   "010029B018432000": {
    "name": "Ghost Trick: Phantom Detective",
    "builds": 1,
-   "needs": 2,
+   "needs": 0,
    "cuts": 0
   },
   "01002B00111A2000": {
    "name": "Hyrule Warriors: Age of Calamity",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 0
   },
   "01002B30028F6000": {
@@ -184,7 +184,7 @@
   "010036E00FB20000": {
    "name": "The Great Ace Attorney Chronicles",
    "builds": 1,
-   "needs": 2,
+   "needs": 0,
    "cuts": 0
   },
   "010038600B27E000": {
@@ -196,7 +196,7 @@
   "010038B015560000": {
    "name": "FINAL FANTASY TACTICS - The Ivalice Chronicles",
    "builds": 1,
-   "needs": 2,
+   "needs": 0,
    "cuts": 2
   },
   "01003E601E324000": {
@@ -238,7 +238,7 @@
   "010049900F546000": {
    "name": "Super Mario 3D All-Stars",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "010049900F546001": {
@@ -274,7 +274,7 @@
   "010051701FB46000": {
    "name": "Monster Train 2",
    "builds": 1,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "01005270232F2000": {
@@ -304,13 +304,13 @@
   "010056B015FE8000": {
    "name": "NieR:Automata The End of YoRHa Edition",
    "builds": 1,
-   "needs": 5,
+   "needs": 1,
    "cuts": 8
   },
   "010057D006492000": {
    "name": "OCTOPATH TRAVELER",
    "builds": 1,
-   "needs": 3,
+   "needs": 1,
    "cuts": 0
   },
   "01005CA01580E000": {
@@ -322,7 +322,7 @@
   "01006000040C2000": {
    "name": "Yoshi's Crafted World",
    "builds": 1,
-   "needs": 2,
+   "needs": 0,
    "cuts": 0
   },
   "0100606026F12000": {
@@ -412,7 +412,7 @@
   "01006F8002326000": {
    "name": "Animal Crossing: New Horizons",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "01006FE013472000": {
@@ -472,7 +472,7 @@
   "01007EF00011E000": {
    "name": "The Legend of Zelda: Breath of the Wild",
    "builds": 1,
-   "needs": 4,
+   "needs": 3,
    "cuts": 7
   },
   "010086A022444000": {
@@ -670,7 +670,7 @@
   "0100B04011742000": {
    "name": "Monster Hunter Rise",
    "builds": 1,
-   "needs": 4,
+   "needs": 1,
    "cuts": 0
   },
   "0100B7C00933A000": {
@@ -688,13 +688,13 @@
   "0100B8E016F76000": {
    "name": "NieR:Automata The End of YoRHa Edition",
    "builds": 1,
-   "needs": 5,
+   "needs": 1,
    "cuts": 8
   },
   "0100B99019412000": {
    "name": "Mario vs. Donkey Kong",
    "builds": 1,
-   "needs": 1,
+   "needs": 0,
    "cuts": 0
   },
   "0100BA4026E94000": {
@@ -736,7 +736,7 @@
   "0100C49025D3E000": {
    "name": "EA SPORTS FC 27",
    "builds": 1,
-   "needs": 4,
+   "needs": 3,
    "cuts": 0
   },
   "0100CA9002322000": {
@@ -784,7 +784,7 @@
   "0100DCA0064A6000": {
    "name": "Luigi's Mansion 3",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "0100E44016C22000": {
@@ -826,7 +826,7 @@
   "0100F2C0115B6000": {
    "name": "The Legend of Zelda: Tears of the Kingdom",
    "builds": 1,
-   "needs": 5,
+   "needs": 2,
    "cuts": 0
   },
   "0100F43008C44000": {
@@ -862,7 +862,7 @@
   "0400380020056000": {
    "name": "Splatoon Raiders",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "04003F40232DE000": {
@@ -874,19 +874,19 @@
   "0400486024DEC000": {
    "name": "The Legend of Zelda: Ocarina of Time",
    "builds": 1,
-   "needs": 6,
+   "needs": 2,
    "cuts": 0
   },
   "040074A01BF12000": {
    "name": "Donkey Kong Bananza",
    "builds": 1,
-   "needs": 3,
+   "needs": 1,
    "cuts": 0
   },
   "040077201BE50000": {
    "name": "Kirby Air Riders",
    "builds": 1,
-   "needs": 3,
+   "needs": 1,
    "cuts": 0
   },
   "04007EF01F8AE000": {
@@ -904,13 +904,13 @@
   "0400C3F00006E000": {
    "name": "Mario Kart World",
    "builds": 1,
-   "needs": 3,
+   "needs": 2,
    "cuts": 0
   },
   "0400D4201C6EA000": {
    "name": "Mario Tennis Fever",
    "builds": 1,
-   "needs": 2,
+   "needs": 1,
    "cuts": 0
   },
   "0400E88025B1A000": {

@@ -23,20 +23,11 @@
   "romfs_marker": "re_chunk_000.pak",
   "app_pool": "0xCD500000",
   "sys_resource": "0x0",
+  "tex_flush_upload": "on",
+  "tex_dirty_upload": "on",
   "mem_used": "0x87bc000"
  },
- "needs": [
-  {
-   "key": "tex_flush_upload",
-   "value": "on",
-   "what": "Textures the game fills in place from the CPU and publishes with a pool flush are not uploaded: some textures may be missing or stale."
-  },
-  {
-   "key": "tex_dirty_upload",
-   "value": "on",
-   "what": "Textures the game rewrites in memory without telling NVN are not uploaded again (needs write tracking of guest pages)."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",
