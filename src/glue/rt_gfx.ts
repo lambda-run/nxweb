@@ -7,6 +7,7 @@
 import { Runtime, type HostCpu, type HostResult } from "./rt_runtime.ts";
 import { GfxHost, type ShaderInfo, type Capture } from "./gfx_host.ts";
 import { range } from "./rt_layout.ts";
+import { instantiate } from "./wasm_abi.ts";
 import type { RtShaders, ShaderBlob } from "./rt_shaders.ts";
 import type { HleGfx } from "./hle_rt.ts";
 
@@ -57,25 +58,26 @@ export class RtGfx implements HleGfx {
     const dec = new TextDecoder();
     this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l), requestDevice: this.live ? opts.requestDevice : undefined,
       now: () => this.guestNow() });
+    // (addresses the recorder hands over are numbers in either build: wasm_abi.ts)
     const env = {
-      memory: rt.memory,
-      log: (p: number, n: number) => rt.log(dec.decode(rt.u8().slice(p >>> 0, (p >>> 0) + n))),
+      memory: rt.memory, ...rt.memImports,
+      log: (p: number, n: number) => rt.log(dec.decode(rt.u8().slice(p, p + n))),
       abort: () => { throw new Error("abort in the gfx module"); },
       gfx_exec: (p: number, n: number) => {
-        if (this.live) { const t0 = performance.now(); this.host.exec(p >>> 0, n >>> 0); this.times.execMs += performance.now() - t0; }
+        if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
         else if (!this.opts.holdFences?.()) this.releaseFences();   // null replayer: the "GPU" is done at once
       },
       // the command memory callback: guest code run to completion on the calling thread
       gfx_guest_call: (fn: bigint, a0: bigint, a1: bigint, a2: bigint, a3: bigint) => rt.guestCall(BigInt.asUintN(64, fn), [a0, a1, a2, a3]),
       gfx_proc_address: (id: number) => BigInt(this.stubOfId(id, `nvn#${id}`)),
     };
-    this.x = new WebAssembly.Instance(module, { env }).exports;
-    const st = range("gfx static"), arena = range("gfx arena"), end = this.x.gfx_static_end() >>> 0, need = this.x.gfx_arena_bytes() >>> 0;
+    this.x = instantiate(module, { env }, { mem64: rt.mem64, name: "gfx.wasm" });
+    const st = range("gfx static"), arena = range("gfx arena"), end = this.x.gfx_static_end(), need = this.x.gfx_arena_bytes();
     if (rt.r.rt_static_check(99, BigInt(st.lo), BigInt(st.hi), BigInt(end))) throw new Error("runtime: the gfx module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
     if (need > arena.hi - arena.lo) throw new Error(`runtime: the gfx arena needs ${need} bytes, the range has ${arena.hi - arena.lo}`);
     if (!this.x.gfx_init(arena.lo, need)) throw new Error("runtime: gfx_init failed");
     if (opts.profile?.bits) this.x.gfx_set_profile(opts.profile.bits);
-    this.abi = rt.u8().slice(this.x.nvn_abi_table() >>> 0, (this.x.nvn_abi_table() >>> 0) + this.x.nvn_count());
+    this.abi = rt.u8().slice(this.x.nvn_abi_table(), this.x.nvn_abi_table() + this.x.nvn_count());
     // The replayer's reports arrive through its hooks; guest threads wait on host.fence(n) promises (Runtime.waitFor
     // wakes the run loop when one resolves)
     this.host.attach(this.x);
@@ -138,7 +140,7 @@ export class RtGfx implements HleGfx {
 
   // ---- stubs ----
   private stubOfName(name: string): number {
-    const rt = this.rt, p = (rt.r.rt_scratch_ptr() >>> 0) + 3200, b = new TextEncoder().encode(name + "\0");
+    const rt = this.rt, p = rt.r.rt_scratch_ptr() + 3200, b = new TextEncoder().encode(name + "\0");
     if (b.length > 200) return 0;
     rt.u8().set(b, p);
     const id = this.x.nvn_lookup(p);
@@ -264,7 +266,7 @@ export class RtGfx implements HleGfx {
   // Resolves at the first display frame at or after host time `at`
   private async displayFrame(at: bigint): Promise<void> { do { await this.opts.nextFrame!(); } while (this.rt.nowNs() < at && !this.rt.disposed); }
   private idOf(name: string): number {
-    const rt = this.rt, p = (rt.r.rt_scratch_ptr() >>> 0) + 3200;
+    const rt = this.rt, p = rt.r.rt_scratch_ptr() + 3200;
     rt.u8().set(new TextEncoder().encode(name + "\0"), p);
     return this.x.nvn_lookup(p);
   }

@@ -37,6 +37,7 @@ const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every(
 export interface MoreCase { name: string; fn: () => Promise<string[]> }
 export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
   const list: MoreCase[] = [];
+  const D = layoutFor();   // the layout a Runtime without one gets: the cases take addresses from it (NX_MEM=64hi places it above 4 GB)
   const test = (name: string, fn: () => Promise<string[] | void>) => list.push({ name, fn: async () => (await fn()) ?? [] });
 
   // ---- module files larger than the fixed file staging range ----
@@ -52,8 +53,8 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     ok(rt.loadNso([{ name: "large", bytes: l.nso }]), "load failed: " + rt.red.join(" | "));
     const t1 = performance.now(), m = rt.modules[0];
     eq([m.imageSize, rt.ld.state(m.handle), rt.ld.get(m.handle, 36 /* Info.FilePtr */)], [l.imageBytes, "Pinned", 0], "image size, loader state and file pointer after the load");
-    ok(rt.logs.some(x => x.includes("staged from the heap region's base 0x18000000")), "the log says where the files were staged: " + rt.logs.join(" | "));
-    ok(zero(rt, SPACE.lo, SPACE.lo + l.nso.length + 0x1000), "the heap region reads zero again before the guest runs");
+    ok(rt.logs.some(x => x.includes("staged from the heap region's base 0x" + D.heapBase.toString(16))), "the log says where the files were staged: " + rt.logs.join(" | "));
+    ok(zero(rt, D.heapBase, D.heapBase + l.nso.length + 0x1000), "the heap region reads zero again before the guest runs");
     ok(zero(rt, fixed.lo, fixed.hi), "nothing of it was put in the fixed range");
     const r = rt.run();
     ok(r.stop?.kind === "exit" && r.stop.code === 9, "exit: " + JSON.stringify(r.stop) + " " + rt.red.join(" | "));
@@ -62,10 +63,10 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     // the same file, staged where the layout of a game puts its heap region, with a code region made for the image
     const layout = layoutFor({ code: 300 * MBY, heap: 512 * MBY }), plain = layoutFor(), same0 = layoutFor({ code: 100 * MBY }), big512 = layoutFor({ code: 512 * MBY });
     eq([same0.codeSize, same0.heapBase, same0.aliasSize], [plain.codeSize, plain.heapBase, plain.aliasSize], "images that fit the default code region leave the layout as it is");
-    ok(big512.codeSize >= 576 * MBY && big512.fit === "profile" && big512.tlsBase === big512.codeBase + big512.codeSize && big512.heapBase === big512.tlsBase + big512.tlsSize && big512.aliasBase + big512.aliasSize <= SPACE.hi,
+    ok(big512.codeSize >= 576 * MBY && big512.fit === "profile" && big512.tlsBase === big512.codeBase + big512.codeSize && big512.heapBase === big512.tlsBase + big512.tlsSize && big512.aliasBase + big512.aliasSize <= (big512.mem64 ? 0x3_FFFF_0000 : SPACE.hi),
       "512 MB of images: the code region holds them, the other regions follow: " + JSON.stringify(big512, (_, v) => typeof v === "bigint" ? v.toString() : v));
     const rt2 = new Runtime(env.mods, { layout });
-    ok(layout.heapBase > SPACE.lo && rt2.loadNso([{ name: "large", bytes: l.nso }]), "load on a per-game layout failed: " + rt2.red.join(" | "));
+    ok(layout.heapBase > D.heapBase && rt2.loadNso([{ name: "large", bytes: l.nso }]), "load on a per-game layout failed: " + rt2.red.join(" | "));
     ok(rt2.logs.some(x => x.includes("staged from the heap region's base 0x" + layout.heapBase.toString(16))), "staged at the layout's heap region");
     const r2 = rt2.run();
     ok(r2.stop?.kind === "exit" && r2.stop.code === 9 && rt2.stdout() === largeOut(l), "on the per-game layout: " + rt2.stdout() + rt2.red.join(" | "));
@@ -86,7 +87,7 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
       try { got = rt.loadNso(files); } catch (e) { fail(`${what}: loadNso threw: ${e}`); }
       const line = rt.red.find(x => want.test(x));
       ok(got === false && rt.state === "Stopped" && rt.r.rt_stop_kind() === 3 && line, `${what}: loaded=${got}, state ${rt.state}, red: ${rt.red.join(" | ")}`);
-      const lo = o.layout?.heapBase ?? SPACE.lo, hi = Math.min(rt.memory.buffer.byteLength, lo + 2 * l.nso.length + 0x2000);
+      const lo = o.layout?.heapBase ?? D.heapBase, hi = Math.min(rt.memory.buffer.byteLength, lo + 2 * l.nso.length + 0x2000);
       ok(hi <= lo || zero(rt, lo, hi), `${what}: nothing is left in the heap region`);
       lines.push(`${what}: ${line}`);
     };
@@ -102,7 +103,7 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     ok(ra.stop?.kind === "exit" && ra.stop.code === 9 && /^ro: .*\ndata: .*\nbss words not zero: 0\n/.test(aliasy.stdout()), "the module runs there (its SetHeapSize of 96 MB is refused): " + aliasy.stdout());
     lines.push("a 32 MB heap region followed by the stack and alias regions: the 40 MB file is staged across them, and the module runs");
     // modules mapped from 0x16000000: 28 MB of code region are left for a 72 MB image
-    refused("an image larger than the code region that is left", { codeBase: 0x1600_0000 }, [{ name: "large", bytes: l.nso }], /module large: its image of \d+ bytes does not fit the code region/);
+    refused("an image larger than the code region that is left", { codeBase: D.codeBase + 0x0E00_0000 }, [{ name: "large", bytes: l.nso }], /module large: its image of \d+ bytes does not fit the code region/);
     // the large file cut short: the loader refuses it by its header
     refused("the file cut at 20 MB", {}, [{ name: "large", bytes: l.nso.subarray(0, 20 * MBY) }], /past the end of the file/);
     // one byte of the stored 40 MB changed: the hash check sees it
@@ -111,7 +112,7 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     // a module file loaded at run time that does not fit the fixed range goes to host-allocated pages of the code
     // region (here 20 MB that are no module: the loader refuses them by their header, after they were staged), and
     // one that fits neither is refused with both figures
-    for (const [codeBase, want] of [[undefined, /not an NSO|NRO|header|magic/i], [0x17B0_0000, /fit neither the file staging range \(\d+ bytes free\) nor the code region \(\d+ bytes free\)/]] as [number | undefined, RegExp][]) {
+    for (const [codeBase, want] of [[undefined, /not an NSO|NRO|header|magic/i], [D.codeBase + 0x0FB0_0000, /fit neither the file staging range \(\d+ bytes free\) nor the code region \(\d+ bytes free\)/]] as [number | undefined, RegExp][]) {
       const rt = new Runtime(env.mods, { codeBase });
       ok(rt.loadNso([{ name: "hello", bytes: env.nso("hello") }]), "hello: load failed");
       let msg = "";

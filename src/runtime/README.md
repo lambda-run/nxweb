@@ -50,7 +50,7 @@ anything runs):
 | rt static | 0x0001_0000 | 0x0010_0000 | `src/runtime` static data: process machine, fault record, clock, scratch, kit trace |
 | loader static | 0x0010_0000 | 0x0020_0000 | `src/loader` static data |
 | loader arena | 0x0020_0000 | 0x0080_0000 | module records, export tables, names (`ld_init`) |
-| kernel static | 0x0080_0000 | 0x0180_0000 | `src/kernel` static data; 14 MB of it is one kit instance per alias page (an alias region of up to 3.5 GB) |
+| kernel static | 0x0080_0000 | 0x0180_0000 | `src/kernel` static data; 14 MB of it is the static leaves of the alias page table (3.5 GB of mapped alias region; more in a 64-bit memory comes from the top of the code region) |
 | gfx static | 0x0180_0000 | 0x0190_0000 | `src/gfx` static data |
 | gfx arena | 0x0190_0000 | 0x0390_0000 | `gfx_init(arena, gfx_arena_bytes())` |
 | file staging | 0x0390_0000 | 0x0490_0000 | module file bytes when they are small (16 MB): the start set of a small program until it is pinned, modules loaded at run time; its free tail is scratch for hashing and entry lists. A larger start set is staged in the guest's own regions: "File staging" below |
@@ -200,88 +200,73 @@ own regions, see "File staging"). With `code` (the images' bytes) the code regio
 steps (images + 64 MB spare), the heap region starts after it, and the images count against the pool when the
 split is chosen; without a profile the default alias region gives up what the code region takes.
 
-**memory64, for the 14.** Phase 1 of 3 is done: the translator, its helpers and their glue run on a 64-bit memory
-(`src/a64/README.md`, "memory64" and "tools/asc64"). The runtime and every other module are wasm32 still, so no game
-runs in the mode yet. What is measured, and what replaces the earlier finding:
+**memory64, for the 14.** The whole runtime has a second mode: every module built for a 64-bit linear memory
+(`rt64.wasm`, `kernel64.wasm`, `loader64.wasm`, `gfx64.wasm`, `fs64.wasm`, `hle64.wasm`, `audio64.wasm`,
+`translator64.wasm`, `helpers64.wasm`: the same sources through `tools/asc64`, the same static layout below 4 GB) on
+one memory of up to 16 GB (`a64_host.ts` `makeMemory64`). `new Runtime(mods, { layout })` is in the mode when `mods`
+are that set (their address tables say; `mem64` states it). memory32 is what it was: same modules, same layout, same
+tests.
 
-- *Engine limits.* A 64-bit memory is at most 16 GB in V8 (262144 pages; a module that declares more is refused at
-  compile time), in Chromium 153 and in Node 22.23, where memory64 is on without a flag. 16 GB holds a 9 GB pool
-  with a per-game split, and holds Ocarina of Time's profile as reserved (12.5 GB of reserve behind 380 MB of host
-  area and code); not nxnative's 64 GB alias reserve. Node's JavaScript API has no `address: "i64"` (it returns a
-  32-bit memory without an error), so the glue makes the memory from a module that defines it (`makeMemory64`), in
-  both engines.
-- *Speed, the translator's mode on the guest corpus* (`npm run a64:mem64:speed`; 75 programs, 276 M guest
-  instructions, modes interleaved, same process): Node 22 (V8 12.4, explicit bounds checks) 5 to 8 % more run time
-  than memory32, with the images above 4 GB the same within the noise; with the guard 8 to 10 %. Chromium 153, two
-  runs of five interleaved rounds: from 11 % fewer to 7 % more instructions per second (the spread between runs is
-  as large as the difference), 5 to 15 % fewer with the images above 4 GB. Memory-bound programs pay the most (up
-  to +40 % on single -O0 programs). The hand-assembled loop (`npm run a64:mem64`) had said 3 to 5 %.
-- *AssemblyScript does have the target.* The earlier finding here, "AssemblyScript has no memory64 target", was
-  wrong in the way that matters: 0.28.20's compiler has `Target.Wasm64` (usize = i64, i64 addresses in loads, stores,
-  `memory.copy` / `memory.fill`, i64 static offsets); only its driver never selects it, and four things around it
-  are unfinished (the memory is declared 32-bit, `memory.size` / `memory.grow` are typed i32, the non-null
-  assertion `x!` emits an i64 condition, the stock runtimes grow the memory). `tools/asc64` closes the four without
-  touching `node_modules`, and Binaryen's validator, `-O2` and V8 accept the result. **Compiled unchanged with it
-  today**: `src/runtime`, `src/kernel`, `src/gfx`, `src/fs`, `src/audio`, `src/hle`, `src/prepare`, and the
-  translator and helpers, which are built and tested that way. `src/loader` stops on two lines
-  (`changetype<Mod>(u32)`). So the "second, guest-only memory behind every take-over" redesign is not needed: the
-  modules stay on the one memory, built for wasm64.
-- *Compiling is not being correct.* A wasm64 build makes `usize` 64 bits; it does not widen a pointer the source
-  holds as `u32`. Every `<u32>` cast of an address, every `load<u32>` / `store<u32>` of one, every record with a
-  4-byte pointer field, every `i32` export parameter that is an address, and every `>>> 0` or `Uint32Array` over
-  addresses in the glue truncates silently above 4 GB. By count (`<u32>` casts / `load<u32>` / `store<u32>` in the
-  sources, not all of them addresses): kernel 77 / 12 / 21, loader 188 / 69 / 42, hle 353 / 129 / 90, gfx 585 / 220
-  / 208, fs 217 / 65 / 39, audio 190 / 66 / 39, prepare 244 / 120 / 83; the glue has 152 `>>> 0` and 15
-  `Uint32Array`. Finding which of those are guest addresses is phase 2's work, and the test for it is the one phase 1
-  used: run everything with the guest above 4 GB, where a truncated pointer lands on zeroed pages 4 GB lower.
+- *Engine limits.* A 64-bit memory is at most 16 GB in V8 (262144 pages), in Chromium 153 and in Node 22.23, where
+  memory64 is on without a flag. Node's JavaScript API has no `address: "i64"`, so the memory comes from a module
+  that defines it, in both engines. Growing it is address space: the 9 GB-pool test below ends with a 12.56 GB
+  memory and 2 MB more resident memory (Node), and runs the same in headless Chromium.
+- *One convention for addresses* (`docs/CONTRACT.md`, "Addresses"): `usize` in AssemblyScript, a number in the glue,
+  converted in one place (`wasm_abi.ts` `instantiate()`, from the table `tools/asc64/abi.mjs` writes into each binary
+  as the difference of its two builds), never through a 32-bit operator. `npm run audit64` keeps it: 2892 sites
+  (casts to 32 bits, 4-byte loads and stores, JavaScript's 32-bit operators) against a reviewed list; a new one
+  fails `npm test`.
+- *The layout rule has the mode* (`rt_process.ts`): `layoutFor(want, { mem64: true })` is the same rule with the
+  regions ending at 0x3_FFFF_0000 and no cap on the alias region; `layoutChoice(want)` is the one answer to "which
+  memory does this profile need": the 32-bit layout when it fits ("profile" or "pool"), else the 64-bit one, with
+  the most real memory the linear memory may come to hold (pool + images + host area and spare) and the sentence
+  the page shows. Over nxnative's 153 profiles: 139 stay 32-bit; **the 14 that were short all fit**, 9 as reserved
+  and 5 with everything their pool lets them commit (alias reserves of 16 and 20 GB cut to 10.8 GB), at up to
+  9.2 GB of real memory. The profile files carry that verdict (`address_space.mem64`, written by
+  `tools/prepare/layout_verdict.mts` from the same function), the prepare page shows it ("runs in 64-bit memory
+  mode: heap .., alias .., pool ..; the tab may come to use up to 9.2 GB of real memory") instead of "Can't run",
+  and the hand-off's options (`handoffOptions(msg, { mem64: "auto" })`) carry the layout and the choice.
+- *The kernel's alias page table is two-level* (`src/kernel/README.md`): leaves on demand, the first 3.5 GB of
+  mapped region from static data, the rest from an arena at the top of the code region which the layout sizes
+  (`ProcessLayout.aliasArena`, 30 MB for a 10.8 GB region) and the runtime hands over (`kernel_alias_arena`).
+- *The page* (`web/worker.ts`): a game whose hand-off layout is a 64-bit one gets the wasm64 set (fetched and
+  compiled then), anything else the wasm32 set; `?mem64=1` puts every program in the mode. The Options row says
+  "64-bit memory mode" and why. The translation cache key has the mode (`m32` / `m64...`).
+- *Tests.* Every runner goes through `tools/modes.mjs`: memory32, memory64, and memory64 with **the whole process
+  above 4 GB** (`NX_MEM=64hi`: code region at 0x1_8000_0000 with heap, stacks, thread-local, alias regions and
+  host-allocated blocks behind it; the flat corpus linked there; the module runners' fake guests above 4 GB), where
+  an address cut to 32 bits lands on untouched pages 4 GB lower. `d a 9 GB pool` creates a process from a Switch 2
+  profile's keys (heap 8 GB, alias 4 GB, pool 9 GB), where the guest sets a 6.2 GB heap in one call, writes and
+  reads a pattern at its bottom, middle and top and in an alias mapping above 8 GB, and walks QueryMemory;
+  `prepare:browser` does the same from a synthetic NUP through the page's verdict and Play.
+- *What the placement found* (each a wrong address, not an error, before): the audio glue's event binding
+  (`ev >>> 0`); `gp()` of `src/audio` and `gok()` of `src/fs` masking to 32 bits; the texture table keeping a
+  texture's pool address in 4 bytes, and the texel and present records of the recorder carrying an address in 4;
+  the take-over glue's stack argument (`sp & 0xFFFFFFFF`); audio's records keyed by and pointing with 4 bytes
+  (outputs, buffers, streams, decoders, renderer threads: its arena is host-allocated, so above 4 GB with the
+  process); the loader's module records; the file system's image record, which grew past its table's stride with
+  8-byte pointers; and, by the 9 GB test, the kernel's marker for a host-mapped stack (0xFFFF_FFFF_0000_0000 + the
+  address), which wrapped for a stack above 4 GB and named heap memory as borrowed.
+- *WebGPU takes the views.* `queue.writeBuffer` / `writeTexture` accept a view of a memory larger than 4 GB at
+  offsets above 4 GB in Chromium 153, as the whole-memory view with an offset, as a subarray, and as a copy
+  (`npm run gfx:mem64`); the copy costs 2.6 to 3.5 times the upload (80 against 30 us for 64 KB, 3.1 against 0.9 ms
+  for 4 MB), so the replayer keeps handing views. All 55 scenes pass with the game above 4 GB.
+- *Cost* (this machine, others idle). Node 22, the flat corpus through the runtime (`npm run rt:mem64`, 61
+  programs, 160 M instructions, 9 interleaved rounds, best / median): memory32 382 / 296 M instructions/s; memory64
+  355 / 260 (7.7 % / 13.7 % more time); above 4 GB 350 / 258 (9.2 % / 14.7 %). Doom (`doom:test`, tics 100..600 of
+  demo1, null replayer): 5.58 ms a frame and 1028 M instructions/s in memory32; 6.34 ms and 906 M/s in memory64
+  (+13.6 %); 6.28 ms and 914 M/s above 4 GB. Headless Chromium 153 (`rt:browser`, one run a mode while other jobs
+  ran: no more than an order of size): corpus 195 / 145 / 230 M instructions/s; Doom on the page with `?mem64=1`
+  runs and draws (`doom:browser`). A default process holds the same in both modes: 380 MiB of address space after
+  a small program and no measurable resident memory beyond memory32's (the kernel's page table is no longer
+  initialized whole: 8 MB less touched per process in both modes).
 
-**Phase 2: every other module on the 64-bit memory**, in the order that keeps something running at each step.
-1. *Build.* `src/runtime/host/build.mts` and `src/hle/host/build.mts` gain a wasm64 build next to the wasm32 one
-   (`asc64([...])` with the same `--memoryBase`: static data stays below 4 GB, which the tool requires), and the
-   glue instantiates either set on a `makeMemory64` memory with `Memory64.imports()` (`env.memory_size`,
-   `env.memory_grow`: the kernel's `commit`, `src/gfx`, `src/fs` and `src/prepare` grow the memory; with asc64 those
-   calls become these imports). `rt_layout.ts`: `Range.lo / hi` are numbers already; `HOST_END` and the host table
-   stay as they are (the host area is the same in both modes).
-2. *The module ABI.* Every export that takes or returns an address becomes `usize` (BigInt at the JavaScript
-   boundary in the wasm64 build, number in the wasm32 one). One convention for the glue, as in `a64_host.ts`:
-   numbers in the glue's own interfaces, `BigInt(x)` exactly at a wasm64 export's i64 parameter, `Number(x)` on the
-   way back, no 32-bit operator on an address. `rt_runtime.ts` (1128 lines), `hle_host.ts`, `gfx_host.ts`
-   (1235), `fs_host.ts`, `audio_host.ts`, `rt_process.ts` and the device glue all take part.
-3. *The kernel.* `kernel_init`'s cfg block is 16 u64 already; inside, region bases, sizes, the heap end and every
-   address in a thread context are to be u64 / usize throughout (`src/kernel/mem.ts` first). The alias page table
-   is one 16-byte kit instance per 4 KB page in static data: 3.5 GB of alias region costs 14 MB today, 64 GB would
-   cost 256 MB, so for a 16 GB memory it is sized per process (a 4 GB alias region: 16 MB) and for more it becomes a
-   two-level table. Thread-local region, handle table and wait lists hold addresses: audit each. The special pcs
-   stay 0xFFFF_FFF0 / 0xFFFF_FFE0 in both modes (the translator treats them as a window in memory64 and has
-   `isHostPc`).
-4. *The loader.* Module bases, relocation targets (R_AARCH64_RELATIVE writes 64-bit values already), symbol tables
-   and the stub region: `Mod` records hold u32 addresses (the two compile errors are there). A module may load
-   above 4 GB in the mode, which `test/a64` already does to the translator.
-5. *The take-over table (`src/hle`) and its glue.* The largest count of pointer handling: every take-over reads
-   guest pointers from registers (64-bit) and many narrow them. Then `src/fs`, `src/audio` (the renderer walks
-   guest command lists and wave buffers by address), `src/gfx` (the recorder keeps guest buffer and texture
-   addresses and sizes; pools above 4 GB; the replayer's `Uint8Array` views over a buffer larger than 4 GB work in
-   V8, as `test/a64` uses them, but WebGPU's `writeBuffer` / `writeTexture` take their data from views of that
-   buffer and should be tried early on a memory64 buffer).
-6. *The per-game layout* (`rt_process.ts` `layoutFor`): `SPACE.hi` and `aliasMax` are 32-bit constants; in the mode
-   the space is 16 GB less host area and code, the split becomes "as reserved" for all 153 profiles whose reserve
-   fits 16 GB, and "short" remains only for reserves beyond it (the 64 GB alias reserves, which are address space
-   nobody commits). The pc map's first level for 16 GB is 2 MB of the "pc map" range; the entry bitmap follows the
-   code region.
-7. *Tests.* Each module's own runner, `rt:test` and `rt:browser` in the mode, and the same again with the process
-   placed above 4 GB (code region, heap, stacks, thread-local region): a second `layoutFor` that starts the guest
-   at 0x1_8000_0000 is the truncation test for everything at once.
-
-Where it will hurt: `src/hle` and `src/gfx` by sheer count (steps 2 and 5); the kernel's alias table by design
-(step 3); and the glue, where a missed `>>> 0` gives a wrong address rather than an error. The compiler itself is
-not where the risk is: the translator, 3,500 lines of the same kind of code, needed changes in eleven places.
-
-**Phase 3: the page chooses the mode.** `layoutFor` says whether a profile fits a 32-bit memory; the page starts
-the memory64 set of modules when it does not (the 14), and may offer it for the others at the measured cost. The
-translation cache key carries the mode already (`optionsKey()` ends in `m32` or `m64...`). A tab that commits 9 GB
-needs the machine to have it: Chromium's limits on a renderer's memory, and what an out-of-memory looks like to the
-page (a `RangeError` from `memory.grow`, or the tab killed), are to be measured on the target machines; nxnative
-notes 12 GB and more wired for Ocarina of Time on a 16 GB Mac while its first 3D scene loads.
+**What is left for a 9 GB title to start from the page** is not memory: the machine must have the real memory the
+verdict names (Chromium's behaviour when a tab commits 9 GB, a `RangeError` from the grow or the tab killed, is
+not measured: this machine has 15 GB and the tests touch pages sparsely); `fs:browser` and `audio:browser` (the
+module-level device tests) run in memory32 only, their modules being covered in the mode by `rt:browser`; a shared
+64-bit memory (the audio worklet's direct transport, guest cores as Workers) is untried; and everything in the next
+paragraph.
 
 **What a Switch 2 title needs beyond memory** (read from nxnative's notes on The Legend of Zelda: Ocarina of Time,
 `0400486024DEC000`, update v131072: `dm/games/0400486024DEC000/README.md` and `game.tsv`; none of it is tried here):

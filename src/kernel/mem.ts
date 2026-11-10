@@ -41,12 +41,66 @@ let nshare: i32 = 0;
 export const MAX_MODULES: i32 = 64;
 const MODS: usize = memory.data(2048);     // MAX_MODULES * 32: base, size, ro offset, data offset
 let nmod: i32 = 0;
-// One kit instance per alias page: 16 bytes each, room for a 3.5 GB alias region
-const MAX_ALIAS_PAGES: u64 = 917504;   // 3.5 GB: a game that maps everything in the alias region (per-game layouts, src/glue/rt_process.ts)
-const PAGES: usize = memory.data(14680064);   // MAX_ALIAS_PAGES * 16
+// The alias region's pages: one kit instance (16 bytes) per 4 KiB page, in a two-level table.
+//   directory  one entry (the address of a leaf, 0 = none) per 16 MB of the region: 4096 entries, 64 GB of address space
+//   leaf       4096 instances, 64 KiB. Made when a page of its 16 MB is first mapped or unmapped; a page without a leaf
+//              is Fresh. Leaves are never given back before the next memInit.
+// The first 224 leaves come from static data (14 MB, what the flat table of a 3.5 GB region was): every layout of a
+// 32-bit memory is covered by them. A 64-bit memory's alias region may be larger: further leaves come from the arena
+// the embedder gave (aliasArena: host-side memory sized from the process's layout), and a map that needs a leaf
+// nobody can give fails with ResultOutOfResource and a red line.
+// @ts-ignore: decorator
+@inline const M64: bool = sizeof<usize>() == 8;
+const LEAF_SHIFT: u64 = 12, LEAF_PAGES: u64 = 4096, LEAF_BYTES: usize = 65536;
+const DIR_N: u64 = 4096;
+const POOL_LEAVES: usize = 224;
+const MAX_ALIAS_PAGES: u64 = M64 ? DIR_N * LEAF_PAGES : 917504;   // 64 GB of directory; a 32-bit memory: 3.5 GB (the static leaves)
+const DIR: usize = memory.data(32768);        // DIR_N * 8
+const PAGES: usize = memory.data(14680064);   // POOL_LEAVES * LEAF_BYTES
+let poolUsed: usize = 0;
+let arenaLo: usize = 0, arenaHi: usize = 0;   // the embedder's leaf memory, from arenaLo on still free
+let leafCount: u32 = 0;
+const AS_LIMIT: u64 = M64 ? 0x3FFFF0000 : 0xFFFF0000;    // no region reaches past it: the memory's most (16 GB / 4 GB) less the last 64 KiB
+const MEM_LIMIT: u64 = M64 ? 0x400000000 : 0x100000000;  // the most a linear memory can be
 
 // @ts-ignore: decorator
-@inline function page(i: u64): Inst { return Inst.at(PAGES + (<usize>i << 4)); }
+@inline function leafOf(i: u64): usize { return <usize>load<u64>(DIR + (<usize>(i >> LEAF_SHIFT) << 3)); }
+// The state of page i (no leaf: Fresh)
+// @ts-ignore: decorator
+@inline function pageState(i: u64): u8 { const l = leafOf(i); return l ? Inst.at(l + (<usize>(i & (LEAF_PAGES - 1)) << 4)).state : <u8>AliasPageS.Fresh; }
+function leafNew(d: u64): usize {
+  let l: usize = 0;
+  if (poolUsed < POOL_LEAVES) { l = PAGES + poolUsed * LEAF_BYTES; poolUsed++; }
+  else if (arenaHi - arenaLo >= LEAF_BYTES) { l = arenaLo; arenaLo += LEAF_BYTES; }
+  else return 0;
+  const was = traceEnabled(); traceEnable(false);
+  for (let k: u64 = 0; k < LEAF_PAGES; k++) Inst.at(l + (<usize>k << 4)).init(ALIAS_PAGE, <u32>((d << LEAF_SHIFT) + k));
+  traceEnable(was);
+  store<u64>(DIR + (<usize>d << 3), l);
+  leafCount++;
+  return l;
+}
+// Page i's instance, to step it: its leaf is made when there is none. null when no leaf can be had.
+function page(i: u64): Inst | null {
+  let l = leafOf(i);
+  if (!l) { l = leafNew(i >> LEAF_SHIFT); if (!l) return null; }
+  return Inst.at(l + (<usize>(i & (LEAF_PAGES - 1)) << 4));
+}
+// Every page of [first, end) has a leaf (made now when it had none); false when one cannot be had
+function leavesFor(first: u64, end: u64): bool {
+  for (let d = first >> LEAF_SHIFT, e = (end + LEAF_PAGES - 1) >> LEAF_SHIFT; d < e; d++)
+    if (!load<u64>(DIR + (<usize>d << 3)) && !leafNew(d)) return false;
+  return true;
+}
+// Leaf memory beyond the static leaves: [base, base + size), zeroed or not, outside every guest region, the kernel's
+// from now until the next memInit. Returns how many leaves it holds.
+export function aliasArena(base: usize, size: usize): u32 {
+  arenaLo = (base + 15) & ~<usize>15; arenaHi = base + size;
+  return arenaHi > arenaLo ? <u32>((arenaHi - arenaLo) / LEAF_BYTES) : 0;
+}
+// Leaves in use, and how many more the static pool and the arena can give
+export function aliasLeaves(): u32 { return leafCount; }
+export function aliasLeavesFree(): u32 { return <u32>(POOL_LEAVES - poolUsed) + <u32>((arenaHi - arenaLo) / LEAF_BYTES); }
 // @ts-ignore: decorator
 @inline function mapP(i: i32): usize { return MAPS + <usize>i * 24; }
 // @ts-ignore: decorator
@@ -60,9 +114,9 @@ export function tlsSlotAddr(i: u32): u64 { return tlsBase + PAGE + <u64>i * TLS_
 
 // Layout errors (kernel_init's result)
 export const E_LAYOUT_ALIGN: i32 = 1;     // a base or size is not a multiple of 4 KiB
-export const E_LAYOUT_RANGE: i32 = 2;     // a region is empty or reaches past 0xFFFF0000
+export const E_LAYOUT_RANGE: i32 = 2;     // a region is empty or reaches past 0xFFFF0000 (a 64-bit memory: 0x3_FFFF_0000)
 export const E_LAYOUT_OVERLAP: i32 = 3;   // two regions overlap
-export const E_LAYOUT_ALIAS: i32 = 4;     // the alias region is larger than 3.5 GB
+export const E_LAYOUT_ALIAS: i32 = 4;     // the alias region is larger than 3.5 GB (a 64-bit memory: than the page directory's 64 GB)
 
 const REG: usize = memory.data(80);
 function regionsOk(): i32 {
@@ -75,7 +129,7 @@ function regionsOk(): i32 {
   for (let i = 0; i < 5; i++) {
     const b = load<u64>(REG + (<usize>i << 4)), n = load<u64>(REG + (<usize>i << 4), 8);
     if ((b | n) & (PAGE - 1)) return E_LAYOUT_ALIGN;
-    if (!n || b > 0xFFFF0000 || n > 0xFFFF0000 - b) return E_LAYOUT_RANGE;
+    if (!n || b > AS_LIMIT || n > AS_LIMIT - b) return E_LAYOUT_RANGE;
     for (let k = 0; k < i; k++) {
       const b2 = load<u64>(REG + (<usize>k << 4)), n2 = load<u64>(REG + (<usize>k << 4), 8);
       if (b < b2 + n2 && b2 < b + n) return E_LAYOUT_OVERLAP;
@@ -107,19 +161,16 @@ export function memInit(cfg: usize, flagMapLimit: bool): i32 {
   }
   mapLimit = flagMapLimit;
   heapCur = 0; heapSeen = 0; aliasMapped = 0; aliasHigh = 0; nmap = 0; nshare = 0; nmod = 0;
-  const e = regionsOk();
-  if (e) return e;
-  const was = traceEnabled(); traceEnable(false);
-  for (let i: u64 = 0, n = aliasCap / PAGE; i < n; i++) page(i).init(ALIAS_PAGE, <u32>i);
-  traceEnable(was);
-  return 0;
+  // no page has a leaf: every page is Fresh
+  memory.fill(DIR, 0, 32768); poolUsed = 0; arenaLo = 0; arenaHi = 0; leafCount = 0;
+  return regionsOk();
 }
 
 // The linear memory reaches end (grown when it does not)
 export function commit(end: u64): bool {
   const have = <u64>memory.size() << 16;
   if (end <= have) return true;
-  if (end > 0x100000000) return false;
+  if (end > MEM_LIMIT) return false;
   return memory.grow(<i32>((end - have + 0xFFFF) >> 16)) >= 0;
 }
 
@@ -210,10 +261,13 @@ function mapArguments(dst: u64, src: u64, size: u64): u64 {
 
 // A stack the embedder maps for a thread it starts itself (the main thread's: on Horizon the process creator maps it
 // in the stack region before the first instruction runs). It is a MapMemory entry with no source: the source field
-// holds an address above 4 GB that no guest range can overlap, so nothing counts as borrowed and UnmapMemory cannot
-// match it. The memory reads zero. Returns false when the range is not pages inside the stack region, overlaps a
+// holds an address far above any memory that no guest range can overlap, so nothing counts as borrowed and
+// UnmapMemory cannot match it. The memory reads zero. Returns false when the range is not pages inside the stack region, overlaps a
 // mapping, the table is full or the linear memory cannot grow.
-export const NO_SOURCE: u64 = 0xFFFFFFFF00000000;
+// (0x8000_0000_0000_0000 + the destination: with the destination anywhere in a 64-bit memory the sum neither wraps
+// nor reaches a guest address; it was 0xFFFF_FFFF_0000_0000 + destination, which wraps for a stack above 4 GB and
+// then names heap memory as borrowed)
+export const NO_SOURCE: u64 = 0x8000000000000000;
 export function hostStackMap(dst: u64, size: u64): bool {
   if (!size || ((dst | size) & 0xFFF) || !contains(stackBase, stackCap, dst, size)) return false;
   if (mapFind(dst, size) || nmap == MAX_MAP || !commit(dst + size)) return false;
@@ -226,24 +280,34 @@ export function hostStackMap(dst: u64, size: u64): bool {
 // ---- alias pages ----
 function aliasUnmapped(off: u64, size: u64): u64 {
   let c: u64 = 0;
-  for (let p = off >> 12, e = (off + size) >> 12; p < e; p++) if (page(p).state != AliasPageS.Mapped) c++;
+  for (let p = off >> 12, e = (off + size) >> 12; p < e; p++) {
+    if (!leafOf(p)) { const next = ((p >> LEAF_SHIFT) + 1) << LEAF_SHIFT, stop = next < e ? next : e; c += stop - p; p = stop - 1; continue; }   // a whole leaf's worth of Fresh pages
+    if (pageState(p) != AliasPageS.Mapped) c++;
+  }
   return c;
 }
+// Scans over unmapped pages step over a part of the region that has no leaf in one go. skipDown(lo): page lo - 1 is
+// not mapped; the next lo to look below (lo - 1, or the first page of the leafless 16 MB that holds lo - 1).
+// skipUp(hi): page hi is not mapped; hi + 1, or the page after its leafless 16 MB.
+// @ts-ignore: decorator
+@inline function skipDown(lo: u64): u64 { return leafOf(lo - 1) ? lo - 1 : ((lo - 1) >> LEAF_SHIFT) << LEAF_SHIFT; }
+// @ts-ignore: decorator
+@inline function skipUp(hi: u64): u64 { return leafOf(hi) ? hi + 1 : ((hi >> LEAF_SHIFT) + 1) << LEAF_SHIFT; }
 // The run of pages around page p that are mapped like it: [lo, hi) in pages
 let runLo: u64 = 0, runHi: u64 = 0;
 function aliasRun(p: u64): bool {
-  const mapped = page(p).state == AliasPageS.Mapped, total = aliasCap >> 12;
+  const mapped = pageState(p) == AliasPageS.Mapped, total = aliasCap >> 12;
   if (!mapped && p >= aliasHigh) {   // nothing was ever mapped from aliasHigh up
     runHi = total;
     let lo = aliasHigh;
-    while (lo && page(lo - 1).state != AliasPageS.Mapped) lo--;
+    while (lo && pageState(lo - 1) != AliasPageS.Mapped) lo = skipDown(lo);
     runLo = lo;
     return false;
   }
   let lo = p, hi = p + 1;
-  while (lo && (page(lo - 1).state == AliasPageS.Mapped) == mapped) lo--;
-  while (hi < aliasHigh && (page(hi).state == AliasPageS.Mapped) == mapped) hi++;
-  if (!mapped && hi == aliasHigh) hi = total;
+  while (lo && (pageState(lo - 1) == AliasPageS.Mapped) == mapped) lo = mapped ? lo - 1 : skipDown(lo);
+  while (hi < aliasHigh && (pageState(hi) == AliasPageS.Mapped) == mapped) hi = mapped ? hi + 1 : skipUp(hi);
+  if (!mapped && hi >= aliasHigh) hi = total;
   runLo = lo; runHi = hi;
   return mapped;
 }
@@ -326,10 +390,14 @@ export function physicalMemory(addr: u64, size: u64, map: bool): u64 {
     }
     if (!commit(addr + size)) return R_LIMIT;
   }
+  if (!leavesFor(first, end)) {
+    lineStart("[RED] kernel: no memory for the alias region's page table at "); putx(addr); puts(" +"); putx(size); puts(" ("); putu(leafCount); puts(" leaves in use)"); lineEnd();
+    return R_OUT_OF_RES;
+  }
   // a page's transitions go through the kit like any other, but not into the trace ring: one large map would fill it
   const was = traceEnabled(); traceEnable(false);
   for (let p = first; p < end; p++) {
-    const pg = page(p), st = pg.state;
+    const pg = page(p)!, st = pg.state;
     if (map) {
       if (st == AliasPageS.Stale) memory.fill(<usize>(aliasBase + (p << 12)), 0, 0x1000);
       pg.step(AliasPageE.Map);
@@ -387,8 +455,10 @@ export function queryMemory(addr: u64): void {
     } else {
       // the alias region's mapped pages nearest to addr: the first when it lies above, the last when below
       let lo: u64 = 0, hi = aliasHigh;
-      while (lo < hi && page(lo).state != AliasPageS.Mapped) lo++;
-      while (hi > lo && page(hi - 1).state != AliasPageS.Mapped) hi--;
+      while (lo < hi && pageState(lo) != AliasPageS.Mapped) lo = skipUp(lo);
+      if (lo > hi) lo = hi;
+      while (hi > lo && pageState(hi - 1) != AliasPageS.Mapped) hi = skipDown(hi);
+      if (hi < lo) hi = lo;
       if (lo < hi) bound(addr, addr < aliasBase ? aliasBase + (lo << 12) : aliasBase, addr < aliasBase ? aliasBase + aliasCap : aliasBase + (hi << 12));
     }
     seg(fLo, fHi - fLo, MS_FREE, 0);
@@ -416,13 +486,13 @@ export function usedMemory(): u64 { return heapCur + memUsed + (mapLimit ? alias
 // For the consistency check: the page counter agrees with the pages. 0 = fine
 export function memCheck(): i32 {
   let n: u64 = 0;
-  for (let p: u64 = 0; p < aliasHigh; p++) if (page(p).state == AliasPageS.Mapped) n++;
+  for (let p: u64 = 0; p < aliasHigh; p = leafOf(p) ? p + 1 : skipUp(p)) if (pageState(p) == AliasPageS.Mapped) n++;
   if (n * PAGE != aliasMapped) return 30;
-  for (let p = aliasHigh, e = aliasCap >> 12; p < e && p < aliasHigh + 64; p++) if (page(p).state != AliasPageS.Fresh) return 31;
+  for (let p = aliasHigh, e = aliasCap >> 12; p < e && p < aliasHigh + 64; p++) if (pageState(p) != AliasPageS.Fresh) return 31;
   if (heapCur > heapCap || heapSeen < heapCur) return 32;
   return 0;
 }
 // One alias page's state (AliasPageS), for tests and dumps
 export function aliasPageState(addr: u64): i32 {
-  return addr >= aliasBase && addr - aliasBase < aliasCap ? page((addr - aliasBase) >> 12).state : -1;
+  return addr >= aliasBase && addr - aliasBase < aliasCap ? pageState((addr - aliasBase) >> 12) : -1;
 }

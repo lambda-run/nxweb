@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { test, both, Fs, R, MODE, KIND, SCRATCH, python, rng, type Entry } from "./harness.mts";
+import { test, both, Fs, R, MODE, KIND, SCRATCH, python, rng, BEYOND, type Entry } from "./harness.mts";
 import { MemStorage, MemDevice, DEV, type FsDevice } from "../../src/glue/fs_host.ts";
 import { NodeStorage } from "../../src/glue/fs_dev_node.ts";
 
@@ -261,8 +261,8 @@ both("romfs: path rules (case, '.', '..', backslashes, slashes), open modes, err
   const [, dh] = await fs.openDir("rom:/");
   assert.equal((await fs.read(dh, 0, 1))[0], R.FAIL); assert.equal((await fs.readDir(h2, 1))[0], R.FAIL);
   // a buffer outside linear memory is refused before anything is read
-  assert.equal(await fs.call("ReadFile", out, h2, 0, 0xFFFFFFF0, 0x100), R.FAIL);
-  assert.equal(await fs.call("ReadDirectory", out, 0xFFFFFF00, dh, 4), R.FAIL);
+  assert.equal(await fs.call("ReadFile", out, h2, 0, BEYOND + 0xF0, 0x100), R.FAIL);
+  assert.equal(await fs.call("ReadDirectory", out, BEYOND, dh, 4), R.FAIL);
   await fs.call("CloseDirectory", dh); await fs.close(h2); await fs.close(h3);
   assert.equal(fs.x.fs_open_files(), 0); assert.equal(fs.x.fs_open_dirs(), 0);
 });

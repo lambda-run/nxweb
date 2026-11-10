@@ -6,11 +6,14 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "../../src/gfx/host/build.mts";
-import { Guest } from "./guest.mts";
+import { Guest, setMemMode } from "./guest.mts";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const OUT = join(ROOT, "build", "gfx");
-export const WASM = join(OUT, "gfx.wasm");
+// NX_MEM (tools/modes.mjs): see guest.mts setMemMode
+export const MEM_MODE = process.env.NX_MEM ?? "32";
+setMemMode(MEM_MODE);
+export const WASM = join(OUT, MEM_MODE === "32" ? "gfx.wasm" : "gfx64.wasm");
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 const NVN_DIR = join(NXNATIVE, "dm", "gfx", "nvn");
 

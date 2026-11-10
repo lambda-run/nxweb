@@ -71,28 +71,29 @@ export function sdk(which: S, quiet: bool = false): u64 {
 
 // ---- the synchronous interfaces: a software decoder state per game object ----
 const SOFT_MAX: i32 = 64;
-const SOFT: usize = memory.data(512);   // SOFT_MAX * { u32 key, u32 state }
-function softFind(key: u32): i32 { for (let i = 0; i < SOFT_MAX; i++) if (load<u32>(SOFT + (<usize>i << 3)) == key) return i; return -1; }
-export function softGet(key: u32): usize { const i = softFind(key); return i < 0 ? 0 : <usize>load<u32>(SOFT + (<usize>i << 3), 4); }
+// (the key is the game object's address, the state a block of the arena: both anywhere in a 64-bit memory)
+const SOFT: usize = memory.data(1024);   // SOFT_MAX * { u64 key, u64 state }
+function softFind(key: u64): i32 { for (let i = 0; i < SOFT_MAX; i++) if (load<u64>(SOFT + (<usize>i << 4)) == key) return i; return -1; }
+export function softGet(key: u64): usize { const i = softFind(key); return i < 0 ? 0 : <usize>load<u64>(SOFT + (<usize>i << 4), 8); }
 // The state kept for the game's decoder object, made on first use
-export function softMake(key: u32): usize {
+export function softMake(key: u64): usize {
   let p = softGet(key);
   if (p) return p;
   const i = softFind(0);
   if (i < 0 || !(p = arenaAlloc(SOFT_STATE))) { red(); puts("codec: no room for another software Opus decoder state"); end(); return 0; }
-  store<u32>(SOFT + (<usize>i << 3), key); store<u32>(SOFT + (<usize>i << 3), <u32>p, 4);
+  store<u64>(SOFT + (<usize>i << 4), key); store<u64>(SOFT + (<usize>i << 4), p, 8);
   return p;
 }
-export function softDel(key: u32): usize {
+export function softDel(key: u64): usize {
   const i = softFind(key);
   if (i < 0) return 0;
-  const p = <usize>load<u32>(SOFT + (<usize>i << 3), 4);
-  store<u64>(SOFT + (<usize>i << 3), 0);
+  const p = <usize>load<u64>(SOFT + (<usize>i << 4), 8);
+  store<u64>(SOFT + (<usize>i << 4), 0); store<u64>(SOFT + (<usize>i << 4), 0, 8);
   return p;
 }
 export function softFree(p: usize): void { arenaFree(p); }
 // The software state of a game decoder object of either form (opus_soft), 0 with a red line when the host made none
-export function softOf(key: u32): usize {
+export function softOf(key: u64): usize {
   const d = decFind(key);
   if (d != null && d.soft) return <usize>d.soft;
   const p = softGet(key);
@@ -110,7 +111,7 @@ class Mgr {
   ioTotal: u32; ioUsed: u32;     // I/O buffers: one per request from Enqueue to Dequeue
   abandoned: u32;                // slots an asynchronous decode still holds after its request was cancelled
   nreq: u32; nfree: u32;
-  pool: u32;                     // nreq request records, then the free stack (u16 each)
+  pool: u64;                     // nreq request records, then the free stack (u16 each): a block of the arena
   // @ts-ignore: decorator
   @inline req(slot: u32): usize { return <usize>this.pool + <usize>slot * REQ_SIZE; }
   // @ts-ignore: decorator
@@ -119,21 +120,23 @@ class Mgr {
 // @ts-ignore: decorator
 @unmanaged
 class Dec {
-  used: u32; key: u32;
+  key: u64;                      // the game's decoder object (its address)
+  soft: u64; work: u64;          // the SDK's software decoder state and its work buffer: blocks of the arena
+  used: u32;
   mgr: i32;                      // -1: its manager was finalized
   rate: i32; ch: i32;
   host: u32;                     // 1: the embedder decodes (audio_opus_*); 0: the SDK's software decoder
-  soft: u32; work: u32;
   head: u32; tail: u32;          // its requests in the order they were enqueued (slot + 1, 0 = none)
   nwait: u32; nexec: u32; ndone: u32;
   order: u32;                    // position among its manager's decoders (Execute goes in this order)
 }
-const MGRS: usize = memory.data(288);     // MGR_MAX * 36
-const DECS: usize = memory.data(14336);   // DEC_MAX * 56
+const MGR_REC: usize = 40, DEC_REC: usize = 72;
+const MGRS: usize = memory.data(320);     // MGR_MAX * MGR_REC
+const DECS: usize = memory.data(18432);   // DEC_MAX * DEC_REC
 // @ts-ignore: decorator
-@inline function mgrAt(i: i32): Mgr { return changetype<Mgr>(MGRS + <usize>i * 36); }
+@inline function mgrAt(i: i32): Mgr { return changetype<Mgr>(MGRS + <usize>i * MGR_REC); }
 // @ts-ignore: decorator
-@inline function decAt(i: i32): Dec { return changetype<Dec>(DECS + <usize>i * 56); }
+@inline function decAt(i: i32): Dec { return changetype<Dec>(DECS + <usize>i * DEC_REC); }
 let lastDec: i32 = 0, orderSeq: u32 = 0, decodeReds: u32 = 0;
 
 // The game tells an initialized manager by the first word of its HardwareOpusDecoderManagerType: it holds index + 1
@@ -144,16 +147,16 @@ function mgrOf(gm: usize): Mgr | null {
   return null;
 }
 // @ts-ignore: decorator
-@inline function mgrIndex(m: Mgr): i32 { return <i32>((changetype<usize>(m) - MGRS) / 36); }
+@inline function mgrIndex(m: Mgr): i32 { return <i32>((changetype<usize>(m) - MGRS) / MGR_REC); }
 // @ts-ignore: decorator
-@inline function decIndex(d: Dec): i32 { return <i32>((changetype<usize>(d) - DECS) / 56); }
+@inline function decIndex(d: Dec): i32 { return <i32>((changetype<usize>(d) - DECS) / DEC_REC); }
 // A decoder of a manager by the game's object (nxnative keeps these under another key than the synchronous form's)
-export function decFind(key: u32): Dec | null {
+export function decFind(key: u64): Dec | null {
   if (decAt(lastDec).used && decAt(lastDec).key == key) return decAt(lastDec);
   for (let i = 0; i < DEC_MAX; i++) { const d = decAt(i); if (d.used && d.key == key) { lastDec = i; return d; } }
   return null;
 }
-function decOf(key: u32): Dec | null {
+function decOf(key: u64): Dec | null {
   const d = decFind(key);
   if (d == null) { red(); puts("codec: Opus decoder "); putx(key); puts(" was not initialized by the host"); end(); }
   return d;
@@ -171,7 +174,7 @@ export function mgrInit(gm: usize, event: usize, decoders: i32, io: i32): u32 {
   const pool = arenaAlloc(<usize>nreq * REQ_SIZE + <usize>nreq * 2);
   if (!pool) { red(); puts("codec: no arena memory for an Opus decoder manager of "); putu(<u32>io); puts(" I/O buffers"); end(); return ERR; }
   const gen = m.gen + 1;
-  m.used = 1; m.gen = gen; m.event = eventBind(event, 1); m.ioTotal = <u32>io; m.ioUsed = 0; m.abandoned = 0; m.nreq = nreq; m.nfree = nreq; m.pool = <u32>pool;
+  m.used = 1; m.gen = gen; m.event = eventBind(event, 1); m.ioTotal = <u32>io; m.ioUsed = 0; m.abandoned = 0; m.nreq = nreq; m.nfree = nreq; m.pool = pool;
   for (let s: u32 = 0; s < nreq; s++) { Inst.at(m.req(s)).init(OPUS_REQ, (<u32>mgrIndex(m) << 16) | s); store<u16>(m.freeStack + (<usize>s << 1), <u16>(nreq - 1 - s)); }
   store<u64>(gm, <u64>(mgrIndex(m) + 1));
   return 0;
@@ -188,14 +191,14 @@ export function mgrFini(gm: usize): void {
 }
 export function mgrFreeIo(gm: usize): i32 { const m = mgrOf(gm); return m == null ? 0 : <i32>(m.ioTotal - m.ioUsed); }
 
-export function decInit(gd: u32, rate: i32, ch: i32, gm: usize): u32 {
+export function decInit(gd: u64, rate: i32, ch: i32, gm: usize): u32 {
   const m = mgrOf(gm);
   if (m == null) return ERR;
   if (decFind(gd) != null) decFini(gd);
   let d: Dec | null = null;
   for (let i = 0; i < DEC_MAX && d == null; i++) if (!decAt(i).used) d = decAt(i);
   if (d == null) { red(); puts("codec: more than "); putu(DEC_MAX); puts(" Opus decoders"); end(); return ERR; }
-  memory.fill(changetype<usize>(d), 0, 56);
+  memory.fill(changetype<usize>(d), 0, DEC_REC);
   const useHost = backend == BACKEND_HOST || (backend == BACKEND_AUTO && !sdk(S.Decode, true));
   if (useHost) {
     const r = hostOpen(<u32>decIndex(d), rate, ch);
@@ -209,7 +212,7 @@ export function decInit(gd: u32, rate: i32, ch: i32, gm: usize): u32 {
     if (!soft || !work) { arenaFree(soft); arenaFree(work); red(); puts("codec: no arena memory for an Opus decoder's work buffer"); end(); return ERR; }
     const r = <u32>guestCall(init, soft, <u64>rate, <u64>ch, work, ws);
     if (r) { arenaFree(soft); arenaFree(work); return r; }
-    d.soft = <u32>soft; d.work = <u32>work;
+    d.soft = soft; d.work = work;
   }
   d.used = 1; d.key = gd; d.mgr = mgrIndex(m); d.rate = rate; d.ch = ch; d.order = orderSeq++;
   return 0;
@@ -228,7 +231,7 @@ function clear(d: Dec, m: Mgr): void {
   d.head = d.tail = 0; d.nwait = d.nexec = d.ndone = 0;
 }
 // FinalizeHardwareOpusDecoder and ResetHardwareOpusDecoder serve both forms: true when gd is a manager's decoder
-export function decFini(gd: u32): bool {
+export function decFini(gd: u64): bool {
   const d = decFind(gd);
   if (d == null) return false;
   if (d.mgr >= 0) clear(d, mgrAt(d.mgr));
@@ -237,7 +240,7 @@ export function decFini(gd: u32): bool {
   d.used = 0;
   return true;
 }
-export function decReset(gd: u32): bool {
+export function decReset(gd: u64): bool {
   const d = decFind(gd);
   if (d == null) return false;
   if (d.mgr >= 0) clear(d, mgrAt(d.mgr));
@@ -248,7 +251,7 @@ export function decReset(gd: u32): bool {
 export function decRate(d: Dec): i32 { return d.rate; }
 export function decCh(d: Dec): i32 { return d.ch; }
 
-export function enqueue(gd: u32, consumed: usize, inp: usize, size: u64): u32 {
+export function enqueue(gd: u64, consumed: usize, inp: usize, size: u64): u32 {
   if (consumed) store<u64>(consumed, 0);
   const d = decOf(gd);
   if (d == null || d.mgr < 0) return ERR;   // not a decoder of a manager, or the manager was finalized
@@ -332,7 +335,7 @@ export function reqComplete(h: u32, samples: i32): void {
   eventSignal(m.event);
 }
 
-export function dequeue(gd: u32, samples: usize, outp: usize, outSize: u64): u32 {
+export function dequeue(gd: u64, samples: usize, outp: usize, outSize: u64): u32 {
   if (samples) store<i32>(samples, 0);
   const d = decOf(gd);
   if (d == null || d.mgr < 0) return ERR;
@@ -351,7 +354,7 @@ export function dequeue(gd: u32, samples: usize, outp: usize, outSize: u64): u32
   return 0;
 }
 // which: 0 waiting, 1 executing, 2 completed
-export function count(gd: u32, which: i32): i32 {
+export function count(gd: u64, which: i32): i32 {
   const d = decOf(gd);
   if (d == null || d.mgr < 0) return 0;
   return <i32>(which == 0 ? d.nwait : which == 1 ? d.nexec : d.ndone);

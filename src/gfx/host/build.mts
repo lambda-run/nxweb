@@ -3,7 +3,7 @@
 // (the graphics machines are src/gfx/defs/*.json: run `npm run kit:diagrams` after changing one).
 // The module imports its memory (the guest's linear memory); its static data starts at --memoryBase (64 KB here).
 // For a shared memory add `--sharedMemory <pages> --enable threads`.
-import { execFileSync } from "node:child_process";
+import { buildPair } from "../../../tools/asc64/abi.mjs";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,8 +21,8 @@ export function build(): { total: number; implemented: number; nops: number } {
   if (!existsSync(NAMES_OUT) || readFileSync(NAMES_OUT, "utf8") !== g.source) writeFileSync(NAMES_OUT, g.source);
   mkdirSync(dirname(WASM), { recursive: true });
   try {
-    execFileSync(process.execPath, [join(ROOT, "node_modules", "assemblyscript", "bin", "asc.js"), "src/gfx/index.ts", "-o", "build/gfx/gfx.wasm", "--runtime", "stub", "-O2",
-      "--importMemory", "--memoryBase", String(MEMORY_BASE)], { cwd: ROOT, stdio: "inherit" });
+    // gfx.wasm and gfx64.wasm (the same for a 64-bit memory), each with its address table
+    buildPair("src/gfx/index.ts", "build/gfx/gfx.wasm", ["--runtime", "stub", "-O2", "--importMemory", "--memoryBase", String(MEMORY_BASE)]);
   } catch { throw new Error("[RED] gfx:build: src/gfx/index.ts did not compile"); }
   return g;
 }

@@ -22,6 +22,7 @@ export interface Env {
   haveGfxGuests?: boolean;              // cube.nso and cube2.nso were built (they need nxnative's nvn.h)
   // nxnative's game profiles as src/prepare converted them (Node: src/prepare/profiles/*.json), for the address-space survey
   profiles?: () => { id: string; apply: Record<string, string>; space: { heap_region: number; alias_region: number; stack_region: number } }[];
+  mode?: string;                        // NX_MEM: "32" (default), "64" a 64-bit memory, "64hi" every process above 4 GB (tools/modes.mjs)
   guardRounds?: number;                 // rounds of the guard's cost measurement (default 7; RT_GUARD_ROUNDS for a measurement run)
 }
 export interface Case { name: string; fn: () => string[] }   // returns lines to print under the test; throws on failure
@@ -54,11 +55,14 @@ export function cases(env: Env): Case[] {
       fail(`expected Stopped(exit ${code}), got ${r.state} ${JSON.stringify(r.stop, (_, v) => typeof v === "bigint" ? hex(v) : v)}\nstdout so far:\n${rt.stdout()}\nred: ${rt.red.join("\n")}`);
   };
   const noRed = (rt: Runtime) => eq(rt.red, [], "red lines");
+  // The layout a Runtime without one gets: the kernel's default, or (NX_MEM=64hi) the same regions above 4 GB. The
+  // cases take addresses from it, not from constants, so that they hold wherever the process is placed.
+  const D = layoutFor(), hi = env.mode === "64hi", S32 = {};
 
   // ---- memory layout ----
   test("layout: the host ranges tile 0..0x08000000 and every module's static data ends inside its range", () => {
     const rt = new Runtime(env.mods);
-    const ends: Record<string, number> = { rt: rt.r.rt_static_end() >>> 0, loader: rt.ld.x.ld_heap_base() >>> 0, kernel: rt.k.kernel_static_end() >>> 0 };
+    const ends: Record<string, number> = { rt: rt.r.rt_static_end(), loader: rt.ld.x.ld_heap_base(), kernel: rt.k.kernel_static_end() };
     const lines = RANGES.map(g => {
       const end = g.module ? ends[g.module] : 0;
       if (g.module && end) ok(end > g.lo && end <= g.hi, `${g.name}: static end ${hex(end)} outside ${hex(g.lo)}..${hex(g.hi)}`);
@@ -71,7 +75,7 @@ export function cases(env: Env): Case[] {
     return lines;
   });
   test("layout: a table with an overlap, a hole or an empty range is refused with a red line; so is static data outside its range", () => {
-    const rt = new Runtime(env.mods), p = rt.r.rt_scratch_ptr() >>> 0;
+    const rt = new Runtime(env.mods), p = rt.r.rt_scratch_ptr();
     const check = (rs: [number, number][], end: number) => {
       const dv = rt.dv();
       rs.forEach(([lo, hi], i) => { dv.setBigUint64(p + 16 * i, BigInt(lo), true); dv.setBigUint64(p + 16 * i + 8, BigInt(hi), true); });
@@ -93,13 +97,14 @@ export function cases(env: Env): Case[] {
     const GB = 2 ** 30, gb = (v: number) => (v / GB).toFixed(2);
     const lines: string[] = [];
     // (1) the two big classes of nxnative's profiles, and one that cannot fit
-    const heapy = layoutFor({ heap: 3.25 * GB, alias: 0.25 * GB, stack: 0.25 * GB }), aliasy = layoutFor({ heap: 0.125 * GB, alias: 4.375 * GB, stack: 0.25 * GB, sysResource: 0x800000 });
-    const big = layoutFor({ heap: 9 * GB, alias: 0.25 * GB, stack: 0.25 * GB, appPool: 0x240000000 });
+    // (the rule for a 32-bit memory, whatever the mode of this run: S32)
+    const heapy = layoutFor({ heap: 3.25 * GB, alias: 0.25 * GB, stack: 0.25 * GB }, S32), aliasy = layoutFor({ heap: 0.125 * GB, alias: 4.375 * GB, stack: 0.25 * GB, sysResource: 0x800000 }, S32);
+    const big = layoutFor({ heap: 9 * GB, alias: 0.25 * GB, stack: 0.25 * GB, appPool: 0x240000000 }, S32);
     eq([heapy.fit, aliasy.fit, big.fit], ["pool", "pool", "short"], "how the three fit");
     ok(heapy.heapSize >= 0xCD500000 - 0x04000000 && heapy.aliasSize >= 0.25 * GB, `heap-heavy: heap ${gb(heapy.heapSize)} GB must hold pool - used, alias ${gb(heapy.aliasSize)}`);
     ok(aliasy.aliasSize >= 0xCD500000, `alias-heavy: the alias region (${gb(aliasy.aliasSize)} GB) must hold the whole pool`);
-    for (const l of [heapy, aliasy, big, layoutFor()]) ok(l.heapBase === SPACE.lo && l.stackBase === l.heapBase + l.heapSize && l.aliasBase === l.stackBase + l.stackSize && l.aliasBase + l.aliasSize <= SPACE.hi, "regions in order, inside the space");
-    eq(layoutFor().fit, "profile", "the default sizes fit as they are");
+    for (const l of [heapy, aliasy, big, layoutFor({}, S32)]) ok(l.heapBase === SPACE.lo && l.stackBase === l.heapBase + l.heapSize && l.aliasBase === l.stackBase + l.stackSize && l.aliasBase + l.aliasSize <= SPACE.hi, "regions in order, inside the space");
+    eq(layoutFor({}, S32).fit, "profile", "the default sizes fit as they are");
     for (const [name, layout] of [["heap-heavy", heapy], ["alias-heavy", aliasy], ["9 GB pool", big]] as const) {
       const rt = boot(["heap"], { layout });
       const r = rt.run();
@@ -112,15 +117,22 @@ export function cases(env: Env): Case[] {
     // (2) every profile nxnative has
     const profiles = env.profiles?.();
     if (!profiles) { lines.push("the profile survey needs src/prepare/profiles (Node): SKIPPED here"); return lines; }
-    const n = { profile: 0, pool: 0, short: 0 }, fixed = { fits: 0 }, shortIds: string[] = [];
+    const n = { profile: 0, pool: 0, short: 0 }, n64 = { profile: 0, pool: 0, short: 0 }, fixed = { fits: 0 }, shortIds: string[] = [];
+    let real64 = 0;
     for (const p of profiles) {
-      const s = settingsFor(p.apply, { space: p.space });
+      const s = settingsFor(p.apply, { space: p.space, mem64: false });
       n[s.layout.fit]++;
+      // ... and by the same rule with a 64-bit memory's room, for those that are short
+      const c = settingsFor(p.apply, { space: p.space, mem64: "auto" }).choice!;
+      eq(c.mem64, s.layout.fit === "short", `${p.id}: a 64-bit memory exactly when the 32-bit layout is short`);
+      if (c.mem64) { n64[c.layout.fit]++; real64 = Math.max(real64, c.real); ok(c.layout.aliasBase + c.layout.aliasSize <= 0x3_FFFF_0000 && (c.layout.fit === "profile" || c.layout.heapSize + c.layout.aliasSize >= c.layout.appPool - c.layout.memUsed), `${p.id}: ${c.sentence}`); }
       if (s.layout.fit === "short") shortIds.push(`${p.id} (pool ${gb(s.layout.appPool)}+ GB, heap ${gb(p.space.heap_region)}, alias ${gb(p.space.alias_region)})`);
       if (p.space.heap_region <= 0x60000000 && p.space.alias_region <= 0x77FF0000) fixed.fits++;
     }
     lines.push(`${profiles.length} profiles: with the fixed map (heap 1.5 GB, alias 1.87 GB) ${fixed.fits} have room for what they reserve; with the split chosen per game ${n.profile} fit as reserved, ${n.pool} more fit everything their pool lets them commit, ${n.short} cannot (pool larger than the address space)`,
-      `cannot fit in a 32-bit memory: ${shortIds.join("; ") || "none"}`);
+      `cannot fit in a 32-bit memory: ${shortIds.join("; ") || "none"}`,
+      `of those ${n.short}, in a 64-bit memory (16 GB): ${n64.profile} fit as reserved, ${n64.pool} fit everything their pool lets them commit, ${n64.short} cannot; the most real memory one may come to hold: ${gb(real64)} GB`);
+    eq(n64.short, 0, "every profile fits a 64-bit memory");
     eq(n.profile + n.pool + n.short, profiles.length, "every profile classified");
     return lines;
   });
@@ -131,7 +143,7 @@ export function cases(env: Env): Case[] {
         needs: [{ key: "address_space", value: "heap 0x8000000 alias 0x118000000", what: "" }, { key: "fps_target", value: "60", what: "a frame-step patch" }] },
       npdm: { stackSize: 0x200000 }, modules: [{ name: "hello", buildId: "", cuts: 2 }, { name: "sdk", buildId: "", cuts: 0 }],
       cuts: [{ module: "hello", offset: 0x100, size: 4 }, { module: "hello", offset: 0x200, size: 8 }] };
-    const o = handoffOptions(msg), l = o.layout;
+    const o = handoffOptions(msg, { space: S32 }), l = o.layout;
     eq([l.fit, l.appPool, l.memUsed, l.sysResource, l.flags, l.programId.toString(16), o.mainStackSize], ["pool", 0x40000000, 0x8000000, 0x800000, 1, "100aaaa0000b000", 0x200000], "layout fit, pool, used, system resource, flags, program id, stack size");
     ok(l.aliasSize >= 0x40000000 && l.heapSize === 0x8000000, `regions: heap ${hex(l.heapSize)}, alias ${hex(l.aliasSize)}`);
     eq(o.hle, { opmode: 0, perfBoost: true, allocBigAlign: true, gameEnv: "A=1 B=2", launchSpec: "lang8", displayVersion: "1.2.3" }, "the take-over table's configuration");
@@ -149,7 +161,7 @@ export function cases(env: Env): Case[] {
     const plain = boot(["hello"], { cache: store }); void plain.cacheLoad();
     ok(keys.length === 2 && keys[0] !== keys[1] && keys[0].includes("+cuts" + o.cutsKey.hello) && !keys[1].includes("+cuts"), "cache keys: " + keys.join(" | "));
     exited(rt.run(), 42, rt);
-    const q = rt.r.rt_query_ptr() >>> 0;
+    const q = rt.r.rt_query_ptr();
     rt.k.kernel_query_memory(BigInt(l.stackBase), q);
     eq([Number(rt.dv().getBigUint64(q, true)), Number(rt.dv().getBigUint64(q + 8, true))], [l.stackBase, 0x200000], "the main stack: at the layout's stack region, the NPDM's size");
     noRed(rt);
@@ -215,7 +227,7 @@ export function cases(env: Env): Case[] {
   });
 
   test("b two modules mapped high in the code region (0x16000000): the pc map reaches every code address, same output", () => {
-    const codeBase = 0x1600_0000;
+    const codeBase = D.codeBase + 0x0E00_0000;
     const rt = boot(["two_main", "two_lib"], { codeBase });
     eq(rt.modules[0].base, codeBase, "base");
     exited(rt.run(), 3, rt);
@@ -290,10 +302,10 @@ export function cases(env: Env): Case[] {
     exited(rt.run(), 0, rt);
     noRed(rt);
     const out = rt.stdout(), lines = out.trimEnd().split("\n");
-    eq(lines[0], "SetHeapSize(4 MB): rc=0x0 base=0x18000000", "line 1");
+    eq(lines[0], `SetHeapSize(4 MB): rc=0x0 base=${hex(D.heapBase)}`, "line 1");
     ok(/^allocator: 3 rounds of 200 blocks, corrupted=0 failed=0 blocks=\d+ bytes in use=\d+$/.test(lines[1]), lines[1]);
     eq(lines[2], "SetHeapSize(8 MB): rc=0x0 same base: yes, first allocation intact: yes", "line 3");
-    eq(lines[3], "address space 0x8000000 + 0xf7ff0000", "line 4");
+    eq(lines[3], `address space ${hex(D.codeBase)} + ${hex(D.aliasBase + D.aliasSize - D.codeBase)}`, "line 4");
     ok(/^walk: \d+ segments, contiguous and complete: yes$/.test(lines.at(-1)!), lines.at(-1)!);
     const segs = lines.filter(l => l.startsWith("  ")).map(l => { const m = /^  (0x[0-9a-f]+) \+ (0x[0-9a-f]+) state=(0x[0-9a-f]+) perm=(...)$/.exec(l)!; return { lo: Number(m[1]), size: Number(m[2]), state: Number(m[3]), perm: m[4] }; });
     const at = (lo: number) => segs.find(s => s.lo === lo) ?? fail(`no segment starts at ${hex(lo)}\n${out}`);
@@ -301,12 +313,55 @@ export function cases(env: Env): Case[] {
     eq(at(m.base), { lo: m.base, size: m.ro.addr - m.base, state: 3, perm: "r-x" }, "the module's text");
     eq(at(m.ro.addr), { lo: m.ro.addr, size: m.data.addr - m.ro.addr, state: 3, perm: "r--" }, "the module's read-only data");
     eq(at(m.data.addr), { lo: m.data.addr, size: m.base + m.imageSize - m.data.addr, state: 4, perm: "rw-" }, "the module's data and bss");
-    eq(at(0x17C00000), { lo: 0x17C00000, size: 0x400000, state: 0xC, perm: "rw-" }, "thread-local region");
-    eq(at(0x18000000), { lo: 0x18000000, size: 0x800000, state: 5, perm: "rw-" }, "heap");
-    eq(at(GUEST.stackRegion), { lo: GUEST.stackRegion, size: GUEST.mainStackSize, state: 0xB, perm: "rw-" }, "the main thread's stack");
+    eq(at(D.tlsBase), { lo: D.tlsBase, size: 0x400000, state: 0xC, perm: "rw-" }, "thread-local region");
+    eq(at(D.heapBase), { lo: D.heapBase, size: 0x800000, state: 5, perm: "rw-" }, "heap");
+    eq(at(D.stackBase), { lo: D.stackBase, size: GUEST.mainStackSize, state: 0xB, perm: "rw-" }, "the main thread's stack");
     eq(segs.filter(s => s.state !== 0).length, 6, "mapped segments");
     for (const s of segs) if (s.state === 0) eq(s.perm, "---", `free segment at ${hex(s.lo)}`);
     return lines.slice(3);
+  });
+
+  // ---- a process beyond 4 GB ----
+  test("d a 9 GB pool (64-bit memory): the layout of a Switch 2 profile; SetHeapSize of 6.2 GB in one call; a pattern at the bottom, in the middle and at the top of the heap and in an alias mapping above 8 GB; QueryMemory", () => {
+    const GB = 2 ** 30, MB = 2 ** 20;
+    // the memory keys of nxnative's profile for a Switch 2 title (heap 8 GB, alias 4 GB, a 9 GB pool, map limit on)
+    const apply = { app_pool: "0x240000000", mem_used: "0x4000000", sys_resource: "0x3000000", mem_map_limit: "on" }, space = { heap_region: 8 * GB, alias_region: 4 * GB, stack_region: 0.25 * GB };
+    const s32 = settingsFor(apply, { space, mem64: false }), s = settingsFor(apply, { space, mem64: "auto" }), l = s.layout, c = s.choice!;
+    eq([s32.layout.fit, c.mem64, l.fit, !!l.mem64], ["short", true, "profile", true], "short in 32 bits; the choice is the 64-bit layout, which fits as reserved");
+    ok(/^runs in 64-bit memory mode: heap 8\.0 GB, alias 4\.0 GB, pool 9\.0 GB \(as the profile reserves them\); the tab may come to use up to 9\.\d GB of real memory$/.test(c.sentence), c.sentence);
+    ok(l.aliasBase > 8 * GB && l.aliasBase + l.aliasSize <= 0x3_FFFF_0000 && l.heapBase === l.codeBase + l.codeSize + l.tlsSize && l.aliasArena === 2 * MB, `the regions: heap at ${hex(l.heapBase)}, alias at ${hex(l.aliasBase)}, page-table arena ${l.aliasArena}`);
+    if (!env.mode || env.mode === "32") {
+      let msg = "";
+      try { new Runtime(env.mods, { layout: l }); } catch (e) { msg = String(e); }
+      ok(/the process layout is one for a 64-bit memory/.test(msg), "a Runtime on a 32-bit memory refuses the layout by name: " + msg);
+      return [c.sentence, "memory32: the Runtime refuses this layout by name; the process itself runs under NX_MEM=64 and NX_MEM=64hi"];
+    }
+    const before = env.rssMb?.() ?? 0, rt = boot(["big"], { layout: l }), t0 = performance.now();
+    exited(rt.run(), 0, rt);
+    noRed(rt);
+    const HEAP = 0x18ce00000, m = l.aliasBase + l.aliasSize - 64 * MB, free = l.stackBase + GUEST.mainStackSize;
+    eq(rt.stdout().trimEnd().split("\n"), [
+      `heap region ${hex(l.heapBase)} + ${hex(l.heapSize)}, alias region ${hex(l.aliasBase)} + ${hex(l.aliasSize)}, pool 0x240000000`,
+      `SetHeapSize(0x18ce00000): rc=0x0 base=${hex(l.heapBase)}`,
+      "heap bottom (+0x0): 0 of 512 words wrong",
+      "heap middle (+0xc6700000): 0 of 512 words wrong",
+      "heap top (+0x18cdff000): 0 of 512 words wrong; 4 GB lower reads 0x0",
+      `the heap's last byte: rc=0x0 ${hex(l.heapBase)} + 0x18ce00000 state=0x5 perm=0x3`,
+      "MapPhysicalMemory at the alias region's end - 64 MB (above 8 GB: yes): rc=0x0",
+      "alias mapping: 0 of 2048 words wrong; 4 GB lower reads 0x0",
+      `the mapping: rc=0x0 ${hex(m)} + 0x4000 state=0x5 perm=0x3`,
+      `below it: rc=0x0 ${hex(free)} + ${hex(m - free)} state=0x0 perm=0x0`,
+      "UnmapPhysicalMemory: rc=0x0",
+      "SetHeapSize(6.2 GB + 8 GB): rc=0xd001",
+      "SetHeapSize(2 MB): rc=0x0",
+    ], "what the guest saw");
+    ok(m > 8 * GB && rt.memory.buffer.byteLength >= m + 0x4000, `the memory reaches the mapping: ${rt.memory.buffer.byteLength} bytes`);
+    // the host reads the same bytes at the same addresses: the pattern the guest left at the heap's top and bottom
+    const dv = rt.dv(), word = (a: number) => BigInt.asUintN(64, BigInt(a) * 0x9E3779B97F4A7C15n);
+    eq([dv.getBigUint64(l.heapBase, true), dv.getBigUint64(l.heapBase + HEAP - 0x1000, true)].map(hex), [word(l.heapBase), word(l.heapBase + HEAP - 0x1000)].map(hex), "the heap's first word and the first word of its last page, read by the host");
+    return [c.sentence, `layout: code ${hex(l.codeBase)}, heap ${hex(l.heapBase)} + ${(l.heapSize / GB).toFixed(1)} GB, stack region ${hex(l.stackBase)}, alias ${hex(l.aliasBase)} + ${(l.aliasSize / GB).toFixed(1)} GB (page-table arena ${l.aliasArena! / MB} MB at the top of the code region)`,
+      `ran in ${(performance.now() - t0).toFixed(0)} ms; the linear memory is ${(rt.memory.buffer.byteLength / GB).toFixed(2)} GB of address space` + (env.rssMb ? `, resident memory of the process grew by ${(env.rssMb() - before).toFixed(0)} MB (seven pages of the 6.2 GB heap and the mapping were touched)` : ""),
+      `${rt.k.kernel_alias_leaves(0)} leaf of the alias page table in use`];
   });
 
   // ---- (e) ----
@@ -342,7 +397,7 @@ export function cases(env: Env): Case[] {
     eq(waits, 2, "host_wait calls");
     const calls = rt.red.filter(l => l.startsWith("[RED] call to unresolved import"));
     eq(calls.length, 1, "red lines for the unresolved call");
-    ok(/^\[RED\] call to unresolved import missing_fn from 0x8[0-9a-f]{6}$/.test(calls[0]), calls[0]);
+    ok((hi ? /^\[RED\] call to unresolved import missing_fn from 0x18[0-9a-f]{7}$/ : /^\[RED\] call to unresolved import missing_fn from 0x8[0-9a-f]{6}$/).test(calls[0]), calls[0]);
     eq(rt.set!.unresolved.map(u => `${u.module}:${u.name}`), ["host_main:missing_fn"], "what the loader reported unresolved");
     const fns = rt.ld.hostFunctions().map(f => `${f.name}:${["weak", "forced", "unresolved"][f.kind]}:${f.refs ? "used" : "unused"}`);
     ok(fns.includes("forced_fn:forced:used") && fns.includes("lib_wins:weak:unused") && fns.includes("missing_fn:unresolved:used"), fns.join(" "));
@@ -374,13 +429,14 @@ export function cases(env: Env): Case[] {
     ok(pc >= t.addr && pc < t.addr + t.size, "pc in the module's text: " + hex(pc));
     eq(rt.dv().getUint32(pc, true), 0xdead, "the word at the reported pc");
   });
-  faultCase("fault_load", "a load beyond the end of memory, in a second thread", "trap", "worker: loading from 0xf0000000, beyond the end of the linear memory\n", (rt, r) => {
+  // (placed above 4 GB, the memory reaches past 0xF000_0000: the guest built to load from 0x3_F000_0000 is used)
+  faultCase(hi ? "fault_load_hi" : "fault_load", "a load beyond the end of memory, in a second thread", "trap", `worker: loading from ${hi ? "0x3f0000000" : "0xf0000000"}, beyond the end of the linear memory\n`, (rt, r) => {
     eq(r.stop!.fault!.thread, 0x1002, "the faulting thread is the worker");
     ok(r.stop!.fault!.detail.includes("out of bounds"), r.stop!.fault!.detail);
-    ok(rt.memory.buffer.byteLength <= 0xF0000000, "the memory did not reach the address");
+    ok(rt.memory.buffer.byteLength <= (hi ? 0x3_F000_0000 : 0xF0000000), "the memory did not reach the address");
   });
   faultCase("fault_stack", "guest stack overflow by runaway recursion", "stack", "recursing without end\n", (rt, r) => {
-    ok(Number(r.stop!.fault!.aux) < GUEST.stackRegion, "sp below the stack: " + hex(r.stop!.fault!.aux));
+    ok(Number(r.stop!.fault!.aux) < D.stackBase, "sp below the stack: " + hex(r.stop!.fault!.aux));
   });
   // the guard on the host area (the default): a guest access below GUARD_BASE traps, and the trap's pc is the instruction itself
   const isMemInsn = (rt: Runtime, pc: bigint) => ((rt.dv().getUint32(Number(pc), true) >>> 25) & 5) === 4;
@@ -599,7 +655,7 @@ export function cases(env: Env): Case[] {
 }
 
 function newEvent(rt: Runtime): { r: number; w: number } {
-  const p = (rt.r.rt_scratch_ptr() >>> 0) + 3072;
+  const p = rt.r.rt_scratch_ptr() + 3072;
   const r = rt.k.kernel_event_new(p);
   return { r, w: rt.dv().getUint32(p, true) };
 }

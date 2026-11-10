@@ -138,7 +138,7 @@ function drawVerdict(snap: Snapshot): void {
     `<dt>Code modules</dt><dd>${det.modules.map(x => `${x.name} <span class="mute">${x.buildId}</span>`).join("<br>")}</dd>` +
     (det.dlc.length ? `<dt>Add-on content</dt><dd>${det.dlc.map(d => `${d.index} <span class="mute">${d.titleId}</span>`).join(", ")}</dd>` : "") +
     (prof?.graphics ? `<dt>Graphics</dt><dd id="graphics" data-api="${prof.graphics.api}">${prof.graphics.api === "nvn" ? "NVN" : prof.graphics.api === "gl" ? "OpenGL (not drawn by nxweb)" : prof.graphics.api === "vulkan" ? "Vulkan (not drawn by nxweb)" : "not known from main's imports"}</dd>` : "") +
-    (prof?.layout ? `<dt>Memory</dt><dd id="layout" data-fit="${prof.layout.fit}">${prof.layout.fit === "profile" ? "fits as the profile reserves it" : prof.layout.fit === "pool" ? "fits what the game can commit" : "does not fit a 32-bit memory"}` +
+    (prof?.layout ? `<dt>Memory</dt><dd id="layout" data-fit="${prof.layout.fit}" data-mem64="${prof.layout.mem64 ? prof.layout.mem64.fit : ""}">${prof.layout.fit === "profile" ? "fits as the profile reserves it" : prof.layout.fit === "pool" ? "fits what the game can commit" : prof.layout.mem64 ? esc(prof.layout.mem64.sentence) : "does not fit a 32-bit memory"}` +
       (prof.layout.note ? `<br><span class="mute">${esc(prof.layout.note)}</span>` : "") + `</dd>` : "") +
     (prof?.warnings.length ? `<dt>Notes</dt><dd id="warnings">${prof.warnings.map(esc).join("<br>")}</dd>` : "") + `</dl>`;
   const needs = prof?.needs ?? [], unc = prof?.unconverted ?? [];

@@ -2,8 +2,15 @@
 // allocator for the "game's" objects and data, and `call(name, ints, floats)`, which makes one NVN call exactly as a
 // game does: the name is resolved with nvn_lookup (as nvnBootstrapLoader would) and the arguments go into a block of
 // x0..x7 and d0..d7. Nothing here reaches into the recorder. Works in Node and in the browser.
+import { instantiate } from "../../src/glue/wasm_abi.ts";
+import { makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 export interface GuestImports { gfx_exec(ptr: number, len: number): void }
 export const GUEST_BASE = 0x0200_0000;      // the "game" lives from 32 MB up
+// The memory mode of the guests made from here on (NX_MEM of tools/modes.mjs; the page's ?mem=): "32" gfx.wasm on a
+// 32-bit memory; "64" gfx64.wasm on a 64-bit memory; "64hi" the same with the game (its objects, pools, command
+// memory, vertex and texel data) above 4 GB. The recorder's arena is host-area memory and stays low.
+export const SPACE = { mode: "32", mem64: false, base: GUEST_BASE };
+export function setMemMode(mode: string): void { SPACE.mode = mode; SPACE.mem64 = mode !== "32"; SPACE.base = mode === "64hi" ? 0x1_8000_0000 : GUEST_BASE; }
 export const ARENA_BASE = 0x0010_0000;      // the recorder's tables (gfx_arena_bytes(): 31 MB) from 1 MB up to the game; its static data is at 64 KB
 
 export class Guest {
@@ -19,27 +26,30 @@ export class Guest {
 
   static async create(wasm: BufferSource | WebAssembly.Module, imports: GuestImports, pages = 2048): Promise<Guest> {
     const g = new Guest();
-    g.memory = new WebAssembly.Memory({ initial: pages });
+    const mem = SPACE.mem64 ? makeMemory64({ initial: pages, maximum: MEM64_MAX_PAGES }) : null;
+    g.memory = mem ? mem.memory : new WebAssembly.Memory({ initial: pages });
+    if (mem && SPACE.base > GUEST_BASE) mem.grow((SPACE.base - GUEST_BASE) / 65536);   // the same room for the game, higher up
+    g.top = SPACE.base;
     const module = wasm instanceof WebAssembly.Module ? wasm : await WebAssembly.compile(wasm);
     const dec = new TextDecoder();
-    const inst = await WebAssembly.instantiate(module, { env: {
-      memory: g.memory,
-      log: (p: number, n: number) => g.logs.push(dec.decode(new Uint8Array(g.memory.buffer, p >>> 0, n))),
+    // addresses are numbers on this side in every mode (src/glue/wasm_abi.ts)
+    g.x = instantiate(module, { env: {
+      memory: g.memory, ...(mem ? mem.imports() : {}),
+      log: (p: number, n: number) => g.logs.push(dec.decode(new Uint8Array(g.memory.buffer, p, n).slice())),
       abort: () => { throw new Error("abort"); },
       gfx_exec: (p: number, n: number) => imports.gfx_exec(p, n),
       // The recorder calls the game back (the command memory callback): fn is a fake code address
       gfx_guest_call: (fn: bigint, a0: bigint, a1: bigint, a2: bigint, a3: bigint) => BigInt(g.callbacks[Number(fn - 0xF000_0000n) >> 2](a0, a1, a2, a3) ?? 0),
       // nvnDeviceGetProcAddress: the "address" of an entry point is 0xE0000000 + id * 16 in this fake guest
       gfx_proc_address: (id: number) => 0xE000_0000 + id * 16,
-    } });
-    g.x = inst.exports;
+    } }, { mem64: SPACE.mem64, name: "gfx.wasm" });
     if (!g.x.gfx_init(ARENA_BASE, g.x.gfx_arena_bytes())) throw new Error("gfx_init failed");
     g.args = g.alloc(128); g.nameBuf = g.alloc(128);
     return g;
   }
   get dv() { return new DataView(this.memory.buffer); }
   get u8() { return new Uint8Array(this.memory.buffer); }
-  alloc(n: number, align = 16): number { const p = (this.top + align - 1) & ~(align - 1); this.top = p + n; if (this.top > this.memory.buffer.byteLength) throw new Error("fake guest out of memory"); return p; }
+  alloc(n: number, align = 16): number { const p = Math.ceil(this.top / align) * align; this.top = p + n; if (this.top > this.memory.buffer.byteLength) throw new Error("fake guest out of memory"); return p; }
   // A game function the recorder can call: the fake address to pass as the callback
   fn(f: (...a: bigint[]) => bigint | number | void): number { this.callbacks.push(f); return 0xF000_0000 + (this.callbacks.length - 1) * 4; }
   id(name: string): number {

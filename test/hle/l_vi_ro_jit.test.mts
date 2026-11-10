@@ -230,7 +230,7 @@ function plugin(h: Hle, o: { version?: number; drop?: string[] } = {}) {
   for (const d of o.drop ?? []) delete syms[d];
   const init = h.fn(() => { log.push("init"); }), fini = h.fn(() => { log.push("fini"); });
   h.nroPlan = (_i, _s, sha, alone) => { assert.equal(sha, P.sha); assert.ok(alone, "a JIT plugin is loaded on its own"); return { syms, init: [init], fini: [fini] }; };
-  const nrr = h.alloc(0x100), work = (h.alloc(8 * MB2) + MB2 - 1) & ~(MB2 - 1);
+  const nrr = h.alloc(0x100), work = Math.ceil(h.alloc(8 * MB2) / MB2) * MB2;   // (no 32-bit operator on an address: the fake guest may be above 4 GB)
   const cfg = h.alloc(16), plug = h.alloc(40), out = h.alloc(16, 0xEE);
   h.dv.setBigUint64(cfg, BigInt(2 * MB2), true); h.dv.setBigUint64(cfg + 8, BigInt(MB2), true);
   [nrr, 0x100, P.p, 256, MB2].forEach((v, i) => h.dv.setBigUint64(plug + 8 * i, BigInt(v), true));

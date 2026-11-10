@@ -3,11 +3,20 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { ROOT, WASM } from "../../src/loader/host/build.mts";
+import { ROOT, WASM as WASM32 } from "../../src/loader/host/build.mts";
+import { instantiate as instantiateAbi } from "../../src/glue/wasm_abi.ts";
+import { makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 import { Loader, type LoaderExports, type FileInMemory } from "../../src/loader/host/loader.mts";
 import { readMachines } from "../../src/kit/host/reader.mts";
 
-export { ROOT, WASM };
+// NX_MEM: "32" (default) the loader built for a 32-bit memory, with a memory of its own; "64" the wasm64 build on a
+// 64-bit memory; "64hi" the same with the module files and the guest images above 4 GB (the arena and the stub
+// region are host-area memory and stay low, as in the runtime).
+export const MODE = process.env.NX_MEM ?? "32";
+export const M64 = MODE !== "32";
+export const HI = MODE === "64hi" ? 0x1_8000_0000 : 0;
+export const WASM = M64 ? WASM32.replace(/\.wasm$/, "64.wasm") : WASM32;
+export { ROOT };
 export const OUT = join(ROOT, "build", "loader", "guests");
 const SRC = join(ROOT, "test", "loader", "src");
 
@@ -152,8 +161,8 @@ export function expectedImage(w: World, m: Placed): Uint8Array {
 
 // ---- instances ----
 // Layout of the test instance's linear memory
-export const ARENA = 0x0010_0000, ARENA_LEN = 0x0010_0000, STUBS = 0x0030_0000, STUB_CAP = 64, FILES = 0x0040_0000, GUEST = 0x0800_0000;
-export const MEM_BYTES = 0x0900_0000;
+export const ARENA = 0x0010_0000, ARENA_LEN = 0x0010_0000, STUBS = 0x0030_0000, STUB_CAP = 64, FILES = HI + 0x0040_0000, GUEST = HI + 0x0800_0000;
+export const MEM_BYTES = HI + 0x0900_0000;
 
 export interface Box {
   x: LoaderExports; ld: Loader; logs: string[];
@@ -171,26 +180,29 @@ export function instantiate(pages: number): { x: LoaderExports; logs: string[] }
   module ??= new WebAssembly.Module(readFileSync(WASM));
   const logs: string[] = [];
   let x!: LoaderExports;
-  const inst = new WebAssembly.Instance(module, { env: {
-    log: (ptr: number, len: number) => { logs.push(Buffer.from(x.memory.buffer, ptr >>> 0, len).toString("utf8")); },
+  // addresses are numbers on this side in every mode (src/glue/wasm_abi.ts)
+  const mem = M64 ? makeMemory64({ initial: pages, maximum: MEM64_MAX_PAGES }) : null;
+  x = instantiateAbi<LoaderExports>(module, { env: {
+    ...(mem ? { memory: mem.memory, ...mem.imports() } : {}),
+    log: (ptr: number, len: number) => { logs.push(Buffer.from(new Uint8Array(x.memory.buffer).slice(ptr, ptr + len)).toString("utf8")); },
     abort: () => { throw new Error("abort"); },
-  } });
-  x = inst.exports as unknown as LoaderExports;
-  const have = x.memory.buffer.byteLength >>> 16;
-  if (pages > have) x.memory.grow(pages - have);
+  } }, { mem64: M64, name: "loader.wasm" });
+  const have = x.memory.buffer.byteLength / 65536;
+  if (pages > have) { if (mem) mem.grow(pages - have); else x.memory.grow(pages - have); }
+  (x as any).grow = (n: number) => mem ? mem.grow(n) : x.memory.grow(n);
   x.kit_cover_enable(1);
   live.push(x);
   return { x, logs };
 }
 
 export function fresh(o: { stubCap?: number } = {}): Box {
-  const { x, logs } = instantiate(MEM_BYTES >>> 16);
+  const { x, logs } = instantiate(MEM_BYTES / 65536);
   if (x.ld_heap_base() > ARENA) throw new Error("the loader's static memory reaches the test arena");
   const ld = new Loader(x, { arena: ARENA, arenaLen: ARENA_LEN, stubBase: STUBS, stubCap: o.stubCap ?? STUB_CAP });
   let nextFile = FILES, nextBase = GUEST;
   return {
     x, ld, logs,
-    put(name, bytes) { const ptr = nextFile; new Uint8Array(x.memory.buffer).set(bytes, ptr); nextFile = (ptr + bytes.length + 0x1FFF) & ~0xFFF; return { name, ptr, len: bytes.length }; },
+    put(name, bytes) { const ptr = nextFile; new Uint8Array(x.memory.buffer).set(bytes, ptr); nextFile = Math.ceil((ptr + bytes.length + 0x1000) / 0x1000) * 0x1000; return { name, ptr, len: bytes.length }; },
     place(size) { const b = nextBase; nextBase += size + 0x1000; return b; },
     mem: (addr, len) => new Uint8Array(x.memory.buffer).slice(addr, addr + len),
     u64: addr => Number(new DataView(x.memory.buffer).getBigUint64(addr, true)),

@@ -2,6 +2,7 @@
 // asks of the outside as one interface, HleEnv. No Node APIs and nothing of the runtime here: src/glue/hle_rt.ts
 // connects an HleHost to a Runtime, the tests (test/hle) give it a fake guest memory and fake kernel events.
 import type { KitExports } from "../kit/host/reader.mts";
+import { instantiate } from "./wasm_abi.ts";
 
 export interface HleExports extends KitExports {
   hle_init(): void;
@@ -151,34 +152,37 @@ export class HleHost {
   private entryList: HleEntry[] | undefined;
   private ids = new Map<string, number>();
 
-  // memory: the shared linear memory, for a module built with --importMemory (hleBuildShared); omitted: the module's own
-  constructor(module: WebAssembly.Module, env: HleEnv, memory?: WebAssembly.Memory) {
+  // memory: the shared linear memory, for a module built with --importMemory (hleBuildShared); omitted: the module's own.
+  // memEnv: what else the module imports to reach it (a 64-bit memory: env.memory_size / env.memory_grow of
+  // a64_host.ts Memory64.imports()). Every address the module hands over is a number here, in either build
+  // (wasm_abi.ts): no 32-bit operator touches one.
+  constructor(module: WebAssembly.Module, env: HleEnv, memory?: WebAssembly.Memory, memEnv: Record<string, unknown> = {}) {
     this.env = env;
     const self = this;
     let x!: HleExports;
     const mem = () => self.memory.buffer;
     const calls = new Map<string, bigint[]>(), told = new Set<string>();
     const missing = (what: string, line: string) => { if (!told.has(what)) { told.add(what); env.log(`[RED] hle: ${line} (HleEnv.${what} is not given)`); } };
-    const str = (p: number, max = 4096) => { const b = new Uint8Array(mem()); let e = p >>> 0; while (b[e] && e - p < max) e++; return dec.decode(b.slice(p >>> 0, e)); };
+    const str = (p: number, max = 4096) => { const b = new Uint8Array(mem()); let e = p; while (b[e] && e - p < max) e++; return dec.decode(b.slice(p, e)); };
     const imports = {
-      log: (p: number, n: number) => env.log(dec.decode(new Uint8Array(mem()).slice(p >>> 0, (p >>> 0) + n))),
+      log: (p: number, n: number) => env.log(dec.decode(new Uint8Array(mem()).slice(p, p + n))),
       abort: () => { throw new Error("hle: abort"); },
       hle_guest_ns: () => u64(env.guestNs()), hle_mono_ns: () => u64(env.monoNs()), hle_real_ns: () => BigInt.asIntN(64, env.realNs()),
       hle_tz: (t: bigint, out: number) => {
         const z = env.timeZone(t), dv = new DataView(mem());
-        dv.setInt32(out >>> 0, z.offset, true); dv.setInt32((out >>> 0) + 4, z.dst ? 1 : 0, true);
+        dv.setInt32(out, z.offset, true); dv.setInt32(out + 4, z.dst ? 1 : 0, true);
         const nm = enc.encode(z.name).subarray(0, 7), b = new Uint8Array(mem());
-        b.fill(0, (out >>> 0) + 8, (out >>> 0) + 16); b.set(nm, (out >>> 0) + 8);
+        b.fill(0, out + 8, out + 16); b.set(nm, out + 8);
       },
-      hle_entropy: (p: number, n: number) => { const t = new Uint8Array(n); env.entropy(t); new Uint8Array(mem()).set(t, p >>> 0); },
-      hle_event_new: (w: number) => { const e = env.eventNew(); if (w) new DataView(mem()).setUint32(w >>> 0, e.w, true); return e.r; },
+      hle_entropy: (p: number, n: number) => { const t = new Uint8Array(n); env.entropy(t); new Uint8Array(mem()).set(t, p); },
+      hle_event_new: (w: number) => { const e = env.eventNew(); if (w) new DataView(mem()).setUint32(w, e.w, true); return e.r; },
       hle_event_signal: (h: number) => env.eventSignal(h >>> 0) ? 1 : 0,
       hle_event_clear: (h: number) => env.eventClear(h >>> 0) ? 1 : 0,
       hle_event_dup_readable: (h: number) => env.eventDupReadable(h >>> 0),
       hle_guest_sym: (p: number) => u64(env.guestSym(str(p))),
       hle_guest_call: (fn: bigint, p: number, n: number) => {
         const dv = new DataView(mem()), args: bigint[] = [];
-        for (let i = 0; i < n; i++) args.push(dv.getBigUint64((p >>> 0) + 8 * i, true));
+        for (let i = 0; i < n; i++) args.push(dv.getBigUint64(p + 8 * i, true));
         return u64(env.guestCall(u64(fn), args));
       },
       hle_module_of: (a: bigint) => env.moduleOf(u64(a)),
@@ -186,13 +190,13 @@ export class HleHost {
       hle_host_alloc: (n: bigint) => u64(env.hostAlloc(u64(n))),
       hle_clock_freeze: (reason: number, on: number) => env.clockFreeze(reason, on !== 0),
       hle_text_request: (r: number) => {
-        const dv = new DataView(mem()), q = r >>> 0, s = (o: number) => str(Number(dv.getBigUint64(q + o, true)));
+        const dv = new DataView(mem()), q = r, s = (o: number) => str(Number(dv.getBigUint64(q + o, true)));
         env.textRequest({ title: s(0), sub: s(8), guide: s(16), initial: s(24), maxChars: dv.getInt32(q + 32, true), minChars: dv.getInt32(q + 36, true),
           kind: dv.getInt32(q + 40, true) ? "inline" : "keyboard" });
       },
       hle_web_open: (path: number, cb: number, hidden: number, delay: number, pulse: number) => env.webOpen(str(path), str(cb), hidden !== 0, delay >>> 0, pulse >>> 0),
       hle_web_show: () => env.webShow(),
-      hle_web_send: (p: number, n: number) => env.webSend(new Uint8Array(mem()).slice(p >>> 0, (p >>> 0) + n)),
+      hle_web_send: (p: number, n: number) => env.webSend(new Uint8Array(mem()).slice(p, p + n)),
       hle_web_close: () => env.webClose(),
       hle_input_hold: (on: number) => env.inputHold(on !== 0),
       hle_vsync_event: (binding: bigint) => env.vsyncEvent(u64(binding)),
@@ -202,18 +206,18 @@ export class HleHost {
       hle_joy_mouse_wanted: (on: number) => env.joyMouseWanted?.(on !== 0),
       hle_vibration: (p: number) => {
         if (!env.vibration) return;
-        const dv = new DataView(mem()), q = p >>> 0, v = (o: number): VibrationValue =>
+        const dv = new DataView(mem()), q = p, v = (o: number): VibrationValue =>
           ({ amplitudeLow: dv.getFloat32(q + o, true), frequencyLow: dv.getFloat32(q + o + 4, true), amplitudeHigh: dv.getFloat32(q + o + 8, true), frequencyHigh: dv.getFloat32(q + o + 12, true) });
         env.vibration({ player: dv.getInt32(q, true), epoch: dv.getBigUint64(q + 8, true), motors: [v(16), v(32)] });
       },
       hle_vi_layer: (w: number, h: number) => env.viLayer?.(w >>> 0, h >>> 0),
       hle_vi_crop: (cx: number, cy: number, w: number, h: number) => env.viCrop?.(cx >>> 0, cy >>> 0, w >>> 0, h >>> 0),
       hle_vi_frame_count: () => { if (env.viFrameCount) return u64(env.viFrameCount()); missing("viFrameCount", "vi: the layer's frame number is asked for: answered 0"); return 0n; },
-      hle_vi_present_progress: (out: number) => { const r = env.viPresentProgress?.() ?? { queued: 0n, done: 0n }, dv = new DataView(mem()); dv.setBigUint64(out >>> 0, u64(r.queued), true); dv.setBigUint64((out >>> 0) + 8, u64(r.done), true); },
+      hle_vi_present_progress: (out: number) => { const r = env.viPresentProgress?.() ?? { queued: 0n, done: 0n }, dv = new DataView(mem()); dv.setBigUint64(out, u64(r.queued), true); dv.setBigUint64(out + 8, u64(r.done), true); },
       hle_vi_presented_ns: (ticket: bigint) => BigInt.asIntN(64, env.viPresentedNs?.(u64(ticket)) ?? 0n),
       hle_ro_load: (image: bigint, size: number, sha: number, alone: number) => {
         if (!env.roLoad) { missing("roLoad", "nn::ro / nn::jit: a module is to be loaded at run time and the embedder has no loader for it"); return 0n; }
-        return u64(env.roLoad(u64(image), size >>> 0, new Uint8Array(mem()).slice(sha >>> 0, (sha >>> 0) + 32), alone !== 0));
+        return u64(env.roLoad(u64(image), size >>> 0, new Uint8Array(mem()).slice(sha, sha + 32), alone !== 0));
       },
       hle_ro_call: (token: bigint, fini: number, index: number) => {
         const key = `${u64(token)}/${fini}`;
@@ -228,7 +232,7 @@ export class HleHost {
       hle_jit_memory: (rxSize: bigint, roSize: bigint, out: number) => {
         const r = env.jitMemory?.(u64(rxSize), u64(roSize));
         if (!r) { missing("jitMemory", "nn::jit: code memory is asked for and the embedder gives none"); return 1; }
-        const dv = new DataView(mem()); dv.setBigUint64(out >>> 0, u64(r.rx), true); dv.setBigUint64((out >>> 0) + 8, u64(r.ro), true);
+        const dv = new DataView(mem()); dv.setBigUint64(out, u64(r.rx), true); dv.setBigUint64(out + 8, u64(r.ro), true);
         return 0;
       },
       hle_jit_code_written: (rx: bigint, off: bigint, size: bigint) => env.jitCodeWritten?.(u64(rx), u64(off), u64(size)),
@@ -236,17 +240,16 @@ export class HleHost {
       hle_native_image_blank: (w: number, h: number) => env.nativeImageBlank(w >>> 0, h >>> 0),
       hle_native_image_blank_free: (h: number) => env.nativeImageBlankFree(h >>> 0),
       hle_exit_request: (reason: number, value: bigint, p: number, n: number) =>
-        env.exitRequest(EXIT_REASON[reason] ?? "abort", u64(value), new Uint8Array(mem()).slice(p >>> 0, (p >>> 0) + (n >>> 0))),
+        env.exitRequest(EXIT_REASON[reason] ?? "abort", u64(value), new Uint8Array(mem()).slice(p, p + (n >>> 0))),
     };
-    const inst = new WebAssembly.Instance(module, { env: memory ? { ...imports, memory } : imports });
-    x = inst.exports as unknown as HleExports;
+    x = instantiate<HleExports>(module, { env: memory ? { ...imports, ...memEnv, memory } : imports }, { name: "hle.wasm" });
     this.x = x;
     this.memory = memory ?? x.memory;
     x.hle_init();
   }
   private cstr(p: number): string { const b = new Uint8Array(this.memory.buffer); let e = p; while (b[e]) e++; return dec.decode(b.slice(p, e)); }
   private scratch(bytes: Uint8Array): number {
-    const p = this.x.hle_scratch() >>> 0;
+    const p = this.x.hle_scratch();
     if (bytes.length > 8191) throw new Error("hle: a string for the module is longer than its 8 KB scratch");
     const b = new Uint8Array(this.memory.buffer); b.set(bytes, p); b[p + bytes.length] = 0;
     return p;
@@ -260,7 +263,7 @@ export class HleHost {
     const x = this.x, n = x.hle_count(), out: HleEntry[] = [];
     for (let id = 0; id < n + x.hle_internal_count(); id++) {
       const f = x.hle_flags(id);
-      out.push({ id, name: this.cstr(x.hle_name(id) >>> 0), demangled: this.cstr(x.hle_demangled(id) >>> 0), forced: (f & 1) !== 0, implemented: (f & 2) !== 0,
+      out.push({ id, name: this.cstr(x.hle_name(id)), demangled: this.cstr(x.hle_demangled(id)), forced: (f & 1) !== 0, implemented: (f & 2) !== 0,
         shadowed: (f & 8) !== 0, duplicate: (f & 32) !== 0, internal: id >= n });
     }
     return this.entryList = out;
@@ -283,7 +286,7 @@ export class HleHost {
   // When the result has `wait`, park the guest thread on that readable handle (WaitSynchronization with the
   // timeout), keep pending(), and call resume() with how the wait ended; repeat while the result has `wait`.
   call(id: number, regs: HleRegs = {}): HleResult {
-    const p = this.x.hle_args() >>> 0, dv = new DataView(this.memory.buffer);
+    const p = this.x.hle_args(), dv = new DataView(this.memory.buffer);
     for (let i = 0; i < ARGS_SIZE; i += 8) dv.setBigUint64(p + i, 0n, true);
     (regs.x ?? []).slice(0, 8).forEach((v, i) => dv.setBigUint64(p + 8 * i, u64(v), true));
     (regs.d ?? []).slice(0, 8).forEach((v, i) => dv.setBigUint64(p + 64 + 8 * i, u64(v), true));
@@ -292,9 +295,9 @@ export class HleHost {
     return this.result(this.x.hle_call(id, p));
   }
   // The argument block of the call that just returned `wait` (the continuation slots are in it)
-  pending(id: number): HlePending { const p = this.x.hle_args() >>> 0; return { id, block: new Uint8Array(this.memory.buffer).slice(p, p + ARGS_SIZE) }; }
+  pending(id: number): HlePending { const p = this.x.hle_args(); return { id, block: new Uint8Array(this.memory.buffer).slice(p, p + ARGS_SIZE) }; }
   resume(pend: HlePending, how: "signaled" | "timeout" | "cancelled"): HleResult {
-    const p = this.x.hle_args() >>> 0;
+    const p = this.x.hle_args();
     new Uint8Array(this.memory.buffer).set(pend.block, p);
     return this.result(this.x.hle_resume(pend.id, p, how === "signaled" ? 1 : how === "timeout" ? 2 : 3));
   }
@@ -327,7 +330,7 @@ export class HleHost {
   }
   // The owned add-on content indices (nxnative: the numeric subdirectories of DM_AOC_DIR)
   aocSet(indices: number[]): void {
-    const p = this.x.hle_scratch() >>> 0, dv = new DataView(this.memory.buffer), n = Math.min(indices.length, 2000);
+    const p = this.x.hle_scratch(), dv = new DataView(this.memory.buffer), n = Math.min(indices.length, 2000);
     for (let i = 0; i < n; i++) dv.setInt32(p + 4 * i, indices[i], true);
     this.x.hle_aoc_set(p, n);
   }
@@ -393,7 +396,7 @@ export class HleHost {
   // What an applet in front of the game reads: every player ORed, each stick axis the most deflected one, and the
   // presses since the last peek
   inputPeek(): { buttons: number; axes: [number, number, number, number] } {
-    const p = this.x.hle_scratch() >>> 0; this.x.hle_input_peek(p);
+    const p = this.x.hle_scratch(); this.x.hle_input_peek(p);
     const dv = new DataView(this.memory.buffer);
     return { buttons: Number(dv.getBigUint64(p, true)), axes: [dv.getInt32(p + 8, true), dv.getInt32(p + 12, true), dv.getInt32(p + 16, true), dv.getInt32(p + 20, true)] };
   }

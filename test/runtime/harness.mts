@@ -10,6 +10,7 @@ import { nodeFileStore } from "../a64/cache_node.ts";
 import { NodeStorage } from "../../src/glue/fs_dev_node.ts";
 import { checkBuilt } from "../../src/runtime/host/build.mts";
 import { rmSync } from "node:fs";
+import { setDefaultSpace } from "../../src/glue/rt_process.ts";
 
 export { ROOT, OUT, build };
 export const GUESTS = join(OUT, "guests");
@@ -21,10 +22,10 @@ const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: ROOT
 
 // name -> source file and extra compiler flags
 export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
-  hello: ["hello.c"], two_main: ["two_main.c"], two_lib: ["two_lib.c"], threads: ["threads.c"], race: ["race.c"], heap: ["heap.c"],
+  big: ["big.c"], hello: ["hello.c"], two_main: ["two_main.c"], two_lib: ["two_lib.c"], threads: ["threads.c"], race: ["race.c"], heap: ["heap.c"],
   host_main: ["host_main.c"], host_lib: ["host_lib.c"], argsg: ["argsg.c"], pads: ["pads.c"], tone: ["tone.c"], audren: ["audren.c", "-fno-builtin"], stress_threads: ["stress_threads.c"], stress_mem: ["stress_mem.c"], stress_ro: ["stress_ro.c"],
   fsg: ["fsg.c"], hleg: ["hleg.c"], ro_main: ["ro_main.c"], fini: ["fini.c"], clock: ["clock.c"], fault_null: ["fault.c", "-DMODE=6"], fault_host: ["fault.c", "-DMODE=7"],
-  fault_jump: ["fault.c", "-DMODE=1"], fault_undef: ["fault.c", "-DMODE=2"], fault_load: ["fault.c", "-DMODE=3"], fault_stack: ["fault.c", "-DMODE=4"], break: ["fault.c", "-DMODE=5"],
+  fault_jump: ["fault.c", "-DMODE=1"], fault_undef: ["fault.c", "-DMODE=2"], fault_load: ["fault.c", "-DMODE=3"], fault_load_hi: ["fault.c", "-DMODE=3", "-DFAR=0x3F0000000ul", '-DFAR_S="0x3f0000000"'], fault_stack: ["fault.c", "-DMODE=4"], break: ["fault.c", "-DMODE=5"],
 };
 
 // nxnative's nvn.h is not in this repository: the graphics guests include it from the reference clone
@@ -136,15 +137,27 @@ export function buildBig(): boolean {
   try { run("python3", [join(ROOT, "test", "a64", "guests", "build.py"), "--big"]); } catch { console.error("[RED] rt: the large guest could not be built (test/a64/guests/build.py --big): the cache timing is skipped"); }
   return existsSync(join(BIG_DIR, "a64_big.O1.json"));
 }
+// NX_MEM (tools/modes.mjs): "32" (default) the modules for a 32-bit memory; "64" the wasm64 set on a 64-bit memory;
+// "64hi" the same with every process above 4 GB: the default space starts the code region at 0x1_8000_0000 (heap,
+// stacks, alias and thread-local regions and host-allocated blocks follow it) and the flat corpus is the one linked
+// there (test/a64/guests/out_hi, built by test/a64/guests/build_hi.py).
+export const MODE = process.env.NX_MEM ?? "32";
+export const HI_BASE = 0x1_8000_0000;
 export function loadEnv(): MoreEnv {
   checkBuilt();   // none of the modules was built from other kit tables
-  const mod = (n: string) => new WebAssembly.Module(readFileSync(join(OUT, n + ".wasm")));
-  const dir = join(ROOT, "test", "guests", "out");
+  const m64 = MODE !== "32", hi = MODE === "64hi";
+  const mod = (n: string) => new WebAssembly.Module(readFileSync(join(OUT, n + (m64 ? "64" : "") + ".wasm")));
+  if (hi) {
+    setDefaultSpace({ mem64: true, codeBase: HI_BASE });
+    if (!existsSync(join(ROOT, "test", "a64", "guests", "out_hi", "hello.O0.json"))) run("python3", [join(ROOT, "test", "a64", "guests", "build_hi.py")]);
+  }
+  const dir = hi ? join(ROOT, "test", "a64", "guests", "out_hi") : join(ROOT, "test", "guests", "out");
   const corpus: CorpusGuest[] = corpusList().map(name => {
     const side = JSON.parse(readFileSync(join(dir, name + ".json"), "utf8"));
     return { name, side, image: new Uint8Array(readFileSync(join(dir, side.image))), expected: new Uint8Array(readFileSync(join(dir, side.expected_stdout))) };
   });
   return {
+    mode: MODE,
     mods: { rt: mod("rt"), kernel: mod("kernel"), loader: mod("loader"), translator: mod("translator"), helpers: mod("helpers"), gfx: mod("gfx"), fs: mod("fs"), hle: mod("hle"), audio: mod("audio") },
     nso: name => new Uint8Array(readFileSync(join(GUESTS, name + ".nso"))),
     file: name => new Uint8Array(readFileSync(join(GUESTS, name))),
@@ -154,7 +167,8 @@ export function loadEnv(): MoreEnv {
     guardRounds: process.env.RT_GUARD_ROUNDS ? Number(process.env.RT_GUARD_ROUNDS) : undefined,
     corpus,
     rssMb: () => process.memoryUsage().rss / 1e6,
-    big: buildBig() ? (() => { const side = JSON.parse(readFileSync(join(BIG_DIR, "a64_big.O1.json"), "utf8")); return { name: "a64_big.O1", side, image: new Uint8Array(readFileSync(join(BIG_DIR, side.image))), expected: new Uint8Array(readFileSync(join(BIG_DIR, side.expected_stdout))) }; })() : undefined,
+    // (the large generated guest is linked at 0x0800_0000: not for a process placed above 4 GB)
+    big: !hi && buildBig() ? (() => { const side = JSON.parse(readFileSync(join(BIG_DIR, "a64_big.O1.json"), "utf8")); return { name: "a64_big.O1", side, image: new Uint8Array(readFileSync(join(BIG_DIR, side.image))), expected: new Uint8Array(readFileSync(join(BIG_DIR, side.expected_stdout))) }; })() : undefined,
     shaderLibrary: shaderArtifacts().library ? new Uint8Array(readFileSync(join(SHADER_OUT, "maxwell.nxsl"))) : undefined,
     shaderWhy: shaderArtifacts().why,
     // rom: the image file; saves: container files in a directory that outlives the storage object

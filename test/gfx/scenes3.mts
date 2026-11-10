@@ -89,7 +89,7 @@ export const scenes3: Scene[] = [
     const G = e.G, cmd = G.cmd, prog = await e.program("vs_quad", "fs_bindless");
     const nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST), linear = G.sampId(FILTER.LINEAR, FILTER.LINEAR);
     const words = G.put(new Uint32Array(8)), sampWords = G.put(new Uint32Array(4)), u32 = () => new Uint32Array(e.g.memory.buffer);
-    const setHandles = (tex0: number, samp0: number, tex5: number, samp5: number) => { u32()[(words + 8) >> 2] = (tex0 | samp0 << 20) >>> 0; u32()[(words + 16) >> 2] = tex5; u32()[(sampWords + 4) >> 2] = (samp5 << 20) >>> 0; };
+    const setHandles = (tex0: number, samp0: number, tex5: number, samp5: number) => { u32()[(words + 8) / 4] = (tex0 | samp0 << 20) >>> 0; u32()[(words + 16) / 4] = tex5; u32()[(sampWords + 4) / 4] = (samp5 << 20) >>> 0; };
     const MIX = [191, 64, 0, 255];      // texture D (red, green) sampled linearly a quarter of the way from its first texel to its second
     let a = { tex: 0, id: 0 }, b = a, c = a, d = a;
     const start = (i: number, p = prog, pool = G.texPool) => {

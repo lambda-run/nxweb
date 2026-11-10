@@ -2,6 +2,7 @@
 // argument block, the two clocks. No browser and no Node APIs: the device is audio_device.ts, the tests bring a
 // fake one. See src/audio/README.md.
 import type { KitExports } from "../kit/host/reader.mts";
+import { instantiate } from "./wasm_abi.ts";
 
 export interface AudioExports extends KitExports {
   audio_init(arenaBase: number, arenaLen: number): void;
@@ -93,32 +94,33 @@ export class AudioHost {
   private scratch = 0;
 
   // memory: the process's linear memory when the module was built with --importMemory; else the module's own is used
-  constructor(module: WebAssembly.Module, embedder: AudioEmbedder, memory?: WebAssembly.Memory) {
+  // memEnv: what else the module imports to reach it (a 64-bit memory: a64_host.ts Memory64.imports()). Addresses the
+  // module hands over are numbers in either build (wasm_abi.ts).
+  constructor(module: WebAssembly.Module, embedder: AudioEmbedder, memory?: WebAssembly.Memory, memEnv: Record<string, unknown> = {}) {
     this.embedder = embedder;
     const dec = new TextDecoder();
-    const bytes = (p: number, n: number) => new Uint8Array(this.x.memory.buffer, p >>> 0, n);
+    const bytes = (p: number, n: number) => new Uint8Array(this.x.memory.buffer, p, n);
     const env: Record<string, unknown> = {
       abort: () => { throw new Error("audio: abort"); },
       log: (p: number, n: number) => embedder.log(dec.decode(bytes(p, n).slice())),
-      audio_event_bind: (ev: number, auto: number) => embedder.eventBind(ev >>> 0, auto !== 0),
+      audio_event_bind: (ev: number, auto: number) => embedder.eventBind(ev, auto !== 0),   // ev: the guest SystemEvent's address
       audio_event_signal: (t: number) => embedder.eventSignal(t >>> 0),
       audio_event_release: (t: number) => embedder.eventRelease?.(t >>> 0),
       audio_dev_start: () => this.embedder.device?.start(),
       audio_dev_stop: () => this.embedder.device?.stop(),
       audio_guest_fn: (p: number, n: number) => embedder.guestFn?.(dec.decode(bytes(p, n).slice())) ?? 0n,
-      audio_guest_call: (fn: bigint, a: number) => embedder.guestCall?.(BigInt.asUintN(64, fn), new BigUint64Array(this.x.memory.buffer.slice(a >>> 0, (a >>> 0) + 64))) ?? 0n,
+      audio_guest_call: (fn: bigint, a: number) => embedder.guestCall?.(BigInt.asUintN(64, fn), new BigUint64Array(this.x.memory.buffer.slice(a, a + 64))) ?? 0n,
       audio_thread_entry: () => embedder.threadEntry?.() ?? 0n,
       audio_handle_dup: (h: number) => embedder.handleDup?.(h >>> 0) ?? 0,
       audio_opus_open: (d: number, rate: number, ch: number) => this.embedder.opus ? this.embedder.opus.open(d, rate, ch) : 0x3a6f,
-      audio_opus_decode: (d: number, req: number, p: number, n: number, out: number, cap: number) => this.embedder.opus ? this.embedder.opus.decode(d, req >>> 0, bytes(p, n), out >>> 0, cap) : -2,
+      audio_opus_decode: (d: number, req: number, p: number, n: number, out: number, cap: number) => this.embedder.opus ? this.embedder.opus.decode(d, req >>> 0, bytes(p, n), out, cap) : -2,
       audio_opus_reset: (d: number) => this.embedder.opus?.reset(d),
       audio_opus_close: (d: number) => this.embedder.opus?.close(d),
     };
-    if (memory) env.memory = memory;
-    const inst = new WebAssembly.Instance(module, { env } as WebAssembly.Imports);
-    this.x = inst.exports as unknown as AudioExports;
+    if (memory) { env.memory = memory; Object.assign(env, memEnv); }
+    this.x = instantiate<AudioExports>(module, { env }, { name: "audio.wasm" });
     if (memory && !this.x.memory) (this.x as { memory: WebAssembly.Memory }).memory = memory;
-    this.scratch = this.x.audio_scratch() >>> 0;
+    this.scratch = this.x.audio_scratch();
   }
   get dv(): DataView { return new DataView(this.x.memory.buffer); }
 
@@ -130,7 +132,7 @@ export class AudioHost {
     return this.x.audio_lookup(this.scratch + 256);
   }
   fnName(id: number): string {
-    const p = this.x.audio_fn_name(id) >>> 0, n = this.x.audio_fn_name_len(id);
+    const p = this.x.audio_fn_name(id), n = this.x.audio_fn_name_len(id);
     return String.fromCharCode(...new Uint16Array(this.x.memory.buffer.slice(p, p + 2 * n)));
   }
   // The guest's stub was called: x = x0..x7 (and x8 when the function returns a struct in memory), v = the low 64
@@ -150,7 +152,7 @@ export class AudioHost {
 
   // The states output #id entered, oldest first, as far as the kit's trace ring still holds them
   outTrace(id: number): string[] {
-    const x = this.x, dv = this.dv, total = x.kit_trace_total() >>> 0, cap = x.kit_trace_cap(), rec = x.kit_trace_rec(), base = x.kit_trace_ptr() >>> 0, m = x.audio_out_machine();
+    const x = this.x, dv = this.dv, total = x.kit_trace_total() >>> 0, cap = x.kit_trace_cap(), rec = x.kit_trace_rec(), base = x.kit_trace_ptr(), m = x.audio_out_machine();
     const r: string[] = [];
     for (let n = Math.max(0, total - cap); n < total; n++) {
       const p = base + (n % cap) * rec;
@@ -159,8 +161,8 @@ export class AudioHost {
     return r;
   }
   // The ring header as an Int32Array over the module's memory (8 words) and its frames
-  ringHeader(): Int32Array { return new Int32Array(this.x.memory.buffer, this.x.audio_ring_ptr() >>> 0, 8); }
-  ringData(): Float32Array { return new Float32Array(this.x.memory.buffer, this.x.audio_ring_data() >>> 0, this.x.audio_ring_cap() * 2); }
+  ringHeader(): Int32Array { return new Int32Array(this.x.memory.buffer, this.x.audio_ring_ptr(), 8); }
+  ringData(): Float32Array { return new Float32Array(this.x.memory.buffer, this.x.audio_ring_data(), this.x.audio_ring_cap() * 2); }
   outs(): { slot: number; id: number; state: string; pending: number; released: number }[] {
     const r = [];
     for (let i = 0; i < this.x.audio_out_max(); i++) {

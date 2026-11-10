@@ -29,9 +29,9 @@ const DIGEST: usize = memory.data(32);
 export class Layout {
   kind: u32;        // KIND_NSO or KIND_NRO
   flags: u32;       // NSO: bits 0-2 segment i is compressed, bits 3-5 segment i has its hash checked
-  file: u32;        // the file's bytes in linear memory; 0 once the module is pinned
   fileLen: u32;
   opts: u32;
+  file: usize;      // the file's bytes in linear memory (anywhere in it: a large start set is staged in the guest's regions); 0 once the module is pinned
   fo0: u32; fo1: u32; fo2: u32;   // offset in the file
   mo0: u32; mo1: u32; mo2: u32;   // offset in the image
   sz0: u32; sz1: u32; sz2: u32;   // size in the image
@@ -66,7 +66,7 @@ function bad(i: u32): void { red(); puts(segName(i)); puts(" segment "); }
 // Returns 0 and fills L, or the reason for the refusal (ModuleRefuseReason) after logging a red line.
 export function parseHeader(L: Layout, file: usize, len: u32, opts: u32): u64 {
   const set = changetype<usize>(L);
-  L.file = <u32>file; L.fileLen = len; L.opts = opts;
+  L.file = file; L.fileLen = len; L.opts = opts;
   if (len >= 0x100 && load<u32>(file) == 0x304F534E) {            // "NSO0"
     L.kind = KIND_NSO;
     const flags = load<u32>(file, 0x0C);
@@ -172,7 +172,7 @@ export function loadWorkDone(): u64 { return sWork; }
 // About `budget` more bytes of work (a stored or LZ4 segment is done whole). LOAD_MORE, 0 when the image is complete,
 // or the reason for the refusal after logging a red line (the image is then not to be used).
 export function loadStep(L: Layout, budget: u32): i64 {
-  const file = <usize>L.file, dst = sDst;
+  const file = L.file, dst = sDst;
   let left: u64 = budget ? budget : 1;
   while (sSeg < 3) {
     const i = sSeg, mo = L.memOff(i), sz = L.size(i), st = L.stored(i), src = file + <usize>L.fileOff(i), out = dst + <usize>mo;

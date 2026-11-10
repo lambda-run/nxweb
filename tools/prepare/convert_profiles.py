@@ -388,9 +388,10 @@ def main():
         else:
             sp = prof["address_space"]
             sp.update(fit=v["fit"], fits=v["fit"] != "short", note=v["note"], layout={"heap": v["heap"], "alias": v["alias"], "stack": v["stack"], "pool": v["pool"]})
+            if v.get("mem64"): sp["mem64"] = v["mem64"]   # short in a 32-bit memory, fits a 64-bit one: the runtime's layoutChoice
             space[v["fit"]].append({"id": gid, "why": v["note"]} if v["fit"] != "profile" else gid)
             if v["fit"] == "short":
-                prof["needs"].append({"key": "address_space", "value": f"heap {sp['heap_region']:#x} alias {sp['alias_region']:#x} stack {sp['stack_region']:#x}", "what": ADDRESS_SPACE[2].format(note=v["note"])})
+                prof["needs"].append({"key": "address_space", "value": f"heap {sp['heap_region']:#x} alias {sp['alias_region']:#x} stack {sp['stack_region']:#x}", "what": ADDRESS_SPACE[2].format(note=v["note"]) + (" It " + v["mem64"]["sentence"] + "." if v.get("mem64") else "")})
                 seen["address_space"] = "c"
         for k, c in seen.items():
             per_class[c] += 1; key_profiles[k] = key_profiles.get(k, 0) + 1

@@ -1,6 +1,7 @@
 // The page `npm run gfx:test` opens (test/gfx/test.html): runs every scene in a fresh fake guest on one WebGPU device
 // and leaves the results in window.__gfx for the runner.
 import { Env } from "./env.mts";
+import { setMemMode } from "./guest.mts";
 import { scenes as scenes1, T } from "./scenes.mts";
 import { scenes2 } from "./scenes2.mts";
 import { scenes3 } from "./scenes3.mts";
@@ -19,7 +20,9 @@ async function main() {
   const device = await adapter.requestDevice(dd);
   const limits = ["maxUniformBuffersPerShaderStage", "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage", "maxStorageTexturesPerShaderStage", "maxDynamicUniformBuffersPerPipelineLayout", "maxVertexAttributes", "maxVertexBuffers", "maxBindGroups"]
     .map(l => `${l} ${adapter.limits[l]} (${device.limits[l]} granted)`).join(", ");
-  const wasm = await WebAssembly.compileStreaming(fetch("/build/gfx/gfx.wasm"));
+  const mem = new URLSearchParams(location.search).get("mem") ?? "32";
+  setMemMode(mem);
+  const wasm = await WebAssembly.compileStreaming(fetch(mem === "32" ? "/build/gfx/gfx.wasm" : "/build/gfx/gfx64.wasm"));
   const only = new URLSearchParams(location.search).get("only");
   const results: any[] = [];
   let hits: number[] = [];

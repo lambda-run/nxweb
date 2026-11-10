@@ -91,14 +91,14 @@ export function ready(i: i32): i32 {
   const s = sinkOf(i);
   if (s == null) return 0;
   const o = outOf(s);
-  for (let slot = out.takeReleased(o); slot >= 0; slot = out.takeReleased(o)) store<u8>(s.freeList + s.nfree++, <u8>load<u32>(o.slot(<u32>slot), 28));
+  for (let slot = out.takeReleased(o); slot >= 0; slot = out.takeReleased(o)) store<u8>(s.freeList + s.nfree++, <u8>load<u32>(o.slot(<u32>slot), out.SLOT_AUX));
   return s.nfree ? 1 : 0;
 }
 function play(s: Sink, src: usize, got: u32): void {
   const n = got ? got : 240;   // nothing rendered: 5 ms of silence, so the pace holds
   const b = <u32>load<u8>(s.freeList + --s.nfree), p = s.pcm(b);
   if (got) memory.copy(p, src, <usize>n * 4); else memory.fill(p, 0, <usize>n * 4);
-  if (!out.append(outOf(s), 0, <u32>p, n * 4, b)) { s.nfree++; return; }
+  if (!out.append(outOf(s), 0, p, n * 4, b)) { s.nfree++; return; }
   s.played++; s.lastBlock = <u32>p; s.lastN = n;
 }
 // With a block free: a queued catch-up frame is played in place of a render (returns 0); otherwise the caller

@@ -103,9 +103,10 @@ export function guestCall(fn: u64, a0: u64 = 0, a1: u64 = 0, a2: u64 = 0, a3: u6
   return envGuestCall(fn, GARGS);
 }
 
-// A guest address: the contract wraps 64-bit guest addresses to 32 bits to index linear memory
+// A guest address as an index into linear memory. A 32-bit memory: the contract wraps 64-bit guest addresses to 32
+// bits; a 64-bit memory: the whole value
 // @ts-ignore: decorator
-@inline export function gp(a: u64): usize { return <usize>(a & 0xFFFFFFFF); }
+@inline export function gp(a: u64): usize { return sizeof<usize>() == 8 ? <usize>a : <usize>(a & 0xFFFFFFFF); }
 
 // ---- arena: OutputStream block storage, Opus managers. First fit over a list of blocks that covers the range ----
 // Block header (16 bytes): +0 u32 size with the header (a multiple of 16), +4 u32 1 = in use

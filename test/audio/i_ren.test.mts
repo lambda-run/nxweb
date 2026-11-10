@@ -203,7 +203,7 @@ class World {
   // A game opens a renderer on thread t (a new one by default) with a work buffer of the size the host told it
   open(o: { event?: boolean; t?: Th; param?: number; work?: number; size?: bigint } = {}): { t: Th; handle: number; ev: number; param: number; work: number; size: bigint } {
     const a = this.a, t = o.t ?? this.th(), handle = a.alloc(16), ev = o.event === false ? 0 : a.alloc(0x40), param = o.param ?? this.param();
-    const size = o.size ?? a.c("ar_WorkSize", param), work = o.work ?? ((a.alloc(Number(size) + 0x2000) + 0xfff) & ~0xfff);
+    const size = o.size ?? a.c("ar_WorkSize", param), work = o.work ?? Math.ceil(a.alloc(Number(size) + 0x2000) / 0x1000) * 0x1000;   // (no 32-bit operator on an address)
     t.run(ev ? t.takeover("ar_Open", [handle, ev, param, work, size]) : t.takeover("ar_Open0", [handle, param, work, size]));
     return { t, handle, ev, param, work, size };
   }
@@ -573,8 +573,8 @@ test("the update lock read off the SDK's code (nxnative t_audren_layout test_upd
   // through a PLT stub: adrp x16, page; ldr x17, [x16, #slot]; the GOT slot holds the function
   {
     const w = new World({ lockOff: 0x1f0 }), a = w.a, dv = a.dv;
-    const page = (a.alloc(0x3000) + 0xfff) & ~0xfff, update = page + 0x100, stub = page + 0x200, got = page + 0x1008, lockFn = page + 0x300;
-    const pages = ((got & ~0xfff) - (stub & ~0xfff)) >> 12;
+    const page = Math.ceil(a.alloc(0x3000) / 0x1000) * 0x1000, update = page + 0x100, stub = page + 0x200, got = page + 0x1008, lockFn = page + 0x300;
+    const pages = Math.floor(got / 0x1000) - Math.floor(stub / 0x1000);
     dv.setUint32(stub, (0x90000010 | (pages & 3) << 29 | ((pages >> 2) & 0x7ffff) << 5) >>> 0, true);
     dv.setUint32(stub + 4, (0xf9400211 | ((got & 0xfff) / 8) << 10) >>> 0, true);
     dv.setBigUint64(got, BigInt(lockFn), true);

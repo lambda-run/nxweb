@@ -1,6 +1,7 @@
 // The fs module's embedder side: instantiates build/fs/fs.wasm, implements its storage imports over FsDevice
 // objects and completes pending calls. No Node or browser APIs here; devices are in fs_dev_*.ts.
 // See src/fs/README.md ("Storage interface").
+import { instantiate } from "./wasm_abi.ts";
 
 export const FS_KIND = { ROM: 0, AOC: 1, SYSDATA: 2, SAVE: 3, DEVICE_SAVE: 4, CACHE: 5, TEMP: 6 } as const;
 export const DEV = { OK: 0, PENDING: 1, NOT_FOUND: -1, IO: -2, NO_SPACE: -3 } as const;
@@ -60,6 +61,7 @@ export interface FsExports {
 export interface FsHostOptions {
   // The shared linear memory, when the module was built with --importMemory
   memory?: WebAssembly.Memory;
+  memEnv?: Record<string, unknown>;   // with memory: what else the module imports to reach it (a 64-bit memory: a64_host.ts Memory64.imports())
   log?: (line: string) => void;
   // nxnative's front_save_failed: a save could not be written (errno)
   saveFailed?: (errno: number) => void;
@@ -82,10 +84,10 @@ export class FsHost {
     this.storage = storage; this.opts = opts;
     const dec = new TextDecoder();
     const env: Record<string, unknown> = {
-      log: (p: number, n: number) => { opts.log?.(dec.decode(new Uint8Array(this.memory.buffer, p >>> 0, n).slice())); },
+      log: (p: number, n: number) => { opts.log?.(dec.decode(new Uint8Array(this.memory.buffer, p, n).slice())); },
       abort: () => { throw new Error("fs: abort"); },
     };
-    if (opts.memory) env.memory = opts.memory;
+    if (opts.memory) { env.memory = opts.memory; Object.assign(env, opts.memEnv ?? {}); }
     const fs = {
       dev_open: (kind: number, index: bigint, token: number): number => {
         const r = storage.open(kind, index);
@@ -100,7 +102,7 @@ export class FsHost {
       dev_read: (dev: number, off: bigint, ptr: number, len: number, token: number): number => {
         const d = this.devs.get(dev);
         if (!d) return DEV.IO;
-        len >>>= 0; ptr >>>= 0;
+        len >>>= 0;   // (ptr is an address: a number already, wasm_abi.ts)
         if (d.readSync) return d.readSync(Number(off), new Uint8Array(this.memory.buffer, ptr, len));
         if (!d.readAsync || !token) return DEV.IO;
         // the bytes are copied when they arrive: the memory may have grown (a new buffer) in between
@@ -114,7 +116,7 @@ export class FsHost {
       dev_write: (dev: number, off: bigint, ptr: number, len: number): number => {
         const d = this.devs.get(dev);
         if (!d || !d.write) return DEV.IO;
-        return d.write(Number(off), new Uint8Array(this.memory.buffer, ptr >>> 0, len >>> 0));
+        return d.write(Number(off), new Uint8Array(this.memory.buffer, ptr, len >>> 0));
       },
       dev_flush: (dev: number, token: number): number => {
         const d = this.devs.get(dev);
@@ -134,8 +136,7 @@ export class FsHost {
       },
       save_failed: (err: number) => { opts.saveFailed?.(err); },
     };
-    const inst = new WebAssembly.Instance(module, { env, fs } as WebAssembly.Imports);
-    this.x = inst.exports as unknown as FsExports;
+    this.x = instantiate<FsExports>(module, { env, fs }, { name: "fs.wasm" });
     this.memory = opts.memory ?? this.x.memory;
   }
 

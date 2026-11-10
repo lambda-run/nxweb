@@ -3,6 +3,9 @@
 import type { Cut, MatchRule } from "./wasm.ts";
 export interface ProfileBuild { version: number | null; tag: string; display: string; modules: Record<string, string> }
 export interface ProfileNeed { key: string; value: string; what: string }
+// A profile that is short in a 32-bit memory and fits a 64-bit one (rt_process.ts layoutChoice): the 64-bit layout's
+// verdict and sizes, the most real memory the tab's linear memory may come to hold, and the sentence that says so
+export interface Mem64Verdict { fit: "profile" | "pool"; heap: number; alias: number; stack: number; pool: number; real: number; sentence: string }
 export interface ModuleCuts { module: string; cuts: Cut[] }
 export interface Profile {
   source: string; title_id: string; name: string; builds: ProfileBuild[];
@@ -14,7 +17,7 @@ export interface Profile {
   unconverted: { kind: string; [k: string]: unknown }[];
   patches?: { converted: boolean; reason: string };   // set when the patch file could not be evaluated by the converter
   // the regions the profile reserves; fit / note / layout: the verdict of the runtime's layout rule (rt_process.ts layoutFor)
-  address_space?: { heap_region: number; alias_region: number; stack_region: number; fits?: boolean; fit?: "profile" | "pool" | "short"; note?: string; layout?: { heap: number; alias: number; stack: number; pool: number } };
+  address_space?: { heap_region: number; alias_region: number; stack_region: number; fits?: boolean; fit?: "profile" | "pool" | "short"; note?: string; mem64?: Mem64Verdict; layout?: { heap: number; alias: number; stack: number; pool: number } };
   capabilities?: Record<string, string[]>;
 }
 export interface ProfileIndex { games: Record<string, { name: string; builds: number; needs: number; cuts: number }>; builds: Record<string, string>; sdk_builds: string[] }

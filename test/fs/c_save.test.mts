@@ -1,7 +1,7 @@
 // Saves: files and directories, open modes and results, the transaction (commit, rollback at the next mount,
 // poison and recovery, read-only fallback), shared and separate backings, concurrent calls with asynchronous storage.
 import assert from "node:assert/strict";
-import { test, both, Fs, R, MODE, KIND, rng, treeText } from "./harness.mts";
+import { test, both, Fs, R, MODE, KIND, rng, treeText, BEYOND } from "./harness.mts";
 import { MemStorage, MemDevice, DEV } from "../../src/glue/fs_host.ts";
 import { NodeStorage } from "../../src/glue/fs_dev_node.ts";
 import { Disk, TestStorage } from "./fault.mts";
@@ -76,7 +76,7 @@ both("save: create, open modes, read, write, set size, flush, sizes: nxnative's 
   assert.deepEqual((await fs.read(hb, 0, big.length + 1))[1], big);
   assert.deepEqual((await fs.read(hb, 123456, 70000))[1], big.subarray(123456, 193456));
   // a buffer outside linear memory
-  assert.equal(await fs.call("WriteFile", hb, 0, 0xFFFFFFF0, 0x100, 0), R.FAIL);
+  assert.equal(await fs.call("WriteFile", hb, 0, BEYOND + 0xF0, 0x100, 0), R.FAIL);
   await fs.close(h); await fs.close(hr); await fs.close(hb);
   assert.equal(fs.x.fs_open_files(), 0);
   assert.deepEqual(fs.red, []);

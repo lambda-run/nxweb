@@ -29,18 +29,21 @@ const HDR_SIZE: u32 = 0x50;
   get state(): u8 { return this.inst.state; }
 }
 const IMG_REC: usize = offsetof<Img>();
-const IMGS: usize = memory.data(76800);   // MAX_IMG * 128
+// A record is 128 bytes in the build for a 32-bit memory and 168 in the one for a 64-bit memory (its five table
+// pointers are usize): the table has 176 bytes a record in both
+const IMG_STRIDE: usize = 176;
+const IMGS: usize = memory.data(105600);   // MAX_IMG * IMG_STRIDE
 let nImg: u32 = 0;
 
 // @ts-ignore: decorator
-@inline export function img(i: u32): Img { return changetype<Img>(IMGS + <usize>i * 128); }
+@inline export function img(i: u32): Img { return changetype<Img>(IMGS + <usize>i * IMG_STRIDE); }
 export function imgCount(): u32 { return nImg; }
 // The image of (kind, index): the existing record, or a new one in state Absent; -1 when the table is full
 export function imgOf(kind: i32, index: i64): i32 {
   for (let i: u32 = 0; i < nImg; i++) { const m = img(i); if (m.kind == kind && m.index == index) return <i32>i; }
-  if (nImg >= MAX_IMG || IMG_REC > 128) return -1;
+  if (nImg >= MAX_IMG || IMG_REC > IMG_STRIDE) return -1;
   const m = img(nImg);
-  memory.fill(changetype<usize>(m), 0, 128);
+  memory.fill(changetype<usize>(m), 0, IMG_STRIDE);
   m.inst.init(FS_IMAGE, nImg); m.kind = kind; m.index = index; m.dev = -1; m.used = 1;
   nImg++;
   return <i32>nImg - 1;

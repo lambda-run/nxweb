@@ -11,8 +11,13 @@ static NOINLINE u64 recurse(u64 n, volatile u64 *up) {
   here[0] = n; here[1] = up ? *up : 0;
   return recurse(n + 1, &here[0]) + here[1] + 1;
 }
+// FAR: the address the worker loads from (a process placed above 4 GB in a 64-bit memory has memory at 0xF000_0000)
+#ifndef FAR
+#define FAR 0xF0000000ul
+#define FAR_S "0xf0000000"
+#endif
 static void load_fn(void *arg) {
-  say("worker: loading from 0xf0000000, beyond the end of the linear memory");
+  say("worker: loading from " FAR_S ", beyond the end of the linear memory");
   say_x("read ", *(volatile u32 *)arg);
 }
 int rt_entry(u64 x0, Handle main_thread) {
@@ -24,7 +29,7 @@ int rt_entry(u64 x0, Handle main_thread) {
   say("executing an undefined instruction");
   __asm__ volatile(".inst 0x0000dead");
 #elif MODE == 3
-  thread_start(&t, load_fn, (void *)0xF0000000ul, stack + sizeof stack, 44, 2);
+  thread_start(&t, load_fn, (void *)FAR, stack + sizeof stack, 44, 2);
   thread_join(&t);
 #elif MODE == 4
   say("recursing without end");

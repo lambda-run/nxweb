@@ -78,8 +78,16 @@ Guest addresses index the linear memory. Five regions, set by `kernel_init`; the
 | alias | 0x8800_0000 + 0x77FF_0000 (1.875 GB) | 2 / 3 | MapPhysicalMemory; ends at 0xFFFF_0000, below the special pc values |
 
 Order heap, stack, alias as in nxnative. ASLR size (13) = code base to alias end. Pool 0xCD50_0000, used memory
-0x0400_0000 (nxnative's `app_pool` / `mem_used` defaults). The alias region is at most 3.5 GB (one 16-byte kit instance
-per page, 14 MB static: a game that maps everything there gets nearly the whole 32-bit space, src/glue/rt_process.ts). The kernel grows the memory (`memory.grow`) when a heap, map or thread-local slot needs it.
+0x0400_0000 (nxnative's `app_pool` / `mem_used` defaults). The alias region's pages are one 16-byte kit instance each in a
+**two-level table** (`mem.ts`): a directory of 4096 entries (64 GB of region, 32 KB) and leaves of 4096 pages (64 KiB,
+16 MB of region) made when a page of theirs is first mapped or unmapped; a page without a leaf is Fresh, so a new
+process touches none of it (the flat table was initialized whole: 8 MB and 5 ms a process). The first 224 leaves are
+static data (the 14 MB the flat table had: 3.5 GB of mapped region, every layout of a 32-bit memory, where 3.5 GB
+stays the limit of the region). In the build for a 64-bit memory the region may be larger and the leaves beyond those
+come from `kernel_alias_arena(base, size)`, host-side memory the embedder gives after `kernel_init` (the runtime: the
+top of the code region, sized by the layout at 1/256 of the region beyond 3.5 GB); a map that needs a leaf nobody can
+give fails with ResultOutOfResource and a red line. Regions may lie anywhere below 0x3_FFFF_0000 there (0xFFFF_0000
+in a 32-bit memory). The kernel grows the memory (`memory.grow`) when a heap, map or thread-local slot needs it.
 
 ## Verified (`npm run kernel:test`: 63 tests, 86/86 transitions taken by the kernel itself)
 

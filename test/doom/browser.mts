@@ -79,7 +79,7 @@ async function session(name: string, fn: (q: any, h: { text: (id: string) => Pro
 
 try {
   await session("doom page: the Doom button runs the game on the WebGPU canvas; title, menu and a new game by keyboard; frames advance at the game's rate; no red line", async (q, { text, until, frames, picture, key }) => {
-    await q.goto(web.url);
+    await q.goto(web.url + (process.env.NX_MEM && process.env.NX_MEM !== "32" ? "?mem64=1" : ""));   // NX_MEM=64: the page in its 64-bit memory mode
     await until("the Doom button", async () => !(await q.isDisabled("#demodoom")), 100);
     if (!/data file is in this build/.test(await text("doomnote"))) throw new Error("the note under the buttons: " + await text("doomnote"));
     const t0 = Date.now();

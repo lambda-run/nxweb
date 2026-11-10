@@ -76,7 +76,7 @@ export class RtAudio {
           if (!hle.x.hle_event_handle(ev)) return 0;
           const t = this.nextToken++; this.events.set(t, { ev, r: 0, w: 0 }); return t;
         }
-        const p = (rt.r.rt_scratch_ptr() >>> 0) + 3088, r = rt.k.kernel_event_new(p) >>> 0, w = rt.dv().getUint32(p, true);
+        const p = rt.r.rt_scratch_ptr() + 3088, r = rt.k.kernel_event_new(p) >>> 0, w = rt.dv().getUint32(p, true);
         if (!r) return 0;
         const t = this.nextToken++; this.events.set(t, { ev: 0, r, w }); return t;
       },
@@ -103,11 +103,11 @@ export class RtAudio {
       handleDup: h => rt.k.kernel_event_dup_readable(h) >>> 0,
       opus: o.opus,
     };
-    this.host = new AudioHost(module, embedder, rt.memory);
+    this.host = new AudioHost(module, embedder, rt.memory, rt.memImports);
     this.x = this.host.x;
     const st = range("audio static");
-    if (rt.r.rt_static_check(96, BigInt(st.lo), BigInt(st.hi), BigInt(this.x.audio_static_end() >>> 0))) throw new Error("runtime: the audio module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
-    this.scratch = this.x.audio_scratch() >>> 0;
+    if (rt.r.rt_static_check(96, BigInt(st.lo), BigInt(st.hi), BigInt(this.x.audio_static_end()))) throw new Error("runtime: the audio module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
+    this.scratch = this.x.audio_scratch();
     for (let id = 1, n = this.x.audio_fn_count(); id <= n; id++) { const name = this.host.fnName(id); rt.register({ name, forced: true, fn: cpu => this.call(cpu, id) }); }
     if (o.send && o.openDeviceAtStart) this.openDevice();
     if (this.wall) this.x.audio_set_catchup_limit(o.catchupLimitNs ?? 100_000_000n);
@@ -130,7 +130,7 @@ export class RtAudio {
     const n = this.o.arenaBytes ?? 16 << 20, base = this.rt.hostAlloc(n);
     if (!base) throw new Error(`runtime: no memory for the audio arena (${n} bytes)`);
     this.x.audio_init(base, n);
-    this.req = this.x.audio_co_req() >>> 0;
+    this.req = this.x.audio_co_req();
     // where a guest function the module asked for returns to, and where a render thread starts
     this.contStub = this.rt.lateStub("<audio.co>", cpu => this.resume(cpu, cpu.x(0), cpu.x(1)));
     this.threadStub = this.rt.lateStub("<audio.render>", cpu => {
@@ -187,7 +187,7 @@ export class RtAudio {
       const fresh = n > this.played[i];
       this.played[i] = n;
       if (!fresh || !n) continue;
-      fn(i, new Int16Array(this.rt.memory.buffer, this.x.audio_rs_played_ptr(i) >>> 0, this.x.audio_rs_played_frames(i) * 2), this.rt.guestNs());
+      fn(i, new Int16Array(this.rt.memory.buffer, this.x.audio_rs_played_ptr(i), this.x.audio_rs_played_frames(i) * 2), this.rt.guestNs());
     }
   }
   // both clocks to the module: the guest clock (silent sinks) and a monotonic host clock (the device's watchdog and

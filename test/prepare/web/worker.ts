@@ -6,14 +6,18 @@ import { RtFs } from "../../../src/glue/rt_fs.ts";
 import { MemStorage, FS_KIND, DEV } from "../../../src/glue/fs_host.ts";
 import { storageFromMessage, romFromMessage, type HandOffMessage } from "../../../src/prepare/host/prepare.ts";
 import { PrepWasm } from "../../../src/prepare/host/wasm.ts";
+import { handoffOptions } from "../../../src/glue/rt_handoff.ts";
 
 const bytes = async (url: string) => new Uint8Array(await (await fetch(url)).arrayBuffer());
 self.onmessage = async (ev: MessageEvent) => {
   try {
     const msg = ev.data.handoff as HandOffMessage;
-    const mod = async (n: string) => WebAssembly.compile(await bytes(`/rtwasm/${n}.wasm`));
+    // { layout: true }: as the page's worker starts a game: the layout from the profile by the one rule
+    // (rt_handoff.ts handoffOptions with mem64 "auto"), and the modules built for a 64-bit memory when it says so
+    const game = ev.data.layout ? handoffOptions(msg, { mem64: "auto" }) : null, m64 = !!game?.layout.mem64;
+    const mod = async (n: string) => WebAssembly.compile(await bytes(`/rtwasm/${n}${m64 ? "64" : ""}.wasm`));
     const [rt, kernel, loader, translator, helpers, fs] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "fs"].map(mod));
-    const run = new Runtime({ rt, kernel, loader, translator, helpers, fs });
+    const run = new Runtime({ rt, kernel, loader, translator, helpers, fs }, game ? { layout: game.layout, mainStackSize: game.mainStackSize, cutsKey: game.cutsKey } : {});
     // a container's files are checked with the prepare module's SHA-256 as they are read
     const lines: string[] = [];
     const pw = msg.rom?.nup || msg.aoc.some(a => a.image.nup) ? new PrepWasm(await WebAssembly.compile(await bytes("/wasm/prepare.wasm"))) : null;
@@ -25,7 +29,7 @@ self.onmessage = async (ev: MessageEvent) => {
     for (const m of msg.modules) files.push({ name: m.name, bytes: new Uint8Array(await m.file.arrayBuffer()) });
     if (!run.loadNso(files)) throw new Error("load failed: " + run.red.join(" | "));
     const res = await run.runAsync();
-    const out = { stdout: run.stdout(), kind: res.stop?.kind, code: res.stop?.code, red: [...run.red] };
+    const out = { stdout: run.stdout(), kind: res.stop?.kind, code: res.stop?.code, red: [...run.red], mem64: run.mem64, memoryBytes: run.memory.buffer.byteLength, cacheKey: run.a64.optionsKey(), choice: game?.choice?.sentence ?? "" };
     run.dispose();
     // the add-on content devices: every file read back whole through the device, synchronously
     const aoc: { index: number; files: number; bytes: number; sum: number; sync: boolean }[] = [];

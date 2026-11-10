@@ -240,6 +240,13 @@ export function kernel_count(what: i32): u64 {
   return 0;
 }
 export function kernel_alias_page_state(addr: u64): i32 { return mem.aliasPageState(addr); }
+// The alias region's page table is two-level (mem.ts): its leaves beyond the 224 in static data (3.5 GB of mapped
+// address space) come from [base, base + size), memory the embedder owns outside every guest region and gives to the
+// kernel until the next kernel_init. Call it after kernel_init. Returns how many leaves (64 KiB, 16 MB of region each)
+// it holds.
+export function kernel_alias_arena(base: usize, size: usize): u32 { kLock(); const r = mem.aliasArena(base, size); kUnlock(); return r; }
+// 0: leaves in use; 1: leaves still to be had (static pool and arena)
+export function kernel_alias_leaves(what: i32): u32 { return what ? mem.aliasLeavesFree() : mem.aliasLeaves(); }
 
 // The kernel's own consistency check, for tests (the fuzz test calls it after every step). 0 = consistent.
 const REFS: usize = memory.data(8192);   // MAX_EVENTS * 4
