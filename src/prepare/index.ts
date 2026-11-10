@@ -108,6 +108,10 @@ export function match_overlap_at(): u32 { return match.matchOverlapAt(); }
 export function match_image_error(): i32 { return match.imageError(); }
 export function match_image_error_at(): u32 { return match.imageErrorAt(); }
 export function match_fn_count(): u32 { return match.fnCount(); }
+export function match_fn_ptr(): usize { return match.fnPtr(); }
+// the instruction scan (src/glue/a64_scan.ts): the module's unpacked image, its text and (match_fn_*) its functions
+export function scan_image(file: usize, len: u32): usize { return cuts.scanImage(file, len); }
+export function nso_text_off(): u32 { return cuts.nsoTextOff(); }
 // the same on an unpacked image, and the parts on their own (the tests compare them with nxnative's nso_match.py)
 export function match_image(image: usize, len: u32, textEnd: u32): i32 { return match.imageInit(image, len, textEnd); }
 export function match_resolve(list: usize, listLen: u32): i32 { return match.matchResolve(list, listLen); }

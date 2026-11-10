@@ -3,7 +3,7 @@ import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, mem, ar, cm, cst, fc,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, tw, ifVoid, ifT, els, end,
   flagsAddSub, addCarry, flagsNZ, setNZCVconst, emitCond, killCmp,
-  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield, optGuard, aw, moff, M64,
+  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield, optGuard, aw, moff, M64, pairLock,
   R_N, R_Z, R_C, R_V, G_FPCR, G_FPSR, G_TPIDR, G_TPIDRRO, G_EXADDR, G_EXVAL, G_EXVAL2,
   F_BRK, F_CNTPCT, F_CRC, T_I32, T_I64,
 } from "./emit";
@@ -525,6 +525,141 @@ function storeInt(rt: i32, size: u32): void {
   aw(); getX(rt, true); mem(size == 0 ? 0x3C : size == 1 ? 0x3D : size == 2 ? 0x3E : 0x37);
 }
 
+// ---------------------------------------------------------------------------------------------
+// LSE atomics (ARMv8.1) and RCPC (ARMv8.3 LDAPR, ARMv8.4 LDAPUR / STLUR). One guest instruction is one step of the
+// translated code, so on an unshared memory (one host thread) a plain load, compute and store is atomic. On a shared
+// memory they are the wasm atomic instructions: rmw add / and / or / xor / xchg, cmpxchg for CAS, and a load +
+// cmpxchg loop for the four min / max forms, which wasm has no instruction for. Like the exclusives there, an atomic
+// access traps on an address that is not aligned to its size.
+// i64 atomic opcode (after 0xFE) for an access of `size`, from the i32 full-width opcode of the family
+// @ts-ignore
+@inline function aop(base: u32, size: u32): u32 { return size == 3 ? base + 1 : base + 4 + size; }
+const AT_LOAD: u32 = 0x10, AT_STORE: u32 = 0x17, AT_ADD: u32 = 0x1E, AT_AND: u32 = 0x2C, AT_OR: u32 = 0x33, AT_XOR: u32 = 0x3A, AT_XCHG: u32 = 0x41, AT_CMPXCHG: u32 = 0x48;
+function atom(base: u32, size: u32): void { b(0xFE); b(aop(base, size)); b(size); moff(0); }
+// @ts-ignore
+@inline function ldOp(size: u32): u32 { return size == 0 ? 0x31 : size == 1 ? 0x33 : size == 2 ? 0x35 : 0x29; }
+// @ts-ignore
+@inline function stOp(size: u32): u32 { return size == 0 ? 0x3C : size == 1 ? 0x3D : size == 2 ? 0x3E : 0x37; }
+// stack: i64 -> i64 with only the low 8 << size bits
+function zext(size: u32): void { if (size < 3) { i64c(size == 0 ? 0xFF : size == 1 ? 0xFFFF : 0xFFFFFFFF); b(0x83); } }
+function sext(size: u32): void { if (size < 3) b(0xC2 + size); }
+
+// CAS / CASA / CASL / CASAL (b, h, w, x): if [Xn|SP] == Rs then [Xn|SP] = Rt; Rs = the value read
+function cas(insn: u32): bool {
+  let size = insn >>> 30;
+  let rs = <i32>((insn >> 16) & 31), rn = <i32>((insn >> 5) & 31), rt = <i32>(insn & 31);
+  if (((insn >> 10) & 31) != 31) return false;
+  let a = t64(A), e = t64(0), n = t64(1), old = t64(2);
+  getXsp(rn, true); lset(a);
+  getX(rs, true); zext(size); lset(e);
+  getX(rt, true); lset(n);
+  if (optShared) { lget(a); aw(); lget(e); lget(n); atom(AT_CMPXCHG, size); }
+  else {
+    lget(a); aw(); mem(ldOp(size)); ltee(old); lget(e); b(0x51);
+    b(0x04); b(0x40); lget(a); aw(); lget(n); mem(stOp(size)); b(0x0B);
+    lget(old);
+  }
+  setX(rs, true);
+  return true;
+}
+function lockAddr(): void { if (M64) i64c(<i64>pairLock); else i32c(<i32>pairLock); }
+// CASP / CASPA / CASPL / CASPAL (w, x pairs): compare Rs:Rs+1 with the two words at [Xn|SP], store Rt:Rt+1 when equal
+function casp(insn: u32): bool {
+  let x = ((insn >> 30) & 1) != 0;
+  let rs = <i32>((insn >> 16) & 31), rn = <i32>((insn >> 5) & 31), rt = <i32>(insn & 31);
+  if (((insn >> 10) & 31) != 31 || (rs & 1) != 0 || (rt & 1) != 0) return false;
+  let size: u32 = x ? 3 : 2, step: i64 = x ? 8 : 4;
+  let a = t64(A), e1 = t64(0), e2 = t64(1), n1 = t64(2), n2 = t64(3), o1 = t64(4), o2 = t64(5);
+  getXsp(rn, true); lset(a);
+  getX(rs, true); zext(size); lset(e1); getX(rs + 1, true); zext(size); lset(e2);
+  getX(rt, true); zext(size); lset(n1); getX(rt + 1, true); zext(size); lset(n2);
+  if (!optShared) {
+    lget(a); aw(); mem(ldOp(size)); lset(o1);
+    lget(a); i64c(step); b(0x7C); aw(); mem(ldOp(size)); lset(o2);
+    lget(o1); lget(e1); b(0x51); lget(o2); lget(e2); b(0x51); b(0x71);
+    b(0x04); b(0x40);
+    lget(a); aw(); lget(n1); mem(stOp(size));
+    lget(a); i64c(step); b(0x7C); aw(); lget(n2); mem(stOp(size));
+    b(0x0B);
+  } else if (!x) {
+    // two words are one 64-bit compare-exchange (the pair is 8-byte aligned, as the instruction requires)
+    lget(a); aw(); lget(e1); lget(e2); i64c(32); b(0x86); b(0x84); lget(n1); lget(n2); i64c(32); b(0x86); b(0x84); atom(AT_CMPXCHG, 3);
+    ltee(o1); i64c(32); b(0x88); lset(o2);
+    lget(o1); i64c(0xFFFFFFFF); b(0x83); lset(o1);
+  } else {
+    // 16 bytes cannot be one wasm atomic operation: every such CASP runs under one lock (a word in the translator's
+    // part of the memory, taken with a compare-exchange spin), so two of them never interleave and a pair is never
+    // half exchanged. The words themselves are read and written with atomic instructions. An access that would trap
+    // (unmapped or misaligned) does so in the two loads before the lock is taken.
+    lget(a); aw(); atom(AT_LOAD, 3); b(0x1A); lget(a); i64c(8); b(0x7C); aw(); atom(AT_LOAD, 3); b(0x1A);
+    b(0x03); b(0x40); lockAddr(); i32c(0); i32c(1); b(0xFE); b(0x48); b(2); b(0); b(0x0D); b(0); b(0x0B);
+    lget(a); aw(); atom(AT_LOAD, 3); lset(o1);
+    lget(a); i64c(8); b(0x7C); aw(); atom(AT_LOAD, 3); lset(o2);
+    lget(o1); lget(e1); b(0x51); lget(o2); lget(e2); b(0x51); b(0x71);
+    b(0x04); b(0x40);
+    lget(a); aw(); lget(n1); atom(AT_STORE, 3);
+    lget(a); i64c(8); b(0x7C); aw(); lget(n2); atom(AT_STORE, 3);
+    b(0x0B);
+    lockAddr(); i32c(0); b(0xFE); b(0x17); b(2); b(0);
+  }
+  lget(o1); setX(rs, true); lget(o2); setX(rs + 1, true);
+  return true;
+}
+// LDADD / LDCLR / LDEOR / LDSET / LDSMAX / LDSMIN / LDUMAX / LDUMIN / SWP (b, h, w, x; plain, A, L, AL; Rt = 31 is the
+// ST* alias: the value read is dropped) and LDAPR
+function atomicMem(insn: u32): bool {
+  let size = insn >>> 30, o3 = (insn >> 15) & 1, opc = (insn >> 12) & 7;
+  let rs = <i32>((insn >> 16) & 31), rn = <i32>((insn >> 5) & 31), rt = <i32>(insn & 31);
+  let a = t64(A), v = t64(0), old = t64(1);
+  if (o3 && opc == 4) {   // LDAPR: load-acquire (RCpc)
+    if ((insn & 0x00C00000) != 0x00800000 || rs != 31) return false;
+    getXsp(rn, true); aw(); if (optShared) atom(AT_LOAD, size); else mem(ldOp(size));
+    setX(rt, true);
+    return true;
+  }
+  if (o3 && opc != 0) return false;
+  let k: u32 = o3 ? 8 : opc;   // 0 add 1 clr 2 eor 3 set 4 smax 5 smin 6 umax 7 umin 8 swp
+  getXsp(rn, true); lset(a);
+  getX(rs, true); if (k == 1) { i64c(-1); b(0x85); }
+  if (k >= 4 && k <= 5) sext(size); else if (k >= 6 && k <= 7) zext(size);
+  lset(v);
+  if (k >= 4 && k <= 7) {
+    let cmp: u32 = k == 4 ? 0x55 : k == 5 ? 0x53 : k == 6 ? 0x56 : 0x54;   // gt_s lt_s gt_u lt_u
+    let so = t64(2);
+    if (optShared) { b(0x03); b(0x40); lget(a); aw(); atom(AT_LOAD, size); lset(old); lget(a); aw(); lget(old); }
+    else { lget(a); aw(); mem(ldOp(size)); lset(old); lget(a); aw(); }
+    lget(old); if (k < 6) sext(size); ltee(so); lget(v); lget(so); lget(v); b(cmp); b(0x1B);
+    if (optShared) { atom(AT_CMPXCHG, size); lget(old); b(0x52); b(0x0D); b(0); b(0x0B); }
+    else mem(stOp(size));
+    lget(old);
+  } else if (optShared) {
+    lget(a); aw(); lget(v);
+    atom(k == 0 ? AT_ADD : k == 1 ? AT_AND : k == 2 ? AT_XOR : k == 3 ? AT_OR : AT_XCHG, size);
+  } else {
+    lget(a); aw(); mem(ldOp(size)); lset(old);
+    lget(a); aw();
+    if (k == 8) lget(v); else { lget(old); lget(v); b(k == 0 ? 0x7C : k == 1 ? 0x83 : k == 2 ? 0x85 : 0x84); }
+    mem(stOp(size));
+    lget(old);
+  }
+  setX(rt, true);
+  return true;
+}
+// LDAPUR / STLUR (ARMv8.4 RCPC2): release store and acquire loads with an unscaled offset
+function rcpc2(insn: u32): bool {
+  let size = insn >>> 30, opc = (insn >> 22) & 3;
+  let rn = <i32>((insn >> 5) & 31), rt = <i32>(insn & 31);
+  let imm: i64 = sx((insn >> 12) & 0x1FF, 9);
+  if ((opc == 2 && size == 3) || (opc == 3 && size >= 2)) return false;
+  getXsp(rn, true); if (imm) { i64c(imm); b(0x7C); }
+  aw();
+  if (opc == 0) { getX(rt, true); if (optShared) atom(AT_STORE, size); else mem(stOp(size)); return true; }
+  if (optShared) atom(AT_LOAD, size); else mem(ldOp(size));
+  if (opc >= 2) { sext(size); if (opc == 3) zext(2); }
+  setX(rt, true);
+  return true;
+}
+
 function exclusive(insn: u32): bool {
   let size = insn >>> 30, o2 = (insn >> 23) & 1, L = (insn >> 22) & 1, o1 = (insn >> 21) & 1;
   let rs = <i32>((insn >> 16) & 31), rt2 = <i32>((insn >> 10) & 31), rn = <i32>((insn >> 5) & 31), rt = <i32>(insn & 31);
@@ -534,7 +669,7 @@ function exclusive(insn: u32): bool {
   let ast: u32 = size == 0 ? 0x1B : size == 1 ? 0x1C : size == 2 ? 0x1D : 0x18;
   let acx: u32 = size == 0 ? 0x4C : size == 1 ? 0x4D : size == 2 ? 0x4E : 0x49;
   if (o2) {
-    if (o1) return false; // CAS family
+    if (o1) return cas(insn);
     getXsp(rn, true);
     if (!optShared) { if (L) loadInt(rt, size, false, true); else storeInt(rt, size); return true; }
     aw();
@@ -544,7 +679,7 @@ function exclusive(insn: u32): bool {
   }
   let ld: u32 = size == 0 ? 0x31 : size == 1 ? 0x33 : size == 2 ? 0x35 : 0x29;
   let st: u32 = size == 0 ? 0x3C : size == 1 ? 0x3D : size == 2 ? 0x3E : 0x37;
-  if (o1 && size < 2) return false;
+  if (o1 && size < 2) return casp(insn);
   let step: i64 = <i64>1 << size;
   getXsp(rn, true); lset(a);
   if (L) {
@@ -610,6 +745,7 @@ export function trLoadStoreInt(pc: u64, insn: u32): bool {
   let size = insn >>> 30;
   let a = t64(A);
   if ((insn & 0x3F000000) == 0x08000000) return exclusive(insn);
+  if ((insn & 0x3F200C00) == 0x19000000) return rcpc2(insn);
   if ((insn & 0x3B000000) == 0x18000000) { // load literal (integer)
     let addr = <i64>pc + (sx((insn >> 5) & 0x7FFFF, 19) << 2);
     switch (size) {
@@ -659,6 +795,7 @@ export function trLoadStoreInt(pc: u64, insn: u32): bool {
     imm = <i64>((insn >> 10) & 0xFFF) << size;
     getXsp(rn, true); if (imm) { i64c(imm); b(0x7C); }
   } else if (insn & (1 << 21)) {
+    if (((insn >> 10) & 3) == 0) return atomicMem(insn);
     if (((insn >> 10) & 3) != 2) return false;
     let option = (insn >> 13) & 7, S = (insn >> 12) & 1;
     if ((option & 2) == 0) return false;

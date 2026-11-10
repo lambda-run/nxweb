@@ -84,12 +84,13 @@ export interface A64Unit {
 export interface A64Fault { pc: number; unit: A64Unit; funcPc: number; offset: number }
 
 const OPT = { pcmapBase: 0, entryBase: 1, regionLo: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8, chunk: 9, rmArith: 10,
-              regionSize: 11, shared: 12, cntYield: 13, precise: 14, guard: 15, pcSpan: 16, maxPages: 17 };
+              regionSize: 11, shared: 12, cntYield: 13, precise: 14, guard: 15, pcSpan: 16, maxPages: 17, pairLock: 18 };
 const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
 const num = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;   // a wasm64 export's usize result
-export const A64_CACHE_VERSION = 5;   // bump when the translator's output changes; test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+export const A64_CACHE_VERSION = 6;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+const PAIR_LOCK_BYTES = 16;           // the end of the helpers' range: the lock word of 16-byte CASPs on a shared memory (src/a64/int.ts casp)
 
 export class A64Host {
   static readonly TRAMPOLINE = 0;
@@ -108,6 +109,7 @@ export class A64Host {
   maxModuleBytes = 0;
   cacheHits = 0;          // units instantiated from the translation cache
   readonly mem64: boolean;
+  coreModule!: WebAssembly.Module;   // the core module, compiled: another thread on the same shared memory instantiates its own (its own CPU state)
   private tr: any;
   private l1Bytes = L1_BYTES;   // the pc map's first level
   private span = GB4;           // the guest addresses it covers
@@ -139,7 +141,7 @@ export class A64Host {
     this.tr.init();
     if (num(this.tr.staticBase()) !== lay.translatorBase || num(hlp.staticBase()) !== lay.helpersBase)
       throw new Error(`a64: translator.wasm / helpers.wasm were built for memory bases 0x${this.tr.staticBase().toString(16)} / 0x${hlp.staticBase().toString(16)}, the layout says 0x${lay.translatorBase.toString(16)} / 0x${lay.helpersBase.toString(16)} (root a64:build script)`);
-    if (num(this.tr.staticEnd()) > lay.translatorEnd || num(hlp.staticEnd()) > lay.helpersEnd)
+    if (num(this.tr.staticEnd()) > lay.translatorEnd || num(hlp.staticEnd()) > lay.helpersEnd - PAIR_LOCK_BYTES)
       throw new Error(`a64: translator data ends at 0x${this.tr.staticEnd().toString(16)}, helpers at 0x${hlp.staticEnd().toString(16)}: beyond their ranges`);
     // pc map: first level, then the shared zero leaf, then leaves on demand
     if (m64) {
@@ -159,10 +161,12 @@ export class A64Host {
     this.setAddr(OPT.entryBase, lay.entryBitsBase);
     this.setAddr(OPT.regionLo, lay.codeRegionLo);
     this.setAddr(OPT.regionSize, lay.codeRegionSize);
+    this.setAddr(OPT.pairLock, lay.helpersEnd - PAIR_LOCK_BYTES);
     if (m64) { this.setAddr(OPT.pcSpan, this.span); this.tr.setOpt(OPT.maxPages, opts.memoryMaxPages ?? MEM64_MAX_PAGES); }
     this.table = new WebAssembly.Table({ element: "anyfunc", initial: 2 });
     const coreLen = this.tr.buildCore();
     const coreMod = new WebAssembly.Module(this.u8().slice(num(this.tr.outPtr()), num(this.tr.outPtr()) + coreLen));
+    this.coreModule = coreMod;
     const onTranslate = opts.onTranslate ?? ((pc: bigint) => this.translateUnit([pc])[0]);
     const coreX = new WebAssembly.Instance(coreMod, {
       env: { memory: this.memory, table: this.table, translate: onTranslate },

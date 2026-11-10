@@ -69,6 +69,7 @@ export function setOpt(id: i32, v: u32): void {
     case 14: optPrecise = <i32>v; break;
     case 15: optGuard = v; break;
     case 17: optMaxPages = v; break;
+    case 18: pairLock = v; break;
   }
 }
 // the address-valued options as 64-bit values (the wasm64 build's; the wasm32 build takes them through setOpt)
@@ -80,6 +81,7 @@ export function setOptAddr(id: i32, v: u64): void {
     case 11: optRegionSize = <usize>v; break;
     case 15: optGuard = <usize>v; break;
     case 16: optPcSpan = v; break;
+    case 18: pairLock = <usize>v; break;
   }
 }
 
@@ -638,6 +640,10 @@ export function emitTrap(fn: u32, pc: u64, arg: u32): void {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Shared memory: the address of the word that serialises 16-byte compare-and-swaps (CASP of two X registers), which
+// wasm cannot do as one atomic operation. The embedder sets it (option 18): a fixed place of the memory's layout, so
+// that every translator build, every instance and every cached unit use the same word.
+export let pairLock: usize = 0;
 export function resetLocals(): void { nLoc = 0; }
 export function initEmit(): void {
   fbBase = balloc(FB_CAP);

@@ -406,6 +406,33 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     eq("pacga", BigInt.asUintN(64, t.c.x4.value), mix(BigInt(DATA + 8), 0xABCDn));
     return "ok";
   });
+  // ---- LSE atomics (ARMv8.1)
+  for (const shared of [false, true]) test(`LSE atomics on ${shared ? "a shared memory (wasm atomic instructions; a 16-byte CASP under the pair lock, which is released)" : "an unshared memory (load, compute, store)"}`, () => {
+    const t = mk(m, { shared });
+    t.host.keepBytes = true;
+    t.put(BASE, [
+      0xF8E10002,   // 00 ldaddal x1, x2, [x0]
+      0xD2800544,   // 04 mov x4, #42
+      0xC8E4FC05,   // 08 casal x4, x5, [x0]
+      0xF8E68007,   // 0c swpal x6, x7, [x0]
+      0x4868FC0A,   // 10 caspal x8, x9, x10, x11, [x0]     (exchanges)
+      0x4868FC0A,   // 14 caspal x8, x9, x10, x11, [x0]     (does not: x8, x9 are the old pair now)
+      RET,
+    ]);
+    t.host.addCode(BASE, 28);
+    const q = new BigUint64Array(t.memory.buffer, DATA, 2); q[0] = 40n; q[1] = 0x55n;
+    t.c.x5.value = 100n; t.c.x6.value = 7n; t.c.x8.value = 7n; t.c.x9.value = 0x55n; t.c.x10.value = 0x111n; t.c.x11.value = 0x222n;
+    t.call(BASE, [BigInt(DATA), 2n]);
+    eq("x2 (LDADD: the value before)", t.c.x2.value, 40n); eq("x4 (CAS: the value read)", t.c.x4.value, 42n); eq("x7 (SWP)", t.c.x7.value, 100n);
+    eq("x8 after the second CASP", t.c.x8.value, 0x111n); eq("x9", t.c.x9.value, 0x222n);
+    eq("memory", `${q[0].toString(16)},${q[1].toString(16)}`, "111,222");
+    const blob = t.host.exportCache(BASE, 28);
+    let atomics = 0;
+    for (let i = 0; i + 1 < blob.length; i++) if (blob[i] === 0xFE && blob[i + 1] >= 0x10 && blob[i + 1] <= 0x4E && blob[i + 2] === 3 && blob[i + 3] === 0) atomics++;
+    if (shared ? atomics < 8 : atomics > 0) throw new Error(`${atomics} atomic instructions in the ${shared ? "shared" : "unshared"} code`);
+    return `${atomics} wasm atomic instructions`;
+  });
+
   test("an instruction outside the implemented set is reported with its word and pc when executed, not before", () => {
     const words = [0xD69F0BFF /* eretaa */, 0x04603000 /* SVE */, 0xD4000002 /* hvc */];
     const t = mk(m);

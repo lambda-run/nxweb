@@ -55,3 +55,19 @@ for path, opts, STACK_TOP, OUT in SOURCES:
                   open(os.path.join(OUT, name + ".json"), "w"), indent=1)
         os.remove(obj)
         print("%-24s exit=%s insns=%s stdout=%d bytes" % (name, res.exit_code, res.insn_count, len(res.stdout)))
+
+# Raw functions for the thread test (test/a64/lse_threads.ts): mt/NAME.c -> out/mt_NAME.bin, the function at offset
+# 0; no reference output, the test checks invariants that hold only when the atomics are atomic.
+MT = os.path.join(HERE, "mt")
+if "--big" not in sys.argv:
+    OUT = os.environ.get("A64_GUEST_OUT") or os.path.join(HERE, "out")
+    for f in sorted(os.listdir(MT)):
+        if not f.endswith(".c"):
+            continue
+        name = "mt_" + f[:-2]
+        obj, elf = os.path.join(OUT, name + ".o"), os.path.join(OUT, name + ".elf")
+        subprocess.check_call(["clang", "--target=aarch64-none-elf", "-ffreestanding", "-nostdlib"] + A78C + ["-O2", "-w", "-c", os.path.join(MT, f), "-o", obj])
+        subprocess.check_call(["ld.lld", "-T", LD, "-e", "worker", obj, "-o", elf])
+        subprocess.check_call(["llvm-objcopy", "-O", "binary", elf, os.path.join(OUT, name + ".bin")])
+        os.remove(obj)
+        print("%-24s %d bytes (thread test)" % (name, os.path.getsize(os.path.join(OUT, name + ".bin"))))

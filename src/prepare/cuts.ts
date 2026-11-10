@@ -109,6 +109,15 @@ export function nsoTextSize(): u32 { return L.sz0; }
 export function nsoBss(): u32 { return L.bss; }
 export function nsoFlags(): u32 { return L.flags; }
 export function nsoInitEnd(): u32 { return L.initEnd; }
+export function nsoTextOff(): u32 { return L.mo0; }
+// The unpacked image of a module file (the opened one's when it is open) with its function table read (match.ts
+// imageInit: fnCount / fnPtr; no table is not an error), for the instruction scan. 0 when the module cannot be unpacked.
+export function scanImage(file: usize, len: u32): usize {
+  const image = imageOf(file, len);
+  if (!image) return 0;
+  imageInit(image, L.initEnd, L.mo0 + L.sz0);
+  return image;
+}
 
 // @ts-ignore: decorator
 @inline function nameSize(file: usize, len: u32): u32 {

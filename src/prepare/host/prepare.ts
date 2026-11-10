@@ -3,6 +3,7 @@
 // the glue to files and storage. Every stage records { state, input, output } in the manifest; a stage whose input
 // hash is the one recorded with a finished output is skipped, so a run that was cancelled, failed or lost its tab
 // goes on where it stopped, and `redo(stage)` is: forget that record, run. See ../README.md.
+import { A64Scanner, SCAN_FORMAT, scanLines, type ModuleScan } from "../../glue/a64_scan.ts";
 import { PrepWasm, type FailReason, type Counts, type PrepState, type Cut, type NpdmInfo, type MatchRule, type MatchOutcome } from "./wasm.ts";
 import type { PrepTree, TreeListing, TreeFile } from "./tree.ts";
 import type { PrepStore } from "./store.ts";
@@ -71,7 +72,10 @@ export interface ProfileOut {
   graphics: { api: GraphicsApi; names: string[] };   // what main imports to draw with
   warnings: string[];
 }
+// One module's instruction scan (src/glue/a64_scan.ts): what of its code the translator has no translation for
+export interface CodeScan { module: string; buildId: string; scan: ModuleScan }
 export interface CodeOut {
+  scan?: CodeScan[];                       // when the embedder gave a scanner; the modules as the game ships them, before cuts
   modules: { name: string; buildId: string; from: "folder" | "store"; path: string; size: number; sha256: string; imageSize: number; cuts: number }[]; cuts: number;
   // what became of each function-matched patch, and the cuts that were placed (applied like registered ones)
   matched: (MatchOutcome & { module: string; buildId: string; from: string })[];
@@ -95,13 +99,14 @@ export interface HandOff {
   saveId: string;                          // the name the saves are kept under (OpfsStorage's directory)
   cuts: AppliedCut[];                      // already applied to the module bytes above
   hooks: TranslatorHook[];
+  scan: CodeScan[];                        // the instruction scan of the Code stage ([] when it was not asked for): for the report
   shaders: ShadersOut;
   // The same as plain data and Blobs, for postMessage to the Worker that runs the game (browser trees and stores)
   message(): Promise<HandOffMessage>;
 }
 export interface HandOffMessage {
   format: number; titleId: string; programId: string; name: string; version: number; displayVersion: string | null;
-  profile: HandOff["profile"]; npdm: DetectOut["npdm"]; saveId: string; cuts: AppliedCut[]; hooks: TranslatorHook[]; shaders: ShadersOut;
+  profile: HandOff["profile"]; npdm: DetectOut["npdm"]; saveId: string; cuts: AppliedCut[]; hooks: TranslatorHook[]; shaders: ShadersOut; scan: CodeScan[];
   modules: { name: string; buildId: string; cuts: number; file: Blob }[];
   rom: RomMessage | null; aoc: { index: number; image: RomMessage }[];
 }
@@ -127,6 +132,10 @@ export interface PrepareOptions {
   // How many bytes of a code module are unpacked or hashed between two looks at the page (a redraw, a Cancel):
   // 4 MB when not given, some tens of milliseconds. Between the steps `at` is called with "<stage>:unpack".
   unpackStep?: number;
+  // The instruction scan of the Code stage: every code module's text is put to the translator's decoder and the
+  // instructions it has no translation for are recorded (CodeOut.scan). `key` names the translator binary (its
+  // hash): the stage runs again when it changes, so a recorded scan is never one of an older translator.
+  scanner?: { scan: A64Scanner; key: string };
 }
 class Cancelled extends Error {}
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -255,7 +264,7 @@ export class Prepare {
         () => this.profile(det, l, profile, pid === det.titleId ? "title" : pid ? "build" : null, sdk), () => {});
       // ---- Code ----
       const loadFiles = prof.load.map(n => l.files.find(f => f.path === det.exefs + n)!);
-      await stage<CodeOut>("code", this.hash(["code", loadFiles.map(fileKey), prof.load.map(n => det.modules.find(m => m.name === n)!.buildId), prof.cuts, prof.match]), () => this.code(det, prof),
+      await stage<CodeOut>("code", this.hash(["code", loadFiles.map(fileKey), prof.load.map(n => det.modules.find(m => m.name === n)!.buildId), prof.cuts, prof.match, ...(this.o.scanner ? [["scan", SCAN_FORMAT, this.o.scanner.key]] : [])]), () => this.code(det, prof),
         o => { this.w.setCount("cuts", o.cuts); this.w.setCount("modules", o.modules.length); });
       // ---- Shaders ----
       await stage<ShadersOut>("shaders", this.hash(["shaders", SHADER_CHAIN, SHADER_STORE, det.titleId]), async () => {
@@ -399,7 +408,7 @@ export class Prepare {
   }
 
   private async code(det: DetectOut, prof: ProfileOut): Promise<CodeOut> {
-    const out: CodeOut = { modules: [], cuts: 0, matched: [], matchCuts: [] };
+    const out: CodeOut = { modules: [], cuts: 0, matched: [], matchCuts: [], ...(this.o.scanner ? { scan: [] } : {}) };
     const mods = prof.load.map(n => det.modules.find(m => m.name === n)!);
     this.w.setCount("total", mods.length); this.w.setCount("bytesTotal", mods.reduce((n, m) => n + m.size, 0));
     for (const m of mods) {
@@ -434,6 +443,21 @@ export class Prepare {
           out.matchCuts.push(...c.cuts.map(x => ({ ...x, module: m.name, buildId: m.buildId })));
         }
       }
+      if (this.o.scanner) {
+        // the instruction scan, on the module as the game ships it (before the cuts): the text goes to the
+        // translator's decoder in pieces, with the page drawn and a Cancel taken between them
+        const si = this.w.scanInput(file);
+        if (si) {
+          // (the row's bar: unpacking took it to 90 % of this module, the scan takes it on from there)
+          const scan = await this.o.scanner.scan.scan(si.text, si.textOff, si.functions, async (done, total) => {
+            this.w.setCount("bytesDone", before + Math.floor(m.size * (0.9 + 0.1 * Math.min(1, done / Math.max(1, total))))); this.changed();
+            await breathe(); await this.point("code:scan");
+          });
+          this.w.setCount("bytesDone", before);
+          out.scan!.push({ module: m.name, buildId: m.buildId, scan });
+          for (const l of scanLines(m.name, scan, 12)) this.w.log("prepare: scan: " + l);
+        }
+      }
       if (c) {
         const r = this.w.cut(file, c.cuts);
         if ("error" in r) throw new PrepError(r.code === -1 ? "module" : "cut", `${path} (build ${m.buildId}): ${r.error.replace(/^\[RED\] (loader|prepare): /, "")}`);
@@ -466,7 +490,7 @@ export class Prepare {
     const cuts: AppliedCut[] = [...prof.cuts.flatMap(c => c.cuts.map(x => ({ ...x, module: c.module, buildId: c.buildId }))), ...(code.matchCuts ?? [])];
     const base = { format: PREPARE_FORMAT, titleId: det.titleId, programId: prof.apply.program_id ?? det.programId, name: prof.name, version: det.version, displayVersion: prof.display,
       profile: { id: prof.id, provisional: prof.provisional, registeredBuild: prof.registered, apply: prof.apply, needs: prof.needs, space: prof.space ?? null, layout: prof.layout ?? null }, npdm: det.npdm,
-      saveId: `nxweb-save-${det.titleId}`, cuts, hooks: [] as TranslatorHook[], shaders: sh };
+      saveId: `nxweb-save-${det.titleId}`, cuts, hooks: [] as TranslatorHook[], shaders: sh, scan: code.scan ?? [] };
     const bytes = (m: CodeOut["modules"][number]) => async (): Promise<Uint8Array> => {
       if (m.from === "folder") return tree.read(m.path, 0, m.size);
       const b = await store.get(m.path);

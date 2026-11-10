@@ -8,7 +8,7 @@ not depend on the enable bits: XPACI/XPACD/XPACLRI always strip (compared on can
 identity signer ever produces) and PACGA always computes: Unicorn's model traps it (no EL3 to enable it), so the
 reference runs a NOP in its place and the expected Xd is the translator's documented keyless function, computed
 here; every other register, the flags and the pc still come from Unicorn."""
-from fuzz_lib import WIN_MID, M64, Case, Enc, Seq
+from fuzz_lib import WIN_BASE, WIN_MID, M64, Case, Enc, Seq
 import fuzz_classes
 from fuzz_classes import CLASSES
 
@@ -46,7 +46,7 @@ def _pacga(x, y):
     return ((((x ^ y) * 0x9E3779B97F4A7C15) & M64) >> 32) << 32
 
 
-def _pacga_post(c, st, post):
+def _pacga_post(c, st, post, mem0, mem1):
     w = c.insns[0]
     rd, rn, rm = w & 31, (w >> 5) & 31, (w >> 16) & 31
     if rd != 31:
@@ -74,3 +74,69 @@ E("pac_branch", "1101011 Z:1 0 op:2 11111 0000 1 M:1 Rn:5 Rm:5", fix={"op": [0, 
 E("pac_ldraa", "11 111 0 00 M:1 S:1 1 imm9:9 W:1 1 Rn:5 Rt:5", base="Rn",
   fix={"imm9": lambda r, f, pc: r.randrange(0, 230) if f["S"] == 0 else r.randrange(282, 512)},
   filt=lambda f: not (f["W"] and f["Rn"] == f["Rt"]))
+
+
+# ------------------------------------------------------------------------------ LSE atomics, RCPC
+# Every base is 16-byte aligned and every offset a multiple of 8, so the same cases run with --shared (wasm atomic
+# instructions trap on a misaligned address).
+def _base(rng, rn):
+    return {("sp" if rn == 31 else "x%d" % rn): WIN_MID + 16 * rng.randrange(-8, 9)}
+
+
+def cas_case(rng, pc):
+    size, L, o0 = rng.randrange(4), rng.getrandbits(1), rng.getrandbits(1)
+    rn = rng.choice([r for r in range(32) if r != 30])
+    regs = [r for r in range(32) if r != rn]
+    rs, rt = rng.choice(regs), rng.choice(regs)
+    cas = (size << 30) | 0x08A07C00 | (L << 22) | (rs << 16) | (o0 << 15) | (rn << 5) | rt
+    if rng.random() < 0.5 and rs != 31:      # the compare value is what memory holds: the exchange happens
+        return Case([(size << 30) | 0x39400000 | (rn << 5) | rs, cas], _base(rng, rn))
+    return Case([cas], _base(rng, rn))
+
+
+def casp_case(rng, pc):
+    sz, L, o0 = rng.getrandbits(1), rng.getrandbits(1), rng.getrandbits(1)
+    rs, rt = rng.sample(range(0, 32, 2), 2) if rng.random() < 0.9 else [rng.randrange(0, 32, 2)] * 2
+    rn = rng.choice([r for r in range(32) if r not in (30, rs, rs + 1)])
+    casp = (sz << 30) | 0x08207C00 | (L << 22) | (rs << 16) | (o0 << 15) | (rn << 5) | rt
+    k = rng.randrange(4)
+    ldp = (0xA9400000 if sz else 0x29400000) | (((rs + 1) & 31) << 10) | (rn << 5) | rs
+    if k == 0:
+        return Case([casp], _base(rng, rn))
+    if k == 1:                               # both words equal
+        return Case([ldp, casp], _base(rng, rn))
+    # one word equal, the other not: flip a bit of Rs or of Rs+1 (eor with the logical immediate #1)
+    r = rs if k == 2 else rs + 1
+    if r == 31:
+        return Case([ldp, casp], _base(rng, rn))
+    return Case([ldp, 0xD2400000 | (r << 5) | r, casp], _base(rng, rn))
+
+
+S("lse_cas", cas_case)
+S("lse_casp", casp_case)
+def _smaxmin_post(c, st, post, mem0, mem1):
+    # Unicorn 2.1 (QEMU 5.0) compares LDSMAX / LDSMIN of 8, 16 and 32 bits wrongly: the zero-extended memory value
+    # against the whole 64-bit register, as signed 64-bit numbers (fixed in later QEMU). The architecture compares the
+    # two values as signed numbers of the access size (MemAtomicOp_SMAX: SInt(data) > SInt(value)); for those cases
+    # the expected memory is computed here. Xt (the value read) and everything else stay Unicorn's.
+    w = c.insns[0]
+    size, opc, rs, rn = w >> 30, (w >> 12) & 7, (w >> 16) & 31, (w >> 5) & 31
+    if opc not in (4, 5) or size == 3:
+        return None
+    n, bits = 1 << size, 8 << size
+    addr = (st["sp"] if rn == 31 else st["x"][rn]) - WIN_BASE
+    sx = lambda v: (v & ((1 << bits) - 1)) - ((v >> (bits - 1) & 1) << bits)
+    old = sx(int.from_bytes(mem0[addr:addr + n], "little"))
+    val = sx(0 if rs == 31 else st["x"][rs])
+    new = max(old, val) if opc == 4 else min(old, val)
+    m = bytearray(mem0)
+    m[addr:addr + n] = (new & ((1 << bits) - 1)).to_bytes(n, "little")
+    return m
+
+
+E("lse_ldop", "size:2 111000 A:1 R:1 1 Rs:5 0 opc:3 00 Rn:5 Rt:5", base="Rn", post=_smaxmin_post)   # LDADD LDCLR LDEOR LDSET LDSMAX LDSMIN LDUMAX LDUMIN (Rt = 31: ST*)
+E("lse_swp", "size:2 111000 A:1 R:1 1 Rs:5 1 000 00 Rn:5 Rt:5", base="Rn")
+E("rcpc_ldapr", "size:2 111000 1 0 1 11111 1 100 00 Rn:5 Rt:5", base="Rn")
+E("rcpc2_ldapur_stlur", "size:2 011001 opc:2 0 imm9:9 00 Rn:5 Rt:5", base="Rn",
+  fix={"imm9": [0, 8, 16, 24, 32, 64, 120, 512 - 8, 512 - 16, 512 - 64, 512 - 128]},
+  filt=lambda f: not (f["opc"] == 2 and f["size"] == 3) and not (f["opc"] == 3 and f["size"] >= 2))
