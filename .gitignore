@@ -3,3 +3,4 @@ build/
 *.wasm
 __pycache__/
 test/guests/out/
+.claude/
