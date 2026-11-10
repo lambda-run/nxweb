@@ -474,7 +474,9 @@ Behavioural differences:
 
 - Gate 1: 214 classes x 2000 cases = 428000 cases, 0 failures (the 32 FP16 classes, 64000 cases, also with
   `--strictnan --shared --seed 5`, `--mem64`, `--hi` and `--nonan --nofma --seed 9`: 0 failures).
-- Gate 2 (Node): 75 guest images, 75 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
+- Gate 2 (Node, with FP16): 88 guest images (61 shared, 27 own, `a64_fp16` among them), 88 pass in each of
+  default, `--budget 50`, `--notail`, `--shared`, `--mem64` and the four above-4 GB runs.
+- Gate 2 (Node, before FP16): 75 guest images, 75 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
   `--precise 2`, `--cntyield` and warm from the translation cache. Feature tests: 9 of 9.
 - Gate 2 (Chromium, Worker): 75 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
   (569 units from the Cache API on the warm pass, 0 instructions translated); feature tests 9 of 9.
