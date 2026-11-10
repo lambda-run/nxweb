@@ -201,7 +201,7 @@ export class Runtime {
   private stop: StopInfo | undefined;
   private flat = false;
   private flatTick = 0n;
-  private initQueue: number[] = [];
+  private initQueue: { pc: number; x: bigint[] }[] = [];
   private entry = 0;
   private mainStackTop = 0;
   private nextFile = range("file staging").lo;
@@ -404,14 +404,16 @@ export class Runtime {
       // The start set stays for good: pinned now, so the loader lets go of the files before any guest code runs
       for (const m of set.modules) this.ld.pin(m.handle);
       this.unstage();
-      // start contract: dependencies' init functions first (load order), the main module's last, then the entry
-      for (const m of [...set.modules.slice(1), set.modules[0]]) { if (m.init) this.initQueue.push(m.init); this.initQueue.push(...m.initArray); }
-      this.entry = set.entry;
       const stack = this.stackRegion, size = pageUp(this.opts.mainStackSize);
       if (!this.k.kernel_map_stack(BigInt(stack), BigInt(size))) throw new Error("the kernel refused the main thread's stack");
       this.mainStackTop = stack + size;
       this.mainThread = this.k.kernel_create_main_thread(BigInt(this.ld.stubAddr(startId)), BigInt(this.mainStackTop));
       if (!this.mainThread) throw new Error("the kernel could not create the main thread");
+      if (!this.sdkStart(set.modules)) {
+        // start contract (test modules): dependencies' init functions first (load order), the main module's last, then the entry
+        for (const m of [...set.modules.slice(1), set.modules[0]]) { if (m.init) this.initQueue.push({ pc: m.init, x: [] }); this.initQueue.push(...m.initArray.map(pc => ({ pc, x: [] }))); }
+        this.entry = set.entry;
+      }
     } catch (e) {
       this.unstage();
       this.faultNow(FAULT.load, (e instanceof Error ? e.message : String(e)).replace(/^\[RED\] /, ""));
@@ -587,11 +589,32 @@ export class Runtime {
     return bytes;
   }
 
+  // A program with the SDK in it (nnosInitialize and nnMain defined) starts as on hardware, where rtld enters the SDK's
+  // nn::init::Start: _init_libc0, nnosInitialize(main thread handle, 0), _init_libc1, nninitInitializeSdkModule,
+  // nninitStartup, _init_libc2, then rtld's InitModules (each module's DT_INIT, which runs its init_array, in load
+  // order), then nnMain. The SDK's constructors need nn::os up (the TLS slots of SdkAllocateTlsSlot); the module's
+  // own crt0 is not run. The same order as nxnative dm/host/main.c.
+  private sdkStart(modules: readonly ModuleInfo[]): boolean {
+    const find = (name: string) => { for (const m of modules) { const a = this.ld.lookupIn(m.handle, name); if (a !== undefined && this.ld.stubId(a) < 0) return a; } return undefined; };
+    const os = find("nnosInitialize"), main = find("nnMain");
+    if (os === undefined || main === undefined) return false;
+    const call = (name: string, x: bigint[] = []) => { const pc = name === "nnosInitialize" ? os : find(name); if (pc !== undefined) this.initQueue.push({ pc, x }); };
+    call("_init_libc0"); call("nnosInitialize", [BigInt(this.mainThread), 0n]); call("_init_libc1");
+    call("nninitInitializeSdkModule"); call("nninitStartup"); call("_init_libc2");
+    for (const m of modules) {
+      if (m.init) this.initQueue.push({ pc: m.init, x: [] });
+      else this.initQueue.push(...m.initArray.map(pc => ({ pc, x: [] })));
+    }
+    this.entry = main;
+    this.log(`runtime: SDK start: nn::init's order (${this.initQueue.length} calls: nnosInitialize, nninitStartup, ${modules.length} modules' DT_INIT), then nnMain at ${hex(main)}`);
+    return true;
+  }
+
   // The host function the main thread starts in: runs the init functions as guest calls, then enters the main module
   private startStep(cpu: HostCpu): HostResult {
     const start = cpu.rt.core.pc.value as bigint;
     const next = this.initQueue.shift();
-    if (next !== undefined) { cpu.setX(30, start); return cpu.jump(next); }
+    if (next !== undefined) { next.x.forEach((v, i) => cpu.setX(i, v)); cpu.setX(30, start); return cpu.jump(next.pc); }
     for (let i = 0; i < 30; i++) cpu.setX(i, 0);
     cpu.setX(1, this.mainThread); cpu.setX(30, PC_EXIT);
     this.core.sp.value = BigInt(this.mainStackTop);
