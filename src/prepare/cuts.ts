@@ -12,6 +12,7 @@ import { Layout, parseHeader, loadSegments, KIND_NSO, OPT_VERIFY_HASH } from "..
 import { sha256 } from "../loader/sha256";
 import { errorPtr as loaderErrorPtr, errorLen as loaderErrorLen, errorClear as loaderErrorClear } from "../loader/util";
 import { red, info, puts, putu, putx, puthex, emit, alloc, errorSet } from "./base";
+import { imageInit, matchResolve } from "./match";
 
 // the loader's red line (it was logged by the loader) as this module's last error
 function refused(r: u64): i32 { errorSet(loaderErrorPtr(), loaderErrorLen()); return <i32>r; }
@@ -132,3 +133,15 @@ export function cutOutPtr(): usize { return outPtr; }
 export function cutOutLen(): u32 { return outLen; }
 export function cutFailedIndex(): i32 { return failedIndex; }
 export function cutApplied(): u32 { return applied; }
+
+// Function-matched cuts (match.ts) for a module file: the module is unpacked as for cutApply, its functions are read
+// from the unwind table, and the rule list is resolved against them. MATCH_OK (the results are behind the match_*
+// exports: the cuts found are a list cutApply takes) or CUT_BAD_MODULE / a MATCH_* error. Nothing is changed here.
+export function matchRun(file: usize, len: u32, list: usize, listLen: u32): i32 {
+  if (nsoParse(file, len)) return CUT_BAD_MODULE;
+  const image = alloc(L.imageSize);
+  if (!image) { red(); puts("no memory for a module image of "); putx(L.imageSize); puts(" bytes"); emit(); return CUT_NOMEM; }
+  if (loadSegments(L, image)) { refused(1); return CUT_BAD_MODULE; }
+  imageInit(image, L.initEnd, L.mo0 + L.sz0);
+  return matchResolve(list, listLen);
+}

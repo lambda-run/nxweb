@@ -24,13 +24,7 @@
   "app_pool": "0xCD500000",
   "sys_resource": "0x1000000"
  },
- "needs": [
-  {
-   "key": "address_space",
-   "value": "heap 0x8000000 alias 0x118000000",
-   "what": "nxnative gives this game a 4.38 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
-  }
- ],
+ "needs": [],
  "dropped": [
   "ipa",
   "app_category",
@@ -117,20 +111,126 @@
    ]
   }
  },
- "unconverted": [
-  {
-   "kind": "MATCH_CUTS",
-   "module": "main",
-   "rules": 1,
-   "names": [
-    "engine region 62 GB → 4 GB (11 instructions in four functions)"
-   ]
-  }
- ],
+ "match_cuts": {
+  "main": [
+   {
+    "name": "engine region 62 GB → 4 GB (11 instructions in four functions)",
+    "functions": [
+     {
+      "size": 472,
+      "fingerprints": [
+       "96d9585e1be0b5ad1a975ae94df0b9e5540467bbd4f646fe7b4eb7abb6ba89fc"
+      ],
+      "cuts": [
+       {
+        "off": 60,
+        "orig": "e11361b2",
+        "new": "2100c0d2",
+        "why": "AllocateAddressRegion size mov x1,#0xf80000000 → mov x1,#0x100000000 (62 GB → 4 GB) (as 13.0.5 main+0x37c9a5c)"
+       },
+       {
+        "off": 76,
+        "orig": "e97f7cb2",
+        "new": "09fe9fd2",
+        "why": "node pool top check, low part mov x9,#0xffffffff0 → mov x9,#0xfff0 (as 13.0.5 main+0x37c9a6c)"
+       },
+       {
+        "off": 80,
+        "orig": "0be4afd2",
+        "new": "0be4bfd2",
+        "why": "node pool start mov x11,#0x7f200000 → mov x11,#0xff200000 (as 13.0.5 main+0x37c9a70)"
+       },
+       {
+        "off": 84,
+        "orig": "09e4aff2",
+        "new": "09e4bff2",
+        "why": "node pool top check movk x9,#0x7f20,lsl #16 → movk x9,#0xff20,lsl #16 (0xff20fff0) (as 13.0.5 main+0x37c9a74)"
+       },
+       {
+        "off": 88,
+        "orig": "eb01c0f2",
+        "new": "0b00c0f2",
+        "why": "node pool start movk x11,#0xf,lsl #32 → movk x11,#0,lsl #32 (0xff200000 = 4 GB − 14 MB) (as 13.0.5 main+0x37c9a78)"
+       },
+       {
+        "off": 124,
+        "orig": "e91361b2",
+        "new": "2900c0d2",
+        "why": "node pool bound: region end mov x9,#0xf80000000 → mov x9,#0x100000000 (as 13.0.5 main+0x37c9a9c)"
+       },
+       {
+        "off": 376,
+        "orig": "01e48f52",
+        "new": "01e49f52",
+        "why": "first free range in 64 KB units mov w1,#0x7f20 → mov w1,#0xff20 (as 13.0.5 main+0x37c9b98)"
+       },
+       {
+        "off": 380,
+        "orig": "e101a072",
+        "new": "0100a072",
+        "why": "first free range movk w1,#0xf,lsl #16 → movk w1,#0,lsl #16 (0xff20 units = 4 GB − 14 MB) (as 13.0.5 main+0x37c9b9c)"
+       }
+      ]
+     },
+     {
+      "size": 536,
+      "fingerprints": [
+       "6a1ad9e4dcca89cdb736dddc23b8cb7640ce06dce95ce497362749cb75b43e61"
+      ],
+      "cuts": [
+       {
+        "off": 80,
+        "orig": "e91361b2",
+        "new": "2900c0d2",
+        "why": "node pool bound: region end mov x9,#0xf80000000 → mov x9,#0x100000000 (as 13.0.5 main+0x37c9c50)"
+       }
+      ]
+     },
+     {
+      "size": 1328,
+      "fingerprints": [
+       "6248aa2f59006b37f9af1690691000914210a3482e3a0defef56460c042cc43f"
+      ],
+      "cuts": [
+       {
+        "off": 588,
+        "orig": "e81361b2",
+        "new": "2800c0d2",
+        "why": "node pool bound: region end mov x8,#0xf80000000 → mov x8,#0x100000000 (as 13.0.5 main+0x37ca3cc)"
+       }
+      ]
+     },
+     {
+      "size": 788,
+      "fingerprints": [
+       "846ba936f6b9870853808ed82d482ce0e104aa7ef300c692d79ca7d4837dd07b"
+      ],
+      "cuts": [
+       {
+        "off": 88,
+        "orig": "e91361b2",
+        "new": "2900c0d2",
+        "why": "node pool bound: region end mov x9,#0xf80000000 → mov x9,#0x100000000 (as 13.0.5 main+0x37caf68)"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "unconverted": [],
  "address_space": {
   "heap_region": 134217728,
   "alias_region": 4697620480,
   "stack_region": 268435456,
-  "fits": false
+  "fit": "pool",
+  "fits": true,
+  "note": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it",
+  "layout": {
+   "heap": 134217728,
+   "alias": 3690921984,
+   "stack": 67108864,
+   "pool": 3444572160
+  }
  }
 }

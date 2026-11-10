@@ -11,6 +11,7 @@ import * as npdm from "./npdm";
 import * as cuts from "./cuts";
 import * as rom from "./romfs_build";
 import * as bnsh from "./bnsh";
+import * as match from "./match";
 
 // ---- the machine (defs/prepare.json) and its counters ----
 const M: Inst = Inst.at(memory.data(16));
@@ -83,6 +84,26 @@ export function cut_out_ptr(): usize { return cuts.cutOutPtr(); }
 export function cut_out_len(): u32 { return cuts.cutOutLen(); }
 export function cut_failed_index(): i32 { return cuts.cutFailedIndex(); }
 export function cut_applied(): u32 { return cuts.cutApplied(); }
+
+// ---- function-matched cuts (match.ts) ----
+export function match_run(file: usize, len: u32, list: usize, listLen: u32): i32 { return cuts.matchRun(file, len, list, listLen); }
+export function match_status_ptr(): usize { return match.matchStatusPtr(); }
+export function match_status_len(): u32 { return match.matchStatusLen(); }
+export function match_cuts_ptr(): usize { return match.matchCutsPtr(); }
+export function match_cuts_len(): u32 { return match.matchCutsLen(); }
+export function match_cut_count(): u32 { return match.matchCutCount(); }
+export function match_src_ptr(): usize { return match.matchSrcPtr(); }
+export function match_overlap_at(): u32 { return match.matchOverlapAt(); }
+export function match_image_error(): i32 { return match.imageError(); }
+export function match_image_error_at(): u32 { return match.imageErrorAt(); }
+export function match_fn_count(): u32 { return match.fnCount(); }
+// the same on an unpacked image, and the parts on their own (the tests compare them with nxnative's nso_match.py)
+export function match_image(image: usize, len: u32, textEnd: u32): i32 { return match.imageInit(image, len, textEnd); }
+export function match_resolve(list: usize, listLen: u32): i32 { return match.matchResolve(list, listLen); }
+export function match_fn_start(i: u32): u32 { return match.fnStart(i); }
+export function match_fn_end(i: u32): u32 { return match.fnEndAt(i); }
+export function match_fingerprint(start: u32, out: usize): i32 { return match.fingerprint(start, out) ? 1 : 0; }
+export function match_writes(word: u32): u32 { return match.writesMask(word); }
 
 // ---- RomFS tables of a directory tree ----
 export function rom_build(list: usize, listLen: u32): i32 { return rom.romBuild(list, listLen); }

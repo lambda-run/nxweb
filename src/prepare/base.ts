@@ -69,6 +69,9 @@ export function alloc(len: usize): usize {
   arenaTop = end;
   return p;
 }
+// A point to go back to: what was allocated after arenaMark() goes with arenaRelease(mark)
+export function arenaMark(): usize { if (!arenaTop) arenaTop = arenaBase(); return arenaTop; }
+export function arenaRelease(mark: usize): void { if (mark >= arenaBase() && mark <= arenaTop) arenaTop = mark; }
 // Whether [ptr, ptr + len) lies in linear memory
 // @ts-ignore: decorator
 @inline export function inMemory(ptr: u64, len: u64): bool { const m = <u64>memory.size() << 16; return ptr <= m && len <= m - ptr; }

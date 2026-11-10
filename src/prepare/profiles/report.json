@@ -1,15 +1,519 @@
 {
  "source": "nxnative dm/games (MIT, Copyright (c) 2026 seedds)",
  "profiles": 153,
- "web_map": {
-  "heap": 1610612736,
-  "alias": 2013200384,
-  "stack": 268435456
+ "address_space": {
+  "rule": "src/glue/rt_process.ts layoutFor",
+  "space": {
+   "lo": 402653184,
+   "hi": 4294901760,
+   "room": 3892248576,
+   "alias_max": 3758096384
+  },
+  "defaults": {
+   "heap": 1610612736,
+   "alias": 2013200384,
+   "stack": 268435456,
+   "appPool": 3444572160,
+   "memUsed": 67108864
+  },
+  "profile": [
+   "010012101468C000",
+   "010020D01AD24000",
+   "0100217023F6C000",
+   "010029B018432000",
+   "01002B30028F6000",
+   "01002CD00A51C000",
+   "01002DA013484000",
+   "010035F022078000",
+   "01003E601E324000",
+   "010049900F546001",
+   "01004A4010FEA000",
+   "01004AB00A260000",
+   "01005270232F2000",
+   "010054B01AD92000",
+   "010057D006492000",
+   "01006000040C2000",
+   "010062B01525C000",
+   "010069401ADB8000",
+   "0100698009C6E000",
+   "010069C01AB82000",
+   "01006D0017F7A000",
+   "01006F8002326000",
+   "01007300020FA000",
+   "010076F0049A2000",
+   "01007960049A0000",
+   "01007A3009184000",
+   "010089B00D09C000",
+   "01008CF01BAAC000",
+   "010093801237C000",
+   "010099C022B96000",
+   "0100A00019DE0000",
+   "0100A3501946E000",
+   "0100A9D01C446000",
+   "0100ACD0163D0000",
+   "0100B04011742000",
+   "0100BC300CB48000",
+   "0100BF00112C0000",
+   "0100C1F0051B6000",
+   "0100CC80140F8000",
+   "0100CD801CE5E000",
+   "0100D7C01F254000",
+   "0100E65002BB8000",
+   "0100EC9010258000",
+   "0100FD8022DAA000"
+  ],
+  "pool": [
+   {
+    "id": "0100000000010000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100000011D90000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 2.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010005501E68C000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010013C00E930000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010014C011146000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010014E00DB56000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.14 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100152000022000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010016100A186000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100199023B2E000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01001F5010DFA000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010020400E1C2000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100276009872000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010028600EBDA000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010029B0118E8000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01002B00111A2000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.14 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01002E7016C46000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100300012F2A000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 2.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100317013770000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010031F019294000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.00 GB, stack 0.63 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010032E00E6E2000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.14 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100346017304000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010036E00FB20000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010038600B27E000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.13 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010038B015560000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.13 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01003FC01670C000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010040801A4C8000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010042000A986000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100429011144000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010045C014650000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010049900F546000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010049900F546002",
+    "why": "the profile reserves heap 1.25 GB, alias 4.25 GB, stack 0.25 GB with a pool of 1.25 GB; this process has heap 1.19 GB, alias 2.37 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01004D300C5AE000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010051701FB46000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100535012974000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010055D009F78000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010056B015FE8000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01005CA01580E000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.13 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100606026F12000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100620012D6E000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100633007D48000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010063301BD50000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100646009FBE000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010067300059A000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01006A800016E000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01006BB00C6F0000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01006C300E9F0000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01006FE013472000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100713016CCC000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010074F013262000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01007BB017812000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01007E3006DDA000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01007EF00011E000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010086A022444000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010089C01E9CA000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01008BC024FDE000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01008C0016544000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.50 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01008D7016438000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01008D9022462000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01008DB008C2C000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.13 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01008F6008C5E000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01008F701C074000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010092B0091D0000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01009320084A4000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100965017338000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "010097F018538000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01009BF0072D4000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "01009D901BC56000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100A3900C3E2000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100A3D008C5C000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100A5C00D162000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.13 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100A6301214E000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 2.50 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100A7C01B792000",
+    "why": "the profile reserves heap 0.13 GB, alias 64.00 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100A83022A22000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100ABD01785C000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100ABF008968000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.13 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100AE00096EA000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100B7C00933A000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100B8A026F14000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100B8E016F76000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100B99019412000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100BA4026E94000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100BC0018138000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100C2A01A730000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.13 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100CA9002322000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100CE4010AAC000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100D5B026844000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100D9F01D474000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100DCA0064A6000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.14 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100E44016C22000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100E95004038000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100ECD018EBE000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100ED7012DB2000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.14 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100F43008C44000",
+    "why": "the profile reserves heap 0.25 GB, alias 4.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.25 GB, alias 3.31 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100F5D01DA3A000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 1.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   },
+   {
+    "id": "0100FF500E34A000",
+    "why": "the profile reserves heap 3.25 GB, alias 0.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 3.15 GB, alias 0.25 GB, stack 0.06 GB: everything the pool lets the game commit fits, with less spare address space than nxnative gives it"
+   }
+  ],
+  "short": [
+   {
+    "id": "010015100B514000",
+    "why": "the profile reserves heap 1.63 GB, alias 2.88 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0100C49025D3E000",
+    "why": "the profile reserves heap 1.25 GB, alias 5.25 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0100F2C0115B6000",
+    "why": "the profile reserves heap 2.13 GB, alias 2.38 GB, stack 0.25 GB with a pool of 3.21 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0400245021D2C000",
+    "why": "the profile reserves heap 0.13 GB, alias 4.38 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0400380020056000",
+    "why": "the profile reserves heap 4.75 GB, alias 16.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "04003F40232DE000",
+    "why": "the profile reserves heap 9.00 GB, alias 0.25 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 3.31 GB, alias 0.25 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0400486024DEC000",
+    "why": "the profile reserves heap 8.00 GB, alias 4.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 3.31 GB, alias 0.25 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "040074A01BF12000",
+    "why": "the profile reserves heap 9.00 GB, alias 0.25 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 3.31 GB, alias 0.25 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "040077201BE50000",
+    "why": "the profile reserves heap 4.75 GB, alias 16.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "04007EF01F8AE000",
+    "why": "the profile reserves heap 4.75 GB, alias 16.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0400A3A01EE4C000",
+    "why": "the profile reserves heap 9.00 GB, alias 0.25 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 3.31 GB, alias 0.25 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0400C3F00006E000",
+    "why": "the profile reserves heap 8.00 GB, alias 4.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 3.31 GB, alias 0.25 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0400D4201C6EA000",
+    "why": "the profile reserves heap 4.75 GB, alias 20.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   },
+   {
+    "id": "0400E88025B1A000",
+    "why": "the profile reserves heap 4.75 GB, alias 16.00 GB, stack 0.25 GB with a pool of 9.00 GB; this process has heap 0.13 GB, alias 3.44 GB, stack 0.06 GB: the pool is larger than a 32-bit address space can hold; the game runs until it needs more (a 64-bit memory would be needed)"
+   }
+  ],
+  "unknown": [],
+  "counts": {
+   "profile": 44,
+   "pool": 95,
+   "short": 14,
+   "unknown": 0
+  }
  },
  "pairs_per_class": {
   "a": 1489,
   "b": 1432,
-  "c": 254
+  "c": 119
  },
  "keys_per_class": {
   "a": 20,
@@ -23,12 +527,12 @@
  },
  "top_c": [
   {
-   "key": "address_space",
-   "profiles": 149
-  },
-  {
    "key": "fps_target",
    "profiles": 33
+  },
+  {
+   "key": "address_space",
+   "profiles": 14
   },
   {
    "key": "tex_flush_upload",
@@ -240,7 +744,7 @@
   },
   "mem_reserve": {
    "class": "b",
-   "note": "the Apple host's guest block size; nxweb's map is fixed in a 4 GB memory (see `address_space` under c when it does not fit)",
+   "note": "the Apple host's guest block size; with mem_alias and mem_stack it gives the regions the runtime's per-game layout starts from (see `address_space`)",
    "what": "",
    "profiles": 153
   },
@@ -252,7 +756,7 @@
   },
   "mem_stack": {
    "class": "b",
-   "note": "the Apple host's stack region size; nxweb's is 256 MB",
+   "note": "the Apple host's stack region size; as mem_reserve",
    "what": "",
    "profiles": 153
   },
@@ -450,9 +954,9 @@
   },
   "address_space": {
    "class": "c",
-   "note": "wasm32: one 4 GB memory (memory64 or a smaller reported pool)",
-   "what": "nxnative gives this game {detail}; a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried).",
-   "profiles": 149,
+   "note": "wasm32: one 4 GB memory; the verdict is the runtime's (src/glue/rt_process.ts layoutFor), only \"short\" is listed",
+   "what": "This game does not fit a 32-bit memory: {note}.",
+   "profiles": 14,
    "derived": true
   }
  },
@@ -461,18 +965,14 @@
   "converted_cuts": 66,
   "patch_files": 22,
   "cut_builds": 15,
+  "match_rules": 4,
+  "converted_match_rules": 4,
+  "match_profiles": [
+   "01001F5010DFA000",
+   "0100346017304000",
+   "01006A800016E000"
+  ],
   "unconverted": {
-   "MATCH_CUTS": {
-    "entries": 5,
-    "items": 17,
-    "profiles": [
-     "01001F5010DFA000",
-     "0100346017304000",
-     "01006A800016E000",
-     "sdk_patches.py",
-     "engine_patches.py"
-    ]
-   },
    "FRAME_STEP": {
     "entries": 5,
     "items": 176,
@@ -497,13 +997,16 @@
   },
   "sdk_cuts": 3,
   "sdk_converted": 3,
-  "sdk_builds": 1
+  "sdk_builds": 1,
+  "wide_match_rules": 13,
+  "converted_wide_match_rules": 13,
+  "patch_files_skipped": []
  },
  "unconverted_reasons": {
-  "FRAME_STEP": "frame-step and screen-shape stubs: code assembled into a patch area beside the module that reads a state page the host writes each frame; needs a patch area in the loader's map, the state page and the host's frame-step driver (nxnative hle_nvn.c fstep_tick)",
-  "MATCH_FRAME_STEP": "as FRAME_STEP, placed by a function fingerprint (nso_match.locate_stub), which also needs the matcher",
-  "MATCH_CUTS": "cuts located by complete-function fingerprints over the module's unwind table (nxnative dm/tools/nso_match.py, 356 lines, not ported); the registered builds' CUTS of the same patches are converted",
-  "OBS": "observation gates: a host callback at a pc; the translator hook exists in the hand-off format but no gate number has a nxweb callback"
+  "FRAME_STEP": "frame-step and screen-shape stubs: code assembled into a patch area beside the module that reads a state page the host writes each frame. Missing in the runtime: a patch area mapped with the module (the loader maps an NSO's three segments and nothing beside them), the state page, and the driver that writes the step each present (nxnative hle_nvn.c fstep_tick); docs/PORTING-STATUS.md, \"Frame-step stubs\"",
+  "MATCH_FRAME_STEP": "as FRAME_STEP, placed by a function fingerprint (the matcher exists: src/prepare/match.ts); the stub is a Python function of the matched addresses, and what it writes needs the same patch area and state page",
+  "OBS": "observation gates: a host callback at a pc; the translator hook exists in the hand-off format but no gate number has a nxweb callback",
+  "PATCH_FILE": "the patch file could not be evaluated in the converter's sandbox (the entry says why): none of its patches is converted"
  },
  "found_by_code": {
   "ue_cvar.py": "Unreal console variables by their registered names (for fps_target, ue_texture_pool)",

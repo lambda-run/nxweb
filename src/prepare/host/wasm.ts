@@ -18,12 +18,23 @@ interface X {
   nso_peek(ptr: number, len: number): number; nso_check(ptr: number, len: number): number; nso_parse(ptr: number, len: number): number; nso_build_id_ptr(): number;
   nso_image_size(): number; nso_text_size(): number; nso_bss(): number; nso_flags(): number;
   cut_apply(file: number, len: number, list: number, listLen: number): number; cut_out_ptr(): number; cut_out_len(): number; cut_failed_index(): number; cut_applied(): number;
+  match_run(file: number, len: number, list: number, listLen: number): number; match_image(image: number, len: number, textEnd: number): number; match_resolve(list: number, listLen: number): number;
+  match_status_ptr(): number; match_status_len(): number; match_cuts_ptr(): number; match_cuts_len(): number; match_cut_count(): number; match_src_ptr(): number;
+  match_overlap_at(): number; match_image_error(): number; match_image_error_at(): number; match_fn_count(): number; match_fn_start(i: number): number; match_fn_end(i: number): number;
+  match_fingerprint(start: number, out: number): number; match_writes(word: number): number;
   rom_build(list: number, listLen: number): number; rom_tables_ptr(): number; rom_tables_len(): number; rom_offsets_ptr(): number; rom_dirs(): number; rom_files(): number;
   rom_data_offset(): number; rom_data_size(): number;
   bnsh_scan(ptr: number, len: number, max: number): number; bnsh_rec_ptr(): number; bnsh_containers(): number; bnsh_dropped(): number;
   kit_refused_total(): number;
 }
 export interface Cut { off: number; orig: string; new: string; why?: string }
+// A function-matched rule (nxnative MATCH_CUTS, as tools/prepare/convert_profiles.py writes it): cuts at offsets from
+// the start of the one function that has the size and one of the fingerprints; a rule of several functions applies
+// whole or not at all; rules of one name are one patch's implementations, of which exactly one must match
+export interface MatchRule { name: string; functions: { size: number; fingerprints: string[]; cuts: Cut[] }[]; file?: string }
+// What became of one patch (the rules of one name) on a module: its cuts' offsets, or why it was not placed
+export interface MatchOutcome { name: string; set: number; matched: boolean; offsets: number[]; why: string }
+export interface MatchResult { cuts: (Cut & { set: number })[]; outcomes: MatchOutcome[]; functions: number }
 export interface NpdmInfo { programId: bigint; titleId: string; sysResource: number; is64: boolean; stackSize: number; version: number; name: string }
 export interface NsoInfo { buildId: string; imageSize: number; textSize: number; bss: number; flags: number }
 export interface RomEntry { path: string; size: number; dir?: boolean }
@@ -119,6 +130,92 @@ export class PrepWasm {
       return { bytes: this.u8(this.x.cut_out_ptr(), this.x.cut_out_len() >>> 0).slice(), applied: this.x.cut_applied() >>> 0 };
     } finally { this.done(); }
   }
+  // Function-matched cuts (src/prepare/match.ts). sets[i] is one list of rules resolved on its own (nxnative: the
+  // game's rules, then the rules for every game). On a module file, or with `textEnd` on an unpacked image (tests).
+  // Nothing is changed: the cuts found go through cut() like registered ones.
+  match(file: Uint8Array, sets: MatchRule[][], textEnd?: number): MatchResult | { error: string; code: number } {
+    try {
+      this.x.prep_error_clear();
+      const rules = sets.flatMap((rs, set) => rs.map(r => ({ r, set })));
+      const groups = new Map<string, number>(), parts: number[][] = [], u32 = (v: number) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, v >>> 24];
+      parts.push(u32(rules.length));
+      for (const { r, set } of rules) {
+        const k = set + "\0" + r.name;
+        if (!groups.has(k)) groups.set(k, groups.size);
+        parts.push(u32(set), u32(groups.get(k)!), u32(r.functions.length));
+        for (const f of r.functions) {
+          parts.push(u32(f.size), u32(f.fingerprints.length));
+          for (const d of f.fingerprints) { if (!/^[0-9a-f]{64}$/.test(d)) return { error: `[RED] prepare: function patch '${r.name}': a fingerprint is not 64 hex digits`, code: -2 }; parts.push([...hexBytes(d)]); }
+          parts.push(u32(f.cuts.length));
+          for (const c of f.cuts) {
+            const o = hexBytes(c.orig), w = hexBytes(c.new);
+            if (o.length !== w.length) return { error: `[RED] prepare: function patch '${r.name}': ${o.length} original bytes and ${w.length} new ones`, code: -2 };
+            parts.push(u32(c.off), u32(o.length), [...o], [...w]);
+          }
+        }
+      }
+      const list = Uint8Array.from(parts.flat());
+      const f = this.put(file), l = this.put(list);
+      let rc: number;
+      if (textEnd === undefined) rc = this.x.match_run(f, file.length, l, list.length);
+      else { this.x.match_image(f, file.length, textEnd); rc = this.x.match_resolve(l, list.length); }
+      const hx = (v: number) => "0x" + (v >>> 0).toString(16);
+      if (rc === -6) return { error: `[RED] prepare: function patches overlap at ${hx(this.x.match_overlap_at())}`, code: rc };
+      if (rc === -2) return { error: "[RED] prepare: the list of function patches is malformed", code: rc };
+      if (rc) return { error: this.lastError() || `[RED] prepare: function patches: error ${rc}`, code: rc };
+      const dv = new DataView(this.x.memory.buffer), sp = this.x.match_status_ptr() >>> 0;
+      const ie = this.x.match_image_error();
+      const imageWhy = ["", "no MOD0", "cannot read function boundaries", `conflicting function boundaries at ${hx(this.x.match_image_error_at())}`, "no memory for the function table"][ie];
+      // per rule: matched, chosen, the starts of its functions, and nxnative's sentence for a miss
+      let at = sp;
+      const st = rules.map(({ r }) => {
+        const matched = dv.getUint32(at, true) === 0, chosen = dv.getUint32(at + 4, true) === 1, n = r.functions.length;
+        at += 12;
+        const misses: string[] = [];
+        r.functions.forEach((fn, i) => {
+          const state = dv.getUint32(at, true), detail = dv.getUint32(at + 4, true);
+          at += 12;
+          const why = state === 1 ? `${detail} matching functions (need exactly one)` : state === 2 ? `original bytes differ at ${hx(detail)}` : "";
+          if (state === 3) misses.push(`function ${i + 1} of ${n} matched a function another one did`);
+          else if (state) misses.push(n > 1 ? `function ${i + 1} of ${n} (${fn.size} bytes): ${why}` : why);
+        });
+        return { matched, chosen, why: imageWhy || misses.join("; ") + (n > 1 && misses.length && misses.length < n ? `; the other ${n - misses.length} matched` : "") };
+      });
+      const count = this.x.match_cut_count() >>> 0, cp = this.x.match_cuts_ptr() >>> 0, src = this.x.match_src_ptr() >>> 0;
+      const cuts: MatchResult["cuts"] = [], offsets = new Map<string, number[]>();
+      let p = cp + 4;
+      for (let i = 0; i < count; i++) {
+        const off = dv.getUint32(p, true), len = dv.getUint32(p + 4, true);
+        const ri = dv.getUint32(src + 12 * i, true), fi = dv.getUint32(src + 12 * i + 4, true), ci = dv.getUint32(src + 12 * i + 8, true);
+        const { r, set } = rules[ri], c = r.functions[fi].cuts[ci];
+        cuts.push({ off, orig: hex(this.u8(p + 8, len)), new: hex(this.u8(p + 8 + len, len)), why: (c.why ?? r.name) + " [function match]", set });
+        const k = set + "\0" + r.name; offsets.set(k, [...(offsets.get(k) ?? []), off]);
+        p += 8 + 2 * len;
+      }
+      const outcomes: MatchOutcome[] = [];
+      for (const k of groups.keys()) {
+        const mine = rules.map((x, i) => ({ ...x, i })).filter(x => x.set + "\0" + x.r.name === k), found = mine.filter(x => st[x.i].matched);
+        const base = { name: mine[0].r.name, set: mine[0].set };
+        if (found.length === 1 && st[found[0].i].chosen) outcomes.push({ ...base, matched: true, offsets: offsets.get(k) ?? [], why: `implementation ${mine.indexOf(found[0]) + 1} of ${mine.length}` });
+        else outcomes.push({ ...base, matched: false, offsets: [], why: found.length ? `${found.length} implementations match (need exactly one)` : [...new Set(mine.map(x => st[x.i].why))].join("; ") });
+      }
+      return { cuts, outcomes, functions: this.x.match_fn_count() >>> 0 };
+    } finally { this.done(); }
+  }
+  // The fingerprint of every function of an unpacked image's unwind table (null: a branch leaves it for a place with
+  // no identity), as nxnative's nso_match.py Image.fingerprint gives it; the tests compare the two
+  fingerprints(image: Uint8Array, textEnd: number): { functions: { start: number; end: number; fingerprint: string | null }[]; error: number } {
+    try {
+      const error = this.x.match_image(this.put(image), image.length, textEnd), o = this.x.prep_alloc(32) >>> 0, out = [];
+      for (let i = 0, n = this.x.match_fn_count() >>> 0; i < n; i++) {
+        const start = this.x.match_fn_start(i) >>> 0;
+        out.push({ start, end: this.x.match_fn_end(i) >>> 0, fingerprint: this.x.match_fingerprint(start, o) ? hex(this.u8(o, 32)) : null });
+      }
+      return { functions: out, error };
+    } finally { this.done(); }
+  }
+  // The registers (bit n: xn) the measured table counts an instruction as writing (src/prepare/gen/match_writes.ts)
+  writes(word: number): number { return this.x.match_writes(word) >>> 0; }
   // The header and tables of a RomFS image over a tree (src/prepare/romfs_build.ts). starts[i] is where file i of
   // `entries` (directories not counted) begins in the virtual image.
   romTables(entries: RomEntry[]): RomTables | { error: string } {

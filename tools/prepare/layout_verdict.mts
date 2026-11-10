@@ -1,0 +1,16 @@
+// The address-space verdict of game profiles, by the runtime's own rule: `settingsFor` / `layoutFor` of
+// src/glue/rt_process.ts, the function a process's layout is made with. tools/prepare/convert_profiles.py runs this
+// (profiles as JSON on stdin, verdicts as JSON on stdout) so that the profile files and the report say what the
+// runtime will do, with no number of the layout written a second time.
+//   in:  [{ id, apply: Record<string, string>, space: { heap_region, alias_region, stack_region } }]
+//   out: { rule, space, defaults, verdicts: [{ id, fit, note, heap, alias, stack, pool }] }
+import { settingsFor, SPACE, DEFAULTS } from "../../src/glue/rt_process.ts";
+
+let text = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) text += chunk;
+const verdicts = (JSON.parse(text) as { id: string; apply: Record<string, string>; space: { heap_region: number; alias_region: number; stack_region: number } }[]).map(p => {
+  const l = settingsFor(p.apply, { space: p.space }).layout;
+  return { id: p.id, fit: l.fit, note: l.note, heap: l.heapSize, alias: l.aliasSize, stack: l.stackSize, pool: l.appPool };
+});
+process.stdout.write(JSON.stringify({ rule: "src/glue/rt_process.ts layoutFor", space: { lo: SPACE.lo, hi: SPACE.hi, room: SPACE.hi - SPACE.lo, alias_max: SPACE.aliasMax }, defaults: DEFAULTS, verdicts }));

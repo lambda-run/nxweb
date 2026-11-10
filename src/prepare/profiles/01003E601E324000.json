@@ -30,11 +30,6 @@
    "key": "fps_target",
    "value": "60",
    "what": "The frame rate the game was tested at is not applied (nxnative writes the engine's frame limit or steps the game by the host's vsyncs); the game runs at its own rate."
-  },
-  {
-   "key": "address_space",
-   "value": "heap 0x8000000 alias 0xc8000000",
-   "what": "nxnative gives this game a 3.12 GB alias region (nxweb: 1.87 GB); a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried)."
   }
  ],
  "dropped": [
@@ -51,11 +46,20 @@
  ],
  "unknown": [],
  "cuts": {},
+ "match_cuts": {},
  "unconverted": [],
  "address_space": {
   "heap_region": 134217728,
   "alias_region": 3355443200,
   "stack_region": 268435456,
-  "fits": false
+  "fit": "profile",
+  "fits": true,
+  "note": "",
+  "layout": {
+   "heap": 134217728,
+   "alias": 3355443200,
+   "stack": 268435456,
+   "pool": 3444572160
+  }
  }
 }

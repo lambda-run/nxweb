@@ -66,6 +66,8 @@ function draw(snap: Snapshot): void {
       `<dt>Profile</dt><dd id="profile">${prof ? (prof.found ? `${esc(prof.name)}${prof.registered ? "" : " (not a build the profile was made on)"}` : "no profile: provisional") : "…"}</dd>` +
       `<dt>Code modules</dt><dd>${det.modules.map(x => `${x.name} <span class="mute">${x.buildId}</span>`).join("<br>")}</dd>` +
       (det.dlc.length ? `<dt>Add-on content</dt><dd>${det.dlc.map(d => `${d.index} <span class="mute">${d.titleId}</span>`).join(", ")}</dd>` : "") +
+      (prof?.layout ? `<dt>Memory</dt><dd id="layout" data-fit="${prof.layout.fit}">${prof.layout.fit === "profile" ? "fits as the profile reserves it" : prof.layout.fit === "pool" ? "fits what the game can commit" : "does not fit a 32-bit memory"}` +
+        (prof.layout.note ? `<br><span class="mute">${esc(prof.layout.note)}</span>` : "") + `</dd>` : "") +
       (prof?.warnings.length ? `<dt>Notes</dt><dd id="warnings">${prof.warnings.map(esc).join("<br>")}</dd>` : "") + `</dl>`;
   }
   const needs = prof?.needs ?? [], unc = prof?.unconverted ?? [];

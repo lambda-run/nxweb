@@ -98,11 +98,20 @@
    ]
   }
  },
+ "match_cuts": {},
  "unconverted": [],
  "address_space": {
   "heap_region": 134217728,
   "alias_region": 1476395008,
   "stack_region": 268435456,
-  "fits": true
+  "fit": "profile",
+  "fits": true,
+  "note": "",
+  "layout": {
+   "heap": 134217728,
+   "alias": 1476395008,
+   "stack": 268435456,
+   "pool": 3444572160
+  }
  }
 }

@@ -9,7 +9,9 @@ import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, utimesSync,
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { ROOT, WASM, build } from "../../src/prepare/host/build.mts";
-import { PrepWasm, STATES, REASONS, type Cut } from "../../src/prepare/host/wasm.ts";
+import { PrepWasm, STATES, REASONS, type Cut, type MatchRule, type MatchResult } from "../../src/prepare/host/wasm.ts";
+import { settingsFor } from "../../src/glue/rt_process.ts";
+import { handoffOptions } from "../../src/glue/rt_handoff.ts";
 import { MemTree, EntryTree, FileListTree, isJunk } from "../../src/prepare/host/tree.ts";
 import { NodeTree } from "../../src/prepare/host/tree_node.ts";
 import { MemStore } from "../../src/prepare/host/store.ts";
@@ -26,7 +28,7 @@ import { Runtime } from "../../src/glue/rt_runtime.ts";
 import { RtFs } from "../../src/glue/rt_fs.ts";
 import { loadDefs } from "../../src/kit/host/defs.mts";
 import * as rth from "../runtime/harness.mts";
-import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, synthTree, lsRows, python, bnsh, type Files } from "./synth.mts";
+import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, synthTree, lsRows, python, bnsh, unwindModules, matchImage, withImport, A64, MATCH_TEXT_END, type Files } from "./synth.mts";
 
 process.chdir(ROOT);
 try {
@@ -500,7 +502,10 @@ test("profile selection: by title ID from the converted nxnative profiles (a bui
   assert.deepEqual([p.found, p.by, p.id, p.name, p.registered, p.cuts.length, p.provisional], [true, "title", ds, "DARK SOULS: REMASTERED", false, 0, false]);
   assert.deepEqual(p.load, ["main"]);
   assert.equal(p.apply.mem_used, "0x6e00000"); assert.equal(p.apply.pad_layout, "full");
-  assert.ok(p.needs.some(n => n.key === "address_space" && /3\.25 GB heap region/.test(n.what)));
+  // its 3.25 GB heap region is no "will not work" any more: the verdict is the runtime's layout rule, for which the heap never passes pool - mem_used (3.10 GB here) and so fits
+  assert.deepEqual([p.needs.filter(n => n.key === "address_space").length, p.layout, p.space], [0, { fit: "profile", note: "" }, { heap_region: 3.25 * 2 ** 30, alias_region: 0.25 * 2 ** 30, stack_region: 0.25 * 2 ** 30 }]);
+  const hd = await r.prep.handoff(), ho = handoffOptions(hd);
+  assert.deepEqual([hd.profile.layout?.fit, ho.layout.fit, ho.layout.heapSize, ho.layout.aliasSize, ho.layout.stackSize], ["profile", "profile", 0xCD500000 - 0x6e00000 + 0x100000, 0.25 * 2 ** 30, 0.25 * 2 ** 30], "the process is laid out by the same rule, from the regions in the hand-off");
   assert.equal(p.warnings.length, 1); assert.match(p.warnings[0], /not a build the profile was made on \(main [0-9a-f]{32}; the profile's builds: v196608 main df3766a2bb651a3e822828abf10b6f7b\): the per-build cuts do not reach it/);
   info.push(`by title: ${p.name}; ${p.warnings[0]}`);
   r.tree.close();
@@ -555,10 +560,45 @@ test("the converted profiles: every file is what tools/prepare/convert_profiles.
   }
   assert.equal(cuts, rep.conversion.converted_cuts + rep.conversion.sdk_converted);
   assert.deepEqual(rep.problems, []);
+  // function-matched rules: well formed, and counted
+  let rules = 0, wide = 0;
+  for (const f of [...Object.keys(idx.games), "_sdk"]) {
+    const p = JSON.parse(readFileSync(join(dir, f + ".json"), "utf8"));
+    for (const rs of Object.values(p.match_cuts ?? {}) as MatchRule[][]) for (const r of rs) {
+      f === "_sdk" ? wide++ : rules++;
+      assert.ok(r.name && r.functions.length >= 1, f);
+      for (const fn of r.functions) {
+        assert.ok(fn.size > 0 && fn.size % 4 === 0 && fn.fingerprints.length && fn.fingerprints.every(d => /^[0-9a-f]{64}$/.test(d)) && fn.cuts.length, `${f} ${r.name}`);
+        for (const c of fn.cuts) assert.ok(c.off % 4 === 0 && c.orig.length === c.new.length && c.orig.length % 8 === 0 && c.off + c.orig.length / 2 <= fn.size, `${f} ${r.name}`);
+      }
+    }
+  }
+  assert.deepEqual([rules, wide], [rep.conversion.converted_match_rules, rep.conversion.converted_wide_match_rules]);
+  assert.deepEqual([rep.conversion.match_rules, rep.conversion.wide_match_rules], [rules, wide], "every function-matched rule converted");
+  assert.deepEqual(rep.conversion.patch_files_skipped, [], "no patch file of the pinned nxnative needs more than the sandbox has");
+  assert.equal(rep.conversion.unconverted.MATCH_CUTS, undefined);
+  // the address space: every profile's verdict in the files is what the runtime's rule says now (the same function a process is laid out with)
+  const fit = { profile: [] as string[], pool: [] as string[], short: [] as string[] };
+  for (const id of Object.keys(idx.games)) {
+    const p = JSON.parse(readFileSync(join(dir, id + ".json"), "utf8")) as Profile, sp = p.address_space!;
+    const l = settingsFor(p.apply, { space: sp }).layout;
+    assert.deepEqual([sp.fit, sp.note, sp.fits, sp.layout], [l.fit, l.note, l.fit !== "short", { heap: l.heapSize, alias: l.aliasSize, stack: l.stackSize, pool: l.appPool }], id);
+    assert.equal(p.needs.some(n => n.key === "address_space"), l.fit === "short", `${id}: address_space is a need exactly when the layout is short`);
+    fit[l.fit].push(id);
+  }
+  const sp = rep.address_space;
+  assert.deepEqual([sp.profile, sp.pool.map((e: { id: string }) => e.id), sp.short.map((e: { id: string }) => e.id)], [fit.profile, fit.pool, fit.short], "the report names the profiles of each verdict");
+  assert.ok(sp.short.every((e: { why: string }) => /the profile reserves heap .* this process has heap/.test(e.why)), "and says why");
+  assert.deepEqual([sp.counts, rep.classes.address_space.profiles, sp.rule], [{ profile: fit.profile.length, pool: fit.pool.length, short: fit.short.length, unknown: 0 }, fit.short.length, "src/glue/rt_process.ts layoutFor"]);
+  // what is not converted is named with its profiles
+  const fs = rep.conversion.unconverted.FRAME_STEP, mfs = rep.conversion.unconverted.MATCH_FRAME_STEP;
+  assert.ok(fs.profiles.length === fs.entries && fs.profiles.every((x: string) => /^[0-9A-F]{16}$/.test(x)) && mfs.profiles.every((x: string) => /^[0-9A-F]{16}$/.test(x)));
   const nx = process.env.NXNATIVE ?? "/home/user/nxnative";
   let check = "SKIPPED: no nxnative checkout (NXNATIVE): the files were not compared with a fresh conversion";
-  if (existsSync(join(nx, "dm", "games"))) check = execFileSync("python3", [join(ROOT, "tools", "prepare", "convert_profiles.py"), "--check", "--nxnative", nx], { encoding: "utf8" }).trim();
-  return [`${rep.profiles} profiles; (profile, key) pairs a ${rep.pairs_per_class.a}, b ${rep.pairs_per_class.b}, c ${rep.pairs_per_class.c}; ${cuts} cuts in ${builds} builds`, check];
+  if (existsSync(join(nx, "dm", "games"))) check = execFileSync("python3", [join(ROOT, "tools", "prepare", "convert_profiles.py"), "--check", "--nxnative", nx], { encoding: "utf8" }).trim().split("\n")[0];
+  return [`${rep.profiles} profiles; (profile, key) pairs a ${rep.pairs_per_class.a}, b ${rep.pairs_per_class.b}, c ${rep.pairs_per_class.c}; ${cuts} cuts in ${builds} builds; function-matched rules: ${rules} in ${rep.conversion.match_profiles.length} profiles, ${wide} for every game`,
+    `address space by the runtime's rule: ${fit.profile.length} fit as reserved, ${fit.pool.length} fit what their pool lets them commit, ${fit.short.length} do not (${fit.short.join(", ")})`,
+    `not converted: FRAME_STEP in ${fs.profiles.join(", ")}; MATCH_FRAME_STEP in ${mfs.profiles.join(", ")}`, check];
 });
 
 test("the prepare machine as the module drives it: its states and events are the table's, and a run in progress refuses Start", () => {
@@ -606,6 +646,347 @@ test("the BNSH container scan (the one container format of shader_split.py porte
   for (let i = 0; i < 300; i++) { const m = one.slice(); let v = i * 2654435761 >>> 0; for (let k = 0; k < 6; k++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; m[0x60 + (v >>> 8) % (m.length - 0x60)] = v >>> 24; } w.bnsh(m); }   // no trap on 300 mutations
   assert.deepEqual(w.bnsh(new Uint8Array(7)).stages, []);
   return [`2 containers, 8 stages, keys ${key(vs)} (vs), ${key(ps)}, ${key(ps2)} (ps): the keys tools/shaders/maxwell_asm.py computes`];
+});
+
+// =================================================================================================== function-matched cuts
+const NX = process.env.NXNATIVE ?? "/home/user/nxnative";
+const capstone = (): string | null => { try { return execFileSync("python3", ["-c", "import capstone; print(capstone.__version__)"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
+// A module file as the image the loader maps (file-backed part) and where its text ends
+function unpack(w: PrepWasm, nso: Uint8Array): { image: Uint8Array; textEnd: number } {
+  const r = w.cut(nso, []); assert.ok("bytes" in r, JSON.stringify(r));
+  const b = r.bytes, dv = new DataView(b.buffer);
+  const seg = [0, 1, 2].map(s => ({ fo: dv.getUint32(0x10 + 16 * s, true), mo: dv.getUint32(0x14 + 16 * s, true), sz: dv.getUint32(0x18 + 16 * s, true) }));
+  const image = new Uint8Array(Math.max(...seg.map(s => s.mo + s.sz)));
+  for (const s of seg) image.set(b.subarray(s.fo, s.fo + s.sz), s.mo);
+  return { image, textEnd: seg[0].mo + seg[0].sz };
+}
+const wordHex = (w: number) => hexOf(Uint8Array.of(w & 255, (w >>> 8) & 255, (w >>> 16) & 255, w >>> 24));
+// A rule for the function at `start` of an image, with cuts at offsets from the image's start (what nxnative's
+// `nso_match.py <nso> <offset> <old> <new> <name>` prints for a reviewed cut)
+function ruleFor(w: PrepWasm, image: Uint8Array, name: string, cuts: [off: number, orig: string, neu: string][], textEnd = MATCH_TEXT_END): MatchRule {
+  const fns = w.fingerprints(image, textEnd).functions, byFn = new Map<number, MatchRule["functions"][number]>();
+  for (const [off, orig, neu] of cuts) {
+    const f = fns.find(f => f.start <= off && off < f.end); assert.ok(f && f.fingerprint, `a function with a fingerprint at 0x${off.toString(16)}`);
+    if (!byFn.has(f.start)) byFn.set(f.start, { size: f.end - f.start, fingerprints: [f.fingerprint], cuts: [] });
+    byFn.get(f.start)!.cuts.push({ off: off - f.start, orig, new: neu, why: name });
+  }
+  return { name, functions: [...byFn.values()] };
+}
+const matched = (r: ReturnType<PrepWasm["match"]>): MatchResult => { assert.ok(!("error" in r), JSON.stringify(r)); return r as MatchResult; };
+// a function that takes an address, calls `target` and returns: 7 words
+const caller = (start: number, target: number, data = 0x2200) => [A64.adrp(8, start, data), A64.addi(8, 8, data & 0xFFF), A64.movX0X23, A64.bl(start + 12, target), A64.beq(8), A64.NOP, A64.RET];
+const CUT: [string, string] = [wordHex(A64.movX0X23), wordHex(A64.addX0X23)];
+
+test("function-matched cuts on hand-made images: a function is found again after it, its callee and its data moved; changed code, a changed or redirected callee, another import or system call, an ambiguous or damaged match are refused; a patch of several functions applies whole or not at all; of a patch's implementations exactly one must match", () => {
+  const w = newWasm(), T = MATCH_TEXT_END, info: string[] = [];
+  const leaf = [A64.movz(0, 1), A64.RET];
+  const original = matchImage({ 0x100: caller(0x100, 0x500), 0x500: leaf });
+  const rule = ruleFor(w, original, "heap", [[0x108, ...CUT]]);
+  assert.deepEqual([rule.functions.length, rule.functions[0].size, rule.functions[0].cuts[0].off], [1, 28, 8]);
+  const one = (image: Uint8Array, rules: MatchRule[] = [rule]) => { const r = matched(w.match(image, [rules], T)); return { cuts: r.cuts.map(c => [c.off, c.orig, c.new]), why: r.outcomes.map(o => o.why), ok: r.outcomes.map(o => o.matched), r }; };
+  // (1) relocation: the function, its callee and the page it addresses all moved
+  const moved = matchImage({ 0x800: caller(0x800, 0x1200, 0x2980), 0x1200: leaf }), before = moved.slice();
+  const m1 = one(moved);
+  assert.deepEqual([m1.cuts, m1.ok, m1.why], [[[0x808, ...CUT]], [true], ["implementation 1 of 1"]]);
+  assert.equal(m1.r.cuts[0].why, "heap [function match]");
+  assert.deepEqual(moved, before, "matching writes nothing");
+  assert.equal(one(original).cuts[0][0], 0x108);
+  // (2) the same instructions with one changed: in the function (a register, a branch inside it), in the callee
+  for (const [off, word] of [[0x108, 0xAA1603E0], [0x110, A64.beq(4)], [0x500, A64.movz(0, 2)]] as const) {
+    const changed = original.slice(); new DataView(changed.buffer).setUint32(off, word, true);
+    assert.deepEqual([one(changed).cuts, one(changed).why], [[], ["0 matching functions (need exactly one)"]], `changed at 0x${off.toString(16)}`);
+  }
+  // (3) the call goes to another function
+  assert.deepEqual(one(matchImage({ 0x100: caller(0x100, 0x600), 0x500: leaf, 0x600: [A64.movz(0, 2), A64.RET] })).ok, [false]);
+  // (4) a callee that is no function, no import and no system call wrapper: the caller has no fingerprint at all
+  assert.equal(w.fingerprints(matchImage({ 0x100: caller(0x100, 0x500) }), T).functions[0].fingerprint, null);
+  assert.deepEqual(one(matchImage({ 0x100: caller(0x100, 0x500) })).why, ["0 matching functions (need exactly one)"]);
+  // (5) an imported function is its name: the PLT stub and the GOT slot may move, the name may not change
+  const imp = (name: string, plt?: number, slot?: number) => withImport(matchImage({ 0x100: caller(0x100, plt ?? 0x1800) }), name, plt, slot);
+  const impRule = ruleFor(w, imp("allocate"), "heap", [[0x108, ...CUT]]);
+  assert.deepEqual(one(imp("allocate", 0x1900, 0x2800), [impRule]).cuts, [[0x108, ...CUT]]);
+  assert.deepEqual(one(imp("free"), [impRule]).ok, [false]);
+  assert.notEqual(impRule.functions[0].fingerprints[0], rule.functions[0].fingerprints[0]);
+  assert.equal(w.fingerprints(imp("a\"b"), T).functions[0].fingerprint, null, "a name that JSON would escape is not taken");
+  // (6) `svc #n; ret` without an unwind entry is the system call n
+  const sys = (n: number, at = 0x500, more: number[] = []) => matchImage({ 0x100: caller(0x100, at) }, { [at]: [A64.svc(n), A64.RET, ...more] });
+  const sysRule = ruleFor(w, sys(0x2C), "heap", [[0x108, ...CUT]]);
+  assert.deepEqual(one(sys(0x2C, 0x700), [sysRule]).cuts, [[0x108, ...CUT]]);
+  assert.deepEqual(one(sys(0x2D), [sysRule]).ok, [false]);
+  { const longer = sys(0x2C); new DataView(longer.buffer).setUint32(0x504, A64.NOP, true); assert.equal(w.fingerprints(longer, T).functions[0].fingerprint, null, "svc; nop is not a wrapper"); }
+  // (7) the low part of an ADRP address is masked only while the register still holds it: after `mov w8, w0` (or a
+  // write to x29) the offset of the load is a member offset, and another offset is another function
+  for (const [reg, move] of [[8, 0x2A0003E8], [29, 0xAA0003FD]] as const) {
+    const words = [A64.adrp(reg, 0x100, 0x2000), move, A64.ldr(0, reg, 8), A64.movX0X23, A64.RET];
+    const r7 = ruleFor(w, matchImage({ 0x100: words }), "heap", [[0x10C, ...CUT]]);
+    const other = words.slice(); other[2] = A64.ldr(0, reg, 9);
+    assert.deepEqual(one(matchImage({ 0x100: other }), [r7]).ok, [false], `x${reg} overwritten: the offset counts`);
+    const direct = [A64.adrp(reg, 0x100, 0x2000), A64.NOP, A64.ldr(0, reg, 8), A64.movX0X23, A64.RET], direct2 = direct.slice(); direct2[2] = A64.ldr(0, reg, 9);
+    assert.deepEqual(one(matchImage({ 0x100: direct2 }), [ruleFor(w, matchImage({ 0x100: direct }), "heap", [[0x10C, ...CUT]])]).ok, [true], `x${reg} still the address: the offset is its low part`);
+  }
+  // (8) an ADR inside the function is exact
+  { const r8 = ruleFor(w, matchImage({ 0x100: [A64.movX0X23, 0x10000040, A64.NOP, A64.RET] }), "heap", [[0x100, ...CUT]]);
+    assert.deepEqual(one(matchImage({ 0x100: [A64.movX0X23, 0x10000020, A64.NOP, A64.RET] }), [r8]).ok, [false]); }
+  // (9) two functions that match: ambiguous
+  assert.deepEqual(one(matchImage({ 0x100: caller(0x100, 0x500), 0x800: caller(0x800, 0x500), 0x500: leaf })).why, ["2 matching functions (need exactly one)"]);
+  // (10) the original bytes are still asserted
+  { const r10: MatchRule = { name: "heap", functions: [{ ...rule.functions[0], cuts: [{ off: 8, orig: "00000000", new: CUT[1], why: "heap" }] }] };
+    assert.deepEqual(one(original, [r10]).why, ["original bytes differ at 0x108"]); }
+  // (11) a patch of several functions: whole or not at all, and the miss is named
+  const second = [A64.movX0X23, A64.movz(1, 7), A64.RET], third = [A64.movz(2, 9), A64.movX0X23, A64.RET];
+  const both = matchImage({ 0x100: caller(0x100, 0x500), 0x500: leaf, 0x900: second });
+  const multi = ruleFor(w, both, "two places", [[0x108, ...CUT], [0x900, ...CUT]]);
+  assert.equal(multi.functions.length, 2);
+  assert.deepEqual(one(matchImage({ 0x300: caller(0x300, 0x700), 0x700: leaf, 0xA00: second }), [multi]).cuts, [[0x308, ...CUT], [0xA00, ...CUT]]);
+  const half = one(matchImage({ 0x300: caller(0x300, 0x700), 0x700: leaf, 0xA00: [A64.movX0X23, A64.movz(1, 8), A64.RET] }), [multi]);
+  assert.deepEqual([half.cuts, half.why], [[], ["function 2 of 2 (12 bytes): 0 matching functions (need exactly one); the other 1 matched"]]);
+  // (12) implementations of one patch: exactly one must match
+  const v2 = ruleFor(w, matchImage({ 0x100: third }), "heap", [[0x104, ...CUT]]);
+  const i2 = one(matchImage({ 0x400: third }), [rule, v2]);
+  assert.deepEqual([i2.cuts, i2.why], [[[0x404, ...CUT]], ["implementation 2 of 2"]]);
+  assert.deepEqual(one(matchImage({ 0x100: caller(0x100, 0x500), 0x500: leaf, 0x400: third }), [rule, v2]).why, ["2 implementations match (need exactly one)"]);
+  assert.deepEqual(one(matchImage({ 0x400: second }), [rule, v2]).why, ["0 matching functions (need exactly one)"]);
+  // (13) two lists are resolved apart (the game's patches, the patches for every game), each with its outcome
+  const two = matched(w.match(matchImage({ 0x100: caller(0x100, 0x500), 0x500: leaf, 0x400: third }), [[rule], [{ ...v2, name: "wide" }, { ...multi, name: "absent" }]], T));
+  assert.deepEqual(two.outcomes.map(o => [o.set, o.name, o.matched, o.offsets]), [[0, "heap", true, [0x108]], [1, "wide", true, [0x404]], [1, "absent", false, []]]);
+  assert.deepEqual(two.cuts.map(c => [c.set, c.off]), [[0, 0x108], [1, 0x404]]);
+  // (14) patches of one list that overlap stop everything (nxnative raises)
+  const over = w.match(original, [[rule, { ...rule, name: "again" }]], T);
+  assert.ok("error" in over && over.code === -6 && /function patches overlap at 0x108/.test(over.error), JSON.stringify(over));
+  assert.ok(!("error" in w.match(original, [[rule], [{ ...rule, name: "again" }]], T)), "in two lists each is found; applying them is where the second one's original bytes fail");
+  // (15) images without a usable function table: no rule matches, and why
+  const noMod = original.slice(); noMod[0x20] = 0;
+  assert.deepEqual(one(noMod).why, ["no MOD0"]);
+  const badEnc = original.slice(); badEnc[0x3003] = 0x37;                      // a table encoding that does not exist
+  assert.deepEqual(one(badEnc).why, ["cannot read function boundaries"]);
+  const conflict = matchImage({ 0x100: caller(0x100, 0x500), 0x500: leaf, 0x600: leaf }); { const dv = new DataView(conflict.buffer); dv.setInt32(0x300C + 16, 0x500 - 0x3000, true); dv.setInt32(0x3240 + 48 + 8, 0x500 - (0x3240 + 48 + 8), true); dv.setUint32(0x3240 + 48 + 12, 12, true); }
+  assert.deepEqual(one(conflict).why, ["conflicting function boundaries at 0x500"]);
+  const noTable = original.slice(); noTable[0x3000] = 2;                       // not version 1: an empty table, as nxnative reads it
+  assert.deepEqual(one(noTable).why, ["0 matching functions (need exactly one)"]);
+  // (16) no trap on damaged images: 400 mutations of the unwind data and the dynamic table
+  const base = imp("allocate");
+  for (let i = 0; i < 400; i++) {
+    const m = base.slice(); let v = (i + 1) * 2654435761 >>> 0;
+    for (let k = 0; k < 4; k++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; const area = [[0x20, 0x20], [0x2100, 0x420], [0x3000, 0x300]][v % 3]; m[area[0] + (v >>> 8) % area[1]] = v >>> 24; }
+    const r = w.match(m, [[impRule, rule]], T); assert.ok("error" in r || r.outcomes.length === 1);
+    w.fingerprints(m, T);
+  }
+  // (17) a malformed rule list is refused, not read past its end
+  assert.ok("error" in w.match(original, [[{ name: "x", functions: [{ size: 6, fingerprints: [rule.functions[0].fingerprints[0]], cuts: rule.functions[0].cuts }] }]], T));
+  assert.ok("error" in w.match(original, [[{ name: "x", functions: [{ size: 28, fingerprints: ["zz"], cuts: rule.functions[0].cuts }] }]], T));
+  assert.ok("error" in w.match(original, [[{ name: "x", functions: [{ size: 28, fingerprints: rule.functions[0].fingerprints, cuts: [{ off: 28, orig: CUT[0], new: CUT[1] }] }] }]], T), "a cut past its function");
+  info.push("17 groups of cases; a relocated function: cut at 0x108 found at 0x808; the fingerprint of the calling function " + rule.functions[0].fingerprints[0].slice(0, 16) + "…");
+  return info;
+});
+
+test("function fingerprints are nxnative's: every function of the test sources, compiled with unwind tables, has the fingerprint dm/tools/nso_match.py gives it (which uses Capstone); the measured register-write table never answers \"not written\" where Capstone lists a write", () => {
+  const w = newWasm(), info: string[] = [];
+  const mods = unwindModules();
+  assert.ok(mods.length >= 40, `modules with unwind tables: ${mods.length}`);
+  const dir = join(SCRATCH, "unwind", "img"); mkdirSync(dir, { recursive: true });
+  const mine: { name: string; file: string; fns: ReturnType<PrepWasm["fingerprints"]>["functions"] }[] = [];
+  let total = 0, withFp = 0, imports = 0;
+  for (const m of mods) {
+    const { image, textEnd } = unpack(w, new Uint8Array(readFileSync(m.path))), file = join(dir, m.name + ".bin");
+    writeFileSync(file, image); writeFileSync(file + ".end", String(textEnd));
+    const f = w.fingerprints(image, textEnd);
+    assert.equal(f.error, 0, m.name);
+    mine.push({ name: m.name, file, fns: f.functions }); total += f.functions.length; withFp += f.functions.filter(x => x.fingerprint).length;
+  }
+  assert.ok(total >= 800 && withFp >= 700, `${total} functions, ${withFp} with a fingerprint`);
+  // and hand-made images: an import through a PLT, a system call wrapper, an address register overwritten, an inner ADR, a trap word
+  const leaf = [A64.movz(0, 1), A64.RET];
+  const hand: Record<string, Uint8Array> = {
+    call: matchImage({ 0x100: caller(0x100, 0x500), 0x500: leaf, 0x800: caller(0x800, 0x500, 0x2980) }),
+    import: withImport(matchImage({ 0x100: caller(0x100, 0x1800), 0x400: caller(0x400, 0x1900) }), "allocate"),
+    svc: matchImage({ 0x100: caller(0x100, 0x500), 0x200: caller(0x200, 0x600) }, { 0x500: [A64.svc(0x2C), A64.RET], 0x600: [A64.svc(0x2C), A64.NOP] }),
+    clobber: matchImage({ 0x100: [A64.adrp(8, 0x100, 0x2000), 0x2A0003E8, A64.ldr(0, 8, 8), A64.RET], 0x200: [A64.adrp(29, 0x200, 0x2000), 0xAA0003FD, A64.ldr(0, 29, 8), A64.RET], 0x300: [A64.adrp(9, 0x300, 0x2000), A64.NOP, 0xF100043F, A64.ldr(0, 9, 8), A64.RET],
+      0x400: [A64.adrp(1, 0x400, 0x2000), 0xF100043F, A64.ldr(0, 1, 8), A64.RET], 0x500: [A64.movX0X23, 0x10000040, A64.NOP, A64.RET], 0x600: [A64.adrp(3, 0x600, 0x2000), 0xE7FFDEFE, A64.addi(3, 3, 0x123), A64.RET] }),
+  };
+  for (const [name, image] of Object.entries(hand)) {
+    const file = join(dir, "hand_" + name + ".bin"); writeFileSync(file, image); writeFileSync(file + ".end", String(MATCH_TEXT_END));
+    mine.push({ name: "hand_" + name, file, fns: w.fingerprints(image, MATCH_TEXT_END).functions });
+  }
+  // every function matches itself, and only itself or its exact copies
+  { const m = mine.find(x => x.name === "rt_hello.O2")!, { image, textEnd } = unpack(w, new Uint8Array(readFileSync(mods.find(x => x.name === "rt_hello.O2")!.path)));
+    for (const f of m.fns.filter(f => f.fingerprint)) {
+      const orig = hexOf(image.subarray(f.start, f.start + 4)), same = m.fns.filter(g => g.fingerprint === f.fingerprint && g.end - g.start === f.end - f.start).length;
+      const r = matched(w.match(image, [[{ name: "self", functions: [{ size: f.end - f.start, fingerprints: [f.fingerprint!], cuts: [{ off: 0, orig, new: orig }] }] }]], textEnd));
+      assert.deepEqual(r.outcomes[0].matched ? r.cuts.map(c => c.off) : same, same === 1 ? [f.start] : same);
+    } }
+  const cs = capstone(), haveNx = existsSync(join(NX, "dm", "tools", "nso_match.py"));
+  const made = /WRITES_CAPSTONE: string = "([^"]+)"/.exec(readFileSync(join(ROOT, "src", "prepare", "gen", "match_writes.ts"), "utf8"))![1];
+  // nso_match.py's fingerprints depend on the Capstone it runs with (which registers it lists as written); the table here is one version's
+  if (cs !== made || !haveNx) info.push(`SKIPPED: the comparison with nxnative's nso_match.py needs ${!haveNx ? "the nxnative checkout (NXNATIVE)" : `Capstone ${made}, the version the register-write table was measured from (${cs ? cs + " is installed" : "none is installed"}: pip install capstone==${made})`}; ${total} functions fingerprinted here, ${withFp} with a result`);
+  else {
+    const lines = execFileSync("python3", [join(ROOT, "tools", "prepare", "match_reference.py"), NX, "-", ...mine.map(m => m.file)], { encoding: "utf8", maxBuffer: 1 << 28 }).trim().split("\n");
+    assert.equal(lines.length, mine.length);
+    let same = 0, none = 0, undecoded = 0; const bad: string[] = [];
+    mine.forEach((m, i) => {
+      const ref = JSON.parse(lines[i]) as { functions: Record<string, string>; error: string | null };
+      assert.equal(ref.error, null, m.name); assert.equal(Object.keys(ref.functions).length, m.fns.length, `${m.name}: the functions of the unwind table`);
+      for (const f of m.fns) {
+        const r = ref.functions[f.start];
+        if (r === undefined) bad.push(`${m.name} +0x${f.start.toString(16)}: not a function for nxnative`);
+        else if (r === f.fingerprint) same++;
+        else if (r.startsWith("!") && f.fingerprint === null) none++;
+        // nxnative refuses a function with a word Capstone does not decode; here it has a fingerprint no rule can hold (README, "Function-matched cuts")
+        else if (/^!undecodable function/.test(r)) undecoded++;
+        else bad.push(`${m.name} +0x${f.start.toString(16)}: nxnative ${r.slice(0, 40)}, here ${f.fingerprint?.slice(0, 16) ?? "none"}`);
+        if (r && !r.startsWith("!")) imports++;
+      }
+    });
+    assert.deepEqual(bad.slice(0, 8), [], `${bad.length} functions differ`);
+    assert.ok(same >= 700);
+    info.push(`${mine.length} modules (clang -O2 and -Os), ${total} functions: ${same} fingerprints equal to nso_match.py's, ${none} without one on both sides (a branch to code with no identity), ${undecoded} that nxnative refuses for a word Capstone ${cs} does not decode, 0 different`);
+  }
+  // the register-write table against Capstone, on words it was not made from
+  if (cs !== made) info.push(`SKIPPED: the register-write table was measured from Capstone ${made}; ${cs ? "Capstone " + cs + " is installed" : "Capstone is not installed"}`);
+  else {
+    const truth = join(SCRATCH, "writes.truth"), n = 300_000;
+    execFileSync("python3", [join(ROOT, "tools", "prepare", "gen_match_writes.py"), "--truth", String(n), truth, "--seed", "424242"], { stdio: "ignore" });
+    const t = readFileSync(truth), dv = new DataView(t.buffer, t.byteOffset, t.byteLength);
+    let dec = 0, exact = 0, more = 0; const unsound: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const word = dv.getUint32(8 * i, true), cap = dv.getUint32(8 * i + 4, true);
+      if (cap === 0xFFFFFFFF) continue;
+      dec++;
+      const m = w.writes(word);
+      if (cap & ~m) unsound.push(`0x${word.toString(16)}: Capstone 0x${cap.toString(16)}, the table 0x${m.toString(16)}`); else if (m === cap) exact++; else more++;
+    }
+    assert.deepEqual(unsound.slice(0, 5), []);
+    assert.ok(dec > 50_000 && exact > dec * 0.8);
+    info.push(`register writes: ${dec} decoded words of ${n} random ones (seed 424242): ${exact} as Capstone ${cs} lists them, ${more} counted as written where Capstone lists less (unmeasured encodings: safe), 0 the other way`);
+  }
+  return info;
+});
+
+test("function-matched cuts in the pipeline: a build no registered cut names gets the profile's patch placed by its function (the code runs changed: exit code 42 -> 7) and the patches for every game are tried; a patch that does not match is left out and said; a build with registered cuts is not matched; the applied cuts are in the hand-off and in the translation cache key", async () => {
+  const w = newWasm(), info: string[] = [];
+  const mod = unwindModules().find(m => m.name === "rt_hello.O2"); assert.ok(mod, "hello with unwind tables");
+  const hello = new Uint8Array(readFileSync(mod.path)), { image, textEnd } = unpack(w, hello);
+  const mov = imageOffsets(w, hello, Uint8Array.of(0x40, 0x05, 0x80, 0x52)); assert.equal(mov.length, 1, "one mov w0,#42");
+  const rule = ruleFor(w, image, "the exit code", [[mov[0], "40058052", "e0008052"]], textEnd);
+  const absent: MatchRule = { name: "not in this build", functions: [{ size: 64, fingerprints: ["ab".repeat(32)], cuts: [{ off: 0, orig: "1f2003d5", new: "1f2003d5", why: "x" }] }] };
+  const other = "0100CCCC0000D000";
+  const prof = (cuts: Cut[], more: Partial<Profile> = {}, row: Record<string, string> = {}) => profileFor(hello, other, cuts, { apply: { title_id: other, program_id: other, name: "Matched", modules: "main", app_pool: "0xCD500000" }, match_cuts: { main: [rule, absent] }, ...more }, row);
+  const sdk = { source: "test", cuts: {}, match_cuts: { main: [{ ...absent, name: "for every game" }] }, unconverted: [] };
+  const files = () => ({ "base/exefs/main": hello, "base/exefs/main.npdm": npdm({ programId: BigInt("0x" + other) }), "base/romfs/a.txt": "a" });
+  const r = prepare(game("match-pipeline", files()), { profiles: memProfiles([prof([])], sdk) });
+  const res = await r.prep.run(); assert.equal(res.state, "Ready", res.error);
+  const p = r.prep.out<ProfileOut>("profile"), c = r.prep.out<CodeOut>("code");
+  assert.deepEqual([p.cuts.length, p.match.map(m => [m.module, m.sets[0].length, m.sets[1].length])], [0, [["main", 2, 1]]]);
+  assert.deepEqual(c.matched.map(m => [m.module, m.from, m.name, m.matched, m.offsets, m.why]), [
+    ["main", `profile ${other}`, "the exit code", true, [mov[0]], "implementation 1 of 1"],
+    ["main", `profile ${other}`, "not in this build", false, [], "0 matching functions (need exactly one)"],
+    ["main", "every game", "for every game", false, [], "0 matching functions (need exactly one)"]]);
+  assert.deepEqual(c.modules.map(m => [m.name, m.from, m.cuts]), [["main", "store", 1]]);
+  assert.ok(r.lines.some(l => l === `prepare: main: function patch 'the exit code': matched at 0x${mov[0].toString(16)} (implementation 1 of 1)`), r.lines.join("\n"));
+  assert.ok(r.lines.some(l => l.startsWith("[RED] prepare: main: function patch 'not in this build' skipped: ")), "the game's own patch that does not match is a red line");
+  assert.ok(r.lines.some(l => l.startsWith("prepare: main: function patch 'for every game' skipped: ")), "one tried on every game is a plain line");
+  const h = await r.prep.handoff();
+  assert.deepEqual(h.cuts.map(x => [x.module, x.off, x.orig, x.new, x.why]), [["main", mov[0], "40058052", "e0008052", "the exit code [function match]"]]);
+  assert.deepEqual(Object.keys(handoffOptions(h).cutsKey), ["main"], "a matched cut changes the module's translation cache key");
+  const run = async (bytes: Uint8Array) => { const rt = new Runtime(env.mods); assert.ok(rt.loadNso([{ name: "hello", bytes }]), rt.red.join("|")); const o = rt.run(); const out = [o.stop?.kind, o.stop?.code, rt.red.length]; rt.dispose(); return out; };
+  assert.deepEqual(await run(hello), ["exit", 42, 0]);
+  assert.deepEqual(await run(await h.modules[0].bytes()), ["exit", 7, 0], "the matched cut is in the code that runs");
+  r.tree.close();
+  // an unchanged folder skips every stage; another rule runs Profile and Code again
+  const again = prepare(dirOf("match-pipeline"), { profiles: memProfiles([prof([])], sdk) }); assert.deepEqual((await again.prep.run()).skipped, [...STAGES]); again.tree.close();
+  const r2 = prepare(dirOf("match-pipeline"), { profiles: memProfiles([prof([], { match_cuts: { main: [absent] } })], sdk) }); const res2 = await r2.prep.run(); r2.tree.close();
+  assert.deepEqual([res2.state, res2.ran, r2.prep.out<CodeOut>("code").modules.map(m => [m.from, m.cuts])], ["Ready", ["profile", "code"], [["folder", 0]]]);
+  // a build with registered cuts keeps exactly those: nxnative matches only where no CUTS name the build
+  const str = imageOffsets(w, hello, ascii("hello from an NSO"));
+  const r3 = prepare(game("match-registered", files()), { profiles: memProfiles([prof([{ off: str[0] + 6, orig: hexOf(ascii("from")), new: hexOf(ascii("FROM")), why: "registered" }])], sdk) });
+  assert.equal((await r3.prep.run()).state, "Ready"); r3.tree.close();
+  assert.deepEqual([r3.prep.out<ProfileOut>("profile").match, r3.prep.out<CodeOut>("code").matched, (await r3.prep.handoff()).cuts.map(x => x.why)], [[], [], ["registered"]]);
+  // a registered cut and a matched one that overlap in one list: Failed(cut), as nxnative stops
+  const r4 = prepare(game("match-overlap", files()), { profiles: memProfiles([prof([], { match_cuts: { main: [rule, { ...rule, name: "the same place" }] } })], sdk) });
+  const res4 = await r4.prep.run(); r4.tree.close();
+  assert.deepEqual([res4.state, res4.reason], ["Failed", "cut"]); assert.match(res4.error!, /function patches overlap at 0x/);
+  info.push(`hello with unwind tables: mov w0,#42 at +0x${mov[0].toString(16)} lies in a function of ${rule.functions[0].size} bytes; found by its fingerprint and cut, the game exits with 7`);
+  // the converted nxnative rules run on a module they were not made for: nothing matches, nothing is red for the wide ones, the prepare ends Ready
+  const db = nodeProfiles(), sdkReal = await db.sdk();
+  const r5 = prepare(game("match-real-rules", { ...files(), "base/exefs/sdk": hello }), { profiles: memProfiles([prof([], { apply: { title_id: other, program_id: other, name: "Matched", modules: "main sdk", app_pool: "0xCD500000" } }, { sdk: "00".repeat(16) })], sdkReal) });
+  const res5 = await r5.prep.run(); r5.tree.close(); assert.equal(res5.state, "Ready", res5.error);
+  const c5 = r5.prep.out<CodeOut>("code"), wideRules = Object.values(sdkReal.match_cuts ?? {}).flat();
+  assert.ok(wideRules.length >= 13 && c5.matched.filter(m => m.from === "every game").every(m => !m.matched));
+  assert.deepEqual(c5.matched.filter(m => m.from === "every game").map(m => m.module).filter((m, i, a) => a.indexOf(m) === i).sort(), Object.keys(sdkReal.match_cuts ?? {}).filter(k => k === "main" || k === "sdk").sort());
+  info.push(`nxnative's ${wideRules.length} rules for every game (modules ${Object.keys(sdkReal.match_cuts ?? {}).join(", ")}) tried on the test module: ${c5.matched.filter(m => m.from === "every game").length} patches, none matches, the prepare ends Ready`);
+  return info;
+});
+
+// =================================================================================================== the converter
+test("the profile converter on a synthetic nxnative tree: a patch file that imports what the sandbox does not provide (or uses a builtin it does not have, or fails) is skipped, not fatal: its profile is converted from game.tsv, its patches are marked not converted with the reason, the run lists such files and exits 0; --strict fails; CUTS, MATCH_CUTS and FRAME_STEP of a good file convert as before", () => {
+  const nx = join(SCRATCH, "fake-nxnative"), out = join(SCRATCH, "fake-profiles");
+  rmSync(nx, { recursive: true, force: true }); rmSync(out, { recursive: true, force: true });
+  const tsv = (id: string, name: string, more: string[] = []) => [`title_id\t${id}`, `program_id\t${id}`, `name\t${name}`, "ipa\tx.ipa", "modules\tmain sdk", `build\tv0\t1.0.0\tmain=${"11".repeat(16)}\tsdk=${"22".repeat(16)}`,
+    "app_pool\t0xCD500000", "mem_reserve\t0x100000000", "mem_alias\t0x10000000", "mem_stack\t0x10000000", ...more].join("\n") + "\n";
+  const fp = "ab".repeat(32);
+  const tree: Files = {
+    "dm/tools/nso_asm.py": "def B(frm, to): return 0x14000000 | (((to - frm) >> 2) & 0x3FFFFFF)\nNOP = 0xD503201F\n",
+    "dm/tools/sdk_patches.py": `CUTS = {'${"33".repeat(16)}': [(0x10, '1f2003d5', 'c0035fd6', 'an sdk cut')]}\nMATCH_CUTS = {'sdk': [{'name': 'wide', 'size': 16, 'fingerprints': ['${fp}'], 'cuts': [(4, '1f2003d5', 'c0035fd6', 'a wide cut')]}]}\n`,
+    "dm/tools/engine_patches.py": "import engine_tables\nMATCH_CUTS = {}\n",
+    // needs a module the sandbox does not have (what a newer nxnative patch file does)
+    "dm/games/0100000000001000/game.tsv": tsv("0100000000001000", "Needs A Module", ["fps_target\t60"]),
+    "dm/games/0100000000001000/patches.py": `from nso_match import Image\nCUTS = {'${"11".repeat(16)}': [(0, '1f2003d5', 'c0035fd6', 'never converted')]}\n`,
+    // a good one: every kind
+    "dm/games/0100000000002000/game.tsv": tsv("0100000000002000", "Good Patches", ["mem_reserve\t0x400000000", "mem_alias\t0x200000000"]),
+    "dm/games/0100000000002000/patches.py": [
+      "import struct", "from nso_asm import B, NOP",
+      `CUTS = {'${"11".repeat(16)}': [(0x40, '1f2003d5', struct.pack('<I', NOP).hex(), 'a cut')]}`,
+      `MATCH_CUTS = {'main': [{'name': 'one', 'size': 32, 'fingerprints': ['${fp}'], 'cuts': [(8, '1f2003d5', struct.pack('<I', B(8, 16)).hex(), 'a branch inside the function')]},`,
+      `                       {'name': 'two', 'functions': [{'size': 8, 'fingerprints': ['${fp}'], 'cuts': [(0, '1f2003d5', 'c0035fd6', 'first')]}, {'size': 12, 'fingerprints': ['${fp}', '${"cd".repeat(32)}'], 'cuts': [(4, '1f2003d5', 'c0035fd6', 'second')]}]}]}`,
+      "def step(ctx):", "    ctx.site(0x100, '1f2003d5'); ctx.emit(NOP); ctx.emit(B(ctx.here(), ctx.here() + 8)); ctx.put(0x100, [NOP], 'a stub')",
+      `FRAME_STEP = {'${"11".repeat(16)}': step}`, ""].join("\n"),
+    // no patch file
+    "dm/games/0100000000003000/game.tsv": tsv("0100000000003000", "No Patches", ["mem_reserve\t0x60000000"]),
+    // a builtin outside the whitelist
+    "dm/games/0100000000004000/game.tsv": tsv("0100000000004000", "Opens A File"),
+    "dm/games/0100000000004000/patches.py": "CUTS = {}\ndata = open('/etc/hostname').read()\n",
+    // fails while it is evaluated
+    "dm/games/0100000000005000/game.tsv": tsv("0100000000005000", "Raises"),
+    "dm/games/0100000000005000/patches.py": "CUTS = {}\nassert 1 == 2, 'a table that does not hold'\n",
+  };
+  writeTree(nx, tree);
+  const tool = join(ROOT, "tools", "prepare", "convert_profiles.py");
+  const conv = (args: string[]) => { try { return { code: 0, out: execFileSync("python3", [tool, "--nxnative", nx, "--out", out, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) }; } catch (e: any) { return { code: e.status as number, out: String(e.stdout) + String(e.stderr) }; } };
+  const r = conv([]);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /patch files not evaluated: 4 \(their profiles are converted from game\.tsv, without patches; --strict fails here\)/);
+  assert.match(r.out, /  0100000000001000\/patches\.py: imports nso_match, which the sandbox does not provide \(it has nso_asm, struct\)/);
+  assert.match(r.out, /  0100000000004000\/patches\.py: uses a name the sandbox does not provide \(name 'open' is not defined\)/);
+  assert.match(r.out, /  0100000000005000\/patches\.py: fails while it is evaluated \(AssertionError: a table that does not hold\)/);
+  assert.match(r.out, /  engine_patches\.py: imports engine_tables, which the sandbox does not provide/);
+  assert.ok(!/\[RED\]/.test(r.out), r.out);
+  const read = (n: string) => JSON.parse(readFileSync(join(out, n), "utf8"));
+  const a = read("0100000000001000.json") as Profile, b = read("0100000000002000.json") as Profile, c = read("0100000000003000.json") as Profile, rep = read("report.json"), sdk = read("_sdk.json");
+  // the skipped one: everything of game.tsv, nothing of the patch file, and the reason where the page and the report find it
+  assert.deepEqual([a.name, a.apply.app_pool, a.builds[0].modules.main, a.needs.map(n => n.key), a.cuts, a.match_cuts], ["Needs A Module", "0xCD500000", "11".repeat(16), ["fps_target"], {}, {}]);
+  assert.deepEqual([a.patches, a.unconverted], [{ converted: false, reason: "imports nso_match, which the sandbox does not provide (it has nso_asm, struct)" }, [{ kind: "PATCH_FILE", reason: "imports nso_match, which the sandbox does not provide (it has nso_asm, struct)" }]]);
+  assert.deepEqual([a.address_space!.fit, c.address_space!.fit], ["pool", "profile"]);
+  assert.deepEqual(rep.conversion.patch_files_skipped.map((e: { file: string }) => e.file), ["0100000000001000/patches.py", "0100000000004000/patches.py", "0100000000005000/patches.py", "engine_patches.py"]);
+  assert.deepEqual(rep.conversion.unconverted.PATCH_FILE.profiles, ["0100000000001000", "0100000000004000", "0100000000005000", "engine_patches.py"]);
+  assert.deepEqual(rep.problems, []);
+  // the good one
+  assert.deepEqual(b.cuts, { ["11".repeat(16)]: { module: "main", cuts: [{ off: 0x40, orig: "1f2003d5", new: "1f2003d5", why: "a cut" }] } });
+  assert.deepEqual(b.match_cuts, { main: [
+    { name: "one", functions: [{ size: 32, fingerprints: [fp], cuts: [{ off: 8, orig: "1f2003d5", new: "02000014", why: "a branch inside the function" }] }] },
+    { name: "two", functions: [{ size: 8, fingerprints: [fp], cuts: [{ off: 0, orig: "1f2003d5", new: "c0035fd6", why: "first" }] }, { size: 12, fingerprints: [fp, "cd".repeat(32)], cuts: [{ off: 4, orig: "1f2003d5", new: "c0035fd6", why: "second" }] }] }] });
+  assert.deepEqual(b.unconverted.map(u => [u.kind, u.sites, u.writes, u.stub_words]), [["FRAME_STEP", 1, 1, 2]]);
+  assert.equal(b.patches, undefined);
+  assert.deepEqual([b.address_space!.fit, b.needs.map(n => n.key), /does not fit a 32-bit memory: the profile reserves heap 7\.50 GB, alias 8\.00 GB/.test(b.needs[0].what)], ["short", ["address_space"], true]);
+  assert.deepEqual([c.cuts, c.unconverted, c.patches], [{}, [], undefined]);
+  assert.deepEqual([Object.keys(sdk.cuts), sdk.match_cuts.sdk.map((x: MatchRule & { file: string }) => [x.name, x.file]), sdk.unconverted], [["33".repeat(16)], [["wide", "sdk_patches.py"]], [{ kind: "PATCH_FILE", reason: "imports engine_tables, which the sandbox does not provide (it has nso_asm, struct)", file: "engine_patches.py" }]]);
+  assert.deepEqual([rep.conversion.registered_cuts, rep.conversion.converted_cuts, rep.conversion.match_rules, rep.conversion.converted_match_rules, rep.conversion.wide_match_rules, rep.address_space.counts], [1, 1, 2, 2, 1, { profile: 1, pool: 3, short: 1, unknown: 0 }]);
+  // the files are stable, --check agrees and also exits 0; --strict is the old behaviour
+  const chk = conv(["--check"]); assert.equal(chk.code, 0, chk.out); assert.match(chk.out, /convert_profiles --check: 8 files are up to date/); assert.match(chk.out, /patch files not evaluated: 4/);
+  const strict = conv(["--strict"]); assert.equal(strict.code, 1); assert.match(strict.out, /\[RED\] convert_profiles --strict: 0100000000001000\/patches\.py imports nso_match, which the sandbox does not provide/);
+  // a rule that cannot be right is a problem (red, exit 1), not a silent skip: a PC-relative replacement that leaves its function
+  writeFileSync(join(nx, "dm", "games", "0100000000003000", "patches.py"), `MATCH_CUTS = {'main': [{'name': 'bad', 'size': 16, 'fingerprints': ['${fp}'], 'cuts': [(8, '1f2003d5', '04000014', 'a branch out of the function')]}]}\n`);
+  const bad = conv([]); assert.equal(bad.code, 1); assert.match(bad.out, /\[RED\] 0100000000003000 module main: a function-matched rule does not convert \(ValueError: replacement must not contain PC-relative instructions, except branches inside the matched function\)/);
+  // the prepare step shows a skipped patch file for what it is
+  return [`5 synthetic profiles, 4 patch files and 2 shared files: 4 not evaluated (a missing module twice, a missing builtin, an assertion), exit 0; --strict exits 1`, r.out.trim().split("\n").filter(l => /not evaluated|patches\.py:/.test(l)).join(" | ")];
 });
 
 // =================================================================================================== run

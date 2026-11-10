@@ -3,7 +3,7 @@
 engine_patches.py) into what nxweb's prepare step reads: one JSON per game under src/prepare/profiles/, the SDK
 cuts, an index, and the report of what converted.
 
-  convert_profiles.py [--nxnative DIR] [--out DIR] [--check]
+  convert_profiles.py [--nxnative DIR] [--out DIR] [--check] [--strict]
 
 nxnative is MIT licensed (Copyright (c) 2026 seedds); the profiles are its constants and tables. Nothing here reads a
 game file. What is carried over: profile keys, build IDs, and the registered cuts (offset, the original bytes a cut
@@ -15,22 +15,27 @@ Key classes (KEYS below is the single source; src/prepare/README.md has the tabl
   b  Apple / Metal / rewriter / offline-chain specific: dropped
   c  switches a per-game mechanism nxweb does not have yet: listed for the player as "will not work"
 
+The address space is not judged here: a profile's reserved regions are handed to the runtime's own rule
+(src/glue/rt_process.ts layoutFor, run through tools/prepare/layout_verdict.mts), and what it answers ("profile",
+"pool" or "short", with its sentence) is what the profile file and the report hold. Node is needed for that.
+
 Patch files are Python. They are not imported: each is executed in a namespace with no builtins but a short
 whitelist, whose only importable modules are `struct` and `nso_asm` (nxnative's 28-line encoder module, executed the
-same way). CUTS are data once evaluated. FRAME_STEP functions are called with a recording context, which shows what
-they would write (sites, stub words) but not something nxweb can apply: see `UNCONVERTED`.
+same way). CUTS and MATCH_CUTS are data once evaluated. FRAME_STEP functions are called with a recording context,
+which shows what they would write (sites, stub words) but not something nxweb can apply: see `UNCONVERTED`.
+A patch file that cannot be evaluated this way (it imports a module the sandbox does not provide, uses a builtin
+outside the whitelist, or fails while it runs) does not stop the conversion: its profile is converted from game.tsv,
+its patches are marked as not converted with the reason, the run ends with a list of such files and exit code 0.
+`--strict` makes that a failure, as it was.
 """
-import argparse, hashlib, json, os, struct, sys, types
+import argparse, hashlib, json, os, struct, subprocess, sys, types
 
 NXNATIVE = os.environ.get("NXNATIVE", "/home/user/nxnative")
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "..", "src", "prepare", "profiles")
 SOURCE = "nxnative dm/games (MIT, Copyright (c) 2026 seedds)"
 
-# nxweb's fixed address space (docs/ARCHITECTURE.md, "The memory map"): what a profile's partition is compared with
-WEB_HEAP = 0x60000000      # 0x1800_0000 .. 0x7800_0000
-WEB_ALIAS = 0x77FF0000     # 0x8800_0000 .. 0xFFFF_0000
-WEB_STACK = 0x10000000     # 0x7800_0000 .. 0x8800_0000
+LAYOUT_VERDICT = os.path.join(HERE, "layout_verdict.mts")   # the runtime's layoutFor over the profiles' reserved regions
 
 # key -> (class, where it goes or why it is dropped, for class c: what the player is told)
 KEYS = {
@@ -59,9 +64,9 @@ KEYS = {
     "ipa":            ("b", "iOS package file name", ""),
     "app_category":   ("b", "App Store category", ""),
     "zip_store":      ("b", "IPA compression", ""),
-    "mem_reserve":    ("b", "the Apple host's guest block size; nxweb's map is fixed in a 4 GB memory (see `address_space` under c when it does not fit)", ""),
+    "mem_reserve":    ("b", "the Apple host's guest block size; with mem_alias and mem_stack it gives the regions the runtime's per-game layout starts from (see `address_space`)", ""),
     "mem_alias":      ("b", "the iPhone's alias region size; as mem_reserve", ""),
-    "mem_stack":      ("b", "the Apple host's stack region size; nxweb's is 256 MB", ""),
+    "mem_stack":      ("b", "the Apple host's stack region size; as mem_reserve", ""),
     "shader_versions": ("b", "which versions nxnative's offline shader tables are the union of", ""),
     "shader_groups":  ("b", "shader_split.py's source groups (offline chain bookkeeping)", ""),
     "shader_note":    ("b", "shader_split.py's table header", ""),
@@ -96,14 +101,14 @@ KEYS = {
     "programs":       ("c", "main.c multi-program", "A game of several programs: only the program in the folder runs; starting another program (oe::ExecuteProgram) is not implemented."),
     "program_of":     ("c", "main.c multi-program", "One program of a multi-program game: it runs alone, with the launch parameter of its profile."),
 }
-# derived, class c: not a key of game.tsv but what its memory keys say against nxweb's fixed map
-ADDRESS_SPACE = ("c", "wasm32: one 4 GB memory (memory64 or a smaller reported pool)", "nxnative gives this game {detail}; a game that sizes its heap from the memory pool it is told about will ask for more than a 4 GB WebAssembly memory can map (the pool nxweb reports would have to be smaller; not tried).")
+# derived, class c: not a key of game.tsv but what the runtime's layout rule answers for its memory keys ("short")
+ADDRESS_SPACE = ("c", "wasm32: one 4 GB memory; the verdict is the runtime's (src/glue/rt_process.ts layoutFor), only \"short\" is listed", "This game does not fit a 32-bit memory: {note}.")
 
 UNCONVERTED = {
-    "FRAME_STEP": "frame-step and screen-shape stubs: code assembled into a patch area beside the module that reads a state page the host writes each frame; needs a patch area in the loader's map, the state page and the host's frame-step driver (nxnative hle_nvn.c fstep_tick)",
-    "MATCH_FRAME_STEP": "as FRAME_STEP, placed by a function fingerprint (nso_match.locate_stub), which also needs the matcher",
-    "MATCH_CUTS": "cuts located by complete-function fingerprints over the module's unwind table (nxnative dm/tools/nso_match.py, 356 lines, not ported); the registered builds' CUTS of the same patches are converted",
+    "FRAME_STEP": "frame-step and screen-shape stubs: code assembled into a patch area beside the module that reads a state page the host writes each frame. Missing in the runtime: a patch area mapped with the module (the loader maps an NSO's three segments and nothing beside them), the state page, and the driver that writes the step each present (nxnative hle_nvn.c fstep_tick); docs/PORTING-STATUS.md, \"Frame-step stubs\"",
+    "MATCH_FRAME_STEP": "as FRAME_STEP, placed by a function fingerprint (the matcher exists: src/prepare/match.ts); the stub is a Python function of the matched addresses, and what it writes needs the same patch area and state page",
     "OBS": "observation gates: a host callback at a pc; the translator hook exists in the hand-off format but no gate number has a nxweb callback",
+    "PATCH_FILE": "the patch file could not be evaluated in the converter's sandbox (the entry says why): none of its patches is converted",
 }
 # rewrites nxnative's rewriter finds by code in any build (patch_nso.py), none ported: name -> (module, what)
 FOUND_BY_CODE = {
@@ -138,10 +143,18 @@ SAFE = {n: getattr(__builtins__, n) if not isinstance(__builtins__, dict) else _
     "AssertionError", "ValueError", "KeyError", "Exception", "True", "False", "None")}
 
 
+class SandboxMissing(ImportError):
+    """A patch file asks for a module the sandbox does not provide"""
+
+
+class PatchFileSkipped(Exception):
+    """A patch file that cannot be evaluated here: the reason, for the profile and the report"""
+
+
 def sandbox(path, modules):
     """Execute a Python file with the whitelist above; `import` gives only what `modules` holds"""
     def imp(name, globals=None, locals=None, fromlist=(), level=0):
-        if name not in modules: raise ImportError(f"{os.path.basename(path)} imports {name}, which the sandbox does not provide")
+        if name not in modules: raise SandboxMissing(f"imports {name}, which the sandbox does not provide (it has {', '.join(sorted(modules)) or 'no modules'})")
         return modules[name]
     ns = {"__builtins__": dict(SAFE, __import__=imp, print=lambda *a, **k: None, __build_class__=None), "__name__": "patches"}
     with open(path, encoding="utf-8") as f: src = f.read()
@@ -194,11 +207,77 @@ class Recorder:
     def address(self, off): raise ValueError("ctx.address reads the game's text")
 
 
+# ---- MATCH_CUTS: cuts placed by the function they lie in (nxnative dm/tools/nso_match.py; here src/prepare/match.ts) ----
+def _signed(n, bits): return n - (1 << bits) if n & (1 << (bits - 1)) else n
+
+
+def _relative(w):
+    """The signed byte displacement of a direct branch (b, bl, b.cond, cbz, cbnz, tbz, tbnz), or None"""
+    if w & 0x7c000000 == 0x14000000: return _signed(w & 0x3ffffff, 26) * 4
+    if w & 0xff000010 == 0x54000000 or w & 0x7e000000 == 0x34000000: return _signed((w >> 5) & 0x7ffff, 19) * 4
+    if w & 0x7e000000 == 0x36000000: return _signed((w >> 5) & 0x3fff, 14) * 4
+    return None
+
+
+def convert_match_function(fn):
+    """One function of a rule, checked as nxnative's nso_match.validate checks it: {size, fingerprints, cuts}"""
+    if set(fn) != {"size", "fingerprints", "cuts"}: raise ValueError("a function of a patch has size, fingerprints and cuts")
+    size, fps = fn["size"], fn["fingerprints"]
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0 or size % 4: raise ValueError("invalid function size")
+    if not isinstance(fps, (list, tuple)) or not fps: raise ValueError("missing function fingerprints")
+    for d in fps:
+        if not isinstance(d, str) or len(d) != 64 or any(c not in "0123456789abcdef" for c in d): raise ValueError("invalid function fingerprint")
+    if not fn["cuts"]: raise ValueError("function patch has no cuts")
+    used, cuts = set(), []
+    for delta, old, new, reason in fn["cuts"]:
+        ob, nb = bytes.fromhex(old), bytes.fromhex(new)
+        if not reason or not isinstance(delta, int) or len(ob) != len(nb) or not ob or len(ob) % 4 or delta % 4 or not 0 <= delta <= size - len(ob): raise ValueError("invalid function-relative cut")
+        span = set(range(delta, delta + len(ob)))
+        if used & span: raise ValueError("overlapping cuts")
+        used |= span
+        for i, (w,) in enumerate(struct.iter_unpack("<I", nb)):
+            # a branch that stays inside the matched function means the same wherever the function lies; anything else that is PC-relative depends on an address
+            br = _relative(w)
+            pcrel = br is not None or w & 0x1f000000 == 0x10000000 or w & 0x3b000000 == 0x18000000
+            if pcrel and not (br is not None and 0 <= delta + i * 4 + br < size): raise ValueError("replacement must not contain PC-relative instructions, except branches inside the matched function")
+        cuts.append({"off": delta, "orig": ob.hex(), "new": nb.hex(), "why": str(reason)})
+    return {"size": size, "fingerprints": list(fps), "cuts": cuts}
+
+
+def convert_match_cuts(table, where, problems):
+    """MATCH_CUTS {module: [rule]} -> {module: [{name, functions: [{size, fingerprints, cuts: [{off, orig, new, why}]}]}]}; off is from the function's start.
+    A rule of one function ({name, size, fingerprints, cuts}) and one of several ({name, functions}) come out in the one shape. Rules of one name are one
+    patch's reviewed implementations: exactly one must match (the order is kept)"""
+    out, n, bad = {}, 0, 0
+    for mod, rules in table.items():
+        conv = []
+        for rule in rules:
+            n += 1
+            try:
+                if not isinstance(rule, dict) or not rule.get("name") or not isinstance(rule["name"], str): raise ValueError("a rule needs a name")
+                if "functions" in rule:
+                    if set(rule) != {"name", "functions"}: raise ValueError("a patch of several functions needs only name and functions")
+                    if not isinstance(rule["functions"], (list, tuple)) or len(rule["functions"]) < 2: raise ValueError("a patch of several functions needs at least two")
+                    fns = [convert_match_function(f) for f in rule["functions"]]
+                else:
+                    if set(rule) != {"name", "size", "fingerprints", "cuts"}: raise ValueError("function patch needs name, size, fingerprints and cuts")
+                    fns = [convert_match_function({k: rule[k] for k in ("size", "fingerprints", "cuts")})]
+                conv.append({"name": rule["name"], "functions": fns})
+            except Exception as e:
+                bad += 1; problems.append(f"{where} module {mod}: a function-matched rule does not convert ({type(e).__name__}: {e})")
+        if conv: out[str(mod)] = conv
+    return out, n, bad
+
+
 def convert_patch_file(path, asm, label):
     problems = []
-    ns = sandbox(path, {"struct": struct, "nso_asm": asm})
+    try: ns = sandbox(path, {"struct": struct, "nso_asm": asm})
+    except SandboxMissing as e: raise PatchFileSkipped(str(e))
+    except NameError as e: raise PatchFileSkipped(f"uses a name the sandbox does not provide ({e})")
+    except Exception as e: raise PatchFileSkipped(f"fails while it is evaluated ({type(e).__name__}: {e})")
     res = {"cuts": {}, "n_cuts": 0, "bad_cuts": 0, "unconverted": [], "capabilities": {}}
     res["cuts"], res["n_cuts"], res["bad_cuts"] = convert_cuts(ns.get("CUTS", {}), label, problems)
+    res["match_cuts"], res["n_match"], res["bad_match"] = convert_match_cuts(ns.get("MATCH_CUTS", {}), label, problems)
     for bid, fn in ns.get("FRAME_STEP", {}).items():
         r = Recorder(); note = ""
         try: fn(r)
@@ -207,23 +286,24 @@ def convert_patch_file(path, asm, label):
                                    "capabilities": sorted(r.capabilities), "render_scale": bool(r.render_scale), "note": "recorded" + note})
     for mod, rules in ns.get("MATCH_FRAME_STEP", {}).items():
         res["unconverted"].append({"kind": "MATCH_FRAME_STEP", "module": mod, "rules": len(rules), "names": sorted({r.get("name", "?") for r in rules})})
-    for mod, rules in ns.get("MATCH_CUTS", {}).items():
-        res["unconverted"].append({"kind": "MATCH_CUTS", "module": mod, "rules": len(rules), "names": sorted({r.get("name", "?") if isinstance(r, dict) else "?" for r in rules})})
     for bid, rows in ns.get("OBS", {}).items():
         res["unconverted"].append({"kind": "OBS", "build": bid, "gates": len(rows)})
     for bid, caps in ns.get("CAPABILITIES", {}).items(): res["capabilities"][bid] = list(caps)
     return res, problems
 
 
+EMPTY_PATCHES = {"cuts": {}, "n_cuts": 0, "bad_cuts": 0, "unconverted": [], "capabilities": {}, "match_cuts": {}, "n_match": 0, "bad_match": 0}
+
+
 def version_number(v):   # 'v327680' -> 327680
     return int(v[1:]) if v.startswith("v") and v[1:].isdigit() else None
 
 
-def convert_game(nx, gid, asm, problems):
+def convert_game(nx, gid, asm, problems, skipped, strict):
     d = os.path.join(nx, "dm", "games", gid)
     rows = read_tsv(os.path.join(d, "game.tsv"))
     prof = {"source": f"nxnative dm/games/{gid}/game.tsv" + ("" if not os.path.exists(os.path.join(d, "patches.py")) else " and patches.py") + " (MIT, Copyright (c) 2026 seedds)",
-            "title_id": gid, "name": "", "builds": [], "apply": {}, "needs": [], "dropped": [], "unknown": [], "cuts": {}, "unconverted": []}
+            "title_id": gid, "name": "", "builds": [], "apply": {}, "needs": [], "dropped": [], "unknown": [], "cuts": {}, "match_cuts": {}, "unconverted": []}
     seen = {}
     for key, vals in rows:
         val = " ".join(vals)
@@ -239,22 +319,23 @@ def convert_game(nx, gid, asm, problems):
         if cls[0] == "a": prof["apply"][key] = val
         elif cls[0] == "c": prof["needs"].append({"key": key, "value": val, "what": cls[2]})
         else: prof["dropped"].append(key)
-    a = prof["apply"]
-    # the memory partition against nxweb's fixed map
+    # the regions the profile reserves (nxnative hle_svc.c: the heap region is the reserve less 256 MB, the stack region and the alias region); what the
+    # runtime makes of them is asked of the runtime's rule for all profiles together (layout_verdicts)
     raw = {k: " ".join(v) for k, v in rows}
     try:
         reserve, alias, stack = int(raw["mem_reserve"], 0), int(raw["mem_alias"], 0), int(raw["mem_stack"], 0)
-        heap = reserve - 0x10000000 - stack - alias
-        over = []
-        if heap > WEB_HEAP: over.append(f"a {heap / 2**30:.2f} GB heap region (nxweb: {WEB_HEAP / 2**30:.2f} GB)")
-        if alias > WEB_ALIAS: over.append(f"a {alias / 2**30:.2f} GB alias region (nxweb: {WEB_ALIAS / 2**30:.2f} GB)")
-        prof["address_space"] = {"heap_region": heap, "alias_region": alias, "stack_region": stack, "fits": not over}
-        if over: prof["needs"].append({"key": "address_space", "value": f"heap {heap:#x} alias {alias:#x}", "what": ADDRESS_SPACE[2].format(detail=" and ".join(over))}); seen["address_space"] = "c"
+        prof["address_space"] = {"heap_region": reserve - 0x10000000 - stack - alias, "alias_region": alias, "stack_region": stack}
     except (KeyError, ValueError) as e: problems.append(f"{gid}: memory keys: {e}")
-    counts = {"cuts": 0, "bad_cuts": 0}
+    counts = {"cuts": 0, "bad_cuts": 0, "match": 0, "bad_match": 0}
     pp = os.path.join(d, "patches.py")
     if os.path.exists(pp):
-        res, pr = convert_patch_file(pp, asm, gid)
+        try: res, pr = convert_patch_file(pp, asm, gid)
+        except PatchFileSkipped as e:
+            if strict: sys.exit(f"[RED] convert_profiles --strict: {gid}/patches.py {e}")
+            skipped.append({"file": f"{gid}/patches.py", "profile": gid, "reason": str(e)})
+            prof["patches"] = {"converted": False, "reason": str(e)}
+            prof["unconverted"] = [{"kind": "PATCH_FILE", "reason": str(e)}]
+            return prof, seen, counts
         problems += pr
         own = {b for row in prof["builds"] for b in row["modules"].values()}
         for bid in res["cuts"]:
@@ -262,29 +343,55 @@ def convert_game(nx, gid, asm, problems):
         # which module a build id is: from the build rows
         modof = {b: m for row in prof["builds"] for m, b in row["modules"].items()}
         prof["cuts"] = {bid: {"module": modof.get(bid, "main"), "cuts": cuts} for bid, cuts in res["cuts"].items()}
+        prof["match_cuts"] = res["match_cuts"]
         prof["unconverted"] = res["unconverted"]
         if res["capabilities"]: prof["capabilities"] = res["capabilities"]
-        counts = {"cuts": res["n_cuts"], "bad_cuts": res["bad_cuts"]}
+        counts = {"cuts": res["n_cuts"], "bad_cuts": res["bad_cuts"], "match": res["n_match"], "bad_match": res["bad_match"]}
     return prof, seen, counts
+
+
+def layout_verdicts(profs):
+    """The runtime's layout rule over every profile's regions: {title id: verdict}, and the rule's own constants for the report"""
+    ask = [{"id": p["title_id"], "apply": p["apply"], "space": p["address_space"]} for p in profs if "address_space" in p]
+    try: r = subprocess.run([os.environ.get("NODE", "node"), LAYOUT_VERDICT], input=json.dumps(ask), capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e: sys.exit(f"[RED] convert_profiles: the layout rule could not be run (node {LAYOUT_VERDICT}): {e}")
+    if r.returncode: sys.exit(f"[RED] convert_profiles: the layout rule failed (node {LAYOUT_VERDICT}): {r.stderr.strip()[-600:]}")
+    out = json.loads(r.stdout)
+    return {v["id"]: v for v in out["verdicts"]}, {"rule": out["rule"], "space": out["space"], "defaults": out["defaults"]}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--nxnative", default=NXNATIVE); ap.add_argument("--out", default=OUT)
     ap.add_argument("--check", action="store_true", help="fail when the files in --out are not what this run would write")
+    ap.add_argument("--strict", action="store_true", help="fail on a patch file the sandbox cannot evaluate, instead of converting its profile without patches")
     a = ap.parse_args()
     nx, out = a.nxnative, os.path.abspath(a.out)
     games_dir = os.path.join(nx, "dm", "games")
     if not os.path.isdir(games_dir): sys.exit(f"[RED] convert_profiles: no nxnative checkout at {nx} (NXNATIVE)")
     asm = load_asm(nx)
-    problems, files = [], {}
+    problems, files, skipped = [], {}, []
     gids = sorted(g for g in os.listdir(games_dir) if os.path.isfile(os.path.join(games_dir, g, "game.tsv")))
     per_class = {"a": 0, "b": 0, "c": 0}       # (profile, key) pairs
     key_profiles = {}                          # key -> number of profiles that set it
     index = {"source": SOURCE, "games": {}, "builds": {}}
-    conv = {"registered_cuts": 0, "converted_cuts": 0, "patch_files": 0, "cut_builds": 0, "unconverted": {}}
-    for gid in gids:
-        prof, seen, counts = convert_game(nx, gid, asm, problems)
+    conv = {"registered_cuts": 0, "converted_cuts": 0, "patch_files": 0, "cut_builds": 0, "match_rules": 0, "converted_match_rules": 0, "match_profiles": [], "unconverted": {}}
+    def unconverted(u, where):
+        e = conv["unconverted"].setdefault(u["kind"], {"entries": 0, "items": 0, "profiles": []})
+        e["entries"] += 1; e["items"] += u.get("rules", u.get("sites", u.get("gates", 0))); e["profiles"].append(where)
+    converted = [convert_game(nx, gid, asm, problems, skipped, a.strict) for gid in gids]
+    verdicts, rule = layout_verdicts([c[0] for c in converted])
+    space = {"rule": rule["rule"], "space": rule["space"], "defaults": rule["defaults"], "profile": [], "pool": [], "short": [], "unknown": []}
+    for gid, (prof, seen, counts) in zip(gids, converted):
+        v = verdicts.get(gid)
+        if v is None: space["unknown"].append(gid)
+        else:
+            sp = prof["address_space"]
+            sp.update(fit=v["fit"], fits=v["fit"] != "short", note=v["note"], layout={"heap": v["heap"], "alias": v["alias"], "stack": v["stack"], "pool": v["pool"]})
+            space[v["fit"]].append({"id": gid, "why": v["note"]} if v["fit"] != "profile" else gid)
+            if v["fit"] == "short":
+                prof["needs"].append({"key": "address_space", "value": f"heap {sp['heap_region']:#x} alias {sp['alias_region']:#x} stack {sp['stack_region']:#x}", "what": ADDRESS_SPACE[2].format(note=v["note"])})
+                seen["address_space"] = "c"
         for k, c in seen.items():
             per_class[c] += 1; key_profiles[k] = key_profiles.get(k, 0) + 1
         files[f"{gid}.json"] = prof
@@ -293,19 +400,30 @@ def main():
             if "main" in row["modules"]: index["builds"].setdefault(row["modules"]["main"], gid)
         if os.path.exists(os.path.join(games_dir, gid, "patches.py")): conv["patch_files"] += 1
         conv["registered_cuts"] += counts["cuts"]; conv["converted_cuts"] += counts["cuts"] - counts["bad_cuts"]; conv["cut_builds"] += len(prof["cuts"])
-        for u in prof["unconverted"]:
-            e = conv["unconverted"].setdefault(u["kind"], {"entries": 0, "items": 0, "profiles": []})
-            e["entries"] += 1; e["items"] += u.get("rules", u.get("sites", u.get("gates", 0))); e["profiles"].append(gid)
+        conv["match_rules"] += counts["match"]; conv["converted_match_rules"] += counts["match"] - counts["bad_match"]
+        if prof["match_cuts"]: conv["match_profiles"].append(gid)
+        for u in prof["unconverted"]: unconverted(u, gid)
     # the shared files: Nintendo SDK module builds, and engine-wide rules
-    sdk, pr = convert_patch_file(os.path.join(nx, "dm", "tools", "sdk_patches.py"), asm, "sdk_patches.py"); problems += pr
-    eng, pr = convert_patch_file(os.path.join(nx, "dm", "tools", "engine_patches.py"), asm, "engine_patches.py"); problems += pr
-    files["_sdk.json"] = {"source": "nxnative dm/tools/sdk_patches.py (MIT, Copyright (c) 2026 seedds)",
-                          "cuts": {bid: {"module": "sdk", "cuts": cuts} for bid, cuts in sdk["cuts"].items()}, "unconverted": sdk["unconverted"] + [dict(u, file="engine_patches.py") for u in eng["unconverted"]]}
+    shared = {}
+    for name in ("sdk_patches.py", "engine_patches.py"):
+        try: shared[name], pr = convert_patch_file(os.path.join(nx, "dm", "tools", name), asm, name); problems += pr
+        except PatchFileSkipped as e:
+            if a.strict: sys.exit(f"[RED] convert_profiles --strict: {name} {e}")
+            skipped.append({"file": name, "profile": None, "reason": str(e)})
+            shared[name] = dict(EMPTY_PATCHES, unconverted=[{"kind": "PATCH_FILE", "reason": str(e)}])
+    sdk, eng = shared["sdk_patches.py"], shared["engine_patches.py"]
+    # rules for every game's module of a name, whatever the profile: the SDK's first, then the engines' (nxnative patch_nso.py SHARED)
+    wide = {}
+    for name, res in shared.items():
+        for mod, rules in res["match_cuts"].items(): wide.setdefault(mod, []).extend(dict(r, file=name) for r in rules)
+    files["_sdk.json"] = {"source": "nxnative dm/tools/sdk_patches.py and engine_patches.py (MIT, Copyright (c) 2026 seedds)",
+                          "cuts": {bid: {"module": "sdk", "cuts": cuts} for bid, cuts in sdk["cuts"].items()}, "match_cuts": wide,
+                          "unconverted": sdk["unconverted"] + [dict(u, file="engine_patches.py") for u in eng["unconverted"]]}
     conv["sdk_cuts"] = sdk["n_cuts"]; conv["sdk_converted"] = sdk["n_cuts"] - sdk["bad_cuts"]; conv["sdk_builds"] = len(sdk["cuts"])
-    for name, res in (("sdk_patches.py", sdk), ("engine_patches.py", eng)):
-        for u in res["unconverted"]:
-            e = conv["unconverted"].setdefault(u["kind"], {"entries": 0, "items": 0, "profiles": []})
-            e["entries"] += 1; e["items"] += u.get("rules", u.get("sites", u.get("gates", 0))); e["profiles"].append(name)
+    conv["wide_match_rules"] = sdk["n_match"] + eng["n_match"]; conv["converted_wide_match_rules"] = conv["wide_match_rules"] - sdk["bad_match"] - eng["bad_match"]
+    for name, res in shared.items():
+        for u in res["unconverted"]: unconverted(u, name)
+    conv["patch_files_skipped"] = skipped
     # no build id may be claimed twice (nxnative stops the rewrite)
     claimed = {}
     for name, f in files.items():
@@ -313,10 +431,12 @@ def main():
             if bid in claimed: problems.append(f"build {bid} has cuts in both {claimed[bid]} and {name}")
             claimed[bid] = name
     index["sdk_builds"] = sorted(files["_sdk.json"]["cuts"])
+    index["match_modules"] = sorted(wide)
     classes = {k: {"class": v[0], "note": v[1], "what": v[2], "profiles": key_profiles.get(k, 0)} for k, v in KEYS.items()}
     classes["address_space"] = {"class": "c", "note": ADDRESS_SPACE[1], "what": ADDRESS_SPACE[2], "profiles": key_profiles.get("address_space", 0), "derived": True}
     top_c = sorted(((k, n) for k, n in key_profiles.items() if classes[k]["class"] == "c"), key=lambda x: (-x[1], x[0]))[:20]
-    report = {"source": SOURCE, "profiles": len(gids), "web_map": {"heap": WEB_HEAP, "alias": WEB_ALIAS, "stack": WEB_STACK},
+    space["counts"] = {k: len(space[k]) for k in ("profile", "pool", "short", "unknown")}
+    report = {"source": SOURCE, "profiles": len(gids), "address_space": space,
               "pairs_per_class": per_class, "keys_per_class": {c: sum(1 for v in classes.values() if v["class"] == c) for c in "abc"},
               "keys_set_per_class": {c: sum(1 for k, v in classes.items() if v["class"] == c and key_profiles.get(k)) for c in "abc"},
               "top_c": [{"key": k, "profiles": n} for k, n in top_c], "classes": classes, "conversion": conv,
@@ -324,22 +444,32 @@ def main():
     files["index.json"] = index
     files["report.json"] = report
     text = {n: json.dumps(f, indent=1, ensure_ascii=False, sort_keys=False) + "\n" for n, f in files.items()}
+    c = conv
+    def summary():
+        sc = space["counts"]
+        print(f"address space, by the runtime's rule ({rule['rule']}): {sc['profile']} fit as reserved, {sc['pool']} fit what their pool lets them commit, {sc['short']} do not fit" + (f", {sc['unknown']} without memory keys" if sc["unknown"] else ""))
+        for e in space["short"]: print(f"  does not fit: {e['id']}: {e['why']}")
+        for k, e in sorted(c["unconverted"].items()): print(f"not converted: {k}: {e['entries']} entries ({e['items']} rules / sites) in {len(set(e['profiles']))} files: {', '.join(sorted(set(e['profiles'])))}")
+        if skipped:
+            print(f"patch files not evaluated: {len(skipped)} (their profiles are converted from game.tsv, without patches; --strict fails here)")
+            for e in skipped: print(f"  {e['file']}: {e['reason']}")
     if a.check:
         stale = [n for n, t in text.items() if not os.path.exists(os.path.join(out, n)) or open(os.path.join(out, n), encoding="utf-8").read() != t]
         extra = [n for n in os.listdir(out) if n.endswith(".json") and n not in text] if os.path.isdir(out) else []
         if stale or extra: sys.exit(f"[RED] convert_profiles --check: {len(stale)} files differ, {len(extra)} are not written by this tool ({', '.join((stale + extra)[:5])})")
-        print(f"convert_profiles --check: {len(text)} files are up to date"); return
+        print(f"convert_profiles --check: {len(text)} files are up to date")
+        summary(); return
     os.makedirs(out, exist_ok=True)
     for n in os.listdir(out):
         if n.endswith(".json") and n not in text: os.remove(os.path.join(out, n))
     for n, t in text.items():
         with open(os.path.join(out, n), "w", encoding="utf-8") as f: f.write(t)
-    c = conv
     print(f"profiles: {len(gids)} converted into {out}")
     print(f"(profile, key) pairs: a {per_class['a']}, b {per_class['b']}, c {per_class['c']}; keys known: a {report['keys_per_class']['a']}, b {report['keys_per_class']['b']}, c {report['keys_per_class']['c']}")
     print("top class c keys: " + ", ".join(f"{k} {n}" for k, n in top_c))
     print(f"registered cuts: {c['converted_cuts']} of {c['registered_cuts']} in {c['cut_builds']} builds of {c['patch_files']} patch files; sdk: {c['sdk_converted']} of {c['sdk_cuts']} in {c['sdk_builds']} builds")
-    for k, e in sorted(c["unconverted"].items()): print(f"not converted: {k}: {e['entries']} entries ({e['items']} rules / sites) in {len(set(e['profiles']))} files")
+    print(f"function-matched rules: {c['converted_match_rules']} of {c['match_rules']} in {len(c['match_profiles'])} profiles; for every game (sdk, engines): {c['converted_wide_match_rules']} of {c['wide_match_rules']}")
+    summary()
     for p in problems: print(f"[RED] {p}")
     if problems: sys.exit(1)
 

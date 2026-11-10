@@ -21,6 +21,7 @@ exefs/ and romfs/ directly in the folder count as base/
 | `index.ts` | The module's exports (`build/prepare/prepare.wasm`, AssemblyScript, its own memory): the machine and its counters, an arena |
 | `npdm.ts` | `main.npdm`: program ID (the title ID, as nxnative), system resource size, 64-bit flag, main stack size |
 | `cuts.ts` | NSO identity (build ID), the whole-module check, registered cuts applied and the module written as an NSO again; over `src/loader`'s NSO reader, LZ4 and SHA-256 (imported, not changed) |
+| `match.ts`, `gen/match_writes.ts` | Function-matched cuts: the module's functions from its unwind table, nxnative's function fingerprint, a rule list resolved to cuts. The second file is generated: which registers Capstone lists an instruction as writing (`tools/prepare/gen_match_writes.py`) |
 | `romfs_build.ts` | The header and four tables of a standard RomFS image for a tree that stays a directory |
 | `bnsh.ts` | The BNSH shader container scan (a proof for the pre-warm, see Shaders) |
 | `defs/prepare.json` | The one machine (diagram: `docs/machines/prepare.md`) |
@@ -33,13 +34,16 @@ exefs/ and romfs/ directly in the folder count as base/
 | `host/profiles.ts`, `profiles_node.ts` | Access to the converted profiles |
 | `profiles/*.json` | Generated: one file per game, `_sdk.json`, `index.json`, `report.json` (`tools/prepare/convert_profiles.py`) |
 | `../../tools/prepare/convert_profiles.py` | nxnative's `dm/games` and patch files into the above |
+| `../../tools/prepare/layout_verdict.mts` | The runtime's layout rule (`src/glue/rt_process.ts`) over the profiles' memory keys, for the converter |
+| `../../tools/prepare/gen_match_writes.py`, `match_reference.py` | The register-write table measured from Capstone; nxnative's own `nso_match.py` on an image, for the tests |
 | `../../web/prepare.html`, `prepare.ts`, `prepare_build.mts` | The page and its build: a frame of the main page (`web/index.html`), whose Play hands over to the page's Worker |
 
 ```
-npm run prepare:test [-- <filter>]   # Node, 19 tests, about 3 s after the builds
+npm run prepare:test [-- <filter>]   # Node, 23 tests, about 10 s after the builds (the first run compiles 92 modules with unwind tables)
 npm run prepare:browser              # headless Chromium (Playwright): the page, OPFS, a reload mid-stage, Play in a Worker
 npm run prepare:measure [-- <files>] # the directory device against a packed image, 50,000 files
 npm run prepare:profiles             # convert nxnative's profiles again (prepare:profiles:check: are they current)
+npm run prepare:writes               # measure the register-write table from Capstone again (prepare:writes:check)
 npm run prepare:web                  # build build/web/prepare.html and serve it on http://localhost:8081
 npm run kit:test                     # includes test/prepare/prepare.machine.test.mts
 ```
@@ -60,8 +64,8 @@ The page draws from `snapshot()` only; the log lines are for people.
 |---|---|---|---|
 | Detect | the layout, the asked version, name / size / time of every file outside a `romfs/` | reads `main.npdm` and the first 0x100 bytes of each exefs file | layout kind, title ID, versions, the chosen version and its roots, NPDM facts, every NSO with its build ID in load order, DLC with index |
 | Index | name / size / time of every file and directory of the chosen `romfs/` and of each DLC's | builds RomFS tables in the module, stores `rom.tables`, `rom.index`, `aoc<i>.*` | per tree: files, directories, bytes, image size, the tables' SHA-256 |
-| Profile | title ID, version, module build IDs, NPDM facts, the profile's JSON, the SDK cuts that match, the RomFS tables' hash | selects the profile, the modules to load, the cuts | found / by title or build / provisional, registered build or not, `apply`, `needs`, load list, cuts, warnings |
-| Code | name / size / time and build ID of each module to load, the cuts | reads each module whole, checks it (segments unpacked, SHA-256), applies cuts, stores a cut module as `code/<name>.nso` | per module: from the folder or the store, size, SHA-256, cuts |
+| Profile | title ID, version, module build IDs, NPDM facts, the profile's JSON, the SDK cuts that match and the rules for every game's modules of these names, the RomFS tables' hash | selects the profile, the modules to load, the cuts, the function-matched rules for modules no registered cut names | found / by title or build / provisional, registered build or not, `apply`, `needs`, load list, cuts, `match`, `space` and `layout` (the address-space verdict), warnings |
+| Code | name / size / time and build ID of each module to load, the cuts, the rules | reads each module whole, checks it (segments unpacked, SHA-256), places function-matched cuts, applies cuts, stores a cut module as `code/<name>.nso` | per module: from the folder or the store, size, SHA-256, cuts; `matched` (each patch: where, or why not), `matchCuts` |
 | Shaders | chain version, store name, title ID | nothing ahead (see Shaders) | `{ mode: "on-demand", chain, store }` |
 
 **Detection** is nxnative's, rule for rule (`detect.ts` names the functions): the title ID is the ACI0 program ID of
@@ -80,7 +84,7 @@ in hex, as nxnative's profiles write it).
 `manifest.json` in the store (OPFS directory `nxweb-prepare-<folder name>`; a directory under Node):
 
 ```json
-{ "format": 1, "folder": "MyGame", "machine": "Ready", "reason": "",
+{ "format": 2, "folder": "MyGame", "machine": "Ready", "reason": "",
   "stages": { "detect": { "state": "done", "input": "<sha256>", "output": { ... }, "ms": 12 },
               "index": { ... }, "profile": { ... }, "code": { ... }, "shaders": { ... } } }
 ```
@@ -102,13 +106,15 @@ in hex, as nxnative's profiles write it).
 ```ts
 interface HandOff {
   titleId, programId, name, version, displayVersion
-  profile: { id, provisional, registeredBuild, apply: Record<string,string>, needs: { key, value, what }[] }
+  profile: { id, provisional, registeredBuild, apply: Record<string,string>, needs: { key, value, what }[],
+             space: { heap_region, alias_region, stack_region } | null,   // what the profile reserves: the runtime lays the process out from it
+             layout: { fit: "profile" | "pool" | "short", note } | null } // the verdict of the runtime's rule when the profile was converted
   npdm: { sysResource, stackSize, is64, name }
   modules: { name, buildId, size, cuts, bytes(): Promise<Uint8Array> }[]   // load order, cuts already applied
   rom: FsDevice | null;  aoc: Map<index, FsDevice>
   storage(saves: FsStorage): FsStorage   // rom + aoc in front of whatever keeps the saves
   saveId: "nxweb-save-<title id>"        // OpfsStorage's directory
-  cuts: { module, buildId, off, orig, new, why }[]
+  cuts: { module, buildId, off, orig, new, why }[]   // registered ones and function-matched ones ("... [function match]")
   hooks: TranslatorHook[]                // always [] in this round
   shaders: { mode: "on-demand", chain, store }
   message(): Promise<HandOffMessage>     // the same as plain data and Blobs, for postMessage to the Worker
@@ -157,8 +163,10 @@ handed out for `FS_KIND.AOC` at the DLC's index.
 
 `tools/prepare/convert_profiles.py` reads `dm/games/<id>/game.tsv` of all 153 profiles and writes
 `profiles/<id>.json`: `builds` (version, display version, module build IDs), `apply` (class a), `needs` (class c,
-with the sentence the page shows), `dropped` (class b, names), `cuts`, `unconverted`, `address_space`.
-`index.json` maps title IDs and main build IDs to profiles; `report.json` holds the counts below.
+with the sentence the page shows), `dropped` (class b, names), `cuts`, `match_cuts`, `unconverted`, `address_space`
+(and `patches: { converted: false, reason }` when its patch file could not be evaluated, see Code patches).
+`index.json` maps title IDs and main build IDs to profiles; `report.json` holds the counts below, the address-space
+verdict of every profile and, for each patch kind that is not converted, the profiles that have it.
 
 **Selection**, as nxnative: by title ID; else by `main`'s build ID among every profile's build rows (a regional
 release of a known build), with this title's program ID; else none: **provisional** (modules in Horizon's load
@@ -183,13 +191,13 @@ the key.
 | `launch_param`, `game_env` | a | 2, 1 | `hle_cfg_str` `STR_LAUNCH_SPEC`, `STR_GAME_ENV` |
 | `game_args`, `shared_font`, `device_api` | a | 0 | documented keys no profile sets |
 | `ipa`, `app_category`, `zip_store` | b | 153 each | iOS packaging |
-| `mem_reserve`, `mem_alias`, `mem_stack` | b | 153 each | the Apple host's guest block; nxweb's map is fixed (but see `address_space`) |
+| `mem_reserve`, `mem_alias`, `mem_stack` | b | 153 each | the Apple host's guest block; the regions they give are what the runtime's per-game layout starts from (see `address_space`) |
 | `shader_versions`, `shader_note`, `shader_groups` | b | 153, 153, 148 | bookkeeping of nxnative's offline shader tables |
 | `depth_mode` | b | 52 | for Metal pipelines made before the game runs; nxweb takes the game's `nvnDeviceSetDepthMode` |
 | `pso_mtl4`, `pso_gpu`, `enc_thread`, `present_snap`, `draw_barriers`, `vconv_range` | b | 1, 0, 1, 1, 1, 1 | Metal replayer settings and optimizations |
 | `core_preempt` | b | 0 | a remedy over pthreads; nxweb's kernel schedules itself |
 | `jit_key_data`, `jit_out_code`, `jit_route` | b | 1 each | the nn::jit image an iPhone is served; nxweb translates at run time |
-| `address_space` (derived) | c | 149 | heap region `mem_reserve - 256 MB - mem_stack - mem_alias` or `mem_alias` larger than nxweb's 1.5 GB / 1.87 GB |
+| `address_space` (derived) | c | 14 | the runtime's layout rule answers "short" for the profile's regions (below) |
 | `fps_target` | c | 33 | `hle_fpslock.c`, FRAME_STEP stubs, the engine finders |
 | `tex_flush_upload` | c | 12 | textures filled in place and published by a pool flush (`hle_nvn.c` `ft_add`) |
 | `tex_dirty_upload` | c | 11 | write tracking of guest pages |
@@ -201,17 +209,33 @@ the key.
 | `fps_hold`, `program_of`, `screen_aspect`, `shader_key_skip`, `snowdrop_pools`, `stdalloc_cap` | c | 2 each | frame holding; multi-program games; screen-shape stubs; masked shader keys; Snowdrop's pools; StandardAllocator cap |
 | `programs`, `render_base`, `ue_fps_cvar`, `ue_texture_pool` | c | 1 each | multi-program launcher; render scale stub; Unreal console variables |
 
-**Counts over the 153 profiles** ((profile, key) pairs): **a 1,489, b 1,432, c 254**. Keys known to the converter:
+**Counts over the 153 profiles** ((profile, key) pairs): **a 1,489, b 1,432, c 119**. Keys known to the converter:
 a 20, b 20, c 19 (17, 18 and 19 of them set by some profile). **The most common class c keys** are all 19 (there are
-not 20): `address_space` 149, `fps_target` 33, `tex_flush_upload` 12, `tex_dirty_upload` 11, `render_cond` 10,
+not 20): `fps_target` 33, `address_space` 14, `tex_flush_upload` 12, `tex_dirty_upload` 11, `render_cond` 10,
 `present_interval` 8, `fps_max` 6, `gpu_timestamps` 5, `tex_dyn_slots` 4, `fps_hold` 2, `program_of` 2,
 `screen_aspect` 2, `shader_key_skip` 2, `snowdrop_pools` 2, `stdalloc_cap` 2, `programs` 1, `render_base` 1,
-`ue_fps_cvar` 1, `ue_texture_pool` 1. Apart from `address_space`, 100 profiles need nothing of class c, 20 one key,
-23 two, 10 three to five.
+`ue_fps_cvar` 1, `ue_texture_pool` 1.
 
-`address_space` is the finding: nxnative gives 73 profiles a 3.25 GB heap region and 43 a 4.375 GB alias region; 4 of
-153 fit nxweb's map as they are. A game that sizes its heap from the pool it is told about will ask for more than
-the kernel's heap region holds. Whether reporting a smaller pool is enough has not been tried on any game.
+### The address space: the runtime's verdict
+
+Whether a game's memory keys fit is not decided here. The converter computes the three regions a profile reserves
+(nxnative `hle_svc.c`: the heap region is `mem_reserve - 256 MB - mem_stack - mem_alias`) and hands them, with the
+profile's `app_pool`, `mem_used` and `sys_resource`, to **the function a process is laid out with**: `settingsFor` /
+`layoutFor` of `src/glue/rt_process.ts`, run by `tools/prepare/layout_verdict.mts`. No number of the layout is
+written in the converter. What it answers is stored in the profile (`address_space`: the regions, `fit`, `note`, the
+sizes the process gets) and in `report.json` (`address_space`: the rule's name and constants, and the profiles of
+each verdict by title ID, with the rule's sentence for those that do not fit as reserved):
+
+| `fit` | Profiles | Meaning | In the profile |
+|---|---|---|---|
+| `profile` | 44 | the regions fit as reserved | nothing listed |
+| `pool` | 95 | the regions are cut to the address space there is, and still hold everything the pool lets the game commit | nothing listed; the page shows the sentence under Memory |
+| `short` | 14 | not even that (11 Switch 2 titles with a 9 GB pool; 3 whose heap and alias regions are both large) | a `needs` entry `address_space` (class c) with the rule's sentence; the runtime starts the process with what there is and one red line |
+
+The prepare step hands the regions over (`HandOff.profile.space`) and the runtime calls the same function on them
+(`handoffOptions`), so the verdict in the files is the layout the process gets; `prepare:profiles:check` and the test
+"the converted profiles" fail when the rule changes and the files were not converted again (the test also calls
+`settingsFor` on every profile and compares). "Fits" is arithmetic on the profiles: no game has run.
 
 A key the converter does not know stops it with a red line (a new nxnative key must be classified).
 
@@ -224,8 +248,8 @@ What `dm/tools/patch_nso.py` does, sorted:
 | Native execution on Apple only | x18 reads and writes to a thread slot; `tpidr_el0` / `tpidrro_el0` through slots; `svc` and `cntpct_el0` gates; `sub sp, sp, xN` alignment; acquire / release ordering on exclusives; Trinity's `dmb ish`; the jump-table and exclusive-window analysis that makes those sites relocatable; patch-area layout | Dropped: the translator implements the instructions, the kernel takes `svc` directly, there is no host kernel to appease |
 | | `engine_patches.py`: Unity 2018 `ThreadedStreamBuffer` plain loads → load-acquire | Dropped while guest threads run on one Worker (every interleaving is sequentially consistent). Needed again with threads on Workers |
 | Game knowledge | **Registered cuts** (`CUTS`, by build ID) in `patches.py` and `sdk_patches.py` | **Converted and applied: 69 of 69** |
-| | Function-matched cuts (`MATCH_CUTS`: 4 game rules, 12 SDK-wide, 1 engine-wide) | Not converted: needs `nso_match.py` (function fingerprints over the unwind table). The registered builds' cuts of the same patches are among the 69 |
-| | Frame-step and screen-shape stubs (`FRAME_STEP`: 5 builds, 176 sites, 5,179 stub words; `MATCH_FRAME_STEP`: 4 rules) | Not converted: code in a patch area beside the module that reads a state page the host writes each frame |
+| | Function-matched cuts (`MATCH_CUTS`: 4 rules in 3 profiles, 12 SDK-wide, 1 engine-wide) | **Converted: 17 of 17, and matched in the page** (`match.ts`, below) for modules whose build no registered cut names |
+| | Frame-step and screen-shape stubs (`FRAME_STEP`: 5 builds, 176 sites, 5,179 stub words; `MATCH_FRAME_STEP`: 4 rules) | Not converted: code in a patch area beside the module that reads a state page the host writes each frame. What the runtime lacks is listed in `docs/PORTING-STATUS.md`, "Frame-step stubs"; `report.json` names the 8 profiles |
 | | Observation gates (`OBS`) | None registered in any patch file today (0 of 0); the rewriter's own gates (address regions, Unreal) are placed by the finders below |
 | | Rewrites found by code in any build (9): `ue_cvar`, `fps_target`, `ue_fixed_rate`, `unity_fps`, `ue_malloc`, `unity_bucket`, `snowdrop_pools`, `ue_region`, `ue_ring` | Not ported |
 | | Spin-wait loops | Nothing needed for correctness, see below |
@@ -233,9 +257,21 @@ What `dm/tools/patch_nso.py` does, sorted:
 **Conversion is mechanical.** Each patch file is executed, not imported, in a namespace whose builtins are a short
 whitelist and whose only importable modules are `struct` and nxnative's `nso_asm` (its 28 lines evaluated the same
 way). `CUTS` are data once evaluated: 66 cuts in 15 builds of 22 patch files, 3 in 1 build of `sdk_patches.py`, all
-with byte strings of equal length (checked). `FRAME_STEP` functions are called with a recording context (which is
-how the 176 sites and 5,179 words are known), but what they write branches into a patch area and addresses a state
-page, neither of which exists here.
+with byte strings of equal length (checked). `MATCH_CUTS` are data too, and each rule is checked as nxnative's
+`nso_match.validate` checks it (sizes, fingerprints, cuts inside their function and not overlapping, no PC-relative
+replacement except a branch that stays inside the function); a rule that fails is a red line and exit code 1.
+`FRAME_STEP` functions are called with a recording context (which is how the 176 sites and 5,179 words are known),
+but what they write branches into a patch area and addresses a state page, neither of which exists here.
+
+**A patch file the sandbox cannot evaluate is skipped, not fatal.** A newer nxnative has a `patches.py` that imports
+`nso_match`; the converter used to stop on it. Now a file that imports a module the sandbox does not provide, uses a
+builtin outside the whitelist, or raises while it is evaluated leaves its profile converted from `game.tsv` alone:
+no cuts, `patches: { converted: false, reason }`, an `unconverted` entry of kind `PATCH_FILE` (the page lists it),
+the file in `report.json` (`conversion.patch_files_skipped`), a summary at the end of the run, exit code 0. The
+same holds for `sdk_patches.py` and `engine_patches.py`. `--strict` makes it a failure again. Tested on a synthetic
+tree made in the test (five profiles; nothing is fetched). `nso_match` itself is not offered to the sandbox: no
+patch file of the pinned checkout imports it, so what one would need from it is not known, and the module needs
+Capstone, classes and `nso_code` (not small, and not something to evaluate in a sandbox on a guess).
 
 **Application** (`cuts.ts`): the module is unpacked (hashes checked), each cut's original bytes are compared with
 the image at its offset **byte for byte, in order, and the first mismatch stops everything** with nxnative's line
@@ -246,8 +282,54 @@ every converted cut is a same-length byte replacement. `TranslatorHook` (return 
 host function at a pc) is defined in the hand-off for patches that are not: none converts to one yet.
 
 Which cuts a game gets: its profile's by build ID, then `_sdk.json`'s by the build ID of whichever module has it
-(the SDK cuts shorten the address-region manager's node area, which nxweb's 1.87 GB alias region needs even more
-than an iPhone's 4.375 GB).
+(the SDK cuts shorten the address-region manager's node area, which a 32-bit alias region needs even more than an
+iPhone's 4.375 GB). A module whose build has neither gets the function-matched rules.
+
+### Function-matched cuts (`match.ts`)
+
+nxnative's `dm/tools/nso_match.py` places a cut in a build nobody registered by finding the function it lies in. A
+rule holds a function's size, one or more fingerprints and cuts at offsets from the function's start; a rule of
+several functions applies whole or not at all; rules of one name are one patch's reviewed implementations, of which
+exactly one must match. As in nxnative (`patch_nso.py`): rules are tried only on a module whose build has no
+registered cuts (an empty list counts as registered); the selected profile's rules (`match_cuts` by module name)
+are one list and a miss is a red line; `_sdk.json`'s (`sdk_patches.py` and `engine_patches.py`: for every game's
+module of that name, whatever the profile, also with no profile) are another and a miss is a plain line; cuts of
+one list that overlap stop the prepare (`Failed(cut)`). What is found goes through the same `cutApply` as a
+registered cut, with every original byte compared, and into the hand-off's `cuts` (so into the translation cache
+key).
+
+The fingerprint is SHA-256 over the function's words with only relocation-dependent bits masked, and over what
+each branch that leaves it leads to (an imported name through the PLT, `svc #n; ret`, or another function's size
+and masked body). `match.ts` reads the functions from `.eh_frame_hdr` as `nso_code.py` does and computes that
+number. Two things in `nso_match.py` come from Capstone and had to be replaced:
+
+- *Which register an instruction writes.* After an ADRP the low part of the address is masked in the first add /
+  load / store on its register within eight instructions, unless a branch or a write to the register comes first;
+  "a write" is Capstone's `regs_access()`, which is not the architecture's (`cmp x1, #1` is listed as writing x1,
+  `adds w3, w2, #1` as writing nothing). `gen/match_writes.ts` is that list **measured from Capstone**
+  (`tools/prepare/gen_match_writes.py`: 43 instruction classes, 48 samples for each value of a class's opcode
+  bits, 4,316 runs of keys). A key that was not regular in every sample, and a word in no class, counts as writing
+  every register. That direction is the safe one: it masks less than nxnative did, so the fingerprint differs and
+  the patch is not placed; it can never make two different functions agree.
+- *Every word of the function decodes.* Not checked here. Decoding depends on no bit a fingerprint masks, so a
+  function that equals a reference function in every unmasked bit decodes exactly when the reference does; a
+  function Capstone refuses gets a fingerprint here that no rule can hold.
+
+An imported name with a byte outside printable ASCII, a quote or a backslash is not taken (JSON would escape it):
+its callers have no fingerprint.
+
+**Checked against nxnative itself** (test "function fingerprints are nxnative's", when the checkout and Capstone
+5.0.7 are there; otherwise it prints SKIPPED, and CI installs Capstone unpinned): the runtime's and the translator's test sources are compiled once more with unwind tables (92 modules,
+clang -O2 and -Os, 956 functions with four hand-made images) and every function's fingerprint is compared with what
+`dm/tools/nso_match.py` gives: **937 equal, 28 without one on both sides, 4 that nxnative refuses for an
+undecodable word, 0 different**. The write table is compared with Capstone on 300,000 more words (105,051 decode:
+87,522 as Capstone lists them, 17,529 counted as written where Capstone lists less, **0 the other way**). The table
+names its Capstone version (5.0.7); with another version installed both comparisons print SKIPPED. No game module
+was matched: nxnative's 17 rules are tried on the test module (none matches, as it must) and the mechanism on
+self-made code, where a rule made from a function finds it again after relocation and the game runs with the cut.
+
+Cost: a module that has rules and no registered cut is unpacked and hashed twice (once to match, once to cut), and
+nxnative's rules for every game mean that is `sdk` and `main` of every unregistered build.
 
 **Spin waits.** nxnative copies a loop that polls memory behind a gate so the host can yield: on Apple hosts each
 guest thread is a host thread, and a spinner takes a core from the thread it waits for. Here the translator counts
@@ -277,14 +359,19 @@ task and mesh stages and `shader_key_skip` are not read here (reported per stage
 
 ## Verified
 
-`npm run prepare:test` (19 tests): SHA-256 against node:crypto; NPDM fields and 5 refusals; build IDs and damaged
+`npm run prepare:test` (23 tests): SHA-256 against node:crypto; NPDM fields and 5 refusals; build IDs and damaged
 modules; **11 layout variants** and **24 malformed folders**, each with its reason; RomFS paths that cannot be;
 the entry-API tree with stand-in entries; the directory device against `mkromfs.py`'s reader; a cut applied (exit
 code 42 → 7 and changed read-only data, in the runtime) and refused (mismatch, out of range, malformed); **the whole
 pipeline ending in a process that runs in the runtime's harness** and reads its RomFS from the folder, with a
 profile's cut applied and a second module loaded; update layering and DLC devices; **stage skipping by hash** (unchanged, a RomFS file touched, resized, a module touched, a new cut, another version asked) and redo of each stage; **a kill at each of 15 points** (5 stages × begin, work, end) and twice in a row,
 each resumed and run; cancel in each stage; profile selection by title (the converted nxnative profiles), by build,
-none, and a mismatching registered cut; the converted files against a fresh conversion; the machine; BNSH.
+none, and a mismatching registered cut; the converted files against a fresh conversion, every rule's shape, and
+every profile's address-space verdict against `settingsFor`; the machine; BNSH; **function-matched cuts**: 17
+groups of cases on hand-made images (relocation, changed code and callees, imports, system call wrappers, ambiguity,
+several functions, several implementations, overlap, damaged unwind data, 400 mutations), the fingerprints and the
+write table against nxnative and Capstone, and the pipeline (a patch placed by its function, the game exits with
+7 instead of 42); **the converter on a synthetic nxnative tree** (patch files it cannot evaluate, `--strict`).
 
 `npm run prepare:browser` (9 tests, Chromium 153): the page through `showDirectoryPicker` (replaced by a function
 that returns an OPFS directory: headless Chromium has no dialog; everything after the call is real), a dropped
@@ -299,8 +386,12 @@ that starts the game in the runtime**, RomFS read with `FileReaderSync`; listing
 - **No containers, no keys**: NSP / XCI / NCA / NUP are not opened. No NACP either (a dump folder has none): the
   name is the profile's, or the NPDM's.
 - No game was prepared: every folder in the tests is synthetic (the runtime's test guests as modules).
-- `MATCH_CUTS`, `FRAME_STEP`, the nine finders: not ported (above). An update nxnative has no build row for gets no
-  cuts, here as there without `MATCH_CUTS`.
+- `FRAME_STEP`, `MATCH_FRAME_STEP`, the nine finders: not ported (above; `docs/PORTING-STATUS.md`, "Frame-step
+  stubs"). `MATCH_CUTS` is, but no rule has been matched on a game module, and a function with an instruction the
+  write table does not know between an ADRP and its use (rare in compiled code: none in the 956 test functions) is
+  not found where nxnative finds it.
+- The register-write table is Capstone 5.0.7's. nxnative does not pin a Capstone version; a rule whose fingerprint
+  was made with a version that lists writes differently is not found here (a miss, never a wrong match).
 - The profile's class (a) values are handed over, not applied: nothing in the runtime takes a profile yet
   (Requests). `romfs_marker` only warns.
 - The pipeline runs on the page's main thread; checking and hashing a 100 MB module blocks it for its duration. The
@@ -322,7 +413,7 @@ Answered in the integration round (src/runtime/README.md, "The address space per
 main page takes `nxweb:handoff` from this page in a frame and its Worker builds the process: `web/worker.ts`,
 `src/glue/rt_handoff.ts`; `npm run web` builds and serves both), 2 (`settingsFor`: the kernel's cfg block, the
 take-over table's configuration, the stack size), 3 (`cutsKey`: a hash of a module's applied cuts in its cache key),
-4 (the layout is chosen per game: 139 of 153 profiles fit, 14 do not; memory64 measured and not recommended now), 5,
+4 (the layout is chosen per game: 139 of 153 profiles fit, 14 do not; memory64 measured and not recommended now; the prepare step's verdict is that function's), 5,
 6 (`prepare:test` in `npm test`, `prepare:browser` in the CI browser job, rows in the docs). Open: 7.
 
 1. **Take the hand-off**: listen for `nxweb:handoff` (or call `prepare.handoff()`), post the message to the Worker,
@@ -334,11 +425,12 @@ take-over table's configuration, the stack size), 3 (`cutsKey`: a hash of a modu
    `mainStackSize`.
 3. **Translation cache key**: a cut module keeps its build ID. Add a hash of `HandOff.cuts` for the module to the
    key (`build id @ address / options`), or a stale translation of the uncut code is reused.
-4. **Address space**: 149 of 153 profiles were brought up with more heap or alias region than the fixed map has.
-   Decide what pool the kernel reports (or memory64).
+4. **Address space**: answered by the per-game layout; the prepare step now reports its verdict (above) instead of
+   a comparison of its own.
 5. The kit tables were regenerated for `prepare` (it sorts before `runtime`, so `PROCESS` moved): every kit module
    needs its build; `rt:build` was run here.
 6. CI: `prepare:test` in the fast tier, `prepare:browser` in the browser job; rows for prepare in
    `docs/ARCHITECTURE.md` and `docs/PORTING-STATUS.md`.
-7. For `FRAME_STEP` (5 games' 60 fps and screen shape): a patch area in the loader's map and a per-frame state
-   page; then the recorded stubs can be emitted. For `OBS`-style patches: a translator hook at a pc.
+7. For `FRAME_STEP` (5 games' 60 fps and screen shape): a patch area in the loader's map, a per-frame state page
+   and the frame-step driver (`docs/PORTING-STATUS.md`, "Frame-step stubs", has the list); then the recorded stubs
+   can be emitted. For `OBS`-style patches: a translator hook at a pc.
