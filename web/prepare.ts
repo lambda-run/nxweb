@@ -179,8 +179,16 @@ function tick(): void {
 }
 setInterval(tick, 250);
 
-async function start(tree: PrepTree, o: { redo?: StageName; version?: number } = {}): Promise<PrepResult | null> {
-  if (prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state)) return null;
+// A start or an open between its check and its run (the module and the scanner are awaited first): a second click
+// then would make a second Prepare beside the first, or find the first running and show an internal error
+let busy = false;
+const idle = () => !busy && !(prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state));
+async function start(tree: PrepTree, o: { redo?: StageName; version?: number } = {}, inner = false): Promise<PrepResult | null> {
+  if (!inner && !idle()) return null;
+  busy = true;
+  try { return await startIn(tree, o); } finally { if (!inner) busy = false; }
+}
+async function startIn(tree: PrepTree, o: { redo?: StageName; version?: number }): Promise<PrepResult | null> {
   $("handoff").textContent = "";
   hideExplain();
   storeDir = "nxweb-prepare-" + tree.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
@@ -196,7 +204,7 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
     lastRun = res; runEnded = Date.now();
     // a folder that holds one .nup and no game files: the container is what was meant
     const inside = res.state === "Failed" && res.reason === "layout" ? (tree as { filesMatching?: (re: RegExp) => { path: string; file: File }[] }).filesMatching?.(/^[^/]+\.nup$/i) ?? [] : [];
-    if (inside.length === 1) { log(`the folder holds ${inside[0].path}: opening that`); prep = null; return await openFile(inside[0].file); }
+    if (inside.length === 1) { log(`the folder holds ${inside[0].path}: opening that`); prep = null; return await openFile(inside[0].file, undefined, true); }
     (window as any).nxwebLastRun = res;
     draw(prep.snapshot());
     return res;
@@ -204,8 +212,12 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
 }
 
 // ---- a file: a NUP container is opened; anything else is explained ----
-async function openFile(file: File, handle?: unknown): Promise<PrepResult | null> {
-  if (prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state)) return null;
+async function openFile(file: File, handle?: unknown, inner = false): Promise<PrepResult | null> {
+  if (!inner && !idle()) return null;
+  busy = true;
+  try { return await openIn(file, handle); } finally { if (!inner) busy = false; }
+}
+async function openIn(file: File, handle?: unknown): Promise<PrepResult | null> {
   hideExplain();
   let head: Uint8Array;
   try { head = new Uint8Array(await file.slice(0, 0x200).arrayBuffer()); }
@@ -227,7 +239,7 @@ async function openFile(file: File, handle?: unknown): Promise<PrepResult | null
   for (const n of tree.notes) log(`${file.name}: ${n}`);
   await remember(handle ?? null);
   showResume(handle ? file.name : "");
-  return start(tree);
+  return start(tree, {}, true);
 }
 const showResume = (name: string) => { const b = $("resume"); b.hidden = !name; b.textContent = name ? `Continue with ${name}` : "Continue"; };
 
