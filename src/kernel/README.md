@@ -50,8 +50,9 @@ runs the read again), `kernel_handle_close(h)` (CloseHandle for handles the embe
 embedder ends the process: every thread leaves as at ExitProcess, stop reason 3), `kernel_event_new` /
 `_dup_readable` / `_signal` / `_clear` (events a service hands its client), `kernel_seed_entropy`, and for tests and
 dumps `kernel_thread_info`, `kernel_thread_ctx`, `kernel_count`, `kernel_check`; for a fault report
-`kernel_svc_ring(index, out, cap)` / `kernel_svc_total(index)`: each thread record's last 16 SVCs (`ring.ts`, 80 bytes
-each: number, x0..x5 as it entered, x0 and x1 as it returned or as its wait's wake wrote them, the return pc). Every entry takes the kernel lock
+`kernel_svc_ring(index, out, cap)` / `kernel_svc_total(index)`: each thread record's last 16 SVCs (`ring.ts`, 112 bytes
+each: number, x0..x5 as it entered, x0 and x1 as it returned or as its wait's wake wrote them, the return pc, and for
+QueryMemory the MemoryInfo it wrote). Every entry takes the kernel lock
 (`base.ts kLock`): today it only catches re-entry; it is the one function that becomes a real lock with Workers.
 
 ## Scheduler and threads

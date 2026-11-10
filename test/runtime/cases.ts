@@ -418,9 +418,10 @@ export function cases(env: Env): Case[] {
       eq(lines, red.slice(at), "the fault's lines are the red lines from its first on");
       ok(/in thread 0x10\d\d \(#\d\) at pc=0x[0-9a-f]+/.test(lines[0]), "red line naming thread and pc: " + red.join(" | "));
       const regs = lines.slice(1, 5).join(" ").replace(/\[RED\]   /g, "");
-      ok(new RegExp("^" + Array.from({ length: 31 }, (_, i) => `x${i}=0x[0-9a-f]+`).join(" ") + " sp=0x[0-9a-f]+ pc=0x[0-9a-f]+ nzcv=0x[0-9a-f]+$").test(regs), "register dump, x0..x30 sp pc nzcv: " + regs);
+      ok(new RegExp("^" + Array.from({ length: 31 }, (_, i) => `x${i}=0x[0-9a-f]+`).join(" ") + " sp=0x[0-9a-f]+ pc=0x[0-9a-f]+ nzcv=0x[0-9a-f]+ tpidr=0x[0-9a-f]+ tpidrro=0x[0-9a-f]+$").test(regs), "register dump, x0..x30 sp pc nzcv tpidr tpidrro: " + regs);
       ok(regs.includes(` pc=${hex(r.stop!.fault!.pc)} `), "the dump's pc is the fault's");
       ok(lines.some(l => /^\[RED\]   pc=0x[0-9a-f]+ is .*; x30=0x[0-9a-f]+ is /.test(l)), "pc and x30 placed: " + lines.join(" | "));
+      ok(lines.some(l => /^\[RED\]   (the frames from x29=0x[0-9a-f]+, innermost first:|no frame record at x29=0x[0-9a-f]+)$/.test(l)), "the x29 frames' heading: " + lines.join(" | "));
       ok(lines.some(l => /^\[RED\]   the last \d+ of the \d+ SVCs of thread 0x10\d\d, oldest first:$/.test(l)), "the SVC ring's heading: " + lines.join(" | "));
       check(rt, r);
       eq(rt.run().state, "Stopped", "run() again stays Stopped");
@@ -465,6 +466,8 @@ export function cases(env: Env): Case[] {
     ok(/; x30=0x[0-9a-f]+ is fault_null\+0x[0-9a-f]+ \(read_through\+0x[0-9a-f]+\)$/.test(place), place);
     ok(lines.some(l => l.includes("the registers are as last written back")), "a trap without preciseFaults 2 says its registers are not exact");
     const svcs = lines.filter(l => l.startsWith("[RED]     #"));
+    const frames = lines.filter(l => l.startsWith("[RED]     frame "));
+    ok(/^\[RED\]     frame 1: fp=0x[0-9a-f]+ returns to 0x[0-9a-f]+, fault_null\+0x[0-9a-f]+ \(/.test(frames[0] ?? ""), "the first frame record by x29 returns into the guest: " + frames.join(" | "));
     ok(svcs.length >= 1 && /^\[RED\]     #\d+ svc 0x27 OutputDebugString\(x0=0x[0-9a-f]+ x1=0x1f\) -> 0x0, returns to 0x8[0-9a-f]+$/.test(svcs.at(-1)!.replace(/0x18[0-9a-f]{7}$/, "0x8000000")), "the say() before the read: " + svcs.join(" | "));
     eq(rt.ld.symbolAt(m.handle, m.base), undefined, "no function symbol at the image's first byte (crt0 is hidden)");
     eq(rt.ld.symbolAt(m.handle, m.base + m.imageSize + 4096), undefined, "none outside the module");

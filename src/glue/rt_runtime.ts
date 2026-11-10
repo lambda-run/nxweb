@@ -4,7 +4,7 @@
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
 import { A64Host, makeMemory64, MEM64_MAX_PAGES, type A64CacheStore, type Memory64 } from "./a64_host.ts";
 import { instantiate, addrBits } from "./wasm_abi.ts";
-import { svcLine, placeOf, SVC_REC, type CodeRange } from "./fault_lines.ts";
+import { svcLine, placeOf, frameLines, SVC_REC, type CodeRange } from "./fault_lines.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
 import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, STAGING, range } from "./rt_layout.ts";
 import { SPACE, writeKernelCfg, layoutFor, getDefaultSpace, type ProcessLayout } from "./rt_process.ts";
@@ -698,6 +698,10 @@ export class Runtime {
     const sym = (h: number, a: number) => h >= 0 ? this.ld.symbolAt(h, a) : undefined;
     const stub = (a: number) => { const id = a >= STUBS.base && a < STUBS.base + 4 * STUBS.cap ? this.ld.stubId(a) : -1; return id >= 0 && id < this.ld.x.ld_host_count() ? this.ld.hostFunction(id).name : undefined; };
     this.log(`[RED]   pc=${hex(pc)} is ${placeOf(pc, mods, sym, stub)}; x30=${hex(x30)} is ${placeOf(x30, mods, sym, stub)}`);
+    const fp = Number(dv.getBigUint64(ctx + 29 * 8, true));
+    const frames = frameLines(dv, fp, GUARD_BASE, dv.byteLength, 16, a => placeOf(a, mods, sym, stub));
+    this.log(frames.length ? `[RED]   the frames from x29=${hex(fp)}, innermost first:` : `[RED]   no frame record at x29=${hex(fp)}`);
+    for (const f of frames) this.log("[RED]     " + f);
     const total = this.k.kernel_svc_total(index), out = this.r.rt_scratch_ptr(), cap = Math.floor(this.r.rt_scratch_cap() / SVC_REC);
     const n = this.k.kernel_svc_ring(index, out, cap);
     this.log(n ? `[RED]   the last ${n} of the ${total} SVCs of thread ${hex(handle)}, oldest first:` : `[RED]   thread ${hex(handle)} made no SVC`);

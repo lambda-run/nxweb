@@ -21,7 +21,7 @@ const SVC: Record<number, [string, number[], number[], boolean?]> = {
   0x32: ["SetThreadActivity", [0, 1], []], 0x33: ["GetThreadContext3", [0, 1], []], 0x34: ["WaitForAddress", [0, 1, 2, 3], []],
   0x35: ["SignalToAddress", [0, 1, 2, 3], []], 0x45: ["CreateEvent", [], [1]],
 };
-export const SVC_REC = 80;   // ring.ts RING_REC
+export const SVC_REC = 112;   // ring.ts RING_REC
 const RF_WAITING = 1, RF_WAITED = 2, RF_ENDED = 4;
 const hex = (v: number | bigint) => "0x" + v.toString(16);
 
@@ -37,9 +37,25 @@ export function svcLine(dv: DataView, r: number): string {
   else if (flags & RF_WAITING) out = "waiting, not returned";
   else {
     out = (resultless ? `x0=${hex(res[0])}` : hex(res[0])) + outs.filter(i => i === 1).map(() => ` x1=${hex(res[1])}`).join("");
+    if (n === 0x06 && res[0] === 0n)
+      out += ` MemoryInfo{base=${hex(dv.getBigUint64(r + 80, true))} size=${hex(dv.getBigUint64(r + 88, true))} state=${hex(dv.getUint32(r + 96, true))} attr=${hex(dv.getUint32(r + 100, true))} perm=${hex(dv.getUint32(r + 104, true))}}`;
     if (flags & RF_WAITED) out += " (after a wait)";
   }
   return `#${seq} svc ${hex(n)} ${name}(${args}) -> ${out}, returns to ${hex(pc)}`;
+}
+
+// The frame records from x29 (AArch64: [fp] the caller's fp, [fp+8] the return address), at most max, while fp is
+// 8-aligned, in [lo, end) and rises; each as "frame i: fp=.. returns to 0x.., <place>"
+export function frameLines(dv: DataView, fp: number, lo: number, end: number, max: number, place: (a: number) => string): string[] {
+  const out: string[] = [];
+  for (let i = 1; i <= max && fp % 8 === 0 && fp >= lo && fp + 16 <= end; i++) {
+    const next = Number(dv.getBigUint64(fp, true)), lr = Number(dv.getBigUint64(fp + 8, true));
+    if (!lr) break;
+    out.push(`frame ${i}: fp=${hex(fp)} returns to ${hex(lr)}, ${place(lr)}`);
+    if (next <= fp) break;
+    fp = next;
+  }
+  return out;
 }
 
 export interface CodeRange { name: string; handle: number; base: number; lo: number; hi: number }   // lo/hi: the text

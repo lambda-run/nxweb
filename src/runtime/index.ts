@@ -140,13 +140,14 @@ export function rt_fault(kind: u32, threadHandle: u32, threadIndex: i32, ctx: us
   if (detailLen > 0) { puts(": "); putBytes(SCRATCH, detailLen < 900 ? detailLen : 900); }
   lineEnd();
   if (ctx) {
-    // every register, eight to a line; the last line ends with sp, pc and nzcv
+    // every register, eight to a line; the last line ends with sp, pc, nzcv, tpidr_el0 and tpidrro_el0
     for (let i = 0; i < 31; i++) {
       if (!(i & 7)) lineStart("[RED]   "); else putc(32);
       putc(120); putu(i); putc(61); putx(load<u64>(ctx + (<usize>i << 3)));
       if ((i & 7) == 7) lineEnd();
     }
     puts(" sp="); putx(load<u64>(ctx, 0xF8)); puts(" pc="); putx(pc); puts(" nzcv="); putx(load<u32>(ctx, 0x108));
+    puts(" tpidr="); putx(load<u64>(ctx, 0x118)); puts(" tpidrro="); putx(load<u64>(ctx, 0x120));
     lineEnd();
   }
   return proc().step(ProcessE.Fault, (<u64>STOP_FAULT << 32) | <u64>kind) ? 1 : 0;
