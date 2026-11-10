@@ -1,23 +1,96 @@
 {
   "id": 0,
   "name": "process",
-  "doc": "Lifecycle of the one guest process a runtime holds (src/runtime). Empty: nothing loaded. Loading: files are being parsed, mapped and relocated. Ready: the main thread exists and has not run. Running: the run loop gives guest threads their slices. Paused: the run loop returned at a slice boundary and every thread keeps its saved context. Stopped is final and carries why: bits 32..39 the kind (1 exit, 2 break, 3 fault) and bits 0..31 the exit code (exit, break) or the fault kind (fault; src/runtime/index.ts FAULT_*). A file the loader refuses stops the process from Loading with a fault.",
-  "states": ["Empty", "Loading", "Ready", "Running", "Paused", "Stopped"],
+  "doc": "Lifecycle of the one guest process a runtime holds (src/runtime). Empty: nothing loaded. Loading: files are being parsed, mapped and relocated. Ready: the main thread exists and has not run. Running: the run loop gives guest threads their slices. Paused: the run loop returned at a slice boundary and every thread keeps its saved context. Stopped is final and carries why: bits 32..39 the kind (1 exit, 2 break, 3 fault, 4 killed by the embedder) and bits 0..31 the exit code (exit, break) or the fault kind (fault; src/runtime/index.ts FAULT_*). A file the loader refuses stops the process from Loading with a fault.",
+  "states": [
+    "Empty",
+    "Loading",
+    "Ready",
+    "Running",
+    "Paused",
+    "Stopped"
+  ],
   "initial": "Empty",
-  "final": ["Stopped"],
+  "final": [
+    "Stopped"
+  ],
   "data": {
-    "Stopped": { "name": "why", "type": "kind << 32 | exit code or fault kind" }
+    "Stopped": {
+      "name": "why",
+      "type": "kind << 32 | exit code or fault kind"
+    }
   },
-  "events": ["Load", "LoadOk", "Start", "Pause", "Resume", "Exit", "Break", "Fault"],
+  "events": [
+    "Load",
+    "LoadOk",
+    "Start",
+    "Pause",
+    "Resume",
+    "Exit",
+    "Break",
+    "Fault",
+    "Kill"
+  ],
   "transitions": [
-    ["Empty", "Load", "Loading"],
-    ["Loading", "LoadOk", "Ready"],
-    ["Loading", "Fault", "Stopped"],
-    ["Ready", "Start", "Running"],
-    ["Running", "Pause", "Paused"],
-    ["Paused", "Resume", "Running"],
-    ["Running", "Exit", "Stopped"],
-    ["Running", "Break", "Stopped"],
-    ["Running", "Fault", "Stopped"]
+    [
+      "Empty",
+      "Load",
+      "Loading"
+    ],
+    [
+      "Loading",
+      "LoadOk",
+      "Ready"
+    ],
+    [
+      "Loading",
+      "Fault",
+      "Stopped"
+    ],
+    [
+      "Ready",
+      "Start",
+      "Running"
+    ],
+    [
+      "Running",
+      "Pause",
+      "Paused"
+    ],
+    [
+      "Paused",
+      "Resume",
+      "Running"
+    ],
+    [
+      "Running",
+      "Exit",
+      "Stopped"
+    ],
+    [
+      "Running",
+      "Break",
+      "Stopped"
+    ],
+    [
+      "Running",
+      "Fault",
+      "Stopped"
+    ],
+    [
+      "Ready",
+      "Kill",
+      "Stopped"
+    ],
+    [
+      "Running",
+      "Kill",
+      "Stopped"
+    ],
+    [
+      "Paused",
+      "Kill",
+      "Stopped"
+    ]
   ]
 }

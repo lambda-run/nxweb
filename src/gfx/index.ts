@@ -14,7 +14,7 @@ import { syncFenceOf } from "./sync";
 import { hostFlush, hostExecs, hostInit } from "./hostops";
 import { hostSegsLent, cmdInit } from "./cmd";
 import { texLayout, texLevelOffset } from "./texlayout";
-import { texContentInit, texStat, deswizzle, contentState, benchSample } from "./texcontent";
+import { texContentInit, texStat, deswizzle, contentState, benchSample, hashFull } from "./texcontent";
 export * from "../kit/exports";
 
 // Once, before anything else: `arena` = gfx_arena_bytes() bytes of linear memory for the module's tables (the embedder
@@ -65,6 +65,8 @@ export function gfx_stat(i: i32): u32 { return i >= 8 ? texStat(i - 8) : i == 6 
 // Block-linear storage of one level and layer to linear rows (toLinear) or back; desc = nvn_texdesc. -1: no such storage
 export function gfx_deswizzle(desc: usize, level: u32, layer: u32, storage: usize, linear: usize, pitch: u32, toLinear: i32): i32 { return deswizzle(desc, level, layer, storage, linear, pitch, toLinear != 0); }
 // The content state of a texture object (gfx_texture: 0 Unknown, 1 Uploaded, 2 GpuOwned), -1 when it is not live
+// A hash of a memory range (53 bits), for the replayer's upload cache
+export function gfx_hash(ptr: usize, len: u32): f64 { return <f64>(hashFull(ptr, len) >> 11); }
 export function gfx_bench_sample(tex: usize, n: u32): u32 { return <u32>benchSample(tex, n); }
 export function gfx_tex_state(tex: usize): i32 { return contentState(load<u64>(tex, 120)); }
 export function gfx_tex_layout(desc: usize, out: usize): void { texLayout(desc, out); }

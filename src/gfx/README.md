@@ -130,6 +130,21 @@ second vertex entry point. WebGPU has no negative viewport, so the split here is
      attributes: [l…] (vertex) | outputs: [i…] (fragment), fixup }`, registered under the stage's key (`GfxHost.registerShader`).
   Alpha test, when ported, will need the fragment stage to discard against a replayer-supplied reference: not specified yet.
 
+## Uploads and bind groups (replayer)
+
+A bound range (vertex, index or uniform data: an address and a size) keeps its GPU buffer across submissions. At its
+first use after guest memory may have changed (new submission, `H_MEM_DIRTY`, a readback landing) the recorder hashes
+its bytes (`gfx_hash`, the whole range: vertex data cannot be sampled safely) and the buffer is written only when the
+hash differs; a range that changed while commands not yet submitted still reference its buffer gets another buffer.
+Bind groups are cached by the buffers, views and samplers they bind. Measured, 1000 draws each with its own two
+uniform ranges (SwiftShader machine, two runs): 14.7–18.3 ms a submission before (2002 buffer writes, 1001 bind
+groups), 6.2–8.1 ms unchanged after (0 writes, 0 bind groups, 2002 hashes), 2.3–4.3 ms with 100 ranges changing.
+Not done: one large buffer with dynamic offsets for uniform blocks, which would also remove the per-range hash.
+
+Loops, fans, quads, quad strips and polygons are drawn through a 32-bit index buffer the replayer builds and keeps
+(by primitive, range or index hash). Indirect draws and indirect-count multi-draws read their arguments from guest
+memory at submit and become direct draws (a count the GPU writes in the same submission is not supported).
+
 ## Verified (`npm run gfx:test`, headless Chromium, WebGPU on SwiftShader; `npm run kit:test` for the tables)
 
 - **Layout**: 268 offsets and sizes equal `nvn_obj.h` compiled by gcc (`test/gfx/layout_ref.c`), except the two listed
@@ -141,24 +156,26 @@ second vertex entry point. WebGPU has no negative viewport, so the split here is
 - **Deswizzler**: 18 textures (2D with mips, non-power-of-two, arrays, cubes, 3D, BC1/BC3/BC7, packaged layouts; 112
   levels and layers) laid out by an independent Python implementation (`test/gfx/swizzle_ref.py`: own layout, one byte
   at a time) come out identical and swizzle back identical; WriteTexels / ReadTexels regions over storage.
-- **Scenes** (26, pixels read back with `copyTextureToBuffer`, expected values computed in the test): clear only;
+- **Scenes** (30, pixels read back with `copyTextureToBuffer`, expected values computed in the test): clear only;
   per-vertex colour; indexed textured quad nearest / linear; uniform animation + UpdateUniformBuffer + CopyBufferToBuffer;
   depth test on DEPTH32F / D24S8 / DEPTH16 with a scissored depth clear; blending; scissored and masked clears in a pass;
   full clear mid-pass; render to texture; self-sampling draw; CALL; buffer→texture, texture→texture (also scaled), mips
   and array layers; BC1/2/3/4/5/7; RGBA8, sRGB, BGRA8, R8, RG8, RGBA16F, RGB10A2, R11G11B10F as targets; missing key;
   command memory exhaustion; pipeline cache and failure; fences, syncs, window images; pool-backed textures uploaded
   and compared level by level; the content-tracking heuristics including their blind spot; WriteTexels;
-  CopyTextureToBuffer on the CPU and from the GPU; 100 textures; both origin / depth conventions with culling.
+  CopyTextureToBuffer on the CPU and from the GPU; 100 textures; both origin / depth conventions with culling;
+  1000 draws (upload and bind group caching, counted); fans, quads, quad strips, polygons, line loops, indirect and
+  multi-draws; two-sided stencil and polygon offset; sampler compare, lod clamp, anisotropy; an sRGB view.
 - **Demo**: `npm run gfx:demo`, `test/gfx/demo.html`; the test run saves `build/gfx/demo.png`.
 
 ## NVN functions
 
-743 names: **306 implemented, 11 empty by design** (nxnative's list: debug groups, patch size, depth bounds, scratch
-memory), **426 red stubs** (`[RED] nvnXxx unimplemented` once, return 0). nxnative implements 489.
+743 names: **310 implemented, 11 empty by design** (nxnative's list: debug groups, patch size, depth bounds, scratch
+memory), **422 red stubs** (`[RED] nvnXxx unimplemented` once, return 0). nxnative implements 489.
 Implemented / total by object: DeviceBuilder 3/3, Device 19/61, QueueBuilder 9/23, Queue 10/16, MemoryPoolBuilder 7/8,
 MemoryPool 9/10, TexturePool 7/9, SamplerPool 8/9, BufferBuilder 6/7, Buffer 10/11, TextureBuilder 30/44, TextureView
 9/14, Texture 21/31, SamplerBuilder 13/25, Sampler 3/15, Program 4/34, Sync 4/6, WindowBuilder 7/20, Window 9/18,
-CommandBuffer 67/214, Blend 7/15, Color 5/7, ChannelMask 2/3, Multisample 7/26, Polygon 9/9, DepthStencil 11/13,
+CommandBuffer 71/214, Blend 7/15, Color 5/7, ChannelMask 2/3, Multisample 7/26, Polygon 9/9, DepthStencil 11/13,
 VertexAttrib 5/5, VertexStream 5/5, Event(Builder) 0/11, other (NVN2, debug, raw) 0/71. The exact set is the
 `case F.` lines of `dispatch.ts`.
 
@@ -168,11 +185,12 @@ VertexAttrib 5/5, VertexStream 5/5, Event(Builder) 0/11, other (NVN2, debug, raw
   from memory, multisampled storage; ReadTexels of GPU-written textures; the blind spots listed above.
 - `gl_FragCoord` / derivative sign under a lower-left origin (fix-up is bound to the vertex stage only); queues with
   an origin different from the device's.
-- Triangle fans, quads, line loops, adjacency, patches; indirect and multi-draws; compute; storage buffers; images;
-  separate textures / samplers; transform feedback; counters and events; multisample resolve; tessellation, geometry.
-- One viewport and scissor; stencil masks and reference of the front face for both; no logic op, alpha test, border
-  colour, polygon mode line / point, advanced blend, depth clamp, primitive restart index; a viewport larger than
-  its target is clipped (red once).
-- Uploads: each bound vertex, index and uniform range is copied to a GPU buffer once per submission (no dirty
-  tracking); bind groups are rebuilt per change. Correct, not fast.
+- Adjacency and patch primitives; compute; storage buffers; images; separate textures / samplers; transform
+  feedback; counters and events; multisample resolve; tessellation, geometry; indirect counts written by the GPU.
+- One viewport and scissor (more is red once: WebGPU has one); stencil masks and reference of the front face for both
+  (WebGPU has one of each); no logic op, alpha test, polygon mode line / point, advanced blend, depth clamp,
+  primitive restart index. WebGPU has no border colour (clamp to edge is used) and no view swizzle (red once); a view
+  can reinterpret only between a format and its sRGB twin (anything else: red once, the texture's format).
+  A viewport larger than its target is clipped (red once).
+- Device loss is not handled.
 - Virtual (sparse) memory pools; `QueueFinish` and acquire pacing wait for the kernel.

@@ -31,7 +31,7 @@ def job_for(row, base, work):
         if any(code[0x30:0x100]): raise ValueError(f"{row['key']}: compute code area +0x30..+0x100 is not all zero")
         code = code[0x100:]
     cp = work / (row['key'] + '.bin'); cp.write_bytes(code)
-    job = dict(key=row['key'], stage=stage, code=str(cp), tex={}, img={}, attr={}, fout={}, c1=c1.hex(), debug=False, reduced=True)
+    job = dict(key=row['key'], stage=stage, code=str(cp), tex={}, img={}, attr={}, fout={}, c1=c1.hex(), debug=True, reduced=True)   # nxnative's defaults (XLATE_DEBUG, XLATE_REDUCED); debug=False threw in the SPIR-V generator on a texel fetch here
     if stage == 'ps' and len(ctl) > 0x71c and struct.unpack_from('<I', ctl, 0x718)[0] & 1: job['early_fragment_tests'] = True
     job.update(row.get('facts') or {})
     return job

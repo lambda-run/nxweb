@@ -357,19 +357,38 @@ function draw(r: usize, size: u32, indexed: bool): void {
     nSkipped++; return;
   }
   if (!prog || load<u32>(prog) != O.MAGIC_PROG) { if (once(9)) L.redLine("draw without a bound program: skipped"); nSkipped++; return; }
-  const prim = load<i32>(r);
-  if (!(prim == 0 || prim == 1 || prim == 3 || prim == 4 || prim == 5)) {
-    if (once(10 + min<u32>(<u32>prim, 15))) { L.red("draw primitive "); L.i(prim); L.str(" has no WebGPU topology (fans, quads, loops, adjacency and patches are not converted yet): skipped"); L.end(); }
+  const orig = load<i32>(r);
+  // WebGPU has points, lines, line strips, triangles and triangle strips. Loops, fans, quads, quad strips and polygons
+  // are drawn as strips or lists through an index buffer the replayer builds (conv = the NVN primitive)
+  let prim = orig, conv = 0;
+  if (orig == 2) { prim = 3; conv = orig; } else if (orig >= 6 && orig <= 9) { prim = 4; conv = orig; }
+  else if (!(orig == 0 || orig == 1 || orig == 3 || orig == 4 || orig == 5)) {
+    if (once(10 + min<u32>(<u32>orig, 15))) { L.red("draw primitive "); L.i(orig); L.str(" has no WebGPU topology (adjacency and patches need geometry or tessellation stages): skipped"); L.end(); }
     nSkipped++; return;
   }
-  const full = <usize>size - 8 >= (indexed ? O.P_DRAW_IDX_SIZE : O.P_DRAW_SIZE);
-  if (full && load<u64>(r + (indexed ? O.P_DRAW_IDX_ind : O.P_DRAW_ind))) { if (once(26)) L.redLine("indirect draw: not replayed"); nSkipped++; return; }
+  // The draw's numbers: from the record, or for an indirect draw from guest memory now (the counts are CPU-visible
+  // at submit; a count written by the GPU in the same submission is not supported)
+  let count = load<u32>(r, 8), instances: u32, baseInstance = load<u32>(r, 16), first: u32 = 0, baseVertex: i32 = 0, ibuf: u64 = 0;
+  const itype = indexed ? load<i32>(r, O.P_DRAW_IDX_itype) : -1;
+  if (indexed) { baseVertex = load<i32>(r, O.P_DRAW_IDX_base_vertex); instances = load<u32>(r, O.P_DRAW_IDX_instances); ibuf = load<u64>(r, O.P_DRAW_IDX_ibuf); }
+  else { first = load<u32>(r, O.P_DRAW_first); instances = load<u32>(r, O.P_DRAW_instances); }
+  if (<usize>size - 8 >= (indexed ? O.P_DRAW_IDX_SIZE : O.P_DRAW_SIZE)) {
+    const q = r + (indexed ? O.P_DRAW_IDX_ind : O.P_DRAW_ind), ind = <usize>load<u64>(q), cnt = <usize>load<u64>(q, 8);
+    if (cnt && <u32>load<i32>(q, 16) >= load<u32>(cnt)) return;       // draw i of a multi-draw whose count is lower
+    if (ind) {
+      count = load<u32>(ind); instances = load<u32>(ind, 4);
+      if (indexed) { ibuf += <u64>load<u32>(ind, 8) << (itype == 2 ? 2 : itype == 1 ? 1 : 0); baseVertex = load<i32>(ind, 12); baseInstance = load<u32>(ind, 16); }
+      else { first = load<u32>(ind, 8); baseInstance = load<u32>(ind, 12); }
+    }
+  }
+  if (!instances) instances = 1;
+  if (!count) return;
   const vs = progShader(prog, 0), fs = progShader(prog, 1);
   if (vs < 0 || fs < 0) { nSkipped++; return; }                        // "[RED] shader <key> is not in the shader map", once a key
   if (vs != curVs || fs != curFs) { curVs = vs; curFs = fs; dirty |= D_PIPE | D_UBO | D_TEX | D_VBUF; }
-  const itype = indexed ? load<i32>(r, O.P_DRAW_IDX_itype) : -1;
-  if (dirty & D_PIPE || load<u8>(PK.KEY, PK.PK_prim) != <u8>prim || load<u8>(PK.KEY, PK.PK_itype) != <u8>(itype >= 0 && (prim == 3 || prim == 5) ? itype + 1 : 0)) {
-    if (!fillKey(prim, itype)) { dirty |= D_PIPE; nSkipped++; return; }
+  const kit = conv == 2 ? 2 : conv ? -1 : itype;      // what the strip index format follows: a converted loop is a strip with 32-bit indices
+  if (dirty & D_PIPE || load<u8>(PK.KEY, PK.PK_prim) != <u8>prim || load<u8>(PK.KEY, PK.PK_itype) != <u8>(kit >= 0 && (prim == 3 || prim == 5) ? kit + 1 : 0)) {
+    if (!fillKey(prim, kit)) { dirty |= D_PIPE; nSkipped++; return; }
     const id = PK.pipelineGet();
     if (id < 0) { dirty |= D_PIPE; nSkipped++; return; }
     if (id != curPipe) { curPipe = id; dirty |= D_BIND | D_VBUF; }
@@ -380,13 +399,10 @@ function draw(r: usize, size: u32, indexed: bool): void {
   emitState();
   if (indexed) {
     const o = H.hostRec(H.H_DRAW_IDX, 40);
-    const inst = load<i32>(r, O.P_DRAW_IDX_instances);
-    store<u32>(o, itype, 8); store<u32>(o, load<u32>(r, O.P_DRAW_IDX_count), 12); store<u32>(o, inst ? inst : 1, 16); store<u32>(o, load<u32>(r, O.P_DRAW_IDX_base_instance), 20);
-    store<i32>(o, load<i32>(r, O.P_DRAW_IDX_base_vertex), 24); store<u64>(o, load<u64>(r, O.P_DRAW_IDX_ibuf), 32);
+    store<u32>(o, itype, 8); store<u32>(o, count, 12); store<u32>(o, instances, 16); store<u32>(o, baseInstance, 20); store<i32>(o, baseVertex, 24); store<u32>(o, conv, 28); store<u64>(o, ibuf, 32);
   } else {
-    const o = H.hostRec(H.H_DRAW, 24);
-    const inst = load<i32>(r, O.P_DRAW_instances);
-    store<u32>(o, load<u32>(r, O.P_DRAW_first), 8); store<u32>(o, load<u32>(r, O.P_DRAW_count), 12); store<u32>(o, inst ? inst : 1, 16); store<u32>(o, load<u32>(r, O.P_DRAW_base_instance), 20);
+    const o = H.hostRec(H.H_DRAW, 32);
+    store<u32>(o, first, 8); store<u32>(o, count, 12); store<u32>(o, instances, 16); store<u32>(o, baseInstance, 20); store<u32>(o, conv, 24);
   }
   nDraws++;
 }
@@ -456,7 +472,9 @@ function exec(p: usize, depth: i32): void {
       case O.OP_SET_RT: setRenderTargets(a); break;
       case O.OP_CLEAR_COLOR: clearColor(a); break;
       case O.OP_CLEAR_DS: clearDepthStencil(a); break;
-      case O.OP_VIEWPORTS: if (load<i32>(a) == 0 && load<i32>(a, 4) >= 1) { memory.copy(VP, a + O.P_VIEWPORTS_v, 16); hasVp = true; dirty |= D_VP; } break;
+      case O.OP_VIEWPORTS:
+        if (load<i32>(a) + load<i32>(a, 4) > 1 && once(31)) L.redLine("SetViewports beyond index 0: WebGPU has one viewport and no layer-selected viewports, the others are ignored");
+        if (load<i32>(a) == 0 && load<i32>(a, 4) >= 1) { memory.copy(VP, a + O.P_VIEWPORTS_v, 16); hasVp = true; dirty |= D_VP; } break;
       case O.OP_SCISSOR: scX = load<i32>(a); scY = load<i32>(a, 4); scW = load<i32>(a, 8); scH = load<i32>(a, 12); hasSc = true; dirty |= D_SC; break;
       case O.OP_DEPTH_RANGE: depthNear = load<f32>(a); depthFar = load<f32>(a, 4); dirty |= D_VP; break;
       case O.OP_BIND_PROGRAM: {

@@ -586,4 +586,145 @@ export const scenes: Scene[] = [
     t.rect(img, 0, 0, 64, 8, BLUE, "the scissored clear: the first rows of the target"); t.rect(img, 0, gl ? 8 : 32, 64, gl ? 32 : 64, [0, 0, 0, 255], "the other half: nothing");
     t.eq(e.host.presentFlips, gl ? 1 : 0, "a bottom-up window texture is flipped when it is shown"); t.eq([e.stat(1), e.stat(2)], [4, 0], "draws"); t.noRed(e);
   } })),
+  { name: "1000 draws with their own uniform ranges: buffer and bind group caching, before and after", async run(e, t) {
+    const G = e.G, cmd = G.cmd, prog = await uboProgram(e), N = 1000, cell = (k: number) => [(k % 40) * 1.6, Math.floor(k / 40) * 2.56];
+    // one block of per-object uniforms, as an engine lays them out: 256 bytes apart (NVN's uniform buffer alignment)
+    const colour = (k: number, f = 0) => [((k * 7 + f * 50) % 256) / 255, ((k * 3) % 256) / 255, 0.5, 1];
+    const block = G.put(new Uint8Array(N * 512)), f32 = () => new Float32Array(e.g.memory.buffer);
+    for (let k = 0; k < N; k++) { const [x, y] = cell(k); f32().set([1 / 40, 1 / 25, (x + 0.8) / 32 - 1, 1 - (y + 1.28) / 32, 0, 0, 0, 0], (block + k * 512) / 4); f32().set(colour(k), (block + k * 512 + 256) / 4); }
+    const top = e.g.top;
+    const frame = () => {
+      e.g.top = top; G.c("CommandBufferAddCommandMemory", [cmd, G.cmdPool.obj, 0, G.cmdPool.size]);
+      const i = G.acquire(e.win); G.begin(); e.frame(cmd, e.wtex[i], prog); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]);
+      for (let k = 0; k < N; k++) { bindUbos(e, cmd, block + k * 512, block + k * 512 + 256); e.drawQuad(cmd); }
+      const h = G.end(), t0 = performance.now(); G.submit([h]); const ms = performance.now() - t0; G.present(e.win, i); return ms;
+    };
+    const run = async (frames: number, change: number) => {
+      const u0 = e.host.stats.uploads, g0 = e.host.stats.bindGroups; let ms = 0;
+      for (let f = 0; f < frames; f++) { for (let k = 0; k < change; k++) f32().set(colour(k * 10, f + 1), (block + k * 10 * 512 + 256) / 4); ms += frame(); }
+      await e.settle();
+      return { ms: ms / frames, uploads: (e.host.stats.uploads - u0) / frames, groups: (e.host.stats.bindGroups - g0) / frames };
+    };
+    e.host.cacheUploads = false; frame(); const before = await run(10, 0);
+    e.host.cacheUploads = true; frame(); frame();
+    const after = await run(10, 0), partly = await run(10, 100);
+    const img = await e.read();
+    for (const k of [0, 10, 555, 990, 999]) { const [x, y] = cell(k); t.px(img, Math.floor(x + 0.8), Math.floor(y + 1.28), rgba8(colour(k, k % 10 === 0 && k < 1000 ? 10 : 0)), `cell ${k}`, 1); }
+    t.eq([before.uploads, after.uploads, partly.uploads], [2002, 0, 100], "ranges written a submission: all (2000 uniform, vertex, index); none when nothing changed; the 100 that changed");
+    t.eq([before.groups, after.groups, partly.groups], [1001, 0, 0], "bind groups created a submission (1000 of uniform buffers and the empty texture group)");
+    console.log(`1000 draws, 2002 bound ranges: before ${before.ms.toFixed(1)} ms a submission (2002 buffer writes, 1000 bind groups); after ${after.ms.toFixed(1)} ms unchanged (0 writes, 0 bind groups, 2002 hashes), ${partly.ms.toFixed(1)} ms with 100 ranges changing a frame (100 writes)`);
+    t.noRed(e);
+  } },
+  { name: "fans, quads, quad strips, polygons and line loops through converted index buffers; indirect draws and a multi-draw with its count in memory", async run(e, t) {
+    const G = e.G, cmd = G.cmd, prog = await e.program("vs_color", "fs_color"), i = G.acquire(e.win);
+    const px = (x: number, y: number) => [x / 32 - 1, 1 - y / 32], v = (x: number, y: number, c: number[]) => [...px(x, y), ...c];
+    const R = [1, 0, 0], Gn = [0, 1, 0], B = [0, 0, 1], Y = [1, 1, 0], W = [1, 1, 1], C = [0, 1, 1];
+    const verts = [
+      v(8, 8, R), v(0, 0, R), v(16, 0, R), v(16, 16, R), v(0, 16, R), v(0, 0, R),                           // 0: a fan around the centre of [0,16)^2
+      v(16, 0, Gn), v(16, 16, Gn), v(32, 16, Gn), v(32, 0, Gn), v(32, 0, B), v(32, 16, B), v(48, 16, B), v(48, 0, B),   // 6: two quads
+      v(0, 16, Y), v(0, 32, Y), v(16, 16, Y), v(16, 32, Y), v(32, 16, Y), v(32, 32, Y),                     // 14: a quad strip of two
+      v(40, 16, C), v(32, 24, C), v(40, 32, C), v(48, 24, C),                                               // 20: a polygon (a diamond)
+      v(4.5, 36.5, W), v(27.5, 36.5, W), v(27.5, 59.5, W), v(4.5, 59.5, W),                                 // 24: a line loop
+      v(32, 32, R), v(32, 48, R), v(48, 32, R), v(48, 48, Gn), v(48, 64, Gn), v(64, 48, Gn), v(32, 48, B), v(32, 64, B), v(48, 48, B),   // 28: three triangles for the indirect draws
+    ];
+    const vb = G.put(new Float32Array(verts.flat())), fanIdx = G.put(new Uint16Array([0, 1, 2, 3, 4, 5])), polyIdx = G.put(new Uint8Array([0, 1, 2, 3]));
+    // indirect arguments, as the GPU would read them: arrays { count, instances, first, base instance }, elements { count, instances, first index, base vertex, base instance }
+    const ind = G.put(new Uint32Array([3, 1, 28, 0, /* multi, 3 records 16 bytes apart */ 3, 1, 31, 0, 3, 1, 34, 0, 3, 1, 0, 0])), cnt = G.put(new Uint32Array([2]));
+    const eind = G.put(new Uint32Array([3, 1, 1, 34, 0])), eidx = G.put(new Uint16Array([9, 0, 1, 2]));
+    G.begin(); G.targets(cmd, [e.wtex[i]]); G.defaultStates(cmd); G.clear(cmd, [0, 0, 0, 1]);
+    G.vertexLayout(cmd, [{ format: FMT.RG32F, offset: 0 }, { format: FMT.RGB32F, offset: 8 }], [{ stride: 20 }]);
+    G.c("CommandBufferBindVertexBuffer", [cmd, 0, vb, verts.length * 20]); G.c("CommandBufferBindProgram", [cmd, prog, 3]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]);
+    G.c("CommandBufferDrawElements", [cmd, PRIM.TRIANGLE_FAN, 1, 6, fanIdx]);                 // indexed fan
+    G.c("CommandBufferDrawArrays", [cmd, 7 /* QUADS */, 6, 8]);
+    G.c("CommandBufferDrawArrays", [cmd, 8 /* QUAD_STRIP */, 14, 6]);
+    G.c("CommandBufferDrawElementsBaseVertex", [cmd, 9 /* POLYGON */, 0 /* u8 */, 4, polyIdx, 20]);
+    G.c("CommandBufferDrawArrays", [cmd, 2 /* LINE_LOOP */, 24, 4]);
+    G.c("CommandBufferDrawArraysIndirect", [cmd, PRIM.TRIANGLES, ind]);
+    G.c("CommandBufferMultiDrawArraysIndirectCount", [cmd, PRIM.TRIANGLES, ind + 16, cnt, 3, 16]);       // room for 3, the count says 2
+    e.finish(i);
+    const img = await e.read(), at = (x: number, y: number, c: number[], m: string) => t.px(img, x, y, [...rgba8(c), 255], m);
+    for (const [x, y] of [[2, 8], [8, 2], [13, 8], [8, 13]]) at(x, y, R, "fan: all four triangles"); at(24, 8, Gn, "first quad"); at(18, 14, Gn, "first quad, second triangle"); at(40, 8, B, "second quad"); at(46, 2, B, "second quad");
+    at(8, 24, Y, "quad strip, first"); at(14, 30, Y, "quad strip, first"); at(24, 24, Y, "quad strip, second"); at(40, 24, C, "polygon"); at(40, 19, C, "polygon, upper triangle"); at(40, 29, C, "polygon, lower triangle"); at(34, 18, [0, 0, 0], "outside the diamond");
+    for (const [x, y] of [[10, 36], [27, 45], [15, 59], [4, 50]]) at(x, y, W, "line loop: all four edges, the closing one too"); at(15, 45, [0, 0, 0], "inside the loop");
+    at(36, 36, R, "indirect draw"); at(52, 52, Gn, "multi-draw, record 0"); at(36, 52, B, "multi-draw, record 1"); at(60, 36, [0, 0, 0], "nothing else");
+    t.eq([e.stat(1), e.stat(2)], [8, 0], "8 draws issued (the third multi-draw record is beyond the count)");
+    const j = G.acquire(e.win);         // again: the converted index buffers are reused; and an indexed indirect draw
+    G.begin(); G.targets(cmd, [e.wtex[j]]); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferDrawElements", [cmd, PRIM.TRIANGLE_FAN, 1, 6, fanIdx]); G.c("CommandBufferDrawElementsIndirect", [cmd, PRIM.TRIANGLES, 1, eidx, eind]); e.finish(j);
+    const img2 = await e.read(); t.px(img2, 8, 2, RED, "fan again"); t.px(img2, 36, 52, BLUE, "indexed indirect: first index 1, base vertex 34"); t.noRed(e);
+  } },
+
+  { name: "stencil with different front and back operations; polygon offset", async run(e, t) {
+    const G = e.G, cmd = G.cmd, prog = await uboProgram(e), ds = G.texture({ w: 64, h: 64, format: FMT.DEPTH24_STENCIL8 }), i = G.acquire(e.win);
+    const flipped = G.put(new Uint16Array([0, 2, 1, 2, 3, 1]));          // the quad, clockwise: back-facing
+    G.begin();
+    const st = e.frame(cmd, e.wtex[i], prog, ds);
+    G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferClearDepthStencil", [cmd, 1, 0, 0xff], [1.0]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]);
+    // pass 1, no colour: front faces replace the stencil with the reference, back faces invert it
+    G.c("ChannelMaskStateSetChannelMask", [st.cm, 0, 0, 0, 0, 0]); G.c("CommandBufferBindChannelMaskState", [cmd, st.cm]);
+    G.c("DepthStencilStateSetStencilTestEnable", [st.ds, 1]); G.c("DepthStencilStateSetStencilFunc", [st.ds, 3, 8 /* ALWAYS */]);
+    G.c("DepthStencilStateSetStencilOp", [st.ds, 1, 1, 1, 3 /* front: REPLACE */]); G.c("DepthStencilStateSetStencilOp", [st.ds, 2, 1, 1, 6 /* back: INVERT */]);
+    G.c("CommandBufferBindDepthStencilState", [cmd, st.ds]); G.c("CommandBufferSetStencilRef", [cmd, 3, 5]);
+    bindUbos(e, cmd, ubo(e, [0.5, 0.5, -0.5, 0.5, 0.5, 0, 0, 0]), ubo(e, [1, 1, 1, 1])); e.drawQuad(cmd);                                              // top left, front-facing: stencil 5
+    bindUbos(e, cmd, ubo(e, [0.5, 0.5, 0.5, 0.5, 0.5, 0, 0, 0]), ubo(e, [1, 1, 1, 1])); G.c("CommandBufferDrawElements", [cmd, PRIM.TRIANGLES, 1, 6, flipped]);   // top right, back-facing: stencil 0xff
+    // pass 2: colour where the stencil equals the reference
+    G.c("ChannelMaskStateSetChannelMask", [st.cm, 0, 1, 1, 1, 1]); G.c("CommandBufferBindChannelMaskState", [cmd, st.cm]);
+    G.c("DepthStencilStateSetStencilFunc", [st.ds, 3, 3 /* EQUAL */]); G.c("DepthStencilStateSetStencilOp", [st.ds, 3, 1, 1, 1]); G.c("CommandBufferBindDepthStencilState", [cmd, st.ds]);
+    bindUbos(e, cmd, ubo(e, IDENT), ubo(e, [1, 0, 0, 1])); e.drawQuad(cmd);                                       // reference 5: red where the front face wrote
+    G.c("CommandBufferSetStencilRef", [cmd, 3, 0xff]); bindUbos(e, cmd, ubo(e, IDENT), ubo(e, [0, 1, 0, 1])); e.drawQuad(cmd);   // reference 255: green where the back face inverted
+    e.finish(i);
+    let img = await e.read();
+    t.rect(img, 0, 0, 32, 32, RED, "stencil 5 from the front face"); t.rect(img, 32, 0, 64, 32, GREEN, "stencil 0xff from the back face"); t.rect(img, 0, 32, 64, 64, [0, 0, 0, 255], "stencil 0: neither");
+    // polygon offset: the same plane drawn twice with depth func LESS; the second passes only when it is biased towards the viewer
+    const dz = G.texture({ w: 64, h: 64, format: FMT.DEPTH32F }), j = G.acquire(e.win);
+    G.begin();
+    const s2 = e.frame(cmd, e.wtex[j], prog, dz);
+    G.c("DepthStencilStateSetDepthTestEnable", [s2.ds, 1]); G.c("CommandBufferBindDepthStencilState", [cmd, s2.ds]);
+    G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferClearDepthStencil", [cmd, 1, 0, 0], [1.0]);
+    const plane = ubo(e, [1, 1, 0, 0, 0.5, 0, 0, 0]);
+    bindUbos(e, cmd, plane, ubo(e, [1, 0, 0, 1])); e.drawQuad(cmd);
+    G.c("CommandBufferSetViewport", [cmd, 0, 0, 32, 64]); bindUbos(e, cmd, plane, ubo(e, [0, 1, 0, 1])); e.drawQuad(cmd);            // left half, unbiased: fails LESS
+    G.c("PolygonStateSetPolygonOffsetEnables", [s2.po, 4 /* FILL */]); G.c("CommandBufferBindPolygonState", [cmd, s2.po]); G.c("CommandBufferSetPolygonOffsetClamp", [cmd], [0, -1000, 0]);
+    G.c("CommandBufferSetViewport", [cmd, 32, 0, 32, 64]); bindUbos(e, cmd, plane, ubo(e, [0, 0, 1, 1])); e.drawQuad(cmd);           // right half, biased: passes
+    e.finish(j);
+    img = await e.read();
+    t.rect(img, 0, 0, 32, 64, RED, "coplanar without offset: hidden"); t.rect(img, 32, 0, 64, 64, BLUE, "with polygon offset: in front");
+    t.eq(e.g.x.gfx_pipeline_count(), 4, "stencil functions and operations and the offset are pipeline state; the reference is not"); t.noRed(e);
+  } },
+
+  { name: "samplers: compare mode on a depth texture, lod clamp and bias on a mip chain, anisotropy; an sRGB view of a linear texture", async run(e, t) {
+    const G = e.G, cmd = G.cmd, uprog = await uboProgram(e), sprog = await e.program("vs_quad", "fs_shadow"), tprog = await e.program("vs_quad", "fs_tex");
+    // a depth texture: left half 0.25, right half 0.75, then sampled with LEQUAL against 0.5
+    const depth = G.texture({ w: 64, h: 64, format: FMT.DEPTH32F }), depthId = G.texId(depth), scratch = G.texture({ w: 64, h: 64, format: FMT.RGBA8 });
+    const cmp = G.sampId(FILTER.NEAREST, FILTER.NEAREST, undefined, { compare: 4 /* LEQUAL */ });
+    let i = G.acquire(e.win);
+    G.begin();
+    const st = e.frame(cmd, scratch, uprog, depth);
+    G.c("DepthStencilStateSetDepthTestEnable", [st.ds, 1]); G.c("DepthStencilStateSetDepthFunc", [st.ds, DEPTH_FUNC.ALWAYS]); G.c("CommandBufferBindDepthStencilState", [cmd, st.ds]);
+    G.c("CommandBufferClearDepthStencil", [cmd, 1, 0, 0], [1.0]);
+    G.c("CommandBufferSetViewport", [cmd, 0, 0, 32, 64]); bindUbos(e, cmd, ubo(e, [1, 1, 0, 0, 0.25, 0, 0, 0]), ubo(e, [0, 0, 0, 1])); e.drawQuad(cmd);
+    G.c("CommandBufferSetViewport", [cmd, 32, 0, 32, 64]); bindUbos(e, cmd, ubo(e, [1, 1, 0, 0, 0.75, 0, 0, 0]), ubo(e, [0, 0, 0, 1])); e.drawQuad(cmd);
+    e.frame(cmd, e.wtex[i], sprog); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]); e.bindTexture(cmd, depthId, cmp);
+    G.c("CommandBufferBindUniformBuffer", [cmd, STAGE.FRAGMENT, 0, ubo(e, [0.5, 0, 0, 0]), 16]); e.drawQuad(cmd);
+    e.finish(i);
+    let img = await e.read();
+    t.rect(img, 0, 0, 32, 64, GREEN, "0.5 <= 0.25 is false"); t.rect(img, 32, 0, 64, 64, RED, "0.5 <= 0.75 is true");
+    // a 16x16 texture with 5 levels, each one colour, written with WriteTexels; the sampler's lod clamp and bias choose the level
+    const mips = G.texture({ w: 16, h: 16, format: FMT.RGBA8, levels: 5 }), mipId = G.texId(mips), cols = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255], [255, 0, 255, 255]];
+    cols.forEach((c, l) => { const n = 16 >> l; G.c("TextureWriteTexels", [mips, G.view({ level: l }), REGION(e, 0, 0, 0, n, n), e.g.bytes(Uint8Array.from({ length: n * n * 4 }, (_, k) => c[k & 3]))]); });
+    const MIPMAP = 2 /* NEAREST_MIPMAP_NEAREST */, show = async (samp: number) => { i = G.acquire(e.win); G.begin(); e.frame(cmd, e.wtex[i], tprog); e.bindTexture(cmd, mipId, samp); e.drawQuad(cmd); e.finish(i); return (await e.read()).px(30, 30); };
+    t.eq(await show(G.sampId(MIPMAP, FILTER.NEAREST)), cols[0], "16 texels over 64 pixels: level 0");
+    t.eq(await show(G.sampId(MIPMAP, FILTER.NEAREST, undefined, { lod: [2, 2] })), cols[2], "lod clamped to 2");
+    t.eq(await show(G.sampId(MIPMAP, FILTER.NEAREST, undefined, { lod: [3, 1000] })), cols[3], "lod at least 3");
+    t.eq(await show(G.sampId(FILTER.NEAREST, FILTER.NEAREST, undefined, { lod: [3, 3] })), cols[0], "a filter without mipmapping reads level 0 whatever the clamp");
+    t.eq(await show(G.sampId(5 /* LINEAR_MIPMAP_LINEAR */, FILTER.LINEAR, undefined, { aniso: 8, lod: [1, 1] })), cols[1], "anisotropic, trilinear, clamped to level 1");
+    t.eq(await show(G.sampId(MIPMAP, FILTER.NEAREST, undefined, { lod: [4, 4] })), cols[4], "the last level");
+    // the same texels through a view that reads them as sRGB: 128 comes out as its linear value
+    const lin = G.texture({ w: 4, h: 4, format: FMT.RGBA8 });
+    G.c("TextureWriteTexels", [lin, 0, REGION(e, 0, 0, 0, 4, 4), e.g.bytes(new Uint8Array(64).fill(128))]);
+    const plain = G.texId(lin), asSrgb = G.texId(lin, G.view({ format: FMT.RGBA8_SRGB })), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
+    const both = async (id: number) => { i = G.acquire(e.win); G.begin(); e.frame(cmd, e.wtex[i], tprog); e.bindTexture(cmd, id, nearest); e.drawQuad(cmd); e.finish(i); return (await e.read()).px(5, 5); };
+    const dec = Math.round(((128 / 255 + 0.055) / 1.055) ** 2.4 * 255);
+    t.eq(await both(plain), [128, 128, 128, 128], "as stored"); const sv = await both(asSrgb); t.ok(Math.abs(sv[0] - dec) <= 1 && sv[3] === 128, `through the sRGB view: ${sv} (expected ${dec}, alpha 128)`);
+    t.noRed(e);
+  } },
 ];

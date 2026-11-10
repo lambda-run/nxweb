@@ -23,7 +23,7 @@ function process_(k: Kit, slot: number) {
 
 test("process: the states and events are the ones the runtime uses", () => {
   assert.deepEqual(M.states, ["Empty", "Loading", "Ready", "Running", "Paused", "Stopped"]);
-  assert.deepEqual(M.events, ["Load", "LoadOk", "Start", "Pause", "Resume", "Exit", "Break", "Fault"]);
+  assert.deepEqual(M.events, ["Load", "LoadOk", "Start", "Pause", "Resume", "Exit", "Break", "Fault", "Kill"]);
   assert.equal(M.initial, "Empty");
   assert.deepEqual(M.final, ["Stopped"]);
 });
@@ -47,5 +47,9 @@ test("process: a break and a fault stop a running process; a refused file stops 
   const b = process_(k, 1); b.go("Load", "Loading"); b.go("LoadOk", "Ready"); b.go("Start", "Running"); b.go("Fault", "Stopped", 3);
   const c = process_(k, 2); c.go("Load", "Loading"); c.go("Fault", "Stopped", 7);
   assert.deepEqual([a.data, b.data, c.data], [7, 3, 7]);
+  // the embedder's stop: from Ready, Running and Paused
+  const d = process_(k, 3); d.no("Kill"); d.go("Load", "Loading"); d.no("Kill"); d.go("LoadOk", "Ready"); d.go("Kill", "Stopped", 4);
+  const e = process_(k, 4); e.go("Load", "Loading"); e.go("LoadOk", "Ready"); e.go("Start", "Running"); e.go("Kill", "Stopped", 4);
+  const f = process_(k, 5); f.go("Load", "Loading"); f.go("LoadOk", "Ready"); f.go("Start", "Running"); f.go("Pause", "Paused"); f.go("Kill", "Stopped", 4);
   assert.equal(k.logs.length, 0);
 });

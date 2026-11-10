@@ -4,23 +4,27 @@
 
 // ---------------------------------------------------------------------------------------------
 // options
-export let optPcmapBase: u32 = 0;   // linear-memory address of the pc map (u32 table index per insn)
-export let optCodeLo: u32 = 0;      // first guest address covered by the pc map
-export let optMapSize: u32 = 0;     // bytes covered by the pc map
+export let optPcmapBase: u32 = 0;   // address of the pc map's first level (65536 u32 leaf addresses, one per 64 KB of guest address space)
+export let optEntryBase: u32 = 0;   // address of the entry bitmap (1 bit per instruction of the code region)
+export let optRegionLo: u32 = 0;    // code region covered by the entry bitmap
+export let optRegionSize: u32 = 0;
 export let optMaxInsns: i32 = 1500; // function size cap
 export let optMaxFuncs: i32 = 1024; // functions per unit (entries + region entries + auto-added BL targets)
 export let optFma: bool = true;     // relaxed-simd fused multiply-add
 export let optTail: bool = true;    // wasm tail calls for jumps
 export let optNan: bool = true;     // ARM NaN generation/propagation fix-up on FP arithmetic
-export let optChunk: u32 = 65536;        // region mode: a unit also takes the untranslated BL targets in the entry's chunk (bytes, power of two; 0 = off)
-export let optRmArith: bool = true;  // scalar FADD/FSUB/FMUL/FDIV/FSQRT honour FPCR.RMode (one FPCR test per operation)
+export let optChunk: u32 = 65536;   // region mode: a unit also takes the untranslated known entries in the entry's chunk (bytes, power of two; 0 = off)
+export let optRmArith: bool = true; // scalar FADD/FSUB/FMUL/FDIV/FSQRT honour FPCR.RMode (one FPCR test per operation)
 export let optDepth: i32 = 160;     // nested guest calls before a call unwinds through the run loop (0 = off)
+export let optShared: bool = false; // modules import a shared memory; exclusives and LDAR/STLR are atomic
+export let optCntYield: bool = false; // `mrs cntpct_el0` is a yield point (write back, pc = the instruction, pc check after the import)
+export let optPrecise: i32 = 0;     // 1: pc is written before every memory instruction; 2: dirty registers too
 
 export function setOpt(id: i32, v: u32): void {
   switch (id) {
     case 0: optPcmapBase = v; break;
-    case 1: optCodeLo = v; break;
-    case 2: optMapSize = v; break;
+    case 1: optEntryBase = v; break;
+    case 2: optRegionLo = v; break;
     case 3: optMaxInsns = v < 1 ? 1 : v > 8000 ? 8000 : <i32>v; break;
     case 4: optMaxFuncs = <i32>v; break;
     case 5: optFma = v != 0; break;
@@ -29,62 +33,105 @@ export function setOpt(id: i32, v: u32): void {
     case 8: optDepth = <i32>v; break;
     case 9: optChunk = v; break;
     case 10: optRmArith = v != 0; break;
+    case 11: optRegionSize = v; break;
+    case 12: optShared = v != 0; break;
+    case 13: optCntYield = v != 0; break;
+    case 14: optPrecise = <i32>v; break;
   }
 }
 
 // ---------------------------------------------------------------------------------------------
-// guest code window (copied in by the glue)
-export let codePtr: usize = 0;
-export let codeBase: u64 = 0;
-export let codeLen: u32 = 0;
-let codeCap: u32 = 0;
-export let markPtr: usize = 0;   // u16 per insn: discovery flags + block index
-export let fnMarkPtr: usize = 0; // u16 per insn: unit function index + 1
-export let statePtr: usize = 0;  // u8 per insn, persistent: 1 = already translated (in the pc map), 2 = BL target
-export const S_DONE: u8 = 1;
-export const S_ENTRY: u8 = 2;
+// guest code: read straight from the shared linear memory. Code ranges are registered by the glue
+// (addRange / removeRange); a function and everything discovered from it stay inside one range.
+const RANGE_CAP = 64;
+const rLo = new StaticArray<u64>(RANGE_CAP);
+const rHi = new StaticArray<u64>(RANGE_CAP);
+let nRanges: i32 = 0;
+export let curLo: u64 = 0;
+export let curHi: u64 = 0;
+export const WINDOW: u64 = 1 << 18;   // discovery stays within +-WINDOW of the function entry
+let markBase: usize = 0;              // u16 per instruction of the discovery window
+let winLo: u64 = 0;
+export function setWin(entry: u64): void { winLo = entry - WINDOW; }
+// @ts-ignore
+@inline export function inWin(pc: u64): bool { return pc - winLo < 2 * WINDOW; }
+// @ts-ignore
+@inline export function inCode(pc: u64): bool { return pc - curLo < curHi - curLo && (pc & 3) == 0; }
+// @ts-ignore
+@inline export function insnAt(pc: u64): u32 { return load<u32>(<usize>pc); }
+// @ts-ignore
+@inline export function markAt(pc: u64): usize { return markBase + (<usize>(pc - winLo) >> 1); }
+export function findRange(pc: u64): bool {
+  if (inCode(pc)) return true;
+  for (let i = 0; i < nRanges; i++) {
+    if (pc - rLo[i] < rHi[i] - rLo[i]) { curLo = rLo[i]; curHi = rHi[i]; return (pc & 3) == 0; }
+  }
+  return false;
+}
+export function noRange(): void { curLo = 0; curHi = 0; }
 
-export function codeBuf(len: u32): usize {
-  if (len > codeCap) {
-    codeCap = (len + 0xFFFF) & ~0xFFFF;
-    codePtr = heap.alloc(codeCap);
-    markPtr = heap.alloc(codeCap >> 1);
-    fnMarkPtr = heap.alloc(codeCap >> 1);
-    statePtr = heap.alloc(codeCap >> 2);
-    memory.fill(markPtr, 0, codeCap >> 1);
-    memory.fill(fnMarkPtr, 0, codeCap >> 1);
-  }
-  return codePtr;
+// entry bitmap (known function entries) and the pc map as "already translated" state
+// @ts-ignore
+@inline function ebyte(pc: u64): usize { return <usize>optEntryBase + <usize>((pc - optRegionLo) >> 5); }
+// @ts-ignore
+@inline function inRegion(pc: u64): bool { return pc - optRegionLo < <u64>optRegionSize; }
+export function isEntry(pc: u64): bool { return inRegion(pc) && ((load<u8>(ebyte(pc)) >> (<u32>((pc - optRegionLo) >> 2) & 7)) & 1) != 0; }
+export function setEntry(pc: u64): void {
+  if (!inRegion(pc) || (pc & 3) != 0) return;
+  let p = ebyte(pc);
+  store<u8>(p, load<u8>(p) | (<u8>1 << (<u32>((pc - optRegionLo) >> 2) & 7)));
 }
-export function setCode(base: u64, len: u32): void {
-  codeBase = base; codeLen = len & ~3;
-  memory.fill(statePtr, 0, codeLen >> 2);
-  // every BL target is a function entry
-  for (let off: u32 = 0; off < codeLen; off += 4) {
-    let insn = load<u32>(codePtr + off);
+function clearEntries(lo: u64, hi: u64): void {
+  for (let pc = lo; pc < hi; pc += 4) {
+    if (!inRegion(pc)) continue;
+    let p = ebyte(pc);
+    store<u8>(p, load<u8>(p) & ~(<u8>1 << (<u32>((pc - optRegionLo) >> 2) & 7)));
+  }
+}
+export function isDone(pc: u64): bool {
+  let p = <u32>pc;
+  let leaf = load<u32>(<usize>optPcmapBase + (<usize>(p >> 16) << 2));
+  return load<u32>(<usize>leaf + (p & 0xFFFC)) != 0;
+}
+// does this instruction look like the first of a function? (frame setup, stack adjustment, PAC/BTI landing pad)
+function looksLikeEntry(insn: u32): bool {
+  return (insn & 0xFFC003E0) == 0xA98003E0     // stp xA, xB, [sp, #-n]!
+      || (insn & 0xFFC003E0) == 0x6D8003E0     // stp dA, dB, [sp, #-n]!
+      || (insn & 0xFF8003FF) == 0xD10003FF     // sub sp, sp, #n
+      || (insn & 0xFFE00FE0) == 0xF8000FE0     // str xN, [sp, #-n]!
+      || insn == 0xD503233F || (insn & 0xFFFFFF3F) == 0xD503241F;   // paciasp, bti
+}
+// register a code range; [tlo, thi) is its text (equal to the range when unknown). Marks the known
+// function entries: BL targets, prologue-looking instructions right after a RET, and aligned
+// 8-byte words anywhere in the range that point into the text.
+export function addRange(lo: u64, hi: u64, tlo: u64, thi: u64): i32 {
+  removeRange(lo, hi);
+  if (nRanges >= RANGE_CAP) return -1;
+  rLo[nRanges] = lo; rHi[nRanges] = hi; nRanges++;
+  noRange();
+  for (let pc = tlo; pc + 4 <= thi; pc += 4) {
+    let insn = load<u32>(<usize>pc);
     if ((insn & 0xFC000000) == 0x94000000) {
-      let t = <i64>off + (<i64>((<i32>(insn << 6)) >> 6) << 2);
-      if (t >= 0 && t < <i64>codeLen) store<u8>(statePtr + <usize>(t >> 2), S_ENTRY);
-    }
-    // heuristics for functions only reached through pointers: code right after a RET, and
-    // aligned 8-byte words that point into the window
-    if (insn == 0xD65F03C0 && off + 8 <= codeLen && load<u32>(codePtr + off + 4) != 0) store<u8>(statePtr + ((off + 4) >> 2), S_ENTRY);
-    if ((off & 7) == 0 && off + 8 <= codeLen) {
-      let v = load<u64>(codePtr + off) - base;
-      if (v < <u64>codeLen && (v & 3) == 0 && load<u64>(codePtr + off) != 0) store<u8>(statePtr + <usize>(v >> 2), S_ENTRY);
+      let t = pc + <u64>(<i64>((<i32>(insn << 6)) >> 6) << 2);
+      if (t - tlo < thi - tlo) setEntry(t);
+    } else if (insn == 0xD65F03C0 && pc + 8 <= thi && looksLikeEntry(load<u32>(<usize>pc + 4))) setEntry(pc + 4);
+  }
+  for (let a = (lo + 7) & ~7; a + 8 <= hi; a += 8) {
+    let v = load<u64>(<usize>a);
+    if (v - tlo < thi - tlo && (v & 3) == 0) setEntry(v);
+  }
+  return nRanges - 1;
+}
+export function removeRange(lo: u64, hi: u64): void {
+  for (let i = 0; i < nRanges; i++) {
+    if (rLo[i] < hi && lo < rHi[i]) {
+      clearEntries(rLo[i], rHi[i]);
+      nRanges--; rLo[i] = rLo[nRanges]; rHi[i] = rHi[nRanges]; i--;
     }
   }
+  noRange();
 }
-// forget which pcs are translated (the glue cleared the pc map)
-export function resetDone(): void { for (let i: u32 = 0, n = codeLen >> 2; i < n; i++) store<u8>(statePtr + i, load<u8>(statePtr + i) & ~S_DONE); }
-// @ts-ignore
-@inline export function stateAt(pc: u64): usize { return statePtr + (<usize>(pc - codeBase) >> 2); }
-// @ts-ignore
-@inline export function inCode(pc: u64): bool { return pc - codeBase < <u64>codeLen && (pc & 3) == 0; }
-// @ts-ignore
-@inline export function insnAt(pc: u64): u32 { return load<u32>(codePtr + <usize>(pc - codeBase)); }
-// @ts-ignore
-@inline export function markAt(pc: u64): usize { return markPtr + (<usize>(pc - codeBase) >> 1); }
+export function rangeCount(): i32 { return nRanges; }
 
 export const M_VIS: u16 = 0x8000;
 export const M_LEAD: u16 = 0x4000;
@@ -219,7 +266,7 @@ export const insMI = new StaticArray<u64>(INS_CAP);
 export const insMV = new StaticArray<u32>(INS_CAP);
 export let nIns: i32 = 0;
 export let fbBase: usize = 0;
-export const FB_CAP: usize = 6 << 20;
+export const FB_CAP: usize = 3 << 20;
 export let ifDepth: i32 = 0;
 export let overflow: bool = false;
 
@@ -370,7 +417,7 @@ export function setNBlk(n: i32): void { nBlk = n; }
 export function setCurBlk(k: i32): void { curBlk = k; term = false; lastCmp = 0; }
 export function setTerm(): void { term = true; }
 export function blockOf(pc: u64): i32 {
-  if (!inCode(pc)) return -1;
+  if (!inCode(pc) || !inWin(pc)) return -1;
   let m = load<u16>(markAt(pc));
   if ((m & (M_VIS | M_LEAD)) != (M_VIS | M_LEAD)) return -1;
   return <i32>(m & 0x3FFF);
@@ -379,44 +426,49 @@ function addSucc(j: i32): void {
   if (succ0[curBlk] < 0 || succ0[curBlk] == j) succ0[curBlk] = j; else succ1[curBlk] = j;
 }
 
-// unit function registry
+// unit function registry (pc -> function index, open-addressing hash)
 const FN_CAP = 4096;
+const HSZ = 16384;
 export const fnPc = new StaticArray<u64>(FN_CAP);
+const hKey = new StaticArray<u64>(HSZ);   // pc + 1, 0 = empty
+const hVal = new StaticArray<u16>(HSZ);
 export let nFn: i32 = 0;
 export let fnLimit: i32 = 0;
 export function resetFns(): void {
-  for (let i = 0; i < nFn; i++) if (inCode(fnPc[i])) store<u16>(fnMarkPtr + (<usize>(fnPc[i] - codeBase) >> 1), 0);
+  for (let i = 0; i < HSZ; i++) hKey[i] = 0;
   nFn = 0;
 }
 export function setFnLimit(n: i32): void { fnLimit = n < FN_CAP ? n : FN_CAP; }
 export function addFn(pc: u64, force: bool): i32 {
-  if (inCode(pc)) {
-    let p = fnMarkPtr + (<usize>(pc - codeBase) >> 1);
-    let m = load<u16>(p);
-    if (m != 0) return <i32>m - 1;
-    if (nFn >= (force ? FN_CAP : fnLimit)) return -1;
-    if (!force && (load<u8>(stateAt(pc)) & S_DONE) != 0) return -1;   // already has a translation: go through the pc map
-    store<u16>(p, <u16>(nFn + 1));
-  } else {
-    if (!force) return -1;
-    for (let i = 0; i < nFn; i++) if (fnPc[i] == pc) return i;
-    if (nFn >= FN_CAP) return -1;
+  let h = <i32>((<u32>(pc >> 2) * 0x9E3779B1) >> 18);
+  while (hKey[h] != 0) {
+    if (hKey[h] == pc + 1) return <i32>hVal[h];
+    h = (h + 1) & (HSZ - 1);
   }
+  if (nFn >= (force ? FN_CAP : fnLimit)) return -1;
+  // a BL target joins the unit only when it is in the caller's range and has no translation yet
+  if (!force && (!inCode(pc) || isDone(pc))) return -1;
+  hKey[h] = pc + 1; hVal[h] = <u16>nFn;
   fnPc[nFn] = pc;
   return nFn++;
 }
 
 // ---------------------------------------------------------------------------------------------
 // control-flow protocol
+// two-level pc map: leaf = L1[pc >> 16], index = leaf[pc & 0xFFFC]; unmapped leaves are a shared zero page
 function idxConst(target: u64): void {
-  let off = (<u32>target - optCodeLo) & ~3;
-  if (off < optMapSize) { i32c(<i32>off); b(0x28); b(2); leb(optPcmapBase); } else i32c(0);
+  let t = <u32>target;
+  i32c(<i32>(optPcmapBase + ((t >> 16) << 2))); b(0x28); b(2); b(0);
+  b(0x28); b(2); leb(t & 0xFFFC);
 }
 // stack: i64 target -> i32 table index
 function idxDyn(): void {
-  let t = t32(11);
-  b(0xA7); i32c(<i32>optCodeLo); b(0x6B); i32c(-4); b(0x71); ltee(t); i32c(<i32>optMapSize); b(0x49);
-  b(0x04); b(T_I32); lget(t); b(0x28); b(2); leb(optPcmapBase); b(0x05); i32c(0); b(0x0B);
+  pcmapLookup(t32(11));
+}
+// stack: i64 pc -> i32 table index (tmp: an i32 local)
+export function pcmapLookup(tmp: u32): void {
+  b(0xA7); ltee(tmp); i32c(16); b(0x76); i32c(2); b(0x74); b(0x28); b(2); leb(optPcmapBase);
+  lget(tmp); i32c(0xFFFC); b(0x71); b(0x6A); b(0x28); b(2); b(0);
 }
 // depth bookkeeping: a nested call announces depth+1, a tail transfer hands on the current depth
 function depthForCall(): void { if (optDepth > 0) { lget(L_DEPTH); i32c(1); b(0x6A); gset(G_DEPTH); } }
@@ -488,6 +540,13 @@ export function callDyn(ret: u64): void {
   writeback(); lget(t); idxDyn(); b(0x11); b(0); b(0);
   pcCheck(ret);
 }
+// `mrs xN, cntpct_el0` as a yield point: leaves the i64 counter on the stack
+export function emitCntYield(pc: u64): void {
+  let t = t64(9);
+  i64c(<i64>pc); gset(G_PC); writeback(); b(0x10); leb(F_CNTPCT); lset(t);
+  pcCheck(pc);
+  lget(t);
+}
 export function emitSvc(imm: u32, ret: u64): void {
   i64c(<i64>ret); gset(G_PC); writeback(); i32c(<i32>imm); b(0x10); leb(F_SVC);
   pcCheck(ret);
@@ -504,6 +563,8 @@ export function emitTrap(fn: u32, pc: u64, arg: u32): void {
 export function resetLocals(): void { nLoc = 0; }
 export function initEmit(): void {
   fbBase = heap.alloc(FB_CAP);
+  markBase = heap.alloc(<usize>(2 * WINDOW / 4) * 2);
+  memory.fill(markBase, 0, <usize>(2 * WINDOW / 4) * 2);
 }
 export function beginFunction(): void {
   P = fbBase; nEv = 0; nIns = 0; ifDepth = 0; overflow = false;

@@ -37,6 +37,17 @@ export function rt_scratch_ptr(): usize { return SCRATCH; }
 export function rt_scratch_cap(): u32 { return 4096; }
 export function rt_wait_slot(threadIndex: u32): usize { return WAIT_SLOTS + (<usize>(threadIndex & 255) << 2); }
 export function rt_query_ptr(): usize { return QUERY; }
+// A context block (contract layout) the glue saves the live CPU state into to read what JavaScript cannot read from
+// globals (the v registers), and the argument block of an NVN call: x0..x7 then d0..d7
+const CTX_SCRATCH: usize = memory.data(0x330);
+const NVN_ARGS: usize = memory.data(128);
+export function rt_ctx_scratch(): usize { return CTX_SCRATCH; }
+// Fills the NVN argument block from a saved context: x0..x7, then the low 64 bits of v0..v7. Returns its address.
+export function rt_nvn_args(ctx: usize): usize {
+  memory.copy(NVN_ARGS, ctx, 64);
+  for (let i = 0; i < 8; i++) store<u64>(NVN_ARGS + 64 + (<usize>i << 3), load<u64>(ctx + 0x130 + (<usize>i << 4)));
+  return NVN_ARGS;
+}
 export function rt_static_end(): usize { return __heap_base; }
 
 // ---- the shared memory's range table ----
@@ -66,7 +77,7 @@ export function rt_static_check(which: i32, lo: u64, hi: u64, staticEnd: u64): i
 }
 
 // ---- the process ----
-export const STOP_EXIT: u32 = 1, STOP_BREAK: u32 = 2, STOP_FAULT: u32 = 3;
+export const STOP_EXIT: u32 = 1, STOP_BREAK: u32 = 2, STOP_FAULT: u32 = 3, STOP_KILLED: u32 = 4;
 export const FAULT_UNIMPLEMENTED: u32 = 1;   // the translator met an instruction it does not translate (aux = the word)
 export const FAULT_BRK: u32 = 2;             // a BRK instruction (aux = its immediate)
 export const FAULT_TRAP: u32 = 3;            // a WebAssembly trap in translated code (memory access out of bounds, ...)
@@ -97,6 +108,9 @@ export function rt_pause(): i32 { return proc().step(ProcessE.Pause) ? 1 : 0; }
 export function rt_resume(): i32 { return proc().step(ProcessE.Resume) ? 1 : 0; }
 export function rt_exit(code: i32): i32 { return proc().step(ProcessE.Exit, (<u64>STOP_EXIT << 32) | <u64><u32>code) ? 1 : 0; }
 export function rt_break(code: i32): i32 { return proc().step(ProcessE.Break, (<u64>STOP_BREAK << 32) | <u64><u32>code) ? 1 : 0; }
+
+// The embedder ends the process (the page's stop button): from Ready, Running or Paused
+export function rt_kill(): i32 { return proc().step(ProcessE.Kill, <u64>STOP_KILLED << 32) ? 1 : 0; }
 
 function faultName(kind: u32): string {
   switch (kind) {

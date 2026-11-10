@@ -9,6 +9,7 @@ import { RANGES, HOST_END, GUEST, PCMAP, STUBS, range } from "./rt_layout.ts";
 export interface RuntimeModules {
   rt: WebAssembly.Module; kernel: WebAssembly.Module; loader: WebAssembly.Module;
   translator: WebAssembly.Module; helpers: WebAssembly.Module;
+  gfx?: WebAssembly.Module;           // build/runtime/gfx.wasm, for src/glue/rt_gfx.ts
 }
 export interface RuntimeOptions {
   budget?: number;                    // budget units per time slice (function entries + backward branches); default 100000
@@ -25,11 +26,17 @@ export type State = typeof STATES[number];
 export const FAULT = { unimplemented: 1, brk: 2, trap: 3, jump: 4, stack: 5, deadlock: 6, load: 7, host: 8 } as const;
 export const FAULT_NAMES = ["", "unimplemented", "brk", "trap", "jump", "stack", "deadlock", "load", "host"] as const;
 export interface StopInfo {
-  kind: "exit" | "break" | "fault";
+  kind: "exit" | "break" | "fault" | "killed";
   code: number;                       // exit code (exit, break)
   fault?: { kind: typeof FAULT_NAMES[number]; thread: number; threadIndex: number; pc: bigint; aux: bigint; detail: string };
 }
-export interface RunResult { state: State; stop?: StopInfo }
+export interface RunResult {
+  state: State; stop?: StopInfo;
+  yielded?: boolean;                  // run({ yieldMs }) gave the host's event loop a turn; the process is still Running
+  idle?: boolean;                     // every thread waits for something outside (a GPU completion, a frame, a timer): call again when it happened
+  wakeMs?: number;                    // with idle on the wall clock: the next guest deadline is this many ms away
+}
+export interface RunLimit { slices?: number; ms?: number; yieldMs?: number; async?: boolean }
 
 // ---- host functions ----
 export type WaitResult = "signaled" | "timeout" | "cancelled";
@@ -61,7 +68,16 @@ export interface HostCpu {
   // blocks (a wait, a sleep, an exit of its thread) the process stops with a host fault: a host frame cannot be
   // suspended. It is not preempted: its slices are refilled until it returns. x30 of the host call is preserved.
   call(fn: bigint | number, ...args: (bigint | number)[]): bigint;
+  // The calling thread waits for something outside the guest: until `done` has resolved (null: nothing to wait for)
+  // AND guest time has reached `at` (kernel_tick scale, ns; omitted: now). Return its result from the handler. Other
+  // threads run meanwhile; the run loop goes back to the host's event loop when nothing can run (runAsync).
+  // Deterministic clock: the guest clock never passes `at` before the thread is woken, so the wake happens at
+  // exactly `at` however long the real thing took. Wall clock: `at` is a plain timer.
+  waitFor(done: Promise<unknown> | null, at: bigint | undefined, resume: (cpu: HostCpu) => HostResult): HostResult;
+  now(): bigint;                      // host time (kernel_tick scale, ns) at this point of the slice
+  args(): number;                     // address of a block with x0..x7 then d0..d7 (low 64 bits of v0..v7) as the guest passed them
 }
+interface Ext { index: number; r: number; w: number; done: boolean; at: bigint; signaled: boolean }
 class GuestCallAbort extends Error { }
 export interface HostFunctionDef {
   name: string;
@@ -116,11 +132,16 @@ export class Runtime {
   private mainStackTop = 0;
   private nextFile = range("file staging").lo;
   private nextBase = GUEST.codeBase;
+  private lateStubs = new Map<string, number>();
   private spOk = new Map<number, { lo: number; hi: number }>();
   private pauseAsked = false;
   private wallStart = 0;
   private sleeper: Int32Array | null = null;
   private frozenSeen = false;
+  private exts: Ext[] = [];
+  private threadEvent = new Map<number, { r: number; w: number }>();
+  private wake: (() => void) | null = null;
+  times = { hostMs: 0 };               // time inside host functions (ms), for the per-frame breakdown
 
   constructor(mods: RuntimeModules, opts: RuntimeOptions = {}) {
     this.opts = { budget: 100000, clock: "deterministic", nsPerUnit: 100, mainStackSize: GUEST.mainStackSize, ...opts };
@@ -200,6 +221,14 @@ export class Runtime {
   register(def: HostFunctionDef): void {
     if (this.state !== "Empty") throw new Error("runtime: register host functions before loading");
     this.registry.set(def.name, def);
+  }
+
+  // A host function added after loading (not bound to any import: its address is handed to the guest by another host
+  // function, as nvnBootstrapLoader does). Returns the stub's guest address; the same name gives the same stub.
+  lateStub(name: string, fn: (cpu: HostCpu) => HostResult): number {
+    let id = this.lateStubs.get(name);
+    if (id === undefined) { id = this.ld.hostAdd(name, false); this.lateStubs.set(name, id); this.handlers[id] = { name, fn }; }
+    return this.ld.stubAddr(id);
   }
 
   // ---- loading ----
@@ -385,12 +414,23 @@ export class Runtime {
       jump: (pc) => act({ kind: "jump", pc: BigInt(pc) }),
       block: (event, timeout, resume) => act({ kind: "block", event, timeout, resume }),
       call: (fn, ...args) => rt.guestCall(BigInt(fn), args),
+      now: () => rt.nowNs(),
+      args: () => { c.save_ctx(rt.r.rt_ctx_scratch()); return rt.r.rt_nvn_args(rt.r.rt_ctx_scratch()) >>> 0; },
+      waitFor: (done, at, resume) => {
+        const ev = rt.eventOf(index), now = rt.nowNs();
+        const e: Ext = { index, r: ev.r, w: ev.w, done: done === null, at: at === undefined || at < now ? now : at, signaled: false };
+        rt.k.kernel_event_clear(ev.w);
+        rt.exts.push(e);
+        if (done) done.then(() => { e.done = true; rt.wake?.(); }, () => { e.done = true; rt.wake?.(); });
+        return act({ kind: "block", event: ev.r, timeout: -1n, resume: (_how, cpu) => { rt.exts = rt.exts.filter(x => x !== e); rt.k.kernel_event_clear(ev.w); return resume(cpu); } });
+      },
     };
   }
   // The thunk: pc is a stub address, registers are written back, x30 is where the guest wants to continue
   private hostCall(): void {
     const c = this.core, pc = Number((c.pc.value as bigint) & M32), id = (pc - STUBS.base) >>> 2;
     this.stats.hostCalls++;
+    const t0 = performance.now();
     const cpu = this.cpuApi();
     let res: HostResult;
     const resume = this.pending.get(this.curIndex);
@@ -414,10 +454,59 @@ export class Runtime {
       } else res = h.fn(cpu);
     }
     this.finishHostCall(res, cpu, pc);
+    this.times.hostMs += performance.now() - t0;
   }
   // A guest function run to completion inside a host call: a nested core.run() that ends when the function returns
   // to PC_CALLBACK. The outer translated frames are still on the wasm stack; they go on when the host call returns.
-  private guestCall(fn: bigint, args: (bigint | number)[]): bigint {
+  // ---- waits for things outside the guest ----
+  nowNs(): bigint { return this.opts.clock === "wall" ? this.r.rt_clock_set(this.wallNs()) : this.r.rt_clock_now(this.core.budget.value); }
+  private eventOf(index: number): { r: number; w: number } {
+    let ev = this.threadEvent.get(index);
+    if (!ev) { const p = (this.r.rt_scratch_ptr() >>> 0) + 3072; const r = this.k.kernel_event_new(p); ev = { r, w: this.dv().getUint32(p, true) }; this.threadEvent.set(index, ev); }
+    return ev;
+  }
+  // Signals the waits whose outside thing has happened and whose time has come. Returns the earliest time of a wait
+  // not yet signaled (0n: none) and whether one is overdue (its time has come but the outside thing has not).
+  private pumpExternals(now: bigint): { next: bigint; overdue: boolean; nextDone: bigint } {
+    let next = 0n, nextDone = 0n, overdue = false;
+    for (const e of this.exts) {
+      if (e.signaled) continue;
+      if (e.done && e.at <= now) { this.k.kernel_event_signal(e.w); e.signaled = true; continue; }
+      if (!e.done && e.at <= now) overdue = true;
+      if (next === 0n || e.at < next) next = e.at;
+      if (e.done && (nextDone === 0n || e.at < nextDone)) nextDone = e.at;
+    }
+    return { next, overdue, nextDone };
+  }
+  get waitingOutside(): number { return this.exts.filter(e => !e.signaled).length; }
+  // The embedder ends the process (Ready, Running or Paused)
+  kill(): void {
+    if (this.state === "Stopped" || this.state === "Empty" || this.state === "Loading") return;
+    this.r.rt_kill(); this.stop = { kind: "killed", code: 0 };
+    this.wake?.();
+  }
+  // run() for a host with an event loop: slices stay synchronous, and between them control goes back to the event
+  // loop, every yieldMs while threads run and for as long as every thread waits for something outside the guest.
+  async runAsync(o: { yieldMs?: number } = {}): Promise<RunResult> {
+    for (;;) {
+      const r = this.run({ async: true, yieldMs: o.yieldMs ?? 8 });
+      if (!r.idle && !r.yielded) return r;
+      await new Promise<void>(res => {
+        this.wake = res;
+        if (!r.idle) setTimeout(res, 0);
+        else {
+          if (r.wakeMs !== undefined) setTimeout(res, Math.max(0, r.wakeMs));
+          // something finished between run() returning and this promise: do not sleep through it
+          const wall = this.opts.clock === "wall", now = wall ? this.wallNs() : 0n;
+          for (const e of this.exts) if (e.done && !e.signaled) { if (!wall || e.at <= now) res(); else setTimeout(res, Number(e.at - now) / 1e6); }
+          if (this.pauseAsked || this.state === "Stopped") res();
+        }
+      });
+      this.wake = null;
+    }
+  }
+
+  guestCall(fn: bigint, args: (bigint | number)[]): bigint {
     const c = this.core, r = this.r, lr: bigint = c.x30.value;
     args.forEach((a, i) => { c["x" + i].value = BigInt.asUintN(64, BigInt(a)); });
     c.x30.value = PC_CALLBACK; c.pc.value = fn;
@@ -468,14 +557,14 @@ export class Runtime {
   }
 
   // ---- the run loop ----
-  requestPause(): void { this.pauseAsked = true; }
+  requestPause(): void { this.pauseAsked = true; this.wake?.(); }
   // Runs guest threads until the process stops, or pauses (requestPause(), or the limits given here).
-  run(limit: { slices?: number; ms?: number } = {}): RunResult {
+  run(limit: RunLimit = {}): RunResult {
     const r = this.r, k = this.k, c = this.core;
     if (this.state === "Stopped") return { state: "Stopped", stop: this.stop };
     if (this.state === "Ready") { r.rt_start(); if (this.opts.clock === "wall") this.wallStart = performance.now(); }
     else if (this.state === "Paused") r.rt_resume();
-    else throw new Error(`runtime: run() in state ${this.state}`);
+    else if (this.state !== "Running") throw new Error(`runtime: run() in state ${this.state}`);
     this.pauseAsked = false;
     const t0 = performance.now(), wall = this.opts.clock === "wall";
     let slices = 0;
@@ -484,21 +573,47 @@ export class Runtime {
         r.rt_pause();
         break;
       }
+      if (limit.yieldMs !== undefined && performance.now() - t0 >= limit.yieldMs) { this.stats.runMs += performance.now() - t0; return { state: this.state, yielded: true }; }
+      let budget = this.opts.budget;
+      const hasExt = this.exts.length > 0;
+      let ext = { next: 0n, overdue: false, nextDone: 0n };
+      if (hasExt) {
+        const now: bigint = wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_now(0);
+        ext = this.pumpExternals(now);
+        if (!wall) {
+          // deterministic: guest time does not pass the time of a wait whose outside thing has not happened yet
+          if (ext.overdue) { const out = this.outside(limit, t0, undefined); if (out) return out; break; }
+          if (ext.next > now) { const room = (ext.next - now + BigInt(this.opts.nsPerUnit) - 1n) / BigInt(this.opts.nsPerUnit); if (room < BigInt(budget)) budget = Number(room); }
+        }
+      }
       const ctx: number = k.kernel_schedule() >>> 0;
       if (!ctx) {
         if (k.kernel_stop_reason()) { this.finish(); break; }
         // every thread waits: time moves to the next deadline
         const until = BigInt.asUintN(64, k.kernel_next_timeout());   // wasm hands a u64 over as a signed BigInt
+        if (ext.next !== 0n) {
+          if (!wall && ext.next <= until) {
+            // the next thing in guest time is an outside wait: if it has happened, time moves there; else wait for it
+            if (ext.nextDone === ext.next) { k.kernel_tick(r.rt_clock_set(ext.next)); continue; }
+            const out = this.outside(limit, t0, undefined); if (out) return out; break;
+          }
+          if (wall) {
+            const target = ext.nextDone !== 0n && ext.nextDone < until ? ext.nextDone : until;
+            const out = this.outside(limit, t0, target === FOREVER ? undefined : Number(target - this.wallNs()) / 1e6); if (out) return out; break;
+          }
+        }
         if (until === FOREVER) { this.faultNow(FAULT.deadlock, "every thread waits and no wait has a deadline", 0n, this.lastCtx, true); break; }
-        if (wall) { this.sleepMs(Number(until - this.wallNs()) / 1e6); k.kernel_tick(r.rt_clock_set(this.wallNs())); }
-        else k.kernel_tick(r.rt_clock_set(until));
+        if (wall) {
+          if (limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true, wakeMs: Number(until - this.wallNs()) / 1e6 }; }
+          this.sleepMs(Number(until - this.wallNs()) / 1e6); k.kernel_tick(r.rt_clock_set(this.wallNs()));
+        } else k.kernel_tick(r.rt_clock_set(until));
         continue;
       }
       if (ctx !== this.lastCtx) c.excl_addr.value = -1n;   // a context switch clears the exclusive monitor
       this.cur = this.lastCtx = ctx; this.curIndex = k.kernel_thread_of_ctx(ctx);
       c.load_ctx(ctx);
-      c.budget.value = this.opts.budget;
-      r.rt_clock_slice_begin(this.opts.budget);
+      c.budget.value = budget;
+      r.rt_clock_slice_begin(budget);
       slices++; this.stats.slices++;
       let trap: unknown;
       try { c.run(); } catch (e) { trap = e ?? new Error("unknown exception"); }
@@ -526,6 +641,13 @@ export class Runtime {
     }
     this.stats.runMs += performance.now() - t0;
     return { state: this.state, stop: this.stop };
+  }
+  // Every thread waits for something outside the guest (or guest time may not pass it): an asynchronous caller gets
+  // `idle` and calls again; a synchronous run() cannot wait and stops with a host fault (it returns nothing then).
+  private outside(limit: RunLimit, t0: number, wakeMs: number | undefined): RunResult | null {
+    if (limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true, wakeMs }; }
+    this.faultNow(FAULT.host, "a guest thread waits for something outside the guest (a GPU completion, a frame); run() cannot wait for it, use runAsync()", 0n, this.lastCtx, true);
+    return null;
   }
   private finish(): void {
     const reason = this.k.kernel_stop_reason(), code = this.k.kernel_exit_code();

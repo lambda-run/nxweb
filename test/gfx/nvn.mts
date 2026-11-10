@@ -95,10 +95,12 @@ export class Game {
   }
   // Registers the texture in the texture pool: its texture ID
   texId(tex: number, view = 0): number { const id = this.nextTexId++; this.c("TexturePoolRegisterTexture", [this.texPool, id, tex, view]); return id; }
-  sampId(min: number, mag: number, wrap = WRAP.CLAMP_TO_EDGE): number {
+  sampId(min: number, mag: number, wrap = WRAP.CLAMP_TO_EDGE, o: { lod?: [number, number]; compare?: number; aniso?: number; bias?: number } = {}): number {
     const g = this.g, b = g.alloc(SIZEOF.SAMPLER_BUILDER), s = g.alloc(SIZEOF.SAMPLER), id = this.nextSampId++;
     this.c("SamplerBuilderSetDevice", [b, this.dev]); this.c("SamplerBuilderSetDefaults", [b]);
     this.c("SamplerBuilderSetMinMagFilter", [b, min, mag]); this.c("SamplerBuilderSetWrapMode", [b, wrap, wrap, wrap]);
+    if (o.lod) this.c("SamplerBuilderSetLodClamp", [b], o.lod); if (o.bias !== undefined) this.c("SamplerBuilderSetLodBias", [b], [o.bias]);
+    if (o.compare) this.c("SamplerBuilderSetCompare", [b, 1, o.compare]); if (o.aniso) this.c("SamplerBuilderSetMaxAnisotropy", [b], [o.aniso]);
     if (this.c("SamplerInitialize", [s, b]) !== 1) throw new Error("SamplerInitialize");
     this.c("SamplerPoolRegisterSampler", [this.sampPool, id, s]);
     return id;

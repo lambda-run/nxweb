@@ -331,3 +331,12 @@ export function updateUniformBuffer(c: usize, buf: u64, off: i64, n: u64, data: 
   if (r) { store<u64>(r, buf + off); store<u64>(r, n, 8); memory.copy(r + 16, data, <usize>n); }
 }
 export function fenceSync(c: usize, sync: u64): void { const r = rec(c, O.OP_FENCE_SYNC, 8); if (r) store<u64>(r, sync); }
+// Indirect draws carry the address of their arguments (read at submit); cnt / i: draw i of a multi-draw with a count in memory
+export function drawArraysIndirect(c: usize, prim: i32, ind: u64, cnt: u64, i: i32): void {
+  const r = rec(c, O.OP_DRAW, O.P_DRAW_SIZE);
+  if (r) { store<i32>(r, prim); store<i32>(r, 1, 12); store<u64>(r, ind, O.P_DRAW_ind); store<u64>(r, cnt, O.P_DRAW_ind + 8); store<i32>(r, i, O.P_DRAW_ind + 16); }
+}
+export function drawElementsIndirect(c: usize, prim: i32, itype: i32, ibuf: u64, ind: u64, cnt: u64, i: i32): void {
+  const r = rec(c, O.OP_DRAW_IDX, O.P_DRAW_IDX_SIZE);
+  if (r) { store<i32>(r, prim); store<i32>(r, itype, 4); store<i32>(r, 1, 20); store<u64>(r, ibuf, 24); store<u64>(r, ind, O.P_DRAW_IDX_ind); store<u64>(r, cnt, O.P_DRAW_IDX_ind + 8); store<i32>(r, i, O.P_DRAW_IDX_ind + 16); }
+}

@@ -3,7 +3,7 @@ import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, mem, ar, cm, cst, fc,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, tw, ifVoid, ifT, els, end,
   flagsAddSub, addCarry, flagsNZ, setNZCVconst, emitCond, killCmp,
-  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap,
+  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield,
   R_N, R_Z, R_C, R_V, G_FPCR, G_FPSR, G_TPIDR, G_TPIDRRO, G_EXADDR, G_EXVAL, G_EXVAL2,
   F_BRK, F_CNTPCT, F_CRC, T_I32, T_I64,
 } from "./emit";
@@ -372,7 +372,7 @@ export function trDpReg(pc: u64, insn: u32): bool {
 }
 
 // ---------------------------------------------------------------------------------------------
-function sysreg(insn: u32): bool {
+function sysreg(insn: u32, pc: u64): bool {
   let rt = <i32>(insn & 31);
   let L = (insn >> 21) & 1;
   let key = (insn >> 5) & 0x7FFF; // o0(1) op1(3) CRn(4) CRm(4) op2(3)
@@ -407,7 +407,7 @@ function sysreg(insn: u32): bool {
   }
   if (!L) return false;
   switch (key) {
-    case 0x5F01: case 0x5F02: b(0x10); leb(F_CNTPCT); break;   // CNTPCT_EL0 / CNTVCT_EL0
+    case 0x5F01: case 0x5F02: if (optCntYield) emitCntYield(pc); else { b(0x10); leb(F_CNTPCT); } break;   // CNTPCT_EL0 / CNTVCT_EL0
     case 0x5F00: i64c(19200000); break;                         // CNTFRQ_EL0
     case 0x5807: i64c(4); break;                                // DCZID_EL0: 64-byte blocks
     case 0x5801: i64c(0x8444C004); break;                       // CTR_EL0
@@ -474,7 +474,7 @@ export function trBranchSys(pc: u64, insn: u32): bool {
     if (((key >> 7) & 15) == 7) return true; // other cache maintenance: no-op
     return false;
   }
-  if ((insn & 0xFFD00000) == 0xD5100000) return sysreg(insn);
+  if ((insn & 0xFFD00000) == 0xD5100000) return sysreg(insn, pc);
   return false;
 }
 
@@ -498,10 +498,17 @@ function exclusive(insn: u32): bool {
   let size = insn >>> 30, o2 = (insn >> 23) & 1, L = (insn >> 22) & 1, o1 = (insn >> 21) & 1;
   let rs = <i32>((insn >> 16) & 31), rt2 = <i32>((insn >> 10) & 31), rn = <i32>((insn >> 5) & 31), rt = <i32>(insn & 31);
   let a = t64(A);
+  // atomic forms (shared memory): 0xFE-prefixed load / store / compare-exchange with natural alignment
+  let ald: u32 = size == 0 ? 0x14 : size == 1 ? 0x15 : size == 2 ? 0x16 : 0x11;
+  let ast: u32 = size == 0 ? 0x1B : size == 1 ? 0x1C : size == 2 ? 0x1D : 0x18;
+  let acx: u32 = size == 0 ? 0x4C : size == 1 ? 0x4D : size == 2 ? 0x4E : 0x49;
   if (o2) {
     if (o1) return false; // CAS family
     getXsp(rn, true);
-    if (L) loadInt(rt, size, false, true); else storeInt(rt, size);
+    if (!optShared) { if (L) loadInt(rt, size, false, true); else storeInt(rt, size); return true; }
+    b(0xA7);
+    if (L) { b(0xFE); b(ald); b(size); b(0); setX(rt, true); }
+    else { getX(rt, true); b(0xFE); b(ast); b(size); b(0); }
     return true;
   }
   let ld: u32 = size == 0 ? 0x31 : size == 1 ? 0x33 : size == 2 ? 0x35 : 0x29;
@@ -511,11 +518,38 @@ function exclusive(insn: u32): bool {
   getXsp(rn, true); lset(a);
   if (L) {
     lget(a); gset(G_EXADDR);
-    lget(a); b(0xA7); mem(ld); let v = t64(0); ltee(v); gset(G_EXVAL);
+    lget(a); b(0xA7); if (optShared) { b(0xFE); b(ald); b(size); b(0); } else mem(ld);
+    let v = t64(0); ltee(v); gset(G_EXVAL);
     if (o1) {
-      lget(a); i64c(step); b(0x7C); b(0xA7); mem(ld); let v2 = t64(1); ltee(v2); gset(G_EXVAL2);
+      lget(a); i64c(step); b(0x7C); b(0xA7); if (optShared) { b(0xFE); b(ald); b(size); b(0); } else mem(ld);
+      let v2 = t64(1); ltee(v2); gset(G_EXVAL2);
       lget(v); setX(rt, true); lget(v2); setX(rt2, true);
     } else { lget(v); setX(rt, true); }
+    return true;
+  }
+  if (optShared) {
+    // store exclusive as compare-exchange against the value the load saw
+    let ok = t32(0), s1 = t64(0), s2 = t64(1);
+    getX(rt, true); lset(s1);
+    if (o1) { getX(rt2, true); lset(s2); }
+    lget(a); gget(G_EXADDR); b(0x51);
+    b(0x04); b(T_I32);
+    lget(a); b(0xA7); gget(G_EXVAL); lget(s1); b(0xFE); b(acx); b(size); b(0); gget(G_EXVAL); b(0x51);
+    b(0x05); i32c(0); b(0x0B);
+    lset(ok);
+    if (o1) {
+      // second word; a pair cannot be one atomic operation: if the second exchange loses, the first is put back
+      lget(ok);
+      b(0x04); b(0x40);
+      lget(a); i64c(step); b(0x7C); b(0xA7); gget(G_EXVAL2); lget(s2); b(0xFE); b(acx); b(size); b(0); gget(G_EXVAL2); b(0x52);
+      b(0x04); b(0x40);
+      lget(a); b(0xA7); lget(s1); gget(G_EXVAL); b(0xFE); b(acx); b(size); b(0); b(0x1A);
+      i32c(0); lset(ok);
+      b(0x0B);
+      b(0x0B);
+    }
+    i64c(-1); gset(G_EXADDR);
+    lget(ok); b(0x45); b(0xAD); setX(rs, true);
     return true;
   }
   // store exclusive: status into rs (0 = success)

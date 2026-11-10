@@ -21,8 +21,8 @@ export const H_UBO: u32 = 10;              // +8 u32 stage, +12 u32 index, +16 u
 export const H_TEX: u32 = 11;              // +8 u32 stage, +12 u32 slot, +16 u64 serial (0 = none), +24 u32 flags (1 snapshot, 2 view), +28 u32 sampler index, +32 view_t
 export const H_BLEND_COLOR: u32 = 12;      // +8 f32 rgba
 export const H_STENCIL_REF: u32 = 13;      // +8 u32 reference
-export const H_DRAW: u32 = 14;             // +8 u32 first, count, instances, base instance
-export const H_DRAW_IDX: u32 = 15;         // +8 u32 index type, count, instances, base instance, +24 i32 base vertex, +32 u64 index address
+export const H_DRAW: u32 = 14;             // +8 u32 first, count, instances, base instance, +24 u32 NVN primitive to convert (0: none)
+export const H_DRAW_IDX: u32 = 15;         // +8 u32 index type, count, instances, base instance, +24 i32 base vertex, +28 u32 NVN primitive to convert, +32 u64 index address
 export const H_CLEAR_RECT: u32 = 16;       // +8 u32 kind (0 colour, 1 depth-stencil), +12 u32 index, +16 u32 mask, +20 f32 rgba (or depth, u32 stencil), +36 u32 x, y, w, h
 export const H_COPY_B2T: u32 = 17;         // +8 u64 source, +16 u64 serial, +24 u32 level, +28 u32 layer, +32 i32 region[6], +56 u32 row stride, +60 u32 image stride
 export const H_COPY_T2T: u32 = 18;         // +8 u64 src, +16 u64 dst, +24 u32 src level, layer, dst level, layer, +40 i32 src region[6], +64 i32 dst region[6], +88 u32 flags

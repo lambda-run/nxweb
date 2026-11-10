@@ -83,7 +83,7 @@ export function deswizzle(d: usize, level: u32, layer: u32, storage: usize, lin:
   return 0;
 }
 
-function hashFull(p: usize, n: usize): u64 {
+export function hashFull(p: usize, n: usize): u64 {
   let h: u64 = 0x9E3779B97F4A7C15 ^ n, i: usize = 0;
   for (; i + 8 <= n; i += 8) { h = (h ^ load<u64>(p + i)) * 0x9E3779B97F4A7C15; h ^= h >> 29; }
   for (; i < n; i++) { h = (h ^ load<u8>(p + i)) * 0x9E3779B97F4A7C15; h ^= h >> 29; }

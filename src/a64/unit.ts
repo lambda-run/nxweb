@@ -2,20 +2,27 @@
 // module builders.
 import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, simd, P, setP,
-  optPcmapBase, optCodeLo, optMapSize, optMaxInsns, optMaxFuncs, optTail,
-  codeBase, inCode, insnAt, markAt, M_VIS, M_LEAD,
+  optPcmapBase, optMaxInsns, optMaxFuncs, optTail, optShared, optPrecise, pcmapLookup, writeback,
+  inCode, inWin, setWin, WINDOW, insnAt, markAt, findRange, noRange, curLo, curHi, isEntry, isDone, M_VIS, M_LEAD,
   NREG, G_PC, G_BUDGET, G_TBASE, G_DEPTH, NGLOB, NIMPF, F_UNIMPL, T_I32, T_I64, T_V128, optDepth, L_DEPTH,
   locTy, nLoc, regLocalRaw, resetLocals, newLocal, L_STATE, L_BUD,
   EV_R, EV_W, EV_WB, EV_RELOAD, evBuf, nEv, insPos, insKind, insMI, insMV, nIns, fbBase, overflow,
   rollback, blkPc, succ0, succ1, nBlk, setNBlk, setCurBlk, term, setTerm, gotoPc, emitTrap,
-  fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, beginFunction, FB_CAP, optChunk, stateAt, S_DONE, S_ENTRY, codeLen, fnLimit,
+  fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, beginFunction, FB_CAP, optChunk, fnLimit,
 } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
 
 // ---------------------------------------------------------------------------------------------
 const HDR_MAX: usize = 128 << 10;
-const CS_CAP: usize = 40 << 20;
+const CS_CAP: usize = 12 << 20;
+const SIDE_CAP: i32 = 500000;      // instructions per unit in the offset -> pc side table
+const REC_CAP: i32 = 8192;
+let sidePtr: usize = 0;            // unit side table: (code offset: u32, guest pc: u32) per instruction
+let nSide: i32 = 0;
+let recPtr: usize = 0;             // per function: (fb offset: u32, guest pc: u32)
+let nRec: i32 = 0;
+let hdrLen: u32 = 0;
 let csBase: usize = 0;     // code section bodies start at csBase + HDR_MAX
 let csP: usize = 0;
 let hdrTmp: usize = 0;
@@ -30,8 +37,14 @@ export function init(): void {
   csBase = heap.alloc(CS_CAP);
   hdrTmp = heap.alloc(HDR_MAX);
   entryPtr = heap.alloc(ENTRY_CAP * 8);
-  metaPtr = heap.alloc(8 + 4096 * 9);
+  metaPtr = heap.alloc(16 + 4096 * 9);
+  sidePtr = heap.alloc(<usize>SIDE_CAP * 8);
+  recPtr = heap.alloc(<usize>REC_CAP * 8);
 }
+export function sideBuf(): usize { return sidePtr; }
+// end of everything this module keeps in the shared memory (static data + buffers)
+export function staticEnd(): usize { return heap.alloc(16); }
+export function staticBase(): usize { return <usize>ASC_MEMORY_BASE; }
 export function entryBuf(): usize { return entryPtr; }
 export function metaBuf(): usize { return metaPtr; }
 export function outPtr(): usize { return outP; }
@@ -78,13 +91,12 @@ const TOUCH_CAP = 65536;
 const touched = new StaticArray<u64>(TOUCH_CAP);
 let nTouched: i32 = 0;
 let minPc: u64 = 0, maxPc: u64 = 0;
-const WINDOW: u64 = 1 << 18;
 
 // @ts-ignore
 @inline function sx(x: u32, bits: u32): i64 { return <i64>((<i32>(x << (32 - bits))) >> (32 - bits)); }
 
 function lead(pc: u64, entry: u64): void {
-  if (!inCode(pc) || pc - (entry - WINDOW) >= 2 * WINDOW) return;
+  if (!inCode(pc) || !inWin(pc)) return;
   let p = markAt(pc);
   let m = load<u16>(p);
   if (m & M_LEAD) return;
@@ -95,12 +107,13 @@ function lead(pc: u64, entry: u64): void {
 
 function discover(entry: u64): i32 {
   wlN = 0; nTouched = 0; minPc = entry; maxPc = entry;
+  setWin(entry);
   let nVis = 0;
   lead(entry, entry);
   while (wlN > 0) {
     let pc = wl[--wlN];
     while (true) {
-      if (!inCode(pc) || pc - (entry - WINDOW) >= 2 * WINDOW) break;
+      if (!inCode(pc) || !inWin(pc)) break;
       let p = markAt(pc);
       let m = load<u16>(p);
       if (m & M_VIS) break;
@@ -152,6 +165,11 @@ function translateInsn(pc: u64, insn: u32): void {
   let p = P, e = nEv, i = nIns;
   let ok = false;
   let op0 = (insn >> 25) & 15;
+  if (optPrecise != 0 && ((op0 & 5) == 4 || (insn & 0xFFFFFFE0) == 0xD50B7420)) {
+    // precise faults: the embedder sees this pc (and with level 2 every register) if the access traps
+    i64c(<i64>pc); gset(G_PC);
+    if (optPrecise >= 2) writeback();
+  }
   if ((op0 & 14) == 8) ok = trDpImm(pc, insn);
   else if ((op0 & 14) == 10) ok = trBranchSys(pc, insn);
   else if ((op0 & 5) == 4) ok = (insn & (1 << 26)) ? trLoadStoreVec(pc, insn) : trLoadStoreInt(pc, insn);
@@ -163,7 +181,8 @@ function translateInsn(pc: u64, insn: u32): void {
 // is this instruction word translatable? (coverage tooling)
 export function probe(insn: u32): i32 {
   beginFunction(); setNBlk(1); setCurBlk(0); succ0[0] = -1; succ1[0] = -1;
-  let pc = codeBase;
+  let pc: u64 = 0x10000;
+  noRange(); setWin(pc);
   let ok = false;
   let op0 = (insn >> 25) & 15;
   if ((op0 & 14) == 8) ok = trDpImm(pc, insn);
@@ -258,9 +277,10 @@ function stubFunction(entry: u64): void {
 }
 
 function translateFunction(entry: u64): bool {
-  if (!inCode(entry)) return false;
+  if (!findRange(entry)) return false;
   if (csP + 2 * FB_CAP > csBase + CS_CAP) return false;
   let n = discover(entry);
+  nRec = 0;
   beginFunction();
   let entryBlk = 0;
   for (let k = 0; k < n; k++) {
@@ -269,6 +289,7 @@ function translateFunction(entry: u64): bool {
     evStart[k] = nEv;
     let pc = blkPc[k];
     while (true) {
+      if (nRec < REC_CAP) { store<u32>(recPtr + (<usize>nRec << 3), <u32>(P - fbBase)); store<u32>(recPtr + (<usize>nRec << 3) + 4, <u32>pc); nRec++; }
       translateInsn(pc, insnAt(pc)); unitInsns++;
       pc += 4;
       if (term) break;
@@ -283,7 +304,7 @@ function translateFunction(entry: u64): bool {
   evStart[n] = nEv;
   let bodyEnd = P;
   let bad = overflow || <usize>(bodyEnd - fbBase) > FB_CAP - (32 << 10);
-  if (bad) { clearMarks(); return false; }
+  if (bad || nSide + nRec > SIDE_CAP) { clearMarks(); return false; }
   analyse();
   clearMarks();
   // assemble
@@ -301,11 +322,24 @@ function translateFunction(entry: u64): bool {
   for (let k = 0; k < n; k++) leb(k);
   b(0x0B);
   let src = fbBase;
+  let ri = 0;
+  let cs0 = csBase + HDR_MAX;
   for (let i = 0; i < nIns; i++) {
     let at = fbBase + insPos[i];
     let len = at - src;
+    // instructions starting in this piece: final offset = where the piece lands + distance into it
+    while (ri < nRec && load<u32>(recPtr + (<usize>ri << 3)) <= insPos[i]) {
+      store<u32>(sidePtr + (<usize>nSide << 3), <u32>(P - cs0) + (load<u32>(recPtr + (<usize>ri << 3)) - <u32>(src - fbBase)));
+      store<u32>(sidePtr + (<usize>nSide << 3) + 4, load<u32>(recPtr + (<usize>ri << 3) + 4));
+      nSide++; ri++;
+    }
     memory.copy(P, src, len); setP(P + len); src = at;
     emitMasked(insMI[i], insMV[i], insKind[i] == EV_WB);
+  }
+  while (ri < nRec) {
+    store<u32>(sidePtr + (<usize>nSide << 3), <u32>(P - cs0) + (load<u32>(recPtr + (<usize>ri << 3)) - <u32>(src - fbBase)));
+    store<u32>(sidePtr + (<usize>nSide << 3) + 4, load<u32>(recPtr + (<usize>ri << 3) + 4));
+    nSide++; ri++;
   }
   let len = bodyEnd - src;
   memory.copy(P, src, len); setP(P + len);
@@ -322,25 +356,41 @@ export function translate(nEntries: i32): u32 {
   setFnLimit(optMaxFuncs > nEntries ? optMaxFuncs : nEntries);
   for (let i = 0; i < nEntries; i++) addFn(load<u64>(entryPtr + (<usize>i << 3)), true);
   if (optChunk != 0) {
-    // region mode: take along the untranslated BL targets of each entry's chunk
+    // region mode: take along the untranslated known entries of each entry's chunk (same code range only)
     for (let i = 0; i < nEntries; i++) {
       let e = load<u64>(entryPtr + (<usize>i << 3));
-      if (!inCode(e)) continue;
-      let lo = (e - codeBase) & ~(<u64>optChunk - 1), hi = lo + optChunk;
-      if (hi > <u64>codeLen) hi = codeLen;
-      for (let off = lo; off < hi && nFn < fnLimit; off += 4) {
-        if (load<u8>(stateAt(codeBase + off)) == S_ENTRY) addFn(codeBase + off, true);
+      if (!findRange(e)) continue;
+      let lo = e & ~(<u64>optChunk - 1), hi = lo + optChunk;
+      if (lo < curLo) lo = curLo;
+      if (hi > curHi) hi = curHi;
+      for (let pc = lo; pc < hi && nFn < fnLimit; pc += 4) {
+        if (isEntry(pc) && !isDone(pc)) addFn(pc, true);
       }
     }
   }
-  csP = csBase + HDR_MAX; unitInsns = 0;
+  csP = csBase + HDR_MAX; unitInsns = 0; nSide = 0;
   for (let f = 0; f < nFn; f++) {
     let ok = translateFunction(fnPc[f]);
-    store<u8>(metaPtr + 8 + 4096 * 8 + f, ok ? 0 : 1);
-    if (ok) store<u8>(stateAt(fnPc[f]), load<u8>(stateAt(fnPc[f])) | S_DONE);
+    store<u8>(metaPtr + 16 + 4096 * 8 + f, ok ? 0 : 1);
     if (!ok) stubFunction(fnPc[f]);
   }
   let codeEnd = csP;
+  // name section after the code: f_<hex pc> per function, so that a trap's stack frame identifies the unit
+  setP(csP);
+  let ns = secBegin(0);
+  name("name");
+  b(1); let sub = P; setP(P + 5);
+  leb(nFn);
+  for (let f = 0; f < nFn; f++) {
+    leb(NIMPF + f);
+    let pc = fnPc[f];
+    let digits = 1; for (let v = pc >> 4; v != 0; v >>= 4) digits++;
+    leb(2 + digits); b(0x66); b(0x5F);
+    for (let d = digits - 1; d >= 0; d--) { let x = <u32>((pc >> (<u64>d * 4)) & 15); b(x < 10 ? 48 + x : 87 + x); }
+  }
+  patch5(sub, <u32>(P - sub - 5));
+  secEnd(ns);
+  let modEnd = P;
   // header into hdrTmp
   setP(hdrTmp);
   b(0); b(0x61); b(0x73); b(0x6D); b(1); b(0); b(0); b(0);
@@ -364,7 +414,7 @@ export function translate(nEntries: i32): u32 {
   secEnd(s);
   s = secBegin(2);
   leb(2 + NGLOB + NIMPF);
-  name("env"); name("memory"); b(2); b(0); b(0);
+  name("env"); name("memory"); b(2); if (optShared) { b(3); b(0); leb(65536); } else { b(0); b(0); }
   name("env"); name("table"); b(1); b(0x70); b(0); b(0);
   for (let g = 0; g < NGLOB; g++) {
     if (g == G_TBASE) { name("env"); globName(g); b(3); b(T_I32); b(0); }
@@ -399,10 +449,10 @@ export function translate(nEntries: i32): u32 {
   let hlen = P - hdrTmp;
   outP = csBase + HDR_MAX - hlen;
   memory.copy(outP, hdrTmp, hlen);
-  // meta
-  store<u32>(metaPtr, nFn); store<u32>(metaPtr + 4, unitInsns);
-  for (let f = 0; f < nFn; f++) store<u64>(metaPtr + 8 + (<usize>f << 3), fnPc[f]);
-  return <u32>(codeEnd - outP);
+  // meta: nFn, guest instructions, side table entries, header length (side offsets are relative to the code bodies)
+  store<u32>(metaPtr, nFn); store<u32>(metaPtr + 4, unitInsns); store<u32>(metaPtr + 8, nSide); store<u32>(metaPtr + 12, <u32>hlen);
+  for (let f = 0; f < nFn; f++) store<u64>(metaPtr + 16 + (<usize>f << 3), fnPc[f]);
+  return <u32>(modEnd - outP);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -419,10 +469,7 @@ function coreFnEnd(nParams: u32): void {
   patch5(csP, <u32>(P - csP - 5));
   csP = P;
 }
-function idxFromPc(tmp: u32): void {
-  gget(G_PC); b(0xA7); i32c(<i32>optCodeLo); b(0x6B); i32c(-4); b(0x71); ltee(tmp); i32c(<i32>optMapSize); b(0x49);
-  b(0x04); b(T_I32); lget(tmp); b(0x28); b(2); leb(optPcmapBase); b(0x05); i32c(0); b(0x0B);
-}
+function idxFromPc(tmp: u32): void { gget(G_PC); pcmapLookup(tmp); }
 
 export function buildCore(): u32 {
   csP = csBase + HDR_MAX;
@@ -493,7 +540,7 @@ export function buildCore(): u32 {
   secEnd(s);
   s = secBegin(2);
   leb(3);
-  name("env"); name("memory"); b(2); b(0); b(0);
+  name("env"); name("memory"); b(2); if (optShared) { b(3); b(0); leb(65536); } else { b(0); b(0); }
   name("env"); name("table"); b(1); b(0x70); b(0); b(2);
   name("env"); name("translate"); b(0); b(1);
   secEnd(s);

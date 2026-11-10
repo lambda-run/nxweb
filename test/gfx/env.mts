@@ -19,6 +19,10 @@ export const SHADERS: Record<string, ShaderInfo> = {
 @fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return textureSample(t, s, v.xy); }` },
   fs_tex_invert: { stage: "fragment", outputs: [0], textures: [{ slot: 0 }], wgsl: `@group(1) @binding(64) var t: texture_2d<f32>; @group(1) @binding(65) var s: sampler;
 @fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return vec4f(1.0 - textureSample(t, s, v.xy).rgb, 1.0); }` },
+  // a depth texture through a comparison sampler: the reference is fragment uniform 0's first value
+  fs_shadow: { stage: "fragment", outputs: [0], ubos: [0], textures: [{ slot: 0, depth: true }], wgsl: `struct U { c: vec4f } @group(0) @binding(16) var<uniform> u: U;
+@group(1) @binding(64) var t: texture_depth_2d; @group(1) @binding(65) var s: sampler_comparison;
+@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { let lit = textureSampleCompare(t, s, v.xy, u.c.x); return vec4f(lit, 1.0 - lit, 0.0, 1.0); }` },
   // fragment uniform buffer 0: the colour
   fs_ubo: { stage: "fragment", outputs: [0], ubos: [0], wgsl: `struct U { c: vec4f } @group(0) @binding(16) var<uniform> u: U; @fragment fn main(@location(0) v: vec4f) -> @location(0) vec4f { return u.c; }` },
   // as the shader chain must emit it: the position fix-up last (origin and depth mode), from @group(2) @binding(0)
