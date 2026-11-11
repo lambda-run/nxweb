@@ -334,7 +334,7 @@ test("jit: what the SDK aborts on is a red line and a failing CreateJitEnvironme
   assert.ok(k3.red.includes("[RED] JIT plugin unexpected default: Decode (mips.cpp:7)"));
 });
 
-// ---------- cut: movies and video codecs ----------
+// ---------- cut: movies (nn::codec's video decoders: m_codec.test.mts) ----------
 test("cut: movie::Decoder fails as nxnative's decoder without an implementation; one red line per function", () => {
   const h = new Hle(), M = (n: string) => `_ZN5movie${n}`;
   const vt = 0x7500_0000n; h.syms.set("_ZTVN5movie7DecoderE", vt);
@@ -359,58 +359,11 @@ test("cut: movie::Decoder fails as nxnative's decoder without an implementation;
   const rows = status().filter(r => r.file === "hle_movie.c");
   assert.equal(rows.length, 27); assert.ok(rows.every(r => r.status === "stub (cut: movies)"));
   assert.equal(new Set([...ctors, ...codes.map(c => c[0]), "7DecoderD2Ev", "7DecoderD1Ev", "7DecoderD0Ev"]).size, 27, "every name of hle_movie.c was called");
-  assert.equal(h.red.length, 27, "one red line per function"); assert.ok(h.red.every(l => l.endsWith(" is cut (movies and video codecs are not played): it fails as in nxnative without a decoder")));
-  assert.ok(h.red.includes("[RED] movie::Decoder::Start() is cut (movies and video codecs are not played): it fails as in nxnative without a decoder"));
+  assert.equal(h.red.length, 27, "one red line per function"); assert.ok(h.red.every(l => l.endsWith(" is cut (movie::Decoder movies are not played): it fails as in nxnative without a decoder")));
+  assert.ok(h.red.includes("[RED] movie::Decoder::Start() is cut (movie::Decoder movies are not played): it fails as in nxnative without a decoder"));
   // a game without the movie library's vtable, and without operator delete
   const g = new Hle(), s2 = g.alloc(16, 0xEE);
   g.call(M(ctors[0]), s2, 3, 4, 1, 0); assert.deepEqual([g.u64(s2), g.u64(s2 + 8)], [0n, 0n]); g.call(M("7DecoderD0Ev"), s2);
   assert.deepEqual(g.red.filter(l => !l.includes(" is cut ")), ["[RED] movie: the game has no vtable of movie::Decoder (nxnative ends the process here): the decoder object keeps none", "[RED] movie: no operator delete in the game; the decoder object is not freed"]);
 });
 
-test("cut: nn::codec video decoders answer as a type with no host decoder (module 111, description 2004); pictures read black; sync points are reached at once", () => {
-  const h = new Hle().sdk(), NONE = BigInt(0x6f | 2004 << 9);
-  const rows = status().filter(r => r.file === "hle_codec_video.c"), by = (c: string) => rows.find(r => r.cname === c)!.mangled;
-  assert.equal(rows.length, 101); assert.ok(rows.every(r => r.status === "stub (cut: video codecs)"));
-  const t = h.alloc(0x400, 0xEE), o = h.alloc(64, 0xEE);
-  for (const c of ["vp9", "vp8", "h264", "av1"]) {
-    h.u8.fill(0xEE, t, t + 16); h.u8.fill(0xEE, o, o + 64);
-    assert.equal(h.call(by(`h_cv_${c}work`), o, o + 8, 0, 1920, 1080).x0, 0n); assert.deepEqual([h.u64(o), h.u64(o + 8)], [0x1000n, 0x1000n], "no work memory needed, as in nxnative");
-    for (const k of ["init", "init2", "tm", "rm", "rm19"]) { h.u8.fill(0xEE, t, t + 16); assert.equal(h.call(by(`h_cv_${c}${k}`), t, 0, 0, 0, 1920, 1080).x0, NONE, `${c}${k}`); assert.deepEqual([h.u64(t), h.u8[t + 8]], [0n, 0xEE], "no host decoder behind the type"); }
-    for (const k of ["reg", "unreg", "start", "submit", "enc", "acq", "props"]) assert.equal(h.call(by(`h_cv_${c}${k}`), t, t, t, 0).x0, NONE, `${c}${k}`);
-    for (const k of ["fin", "stop", "flush", "rel"]) assert.equal(h.call(by(`h_cv_${c}${k}`), t, 0).x0, 0n, `${c}${k}`);
-    h.u8.fill(0xEE, o, o + 16); assert.equal(h.call(by(`h_cv_${c}event`), o, t).x0, NONE); assert.deepEqual([h.u64(o), h.u8[o + 8]], [0n, 0xEE], "no submission event");
-    assert.equal(h.call(by(`h_cv_${c}ev22`), t).x0, 0n);
-    h.u8.fill(0xEE, o, o + 64); assert.equal(h.call(by(`h_cv_${c}props19`), o, o + 2, o + 4, o + 6, o + 8, o + 16, o + 24, t).x0, NONE); assert.deepEqual([h.u32(o + 8), h.u8[o + 12], h.u8[o]], [0, 0xEE, 0xEE], "colour space 0, nothing else");
-  }
-  assert.equal(h.call(by("h_cv_h264init3"), t, 0, 0, 0, 1920, 1080).x0, NONE);
-  assert.equal(h.call(by("h_cv_init")).x0, 0n); assert.equal(h.call(by("h_cv_fin")).x0, 0n);
-  // the preference is a value: { u16 w, h; u32 format, mode, 'DmCV'; 8 bytes of zero } through x8
-  for (const c of ["h_cv_pref", "h_cv_pref22", "h_cv_pref19"]) {
-    const p = h.alloc(24 + 16, 0xEE); h.callRegs(by(c), { x: [0x1_0780n, 1080, 5, 2], x8: p });
-    const e = Buffer.alloc(24); e.writeUInt16LE(1920, 0); e.writeUInt16LE(1080, 2); e.writeUInt32LE(5, 4); e.writeUInt32LE(2, 8); e.writeUInt32LE(0x56436d44, 12);
-    assert.deepEqual(h.read(p, 24), e, c); assert.equal(h.u8[p + 24], 0xEE);
-  }
-  h.u8.fill(0xEE, o, o + 16); assert.equal(h.call(by("h_cv_poolsize"), o, o + 8, t, 4).x0, NONE); assert.deepEqual([h.u64(o), h.u64(o + 8)], [0n, 0x4000n]);
-  for (const c of ["h_cv_pool", "h_cv_pool22"]) { h.u8.fill(0xEE, t, t + 16); assert.equal(h.call(by(c), t, 0, 0, o, 4, 0).x0, NONE); assert.equal(h.u64(t), 0n); }
-  h.call(by("h_cv_poolfin"), t); assert.equal(h.call(by("h_cv_native"), t, 0).x0, 0n, "no native image handle");
-  // the readers: no picture is black (RGBA 0; NV12 Y 16, UV 128); their sizes are stack arguments
-  const img = h.alloc(64, 0xEE);
-  h.stack = [32n]; assert.equal(h.call(by("h_cv_rgba"), t, 0, 0, 0, 4, 2, img, 16).x0, 0n); assert.ok(h.read(img, 32).every(b => b === 0) && h.u8[img + 32] === 0xEE);
-  h.u8.fill(0xEE, img, img + 64); h.stack = [16n]; assert.equal(h.call(by("h_cv_rgbahdr"), t, 0, 0, 0, 4, 2, img, 16).x0, 0n); assert.ok(h.read(img, 16).every(b => b === 0) && h.u8[img + 16] === 0xEE);
-  h.u8.fill(0xEE, img, img + 64); h.stack = [8n, BigInt(img + 32), 4n, 4n]; assert.equal(h.call(by("h_cv_nv12"), t, 0, 0, 0, 4, 2, img, 4).x0, 0n);
-  assert.ok(h.read(img, 8).every(b => b === 16) && h.u8[img + 8] === 0xEE && h.read(img + 32, 4).every(b => b === 128) && h.u8[img + 36] === 0xEE, "video black");
-  h.u8.fill(0xEE, img, img + 64); h.stack = [8n, BigInt(img + 32), 8n, 4n]; h.call(by("h_cv_nv12"), t, 0, 0, 0, 4, 2, img, 4); assert.equal(h.u8[img], 0xEE, "only whole tight pictures, as in nxnative");
-  h.stack = [];
-  // sync points: a handle no decoder made is reached, so a requested event is signalled at once
-  assert.equal(h.call(by("h_gs_trywait"), o).x0, 1n);
-  const ev = h.alloc(0x58 + 16, 0xEE);
-  assert.equal(h.call(by("h_spt_create"), ev).x0, 0n); assert.ok(h.read(ev, 0x58).every(b => b === 0) && h.u8[ev + 0x58] === 0xEE); assert.equal(h.created.length, 1, "the event type holds a SystemEvent of the SDK");
-  assert.equal(h.call(by("h_spt_request"), ev, o).x0, 0n); assert.ok(h.ev(h.created[0].w).signaled);
-  h.call(by("h_spt_cancel"), ev); assert.ok(!h.ev(h.created[0].w).signaled);
-  const calls: string[] = [];
-  h.fn(() => { calls.push("holder"); }, "_ZN2nn2os25InitializeMultiWaitHolderEPNS0_19MultiWaitHolderTypeEPNS0_15SystemEventTypeE"); h.fn(() => { calls.push("try"); return 0x101; }, "_ZN2nn2os18TryWaitSystemEventEPNS0_15SystemEventTypeE"); h.fn(() => { calls.push("destroy"); }, "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
-  h.call(by("h_spt_holder"), o, ev); assert.equal(h.call(by("h_spt_trywait"), ev).x0, 1n, "a bool: the low byte"); h.call(by("h_spt_destroy"), ev);
-  assert.deepEqual(calls, ["holder", "try", "destroy"], "forwarded to the SDK's nn::os");
-  const called = new Set(h.red.map(l => l.replace(/ is cut .*/, "")));
-  assert.equal(called.size, 101, "every name of hle_codec_video.c was called, each with its one red line"); assert.equal(h.red.length, 101);
-});
