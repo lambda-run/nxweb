@@ -58,6 +58,7 @@
     "hle:check": "python3 tools/hle_names.py --check",
     "hle:build": "node src/hle/host/build.mts",
     "hle:test": "node tools/modes.mjs test/hle/run.mts",
+    "hle:browser": "node test/hle/browser.mts",
     "audio:names": "node src/audio/host/gen_names.mts /home/user/nxnative/dm/host",
     "audio:build": "node tools/asc64/abi.mjs src/audio/index.ts build/audio/audio.wasm -O2 --runtime stub --64 --importMemory",
     "audio:test": "node tools/modes.mjs test/audio/run.mts",
