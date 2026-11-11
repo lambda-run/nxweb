@@ -654,7 +654,15 @@ DeviceGetCurrentTimestampInNanoseconds.
   on it draws); the other counters report 0; events (`SignalEvent`, `WaitForEvent`) are not there. Conditional
   rendering needs the profile's `render_cond`. A counter record a shader writes is not tracked.
 - Adjacency and patch primitives; separate textures / samplers; transform feedback;
-  tessellation, geometry; indirect counts written by the GPU.
+  tessellation and geometry shaders (a resource bound to their stages is kept, and a red line names the stage: WebGPU
+  has neither, nxnative's compute emulation `dmsh_geometry.py` is not ported); indirect counts written by the GPU
+  (but a mesh draw's, below).
+- Mesh draws (`DrawMeshTasks`, `DrawMeshTasksIndirect`) are emulated: the task shader (if the mesh shader reads a
+  payload) and the mesh shader run as compute passes (`src/shaders/meshstage.ts` wraps their compute WGSL), writing
+  their outputs to one storage buffer, and a vertex shader made from the mesh shader's outputs pulls them in a
+  `drawIndirect` whose count the GPU wrote; an indirect draw's `{count, first}` is read on the GPU. Not done: a mesh
+  or task shader with shared memory of its own (refused at translation, as nxnative does), and a draw whose workgroups
+  exceed the output buffer (cut, red once).
 - One viewport and scissor (more is red once: WebGPU has one); stencil masks and reference of the front face for both
   (WebGPU has one of each); no logic op, alpha test, polygon mode line / point, advanced blend, primitive restart
   index. WebGPU has no border colour (clamp to edge is used) and no view swizzle (red once); a view can reinterpret

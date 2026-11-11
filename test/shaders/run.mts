@@ -303,6 +303,10 @@ await test("NVN2: translator jobs of src/shaders/job.ts are nxnative's dmsh_buil
     const kind = i % 6, size = [0xc0, 0xd0, 0xd8][i % 3];
     const opts = kind === 0 ? { stage: 5 } : kind === 1 ? { stage: 0, sph: 0x481 } : kind === 2 ? { stage: 0, sph: sph(5) } : kind === 3 ? { stage: 0, sph: 0x061 } : kind === 4 ? { stage: 6 + ((i / 6) & 1) } : { stage: 0, sph: sph(2 + ((i / 6 | 0) % 3)) };
     cases.push({ key: (0xa000 + i).toString(16).padStart(16, "0"), ...nvn2Case(r, size, 0x100 + (r() << 2), opts) });
+    if (kind === 4) {      // a task or mesh shader's own fields (dmsh_meshstage.info): threads, payload, vertices a primitive, vertex and primitive limits, no per-primitive SPH
+      const c = cases[i].control, d = new DataView(c.buffer, c.byteOffset);
+      d.setUint16(0x58, 32 << (i % 2), true); d.setUint16(0x5a, (i * 12) % 80, true); c[0x5f] = 1 + i % 3; d.setUint16(0x60, 1 + (i * 5) % 64, true); d.setUint16(0x62, 1 + (i * 7) % 126, true); c[0x68] &= 0x7f;
+    }
   }
   writeFileSync(join(AM, "job_cases.json"), JSON.stringify(cases.map(k => ({ key: k.key, stage: "", control: hexOf(k.control), code: hexOf(k.code) }))));
   const py = JSON.parse(execFileSync("python3", [join(ROOT, "test/shaders/nvn2_ref.py"), join(AM, "job_cases.json"), join(AM, "ref")], { env: { ...process.env, NXNATIVE }, maxBuffer: 1 << 28 }).toString());
@@ -316,13 +320,23 @@ await test("NVN2: translator jobs of src/shaders/job.ts are nxnative's dmsh_buil
       if (p.nxnative.error) throw new Error(`${what}: nxnative refused it: ${p.nxnative.error}`);
       eq(canon(ts), canon(p.nxnative), `${what}: job.ts against nxnative's job_for`); eq(canon(p.nxweb), canon(p.nxnative), `${what}: xlate.py against nxnative's job_for`);
       eq(ts.arch, "sm86", `${what}: arch`);
+    } else if (p.stage === "ts" || p.stage === "ms") {
+      // task / mesh: compute with the stage memory in shared memory, nxnative's job but for its Metal-only mesh_stage facts (job.ts keeps its own, "mesh",
+      // for src/shaders/meshstage.ts); one with shared memory of its own is refused where nxnative marks it refused
+      if (p.nxnative.error) throw new Error(`${what}: nxnative refused it: ${p.nxnative.error}`);
+      const { mesh_stage: facts, ...nj } = p.nxnative;
+      if (facts?.refused) { if (!/shared memory of its own/.test(ts.error ?? "") || !/shared memory of its own/.test(p.nxweb?.error ?? "")) throw new Error(`${what}: nxnative refuses it (${facts.refused}), nxweb: ${ts.error} / ${p.nxweb?.error}`); return; }
+      if (ts.error || p.nxweb?.error) throw new Error(`${what}: refused: ${ts.error} / ${p.nxweb?.error}`);
+      const { mesh, ...tj } = ts;
+      eq(canon(tj), canon(nj), `${what}: job.ts against nxnative's job_for`); eq(canon(p.nxweb), canon(nj), `${what}: xlate.py against nxnative's job_for`);
+      eq([tj.stage, mesh.kind, mesh.threads, mesh.payload], ["cs", p.stage, facts.threads, facts.payload], `${what}: the stage's facts`);
     } else {
-      // task / mesh (nxnative wraps them in a Metal mesh stage) and tessellation / geometry: refused by name on both nxweb sides
+      // tessellation / geometry: refused by name on both nxweb sides
       if (!ts.error || !p.nxweb?.error) throw new Error(`${what}: not refused: ${JSON.stringify(ts).slice(0, 200)}`);
-      if (!/mesh pipeline|tessellation or geometry/.test(ts.error) || !/mesh pipeline|tessellation or geometry/.test(p.nxweb.error)) throw new Error(`${what}: ${ts.error} / ${p.nxweb.error}`);
+      if (!/tessellation or geometry/.test(ts.error) || !/tessellation or geometry/.test(p.nxweb.error)) throw new Error(`${what}: ${ts.error} / ${p.nxweb.error}`);
     }
   });
-  if (!seen.cs || !seen.vs || !seen.ps || !seen["ts refused"] || !seen["ms refused"]) throw new Error(`stages: ${JSON.stringify(seen)}`);
+  if (!seen.cs || !seen.vs || !seen.ps || !seen.ts || !seen.ms) throw new Error(`stages: ${JSON.stringify(seen)}`);
   if (!cases.some((k, i) => py[i].stage === "ps" && py[i].nxnative.early_fragment_tests) || !cases.some((k, i) => py[i].stage === "ps" && !py[i].nxnative.early_fragment_tests)) throw new Error("early fragment tests: both answers not covered");
   // NVN (Maxwell) is the job the page made before: the hand-assembled programs, through job.ts and xlate.py (c1 aside: xlate.py takes code[c1o:c1t] as nxnative does)
   for (const row of JSON.parse(readFileSync(join(MX, "corpus.json"), "utf8"))) {

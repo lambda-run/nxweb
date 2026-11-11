@@ -94,7 +94,7 @@ export function gfx_pass_state(): i32 { return passState(); }
 // 0 passes begun, 1 draws issued, 2 draws skipped, 3 snapshots, 4 clears drawn as triangles, 5 submissions, 6 host stream hand-overs, 7 host-lent command segments
 // 8 texture uploads, 9 KB uploaded, 10 sampled hashes taken, 11 full hashes taken, 12 textures found changed,
 // 13 compute dispatches, 14 compute passes, 15 buffer-to-texture copies made in the texture's storage,
-// 16 texture handles taken from uniform data (bindless slots bound)
+// 16 texture handles taken from uniform data (bindless slots bound), 21 mesh draws (DrawMeshTasks), 22 of them indirect, 23 with a task shader, 24 mesh draws skipped
 export function gfx_stat(i: i32): u32 { return i >= 13 ? stat(i) : i >= 8 ? texStat(i - 8) : i == 6 ? hostExecs() : i == 7 ? hostSegsLent() : stat(i); }
 // Block-linear storage of one level and layer to linear rows (toLinear) or back; desc = nvn_texdesc. -1: no such storage
 export function gfx_deswizzle(desc: usize, level: u32, layer: u32, storage: usize, linear: usize, pitch: u32, toLinear: i32): i32 { return deswizzle(desc, level, layer, storage, linear, pitch, toLinear != 0); }
