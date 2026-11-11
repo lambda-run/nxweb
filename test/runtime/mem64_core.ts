@@ -58,17 +58,41 @@ const fail = (m: string): never => { throw new Error("[RED] " + m); };
 // The corpus is linked at both addresses from the same sources; a program whose data holds absolute addresses
 // differs between the two (those words are its pointers, moved by the difference of the bases). Kept are the programs
 // whose two images are the same bytes with the same entry, stack, bss and expected stdout and exit code relative to the base.
+// The ones that differ are known (MOVED); any other difference, or a known one that no longer differs or differs in
+// more than its image's words, fails the run, so a damaged image or expected output cannot drop a program silently.
 const LO_BASE = 0x0800_0000, HI_BASE = 0x1_8000_0000;
+export const MOVED = ["control.O0", "control.O2", "control.Os", "fpcr_modes.O0", "fpcr_modes.O2", "fpcr_modes.Os", "mixed_lz.O0", "mixed_lz.O2", "mixed_lz.Os", "raw_ret.asm"];
 export function sameCode(lo: Flat[], hi: Flat[]): { lo: Flat[]; hi: Flat[]; line: string } {
-  const keep: number[] = [], moved: string[] = [];
+  const keep: number[] = [], moved: string[] = [], bad: string[] = [];
   lo.forEach((a, i) => {
     const b = hi[i], rel = (f: Flat, base: number) => [f.side.entry - base, f.side.stack_top - base, (f.side.bss_end ?? base) - base, f.side.exit_code, f.side.insn_count].join();
     if (b?.name !== a.name || a.side.base !== LO_BASE || b.side.base !== HI_BASE) fail(`corpus: ${a.name} is not at 0x${LO_BASE.toString(16)} and 0x${HI_BASE.toString(16)}`);
-    if (eqBytes(a.image, b.image) && eqBytes(a.expected, b.expected) && rel(a, LO_BASE) === rel(b, HI_BASE)) keep.push(i); else moved.push(a.name);
+    const same = eqBytes(a.expected, b.expected) && rel(a, LO_BASE) === rel(b, HI_BASE) && a.image.length === b.image.length;
+    if (same && eqBytes(a.image, b.image)) keep.push(i); else moved.push(a.name);
+    if (!same && MOVED.includes(a.name)) bad.push(`${a.name} differs in more than its image's words (expected stdout, exit code, size or layout)`);
   });
-  if (keep.length < lo.length / 2) fail(`corpus: only ${keep.length} of ${lo.length} programs are the same bytes at both addresses`);
+  for (const n of moved) if (!MOVED.includes(n)) bad.push(`${n} is not the same at both addresses`);
+  for (const n of MOVED) if (lo.some(f => f.name === n) && !moved.includes(n)) bad.push(`${n} is now the same at both addresses: update MOVED`);
+  if (bad.length) fail(`corpus, same code above 4 GB: ${bad.join("; ")}`);
   return { lo: keep.map(i => lo[i]), hi: keep.map(i => hi[i]),
-    line: `${keep.length} of ${lo.length} corpus programs are byte-identical at 0x0800_0000 and 0x1_8000_0000 (image, entry, stack, bss, expected stdout and exit code) and are the corpus; left out, with absolute addresses in their data: ${moved.join(", ") || "none"}` };
+    line: `${keep.length} of ${lo.length} corpus programs are byte-identical at 0x0800_0000 and 0x1_8000_0000 (image, entry, stack, bss, expected stdout and exit code) and are the corpus; left out, the ${moved.length} known to hold absolute addresses in their data: ${moved.join(", ") || "none"}` };
+}
+// sameCode on the real corpus, and on copies damaged the ways that must fail it: one byte appended to a kept
+// program's expected stdout on one side, one byte of a kept program's image changed, a known program's exit code changed
+export function selfTestSameCode(lo: Flat[], hi: Flat[]): string {
+  sameCode(lo, hi);
+  const k = lo.findIndex(f => !MOVED.includes(f.name)), m = lo.findIndex(f => MOVED.includes(f.name));
+  const cases: [string, Flat[], Flat[]][] = [
+    [`${lo[k].name}'s expected stdout + 1 byte below 4 GB`, lo.map((f, i) => i === k ? { ...f, expected: new Uint8Array([...f.expected, 0x21]) } : f), hi],
+    [`one byte of ${hi[k].name}'s image above 4 GB`, lo, hi.map((f, i) => i === k ? { ...f, image: f.image.map((x, j) => j === f.image.length >> 1 ? x ^ 1 : x) } : f)],
+  ];
+  if (m >= 0) cases.push([`${lo[m].name}'s exit code below 4 GB`, lo.map((f, i) => i === m ? { ...f, side: { ...f.side, exit_code: (f.side.exit_code ?? 0) + 1 } } : f), hi]);
+  for (const [what, l, h] of cases) {
+    let threw = false;
+    try { sameCode(l, h); } catch { threw = true; }
+    if (!threw) fail(`self-test: sameCode accepted a corpus with ${what}`);
+  }
+  return `sameCode self-test: the corpus passes; ${cases.map(c => c[0]).join(", ")}: each fails the run`;
 }
 
 // The spans of every Runtime.run and every translation (translator + compile + instantiation) of a Runtime, and the

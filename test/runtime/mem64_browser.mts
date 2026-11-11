@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import { ROOT, OUT, corpusList } from "./harness.mts";
-import { report, workloadNames, sameCode, type Flat, type Launch, type Samples } from "./mem64_core.ts";
+import { report, workloadNames, sameCode, selfTestSameCode, type Flat, type Launch, type Samples } from "./mem64_core.ts";
 
 process.chdir(ROOT);
 const argv = process.argv.slice(2);
@@ -30,6 +30,7 @@ const doomRef = existsSync(refFile) && existsSync(doomNso) && existsSync(DOOM_WA
 if (!corpus.length || !existsSync(join(hi, corpus[0] + ".json"))) { console.log("[RED] rt:mem64:browser: build first (see rt:mem64)"); process.exit(1); }
 const flats = (dir: string): Flat[] => corpus.map(name => { const side = JSON.parse(readFileSync(join(dir, name + ".json"), "utf8"));
   return { name, side, image: new Uint8Array(readFileSync(join(dir, side.image))), expected: new Uint8Array(readFileSync(join(dir, side.expected_stdout))) }; });
+console.log(selfTestSameCode(flats(lo), flats(hi)));
 const same = sameCode(flats(lo), flats(hi));
 buildSync({ entryPoints: ["test/runtime/mem64_core.ts"], bundle: true, format: "iife", outfile: join(OUT, "web", "mem64_worker.js"), logLevel: "warning", absWorkingDir: ROOT });
 

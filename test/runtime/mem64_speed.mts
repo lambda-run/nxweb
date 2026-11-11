@@ -23,7 +23,7 @@ import { PerformanceObserver } from "node:perf_hooks";
 import { ROOT, OUT, corpusList } from "./harness.mts";
 import { Runtime, type RuntimeModules } from "../../src/glue/rt_runtime.ts";
 import { layoutFor } from "../../src/glue/rt_process.ts";
-import { bench, report, workloadNames, sameCode, bootstrapMedian, CONFIGS, type BenchInput, type Flat, type Samples, type Launch } from "./mem64_core.ts";
+import { bench, report, workloadNames, sameCode, selfTestSameCode, bootstrapMedian, CONFIGS, type BenchInput, type Flat, type Samples, type Launch } from "./mem64_core.ts";
 
 const argv = process.argv.slice(2);
 const arg = (name: string, d: string) => { const i = argv.indexOf("--" + name); return i >= 0 ? argv[i + 1] : d; };
@@ -109,6 +109,9 @@ if (!lo.length || !existsSync(join(HI, lo[0] + ".json"))) {
 }
 if (cpus.length && spawnSync("taskset", ["-c", cpus[0], "true"]).status !== 0) { console.log(`[RED] rt:mem64: --cpus needs taskset and CPUs ${cpus.join(", ")}`); process.exit(1); }
 mkdirSync(MEM, { recursive: true });
+{ let st: string;
+  try { st = selfTestSameCode(flats(LO), flats(HI)); } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }
+  console.log(st); if (argv[0] === "--self-test") process.exit(0); }
 // Doom: the engine (npm run doom:fetch), nvn.h (NXNATIVE) and the shareware data file (DOOM_WAD; Debian/Ubuntu package doom-wad-shareware)
 let doomWhy = "";
 {
