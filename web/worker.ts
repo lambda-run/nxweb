@@ -287,7 +287,9 @@ function report(userAgent: string): string {
   const live = liveStates();
   return reportText({ title: title || "nxweb report (no program loaded)", build: buildStamp, when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
     state: rt ? STATES[rt.r.rt_state()] : "Empty", stop: live.process?.match(/\((.*)\)$/)?.[1] ?? "", fault, modules: modRows, takeovers: tk,
-    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, idle: rt && !rt.disposed ? rt.idleWaitLines() : undefined, fs: fsys ? fsys.lines() : undefined, log: lines.slice(-200), redTotal, scan: scanReport });
+    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, idle: rt && !rt.disposed ? rt.idleWaitLines() : undefined, fs: fsys ? fsys.lines() : undefined,
+    frames: gfx && rt && !rt.disposed ? gfx.host.ledger.frames : undefined, firstDrawn: gfx && rt && !rt.disposed ? gfx.host.ledger.firstDrawn : undefined,
+    shaderKeys: shaderLookup && rt && !rt.disposed ? shaderLookup.reportLines() : undefined, log: lines.slice(-200), redTotal, scan: scanReport });
 }
 let lastMachines: ReturnType<typeof machineRows> = [], lastOptionsKey = "";
 let scanReport: string[] | undefined;   // the instruction scan of the program that is loaded, when the prepare step handed it off (its Code stage)

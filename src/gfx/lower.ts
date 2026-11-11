@@ -20,7 +20,7 @@ import { GFX_PASS, GfxPassE, GfxPassS } from "../kit/gen/tables";
 import * as O from "./obj";
 import * as H from "./hostops";
 import { dpoolBase, texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
-import { progShader, progMissingKey, libKey, watched, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID } from "./shader";
+import { progShader, progMissingKey, progMissingKeys, libKey, watched, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID } from "./shader";
 import { fmtClass, fmtCanon, fmtTwin } from "./fmt";
 import * as PK from "./pipeline";
 import { syncFence } from "./sync";
@@ -522,6 +522,15 @@ function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
     if (hasView) memory.copy(r + 32, e + TDE_view, O.VIEW_SIZE);
   }
 }
+// A draw or dispatch that is skipped, for the embedder's counts (H_SKIP; src/glue/gfx_ledger.ts). For a program
+// whose stages are not all in the library: those keys and their states, the reason SKIP_SHADER (SKIP_NO_STAGE when
+// every key is there but the stage asked for is not)
+function skipRec(reason: u32, kind: u8, p: usize): void {
+  const r = H.hostRec(H.H_SKIP, H.H_SKIP_SIZE);
+  store<u8>(r, kind, 12);
+  if (reason == H.SKIP_SHADER) reason = p && load<u32>(p) == O.MAGIC_PROG && progMissingKeys(p, r + 16, r + 13) ? H.SKIP_SHADER : H.SKIP_NO_STAGE;
+  store<u32>(r, reason, 8);
+}
 // A dispatch that cannot run (its shader is not registered, or its pipeline failed) of a key the embedder watches (gfx_watch_key): the replayer is told,
 // inside a compute pass as the dispatch would have been, with the compute stage's bound textures, images and push constants (GfxHost's NDVE stand-in).
 // Its images count as written by the GPU: the embedder may write them in its place. Keys not watched: nothing is recorded
@@ -541,9 +550,9 @@ function dispatch(r: usize): void {
   let x = load<u32>(r), y = load<u32>(r, 4), z = load<u32>(r, 8);
   const ind = <usize>load<u64>(r, O.P_DISPATCH_ind);
   if (ind) { x = load<u32>(ind); y = load<u32>(ind, 4); z = load<u32>(ind, 8); }      // CPU-visible at submit, as indirect draws
-  if (!progC || load<u32>(progC) != O.MAGIC_PROG) { if (once(36)) L.redLine("compute dispatch without a bound compute program: skipped"); nSkipped++; return; }
+  if (!progC || load<u32>(progC) != O.MAGIC_PROG) { if (once(36)) L.redLine("compute dispatch without a bound compute program: skipped"); skipRec(H.SKIP_STATE, 1, 0); nSkipped++; return; }
   const cs = progShader(progC, 2);
-  if (cs < 0) { skippedDispatch(progMissingKey(progC), x, y, z); nSkipped++; return; }
+  if (cs < 0) { skippedDispatch(progMissingKey(progC), x, y, z); skipRec(H.SKIP_SHADER, 1, progC); nSkipped++; return; }
   if (!x || !y || !z) return;
   if (cs != curCs) {
     const k = PK.KEY;
@@ -552,7 +561,7 @@ function dispatch(r: usize): void {
     curCsPipe = PK.pipelineGet(); curCs = cs;
     dirty |= D_PIPE;                         // the key record no longer holds the draw pipeline's key
   }
-  if (curCsPipe < 0) { curCs = -1; skippedDispatch(libKey(cs), x, y, z); nSkipped++; return; }
+  if (curCsPipe < 0) { curCs = -1; skippedDispatch(libKey(cs), x, y, z); skipRec(H.SKIP_PIPELINE, 1, 0); nSkipped++; return; }
   passEvent(GfxPassE.Dispatch);
   store<u32>(DIM, x); store<u32>(DIM, y, 4); store<u32>(DIM, z, 8);
   emitUbos(2, cs); emitTexs(2, cs); emitStorage(2, cs);
@@ -565,9 +574,9 @@ function draw(r: usize, size: u32, indexed: bool): void {
   if (pass().state == GfxPassS.Unset || !hasTargets()) {
     if (pass().state == GfxPassS.Unset) passEvent(GfxPassE.Draw);      // refused: a draw with no render targets
     else if (once(8)) L.redLine("draw with render targets that have no live texture: skipped");
-    nSkipped++; return;
+    skipRec(H.SKIP_STATE, 0, 0); nSkipped++; return;
   }
-  if (!prog || load<u32>(prog) != O.MAGIC_PROG) { if (once(9)) L.redLine("draw without a bound program: skipped"); nSkipped++; return; }
+  if (!prog || load<u32>(prog) != O.MAGIC_PROG) { if (once(9)) L.redLine("draw without a bound program: skipped"); skipRec(H.SKIP_STATE, 0, 0); nSkipped++; return; }
   const orig = load<i32>(r);
   if (orig == MESH_PRIM) { meshDraw(r); return; }
   // WebGPU has points, lines, line strips, triangles and triangle strips. Loops, fans, quads, quad strips and polygons
@@ -576,7 +585,7 @@ function draw(r: usize, size: u32, indexed: bool): void {
   if (orig == 2) { prim = 3; conv = orig; } else if (orig >= 6 && orig <= 9) { prim = 4; conv = orig; }
   else if (!(orig == 0 || orig == 1 || orig == 3 || orig == 4 || orig == 5)) {
     if (once(10 + min<u32>(<u32>orig, 15))) { L.red("draw primitive "); L.i(orig); L.str(" has no WebGPU topology (adjacency and patches need geometry or tessellation stages): skipped"); L.end(); }
-    nSkipped++; return;
+    skipRec(H.SKIP_STATE, 0, 0); nSkipped++; return;
   }
   // The draw's numbers: from the record, or for an indirect draw from guest memory now (the counts are CPU-visible
   // at submit; a count written by the GPU in the same submission is not supported)
@@ -597,13 +606,13 @@ function draw(r: usize, size: u32, indexed: bool): void {
   if (!instances) instances = 1;
   if (!count) return;
   const vs = progShader(prog, 0), fs = progShader(prog, 1);
-  if (vs < 0 || fs < 0) { nSkipped++; return; }                        // "[RED] shader <key> is not in the shader map", once a key
+  if (vs < 0 || fs < 0) { skipRec(H.SKIP_SHADER, 0, prog); nSkipped++; return; }                        // "[RED] shader <key> is not in the shader map", once a key
   if (vs != curVs || fs != curFs || meshMode) { curVs = vs; curFs = fs; meshMode = false; dirty |= D_PIPE | D_UBO | D_TEX | D_VBUF; }
   const kit = conv == 2 ? 2 : conv ? -1 : itype;      // what the strip index format follows: a converted loop is a strip with 32-bit indices
   if (dirty & D_PIPE || load<u8>(PK.KEY, PK.PK_prim) != <u8>prim || load<u8>(PK.KEY, PK.PK_itype) != <u8>(kit >= 0 && (prim == 3 || prim == 5) ? kit + 1 : 0)) {
-    if (!fillKey(prim, kit)) { dirty |= D_PIPE; nSkipped++; return; }
+    if (!fillKey(prim, kit)) { dirty |= D_PIPE; skipRec(H.SKIP_STATE, 0, 0); nSkipped++; return; }
     const id = PK.pipelineGet();
-    if (id < 0) { dirty |= D_PIPE; nSkipped++; return; }
+    if (id < 0) { dirty |= D_PIPE; skipRec(H.SKIP_PIPELINE, 0, 0); nSkipped++; return; }
     if (id != curPipe) { curPipe = id; dirty |= D_BIND | D_VBUF; }
     dirty &= ~D_PIPE;
   }
@@ -633,7 +642,7 @@ function computePipe(id: i32): i32 {
   dirty |= D_PIPE;
   return PK.pipelineGet();
 }
-function meshSkip(): void { nMeshSkipped++; nSkipped++; }
+function meshSkip(reason: u32 = H.SKIP_SHADER): void { skipRec(reason, 2, prog); nMeshSkipped++; nSkipped++; }
 function meshDraw(r: usize): void {
   const ms = progShader(prog, 4);
   if (ms < 0) { if (once(37)) L.redLine("DrawMeshTasks with a program that has no mesh shader, or whose shaders are not all in the shader map: skipped"); meshSkip(); return; }
@@ -644,12 +653,12 @@ function meshDraw(r: usize): void {
   const withTask = (load<u32>(libRefl(ms), RF_flags) & 4) != 0, ts = withTask ? progShader(prog, 3) : -1;
   if (withTask && ts < 0) { if (once(39)) L.redLine("a mesh shader that reads its task's payload, in a program with no task shader (or one not in the shader map): its mesh draws are skipped"); meshSkip(); return; }
   const tp = withTask ? computePipe(ts) : -1, mp = computePipe(ms);
-  if (mp < 0 || (withTask && tp < 0)) { meshSkip(); return; }
+  if (mp < 0 || (withTask && tp < 0)) { meshSkip(H.SKIP_PIPELINE); return; }
   meshMode = true;
   if (ms != curVs || fs != curFs) { curVs = ms; curFs = fs; dirty |= D_UBO | D_TEX | D_VBUF; }
-  if (!fillKey(MESH_PRIM, -1)) { dirty |= D_PIPE; meshSkip(); return; }
+  if (!fillKey(MESH_PRIM, -1)) { dirty |= D_PIPE; meshSkip(H.SKIP_STATE); return; }
   const id = PK.pipelineGet();
-  if (id < 0) { dirty |= D_PIPE; meshSkip(); return; }
+  if (id < 0) { dirty |= D_PIPE; meshSkip(H.SKIP_PIPELINE); return; }
   if (id != curPipe) { curPipe = id; dirty |= D_BIND | D_VBUF; }
   dirty &= ~D_PIPE;
   passBreak();
@@ -820,8 +829,8 @@ function exec(p: usize, depth: i32): void {
       }
       case O.OP_POLY_OFFSET: memory.copy(POLYOFF, a, 12); dirty |= D_PIPE; break;
       case O.OP_BLEND_COLOR: memory.copy(BLENDC, a, 16); dirty |= D_BLENDC; break;
-      case O.OP_DRAW: if (!R.renderSkip(0)) draw(a, size, false); break;
-      case O.OP_DRAW_IDX: if (!R.renderSkip(0)) draw(a, size, true); break;
+      case O.OP_DRAW: if (!R.renderSkip(0)) draw(a, size, false); else skipRec(H.SKIP_RENDER_COND, 0, 0); break;
+      case O.OP_DRAW_IDX: if (!R.renderSkip(0)) draw(a, size, true); else skipRec(H.SKIP_RENDER_COND, 0, 0); break;
       case O.OP_BARRIER: if (load<i32>(a)) passBreak(); break;
       // The pools' numbering bases were added to bound handles when the binds were recorded; handles read from uniform
       // data (slotHandle) take the bases of the pools set here

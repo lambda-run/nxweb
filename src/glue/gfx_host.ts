@@ -6,6 +6,7 @@
 import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
+import { FrameLedger } from "./gfx_ledger.ts";
 import { NdveBypass, NDVE_KEYS, NDVE_OUTPUT_IMAGE, NDVE_FLIP_ON, NDVE_FLIP_BASE } from "./ndve.ts";
 export type { Capture, CaptureImage } from "./gfx_capture.ts";
 
@@ -98,7 +99,7 @@ export interface GfxHostOptions {
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
   BLEND_COLOR: 12, STENCIL_REF: 13, DRAW: 14, DRAW_IDX: 15, CLEAR_RECT: 16, COPY_B2T: 17, COPY_T2T: 18, SNAPSHOT: 19, PRESENT: 20, FENCE: 21, FLUSH: 22, MEM_DIRTY: 23, TEX_DATA: 24, COPY_T2B: 25, FIXUP: 26,
   UBO_DATA: 27, SSBO: 28, IMG: 29, BEGIN_COMPUTE: 30, DISPATCH: 31, BUF_READBACK: 32,
-  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38, CLEAR_TEX: 39, DISPATCH_SKIPPED: 40 };
+  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38, CLEAR_TEX: 39, DISPATCH_SKIPPED: 40, SKIP: 41 };
 // Pipeline key offsets (src/gfx/pipeline.ts)
 const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8, samples: 9, ncolor: 10, depthFmt: 11, colorFmt: 12, a2c: 20, flags: 21, blendEn: 22, stencilV: 23, stencilW: 24,
   itype: 25, chmask: 28, ds: 32, blend: 40, offset: 104, attrMask: 116, attr: 120, stream: 248, vin: 376 };
@@ -147,6 +148,7 @@ export class GfxHost {
   context: GPU = null;
   canvasFormat = "bgra8unorm";
   lastPresented = 0;
+  ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0,
     meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0 };
@@ -161,6 +163,7 @@ export class GfxHost {
   onDeviceRestored: ((texturesGone: number) => void) | null = null;
   // Called when a vertex shader is bound with attribute formats of another class than it declares and has no variant:
   // the shader chain's hook to translate one (return its WGSL, or undefined: the pipeline fails with a red line)
+  shaderStateOf: ((keyHex: string) => string | undefined) | null = null;   // the embedder's state of a key (rt_shaders.ts), for the capture's key lines
   onShaderVariant: ((keyHex: string, classes: Record<number, VinClass>) => string | undefined) | null = null;
 
   private opts: GfxHostOptions;
@@ -1536,12 +1539,15 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   }
 
   // ---- the stream ----
+  // the null replayer: nothing runs, the ledger still counts
+  account(ptr: number, len: number) { if (!this.disposed) this.ledger.walk(this.dv, ptr < 0 ? ptr + 4294967296 : ptr, len); }
   exec(ptr: number, len: number) {
     if (this.disposed) return;
     let dv = this.dv;
     for (let p = ptr, end = ptr + len; p < end;) {
       const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
       if (this.cap) this.captureRecord(op, dv, p);
+      this.ledger.record(op, dv, p);
       switch (op) {
         case H.TEX_CREATE: {
           const serial = this.u64(dv, p + 8), d = p + 16, format = dv.getInt32(d + 4, true);
@@ -1555,6 +1561,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.BEGIN_COMPUTE: this.endPass(); this.pass = this.encoder().beginComputePass(); this.computePass = true; this.cur = null; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); this.stats.computePasses++; break;
         case H.DISPATCH: this.dispatch(dv, p); break;
         case H.DISPATCH_SKIPPED: this.dispatchSkipped(dv, p); break;
+        case H.SKIP: break;
         case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (dv.getUint32(p + 28, true) & 1) !== 0 }); this.bindDirty = true; break;
         case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null }); this.bindDirty = true; break; }
         case H.MESH_BEGIN: this.meshBegin(dv, p); break;
@@ -1577,8 +1584,8 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.BLEND_COLOR: this.pass.setBlendConstant([0, 1, 2, 3].map(i => dv.getFloat32(p + 8 + i * 4, true))); break;
         case H.STENCIL_REF: this.pass.setStencilReference(dv.getUint32(p + 8, true)); break;
         case H.DRAW: case H.DRAW_IDX: {
-          if (!this.cur || this.computePass) break;
-          if (this.bindDirty && !this.bind()) break;
+          if (!this.cur || this.computePass) { this.ledger.dropped("pipeline not built on the host"); break; }
+          if (this.bindDirty && !this.bind()) { this.ledger.dropped("bindings not made on the host"); break; }
           if (this.cur.drawParams) this.setDrawParams(op === H.DRAW ? dv.getUint32(p + 8, true) : dv.getInt32(p + 24, true), dv.getUint32(p + 20, true), dv.getUint32(p + (op === H.DRAW ? 28 : 40), true));
           const conv = dv.getUint32(p + (op === H.DRAW ? 24 : 28), true);
           if (conv) { this.drawConverted(dv, p, op === H.DRAW_IDX, conv); this.stats.draws++; break; }
@@ -1586,7 +1593,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
           else {
             const itype = dv.getUint32(p + 8, true), count = dv.getUint32(p + 12, true), isz = itype === 2 ? 4 : itype === 1 ? 2 : 1;
             const ib = this.upload(this.u64(dv, p + 32), count * isz, itype === 0 ? 1 : 2);
-            if (!ib) break;
+            if (!ib) { this.ledger.dropped("index buffer not uploaded"); break; }
             this.pass.setIndexBuffer(ib, itype === 2 ? "uint32" : "uint16", this.upOff);
             this.pass.drawIndexed(count, dv.getUint32(p + 16, true), 0, dv.getInt32(p + 24, true), dv.getUint32(p + 20, true));
           }
@@ -1682,6 +1689,9 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   private captureEnd() {
     const c = this.cap!;
     this.cap = null;
+    c.lines.push(`F ${this.ledger.lastLine || "no frame was presented"}`);
+    const keys = this.ledger.keyLines(undefined, k => this.shaderStateOf?.(k));
+    if (keys.length) c.lines.push("K shader keys that skipped work, by first use:", ...keys.map(l => `K   ${l}`));
     void Promise.all(c.images).then(images => c.done({ text: c.lines.join("\n") + "\n", images: images.filter((i): i is CaptureImage => !!i), passes: c.state.pass, draws: c.state.draws, dispatches: c.dispatches, records: c.records }));
   }
 }

@@ -7,6 +7,7 @@
   "scripts": {
     "test": "node test/runtime/all.mts",
     "audit64": "node tools/audit64.mjs",
+    "shaders:firstuse": "node tools/shaders/firstuse.mts",
     "kit:diagrams": "node src/kit/host/gen.mts",
     "kit:check": "node src/kit/host/gen.mts --check",
     "kit:test": "node test/kit/run.mts",

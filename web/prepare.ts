@@ -101,7 +101,8 @@ function shadersLine(p: PrewarmOut | null): string {
   const list = (rs: PrewarmOut["failures"]) => rs.map(r => `${esc(r.reason)} (${r.count})`).join("; ");
   let t = `${p.found} shader stages found in ${p.files} files${kinds ? ` (${kinds})` : ""}`;
   t += p.chain ? `; ${p.translated} translated, ${p.cached} already cached, ${p.failed} failed` : `; not translated ahead: this build has no in-page translator (web:build makes it)`;
-  if (p.failures.length) t += `<br><b class="warn" id="shaderfail">failed: ${list(p.failures)}</b>`;
+  if (p.failures.length) t += `<br><b class="warn" id="shaderfail">failed: ${list(p.failures)}</b>` +
+    `<details id="shaderfailkeys"><summary>every failed key, one line a reason</summary><pre>${p.failures.map(r => `${esc(r.reason)} (${r.count}): ${r.examples.join(" ")}`).join("\n")}</pre></details>`;
   if (p.unreadable.length) t += `<br>unreadable: ${list(p.unreadable)}`;
   if (p.notRead.length) t += `<br><span id="shadernotread">not read: ${list(p.notRead)}</span>`;
   return t;
