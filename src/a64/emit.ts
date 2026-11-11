@@ -215,8 +215,12 @@ export function lset(i: u32): void { b(0x21); leb(i); }
 export function ltee(i: u32): void { b(0x22); leb(i); }
 export function gget(i: u32): void { b(0x23); leb(i); }
 export function gset(i: u32): void { b(0x24); leb(i); }
-export function mem(op: u32): void { b(op); b(0); if (M64) leb64(optGuard); else leb(<u32>optGuard); }
-export function vmem(op: u32): void { simd(op); b(0); if (M64) leb64(optGuard); else leb(<u32>optGuard); }
+// a constant offset of the next memory instruction's address (an LDR/STR immediate), carried in its memory operand
+// instead of an add: the effective address is computed without wrapping, so an address that would wrap traps
+export let memOff: u32 = 0;
+export function setMemOff(o: u32): void { memOff = o; }
+export function mem(op: u32): void { b(op); b(0); moff(0); }
+export function vmem(op: u32): void { simd(op); b(0); moff(0); }
 // Guest data address on the stack: i64 -> i32. With optGuard the address is biased by -optGuard and every memory
 // instruction carries the offset optGuard (mem, vmem, moff): an address below optGuard wraps to 4 GB or more and
 // the access traps (the effective address is computed without wrapping), at the cost of one subtraction.
@@ -226,7 +230,7 @@ export function aw(): void {
   if (M64) { if (optGuard) { i64c(<i64>optGuard); b(0x7D); } return; }
   b(0xA7); if (optGuard) { i32c(<i32>optGuard); b(0x6B); }
 }
-export function moff(o: u32): void { if (M64) leb64(<u64>o + optGuard); else leb(o + <u32>optGuard); }
+export function moff(o: u32): void { o += memOff; memOff = 0; if (M64) leb64(<u64>o + optGuard); else leb(o + <u32>optGuard); }
 // profile counter k += n (counters: profBase, u64 each; see PROF_* in a64_host.ts)
 export function prof(k: i32, n: i64): void {
   if (!optProf || n == 0) return;
@@ -343,6 +347,9 @@ export const insSite = mk<u8>(INS_CAP);   // which kind of site (WB_* / RL_*): p
 // INS_BACK (it did not come back: write back dirty & ~W) or INS_AFTER (reload needed & W; dirty & ~(R | W) stays dirty)
 export const INS_CALL: u8 = 1, INS_BACK: u8 = 2, INS_AFTER: u8 = 3;
 export const INS_SEQ: u8 = 4;   // a write-back on the block's straight path (precise faults): every register is clean after it
+// a write-back before leaving for a pc of this function's block insG (the budget exit at a back edge): only the dirty
+// registers that block needs (nI); the others are written before they are read or written back on every path from it
+export const INS_LIVE: u8 = 5;
 export const insMode = mk<u8>(INS_CAP);
 export const insG = mk<u16>(INS_CAP);
 export let nIns: i32 = 0;
@@ -627,11 +634,11 @@ function pcCheck(ret: u64, g: i32 = -1): void {
   reload(RL_CALL);
   if (g >= 0) insSum(INS_AFTER, g);
 }
-function budgetCheck(target: u64): void {
+function budgetCheck(target: u64, j: i32): void {
   gget(G_BUDGET); i32c(1); b(0x6B); ltee(L_BUD); gset(G_BUDGET);
   prof(1, 1);
   lget(L_BUD); i32c(0); b(0x48);
-  ifVoid(); i64c(<i64>target); gset(G_PC); writeback(WB_BUDGET); b(0x0F); end();
+  ifVoid(); i64c(<i64>target); gset(G_PC); writeback(WB_BUDGET); insSum(INS_LIVE, j); b(0x0F); end();
 }
 // leave the function towards a constant pc (tail transfer through the table)
 export function exitConst(target: u64): void {
@@ -688,7 +695,7 @@ export function gotoPc(target: u64, isLast: bool): void {
   if (pos(j) > pos(curBlk)) {
     if (!(isLast && pos(j) == pos(curBlk) + 1 && ifDepth == 0)) { b(0x0C); leb(fwdDepth(j) + ifDepth); }
   } else {
-    budgetCheck(target);
+    budgetCheck(target, j);
     if (structOn) { b(0x0C); leb(backDepth(j) + ifDepth); }
     else { i32c(j); lset(L_STATE); b(0x0C); leb(nBlk - 1 - curBlk + ifDepth); }
   }

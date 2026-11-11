@@ -3,7 +3,7 @@ import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, mem, ar, cm, cst, fc,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, tw, ifVoid, ifT, els, end,
   flagsAddSub, addCarry, flagsNZ, setNZCVconst, emitCond, killCmp,
-  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield, optGuard, aw, moff, M64, pairLock,
+  gotoPc, branchIf, callConst, callDyn, exitDyn, exitRet, emitSvc, emitTrap, emitCntYield, optShared, optCntYield, optGuard, aw, moff, M64, pairLock, setMemOff,
   R_N, R_Z, R_C, R_V, G_FPCR, G_FPSR, G_TPIDR, G_TPIDRRO, G_EXADDR, G_EXVAL, G_EXVAL2,
   F_BRK, F_CNTPCT, F_CRC, T_I32, T_I64,
 } from "./emit";
@@ -513,16 +513,16 @@ export function trBranchSys(pc: u64, insn: u32): bool {
 // integer loads / stores. Address is kept in an i64 temp.
 const A = 8;   // temp slot for address
 // stack: (i64 addr on stack) -> value loaded into rt
-function loadInt(rt: i32, size: u32, sgn: bool, to64: bool): void {
-  aw();
+function loadInt(rt: i32, size: u32, sgn: bool, to64: bool, off: u32 = 0): void {
+  aw(); setMemOff(off);
   if (!sgn) { mem(size == 0 ? 0x31 : size == 1 ? 0x33 : size == 2 ? 0x35 : 0x29); }
   else if (to64) { mem(size == 0 ? 0x30 : size == 1 ? 0x32 : 0x34); }
   else { mem(size == 0 ? 0x2C : 0x2E); b(0xAD); }
   setX(rt, true);
 }
 // stack: i64 addr ; then value pushed by this fn -> store
-function storeInt(rt: i32, size: u32): void {
-  aw(); getX(rt, true); mem(size == 0 ? 0x3C : size == 1 ? 0x3D : size == 2 ? 0x3E : 0x37);
+function storeInt(rt: i32, size: u32, off: u32 = 0): void {
+  aw(); getX(rt, true); setMemOff(off); mem(size == 0 ? 0x3C : size == 1 ? 0x3D : size == 2 ? 0x3E : 0x37);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -762,17 +762,18 @@ export function trLoadStoreInt(pc: u64, insn: u32): bool {
     if (opc == 3 || (opc == 1 && !L)) return false;
     let sz: u32 = opc == 2 ? 3 : 2;
     let imm: i64 = sx((insn >> 15) & 0x7F, 7) << sz;
+    let off: u32 = type == 2 && imm > 0 ? <u32>imm : 0;
     getXsp(rn, true);
-    if (type != 1 && imm != 0) { i64c(imm); b(0x7C); }
+    if (type != 1 && imm != 0 && !off) { i64c(imm); b(0x7C); }
     lset(a);
     if (L) {
       let v = t64(0);
-      lget(a); aw(); mem(sz == 3 ? 0x29 : opc == 1 ? 0x34 : 0x35); lset(v);
-      lget(a); i64c(<i64>1 << sz); b(0x7C); loadInt(rt2, sz, opc == 1, true);
+      lget(a); aw(); setMemOff(off); mem(sz == 3 ? 0x29 : opc == 1 ? 0x34 : 0x35); lset(v);
+      lget(a); loadInt(rt2, sz, opc == 1, true, off + (1 << sz));
       if (rt != rt2) { lget(v); setX(rt, true); }
     } else {
-      lget(a); storeInt(rt, sz);
-      lget(a); i64c(<i64>1 << sz); b(0x7C); storeInt(rt2, sz);
+      lget(a); storeInt(rt, sz, off);
+      lget(a); storeInt(rt2, sz, off + (1 << sz));
     }
     if (type == 1) { lget(a); i64c(imm); b(0x7C); setXsp(rn, true); }
     else if (type == 3) { lget(a); setXsp(rn, true); }
@@ -790,10 +791,10 @@ export function trLoadStoreInt(pc: u64, insn: u32): bool {
   }
   let opc = (insn >> 22) & 3;
   let wb = 0; // 1 post, 2 pre
-  let imm: i64 = 0;
+  let imm: i64 = 0, off: u32 = 0;
   if (insn & (1 << 24)) { // unsigned offset
     imm = <i64>((insn >> 10) & 0xFFF) << size;
-    getXsp(rn, true); if (imm) { i64c(imm); b(0x7C); }
+    off = <u32>imm; getXsp(rn, true);
   } else if (insn & (1 << 21)) {
     if (((insn >> 10) & 3) == 0) return atomicMem(insn);
     if (((insn >> 10) & 3) != 2) return false;
@@ -805,17 +806,18 @@ export function trLoadStoreInt(pc: u64, insn: u32): bool {
     imm = sx((insn >> 12) & 0x1FF, 9);
     if (m == 2) return false; // unprivileged
     wb = m == 1 ? 1 : m == 3 ? 2 : 0;
-    getXsp(rn, true); if (wb != 1 && imm) { i64c(imm); b(0x7C); }
+    if (wb == 0 && imm > 0) off = <u32>imm;
+    getXsp(rn, true); if (wb != 1 && imm && !off) { i64c(imm); b(0x7C); }
   }
   if (size == 3 && opc == 2) { b(0x1A); return wb == 0; } // PRFM
   if (opc == 3 && size >= 2) { return false; }
   lset(a);
-  if (opc == 0) { lget(a); storeInt(rt, size); }
+  if (opc == 0) { lget(a); storeInt(rt, size, off); }
   else {
     // for writeback loads the base update happens first so that rt wins if rt == rn
     if (wb == 1) { lget(a); i64c(imm); b(0x7C); setXsp(rn, true); }
     else if (wb == 2) { lget(a); setXsp(rn, true); }
-    lget(a); loadInt(rt, size, opc >= 2, opc == 2);
+    lget(a); loadInt(rt, size, opc >= 2, opc == 2, off);
     return true;
   }
   if (wb == 1) { lget(a); i64c(imm); b(0x7C); setXsp(rn, true); }

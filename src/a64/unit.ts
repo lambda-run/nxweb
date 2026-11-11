@@ -12,7 +12,7 @@ import {
   M64, optMaxPages, blockOf,
 } from "./emit";
 import { posOf, optProf, STRUCT_CAP, structOn, structFail, setStruct, lvBlk, lvWrap, fwLo, lvLoop, loopEnd } from "./emit";
-import { prof, profBase, intrinsicAt, insSite, RL_ENTRY, insMode, insG, INS_CALL, INS_BACK, INS_AFTER, INS_SEQ, writebackSeq, sRI, sRV, sWI, sWV, sOk, accRI, accRV, accWI, accWV, accAll, resetAcc } from "./emit";
+import { prof, profBase, intrinsicAt, insSite, RL_ENTRY, insMode, insG, INS_CALL, INS_BACK, INS_AFTER, INS_SEQ, INS_LIVE, writebackSeq, sRI, sRV, sWI, sWV, sOk, accRI, accRV, accWI, accWV, accAll, resetAcc } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
 
@@ -265,13 +265,17 @@ function analyse(): void {
         let x = evBuf[e], kind = x & 0xFF, r = x >> 8;
         if (kind == EV_R) { if (r < 36) ni |= <u64>1 << r; else nv |= <u32>1 << (r - 36); }
         else if (kind == EV_W) { if (r < 36) ni &= ~(<u64>1 << r); else nv &= ~(<u32>1 << (r - 36)); }
-        else if (kind == EV_WB) { ni |= insMI[r]; nv |= insMV[r]; }
+        else if (kind == EV_WB) {
+          if (insMode[r] == INS_LIVE) { let g = <i32>insG[r]; ni |= insMI[r] & nI[g]; nv |= insMV[r] & nV[g]; }
+          else { ni |= insMI[r]; nv |= insMV[r]; }
+        }
         else if (insMode[r] == INS_AFTER) { let g = <i32>insG[r]; insMI[r] = ni & sWI[g]; insMV[r] = nv & sWV[g]; ni &= ~sWI[g]; nv &= ~sWV[g]; }
         else { insMI[r] = ni; insMV[r] = nv; ni = 0; nv = 0; }
       }
       if (ni != nI[k] || nv != nV[k]) { nI[k] |= ni; nV[k] |= nv; changed = true; }
     }
   }
+  for (let i = 0; i < nIns; i++) if (insMode[i] == INS_LIVE) { let g = <i32>insG[i]; insMI[i] &= nI[g]; insMV[i] &= nV[g]; }
 }
 
 function emitMasked(mi: u64, mv: u32, isWb: bool, site: u8): void {

@@ -1,6 +1,6 @@
 // nxweb a64: scalar floating point and SIMD&FP register loads/stores.
 import {
-  b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, vmem, mem, aw, moff, fc, ar, cm, cst,
+  b, leb, i32c, i64c, f32c, f64c, v128c, lget, lset, ltee, simd, vmem, mem, aw, moff, setMemOff, fc, ar, cm, cst,
   getX, getXsp, setX, setXsp, rget, rset, t32, t64, ta, tf32, tf64, tv, emitCond, killCmp, optFma, optNan, gget,
   G_FPCR, F_NAN1S, F_NAN2S, F_NAN3S, F_RND, F_SFS, F_SFD, T_I64, optRmArith,
   R_N, R_Z, R_C, R_V, R_V0, T_I32,
@@ -449,20 +449,20 @@ export function trFp(pc: u64, insn: u32): bool {
 // SIMD&FP register loads / stores. scale: 0..4 (B H S D Q)
 const A = 8;
 // stack: -> ; address in t64(A)
-function loadVec(rt: i32, scale: u32): void {
+function loadVec(rt: i32, scale: u32, off: u32 = 0): void {
   let a = t64(A);
   switch (scale) {
-    case 4: lget(a); aw(); vmem(0x00); break;
-    case 3: lget(a); aw(); vmem(0x5D); break;
-    case 2: lget(a); aw(); vmem(0x5C); break;
-    case 1: v128c(0, 0); lget(a); aw(); mem(0x2F); simd(0x1C); b(0); break;
-    default: v128c(0, 0); lget(a); aw(); mem(0x2D); simd(0x1C); b(0); break;
+    case 4: lget(a); aw(); setMemOff(off); vmem(0x00); break;
+    case 3: lget(a); aw(); setMemOff(off); vmem(0x5D); break;
+    case 2: lget(a); aw(); setMemOff(off); vmem(0x5C); break;
+    case 1: v128c(0, 0); lget(a); aw(); setMemOff(off); mem(0x2F); simd(0x1C); b(0); break;
+    default: v128c(0, 0); lget(a); aw(); setMemOff(off); mem(0x2D); simd(0x1C); b(0); break;
   }
   vset(rt);
 }
-function storeVec(rt: i32, scale: u32): void {
+function storeVec(rt: i32, scale: u32, off: u32 = 0): void {
   let a = t64(A);
-  lget(a); aw(); vget(rt);
+  lget(a); aw(); vget(rt); setMemOff(off);
   if (scale == 4) vmem(0x0B); else { vmem(0x58 + scale); b(0); }
 }
 
@@ -558,15 +558,14 @@ export function trLoadStoreVec(pc: u64, insn: u32): bool {
     if (size == 3) return false;
     let sc = 2 + size;
     let imm: i64 = sx((insn >> 15) & 0x7F, 7) << sc;
+    let off: u32 = type == 2 && imm > 0 ? <u32>imm : 0;
     getXsp(rn, true);
-    if (type != 1 && imm != 0) { i64c(imm); b(0x7C); }
+    if (type != 1 && imm != 0 && !off) { i64c(imm); b(0x7C); }
     lset(a);
-    let a2 = t64(A + 1);
     if (type == 1) { lget(a); i64c(imm); b(0x7C); setXsp(rn, true); }
     else if (type == 3) { lget(a); setXsp(rn, true); }
-    if (L) loadVec(rt, sc); else storeVec(rt, sc);
-    lget(a); i64c(<i64>1 << sc); b(0x7C); lset(a);
-    if (L) loadVec(rt2, sc); else storeVec(rt2, sc);
+    if (L) loadVec(rt, sc, off); else storeVec(rt, sc, off);
+    if (L) loadVec(rt2, sc, off + (1 << sc)); else storeVec(rt2, sc, off + (1 << sc));
     return true;
   }
   if ((insn & 0x3A000000) != 0x38000000) return false;
@@ -574,10 +573,10 @@ export function trLoadStoreVec(pc: u64, insn: u32): bool {
   let scale = size;
   if (opc & 2) { if (size != 0) return false; scale = 4; }
   let wb = 0;
-  let imm: i64 = 0;
+  let imm: i64 = 0, off: u32 = 0;
   if (insn & (1 << 24)) {
     imm = <i64>((insn >> 10) & 0xFFF) << scale;
-    getXsp(rn, true); if (imm) { i64c(imm); b(0x7C); }
+    off = <u32>imm; getXsp(rn, true);
   } else if (insn & (1 << 21)) {
     if (((insn >> 10) & 3) != 2) return false;
     let option = (insn >> 13) & 7, S = (insn >> 12) & 1;
@@ -588,10 +587,11 @@ export function trLoadStoreVec(pc: u64, insn: u32): bool {
     imm = sx((insn >> 12) & 0x1FF, 9);
     if (m == 2) return false;
     wb = m == 1 ? 1 : m == 3 ? 2 : 0;
-    getXsp(rn, true); if (wb != 1 && imm) { i64c(imm); b(0x7C); }
+    if (wb == 0 && imm > 0) off = <u32>imm;
+    getXsp(rn, true); if (wb != 1 && imm && !off) { i64c(imm); b(0x7C); }
   }
   lset(a);
-  if (opc & 1) loadVec(rt, scale); else storeVec(rt, scale);
+  if (opc & 1) loadVec(rt, scale, off); else storeVec(rt, scale, off);
   if (wb == 1) { lget(a); i64c(imm); b(0x7C); setXsp(rn, true); }
   else if (wb == 2) { lget(a); setXsp(rn, true); }
   return true;

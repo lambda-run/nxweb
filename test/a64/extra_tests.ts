@@ -141,6 +141,47 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     });
     return `${acc.length} accesses: pc and x9 exact below the guard, no trap at it`;
   });
+  test("immediate offsets in the memory operand: LDR, LDP's second word, STR Q, LDUR past the end and an address that would wrap trap at their pc; in bounds they work", () => {
+    const t = mk(m, { preciseFaults: 2 });
+    const end = t.memory.buffer.byteLength;
+    // mov x9, #42; <access through x5 + imm>; ret. x5 for a trap, and for an access 256 bytes before the end
+    const acc: [number, number, string][] = [
+      [0xF94004A1, end - 8, "ldr x1, [x5, #8]"], [0xA94108A1, end - 24, "ldp x1, x2, [x5, #16]"],
+      [0x3D8008A0, end - 40, "str q0, [x5, #32]"], [0xB84030A1, end - 4, "ldur w1, [x5, #3]"],
+    ];
+    acc.forEach(([a], i) => t.put(BASE + i * 0x40, [0xD2800549, a, RET]));
+    t.host.addCode(BASE, acc.length * 0x40);
+    const trapAt = (i: number, x5: bigint, what: string) => {
+      let err: unknown;
+      t.c.x9.value = 0n; t.c.x1.value = 11n; t.c.x5.value = x5;
+      try { t.call(BASE + i * 0x40); } catch (e) { err = e; }
+      if (!err) throw new Error(`${what} with x5 = 0x${x5.toString(16)}: no trap`);
+      eq(`${what} pc`, t.host.faultFromError(err)?.pc, BASE + i * 0x40 + 4); eq(`${what} x9`, t.c.x9.value, 42n); eq(`${what} x1`, t.c.x1.value, 11n);
+    };
+    acc.forEach(([, x5, what], i) => {
+      trapAt(i, BigInt(x5), what);
+      trapAt(i, 0xFFFFFFFFFFFFFFF8n, what + " (address wraps)");
+      t.c.x5.value = BigInt(end - 0x100); t.call(BASE + i * 0x40);
+    });
+    return `${acc.length} accesses: past the end and wrapping trap with pc, x1 and x9 exact; 256 bytes before the end they work`;
+  });
+  test("budget exit at a back edge writes back only what the loop head needs: a register written before it is read stays as it was", () => {
+    // mov x0, #0; mov x2, #100; loop: add x3, x0, #1; add x0, x3, #2; subs x2, x2, #1; b.ne loop; ret
+    const code = [0xD2800000, 0xD2800C82, 0x91000403, 0x91000860, 0xF1000442, 0x54FFFFA1, RET];
+    for (const precise of [0, 2] as const) {
+      const t = mk(m, { preciseFaults: precise });
+      t.put(BASE, code); t.host.addCode(BASE, code.length * 4);
+      t.c.x3.value = 0x55n; t.c.x30.value = 0xFFFFFFF0n; t.c.pc.value = BigInt(BASE);
+      t.c.budget.value = 2; t.c.run();
+      eq(`precise ${precise}: x3 after the first budget exit`, t.c.x3.value, 0x55n);
+      eq(`precise ${precise}: x0 after the first budget exit`, t.c.x0.value, 6n);
+      let slices = 1;
+      while (!t.host.isHostPc(t.c.pc.value) && slices < 1000) { t.c.budget.value = 2; t.c.run(); slices++; }
+      eq(`precise ${precise}: x0`, t.c.x0.value, 300n); eq(`precise ${precise}: x3`, t.c.x3.value, 298n); eq(`precise ${precise}: x2`, t.c.x2.value, 0n);
+      if (slices < 10) throw new Error(`precise ${precise}: ${slices} slices, the budget did not exit`);
+    }
+    return "x3 (dead at the loop head) not written at the budget exits, exact at the return; x0 = 300 through 50 slices";
+  });
   test("preciseFaults=1: pc is exact, registers are not written", () => {
     const t = mk(m, { preciseFaults: 1 });
     t.put(BASE, faulty(true)); t.host.addCode(BASE, 32);
