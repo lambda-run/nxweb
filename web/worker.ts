@@ -221,6 +221,10 @@ function counters(): Record<string, string | number> {
   if (!rt) return {};
   const c: Record<string, string | number> = { slices: rt.stats.slices, SVCs: rt.stats.svcs, "host calls": rt.stats.hostCalls, "budget units": rt.units, "translated units": rt.disposed ? 0 : rt.a64.units.length,
     "instructions translated": rt.a64.translatedInsns, "module loads at run time": rt.stats.moduleLoads, "threads waiting outside the guest": rt.waitingOutside, "kit refusals": rt.disposed ? "-" : refusedTotal(kitParts()) };
+  if (!rt.disposed) {
+    const l = rt.libcStats.filter(x => x.calls);
+    c["libc intrinsic calls"] = l.length ? l.map(x => `${x.name} ${x.calls} (${(x.bytes / 1048576).toFixed(1)} MB)`).join(", ") : "none (no module defines memcpy, strlen, ... or none was called)";
+  }
   if (gfx) Object.assign(c, { frames: gfx.stats.frames, "NVN calls": gfx.stats.nvnCalls, "SyncWait parked / timed out": `${gfx.stats.syncParked} / ${gfx.stats.syncTimeouts}`, "QueueFinish parked": gfx.stats.finishParked });
   if (audio) Object.assign(c, { "nn::audio calls": audio.stats.calls, "audio ticks": audio.stats.ticks, "audio event signals": audio.stats.signals });
   if (fsys) c["nn::fs calls"] = fsys.stats.calls;

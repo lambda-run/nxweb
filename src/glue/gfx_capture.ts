@@ -10,7 +10,8 @@ export interface CaptureCtx { shaderKey(id: number): string; texture(serial: num
 
 const OPS: Record<number, string> = { 1: "TEX_CREATE", 2: "TEX_DESTROY", 3: "BEGIN_PASS", 4: "END_PASS", 5: "VIEWPORT", 6: "SCISSOR", 7: "PIPELINE_CREATE", 8: "PIPELINE", 9: "VBUF", 10: "UBO", 11: "TEX",
   12: "BLEND_COLOR", 13: "STENCIL_REF", 14: "DRAW", 15: "DRAW_IDX", 16: "CLEAR_RECT", 17: "COPY_B2T", 18: "COPY_T2T", 19: "SNAPSHOT", 20: "PRESENT", 21: "FENCE", 22: "FLUSH", 23: "MEM_DIRTY", 24: "TEX_DATA",
-  25: "COPY_T2B", 26: "FIXUP", 27: "UBO_DATA", 28: "SSBO", 29: "IMG", 30: "BEGIN_COMPUTE", 31: "DISPATCH", 32: "BUF_READBACK" };
+  25: "COPY_T2B", 26: "FIXUP", 27: "UBO_DATA", 28: "SSBO", 29: "IMG", 30: "BEGIN_COMPUTE", 31: "DISPATCH", 32: "BUF_READBACK",
+  35: "MESH_BEGIN", 36: "MESH_TASK", 37: "MESH_RUN", 38: "MESH_DRAW" };
 const STAGE = ["vs", "fs", "cs"], PRIMS = ["points", "lines", "line loop", "line strip", "triangles", "triangle strip", "triangle fan", "quads", "quad strip", "polygon"];
 const hex = (v: number) => "0x" + v.toString(16);
 const u64 = (dv: DataView, p: number) => dv.getUint32(p, true) + dv.getUint32(p + 4, true) * 4294967296;
@@ -105,6 +106,10 @@ export function describeRecord(op: number, dv: DataView, p: number, ctx: Capture
     case 31: state.inPass++; return `  D dispatch pipeline ${dv.getUint32(p + 8, true)} groups ${i32s(dv, p + 12, 3)}`;
     case 32: return `B read back storage ${hex(u64(dv, p + 8))}+${dv.getUint32(p + 16, true)} into guest memory`;
   }
+  if (op === 35) { const f = dv.getUint32(p + 8, true); state.inPass = 0; return `P ${++state.pass} begin compute: mesh draw, mesh shader #${dv.getUint32(p + 32, true)}${f & 2 ? ` after task shader #${dv.getInt32(p + 36, true)}` : ""}, ${f & 1 ? `indirect {count, first} at ${hex(u64(dv, p + 24))}` : `${dv.getUint32(p + 16, true)} workgroups from ${dv.getUint32(p + 12, true)}`}`; }
+  if (op === 36) { state.inPass++; return `  D task shader: pipeline ${dv.getUint32(p + 8, true)}, grid from the counts (on the GPU)`; }
+  if (op === 37) { state.inPass++; return `  D mesh shader: pipeline ${dv.getUint32(p + 8, true)}, grid from the counts (on the GPU), into the output slots\nP ${state.pass} end (${state.inPass} draws or dispatches)`; }
+  if (op === 38) { state.draws++; state.inPass++; return `  D draw the mesh output slots (indirect, vertex count from the GPU) pipeline ${dv.getUint32(p + 8, true)}`; }
   if (op === 33) return `Q report #${dv.getUint32(p + 8, true)}`;
   if (op === 34) return "Q the reports so far land when this segment is done";
   return `? ${OPS[op] ?? `op ${op}`}`;

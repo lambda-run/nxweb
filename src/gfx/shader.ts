@@ -18,7 +18,7 @@ import { GFX_SHADER, GfxShaderE, GfxShaderS } from "../kit/gen/tables";
 import { pipelineResetShader } from "./pipeline";
 
 // Reflection record (400 bytes), as the embedder passes it (GfxHost.registerShader fills it from the shader chain's record)
-export const RF_stage: usize = 0;       // u32: 0 vertex, 1 fragment, 2 compute
+export const RF_stage: usize = 0;       // u32: 0 vertex, 1 fragment, 2 compute, 3 task, 4 mesh (NVN2: compute after the translator, src/shaders/meshstage.ts)
 export const RF_ubo: usize = 4;         // u32: bit i = uniform buffer binding i of this stage is read (0..13 the game's slots, 14 the translator's support buffer)
 export const RF_tex: usize = 8;         // u32: bit s = texture slot s of this stage is sampled
 export const RF_io: usize = 12;         // u32: vertex: attribute locations read; fragment: colour outputs written
@@ -138,7 +138,7 @@ function reportMissing(key: u64): void {
   L.end();
 }
 
-// The library id of the stage with shader stage number `want` (0 vertex, 1 fragment, 2 compute) of the program object at `prog`,
+// The library id of the stage with shader stage number `want` (0 vertex, 1 fragment, 2 compute, 3 task, 4 mesh) of the program object at `prog`,
 // -1 when the program has no such stage or its shader is not in the library (reported red once a key).
 // A program's stages are in the order the game passed them: the stage of each is the library's to say, so every stage
 // whose key is known is tried.

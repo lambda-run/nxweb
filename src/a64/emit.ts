@@ -273,7 +273,8 @@ export const F_NAN3D = 11;
 export const F_RND = 12;
 export const F_SFS = 13;
 export const F_SFD = 14;
-export const NIMPF = 15;
+export const F_LIBC = 15;
+export const NIMPF = 16;
 
 export const T_I32: u8 = 0x7F;
 export const T_I64: u8 = 0x7E;
