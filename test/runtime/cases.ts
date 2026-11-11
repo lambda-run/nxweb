@@ -267,6 +267,8 @@ export function cases(env: Env): Case[] {
     ok(hot.length >= 2 && /^\d+ slice ends sampled at \d+ pcs$/.test(hot[0]) && /^ *\d+\.\d% .+; hottest pc 0x[0-9a-f]+ is /.test(hot[1]), "hot code lines: " + hot.join(" | "));
     ok(hot.some(l => /^by guest thread/.test(l)) && hot.some(l => /^ +\d+\.\d% thread #\d+/.test(l)), "hot code by thread: " + hot.join(" | "));
     ok(hot.some(l => /^ +\d+% from 0x[0-9a-f]+ /.test(l)), "hot code callers: " + hot.join(" | "));
+    const idle = rt.idleWaitLines(3);
+    ok(idle.length >= 2 && (/^\d+ samples /.test(idle[0]) && idle.slice(1).every(l => /^ +\d+% thread #\d+.* on .+, from 0x/.test(l) || /^\(\d+ more waits\)$/.test(l))), "idle wait lines: " + idle.join(" | "));
     return [`${rt.stats.slices} slices, ${rt.stats.svcs} SVCs, ${rt.units} budget units, guest clock at the end ${(Number(rt.guestNs()) / 1e6).toFixed(3)} ms`];
   });
   test("c threads: identical output across 20 runs", () => {

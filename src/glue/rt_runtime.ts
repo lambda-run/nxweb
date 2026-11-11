@@ -218,6 +218,10 @@ export class Runtime {
   mainThread = 0;
   private hotPcs = new Map<number, number>();
   private hotThreads = new Map<number, { n: number; tls: number }>();   // kernel thread index -> slice ends, its TLS
+  private idleWaits = new Map<string, number>();   // "thread,wait kind,x30,frame return" -> samples it waited there in
+  private idleTls = new Map<number, number>();
+  private idleSamples = 0;
+  private idleAt = -1e9;
   private hotCallers = new Map<number, Map<string, number>>();   // pc -> "x30,[x29+8]" -> times   // pc at the end of each time slice that ran to its end -> times
   stats = { slices: 0, svcs: 0, hostCalls: 0, runMs: 0, grows: 0, entries: 0, moduleLoads: 0, moduleUnloads: 0, finiCalls: 0, clockParks: 0 };
   disposed = false;
@@ -774,6 +778,39 @@ export class Runtime {
     const stub = (a: number) => { const id = a >= STUBS.base && a < STUBS.base + 4 * STUBS.cap ? this.ld.stubId(a) : -1; return id >= 0 && id < this.ld.x.ld_host_count() ? this.ld.hostFunction(id).name : undefined; };
     return { mods, sym, stub };
   }
+  // While every thread waits (at most one sample each 10 ms of run time): which threads wait, on what kind of wait,
+  // called from where (the saved x30 and its frame record's return). Says what an idle run loop waits for: a frame,
+  // a timer, another thread, the GPU.
+  private sampleIdle(): void {
+    const now = performance.now();
+    if (now - this.idleAt < 10) return;
+    this.idleAt = now;
+    this.idleSamples++;
+    const dv = this.dv(), ok = (a: number) => a % 8 === 0 && a >= GUARD_BASE && a + 16 <= dv.byteLength;
+    for (let i = 0; i < 256; i++) {
+      const ctx = Number(this.k.kernel_thread_ctx(i));
+      if (!ctx) continue;
+      const kind = dv.getUint32(this.threadInfo(i) + 8, true);
+      if (!kind) continue;
+      const lr = Number(dv.getBigUint64(ctx + 30 * 8, true)), fp = Number(dv.getBigUint64(ctx + 29 * 8, true));
+      const up = ok(fp) ? Number(dv.getBigUint64(fp + 8, true)) : 0;
+      if (!this.idleTls.has(i)) this.idleTls.set(i, Number(dv.getBigUint64(ctx + 0x120, true)));
+      const key = `${i},${kind},${lr},${up}`, n = this.idleWaits.get(key);
+      if (n !== undefined || this.idleWaits.size < 4096) this.idleWaits.set(key, (n ?? 0) + 1);
+    }
+  }
+  idleWaitLines(max = 10): string[] {
+    if (!this.idleSamples) return [];
+    const { mods, sym, stub } = this.codePlaces();
+    const kinds = ["", "a lock", "a condition variable", "an address", "a synchronization object (event, handle)", "sleep", "the clock"];
+    const rows = [...this.idleWaits].sort((x, y) => y[1] - x[1]);
+    const out = rows.slice(0, max).map(([key, n]) => {
+      const [i, kind, lr, up] = key.split(",").map(Number), nm = this.threadName(this.idleTls.get(i) ?? 0);
+      return `${(100 * n / this.idleSamples).toFixed(0).padStart(4)}% thread #${i}${nm ? ` "${nm}"` : ""} on ${kinds[kind] ?? `wait kind ${kind}`}, from ${hex(lr)} ${placeOf(lr, mods, sym, stub)}` + (up && up !== lr ? ` <- ${hex(up)} ${placeOf(up, mods, sym, stub)}` : "");
+    });
+    if (rows.length > max) out.push(`(${rows.length - max} more waits)`);
+    return [`${this.idleSamples} samples (one at most each 10 ms) while every guest thread waited; the share of them each wait was in:`, ...out];
+  }
   // Where the guest's time goes: the pc each time slice ended at, by function (a symbol, else the 4 KB page of its
   // module), the hottest first, with each function's hottest pc and its callers (x30 <- the frame record's return). Slices that ended in a host call or a fault are left out.
   hotCode(max = 12): string[] {
@@ -1218,6 +1255,7 @@ export class Runtime {
       if (!ctx) {
         if (k.kernel_stop_reason()) { this.finish(); break; }
         // every thread waits: time moves to the next deadline
+        this.sampleIdle();
         let until = BigInt.asUintN(64, k.kernel_next_timeout());   // wasm hands a u64 over as a signed BigInt
         if (dl < until) until = dl;
         if (ext.next !== 0n) {
