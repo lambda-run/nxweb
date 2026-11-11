@@ -32,7 +32,7 @@ export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
 // (NXNATIVE_NVN_INCLUDE overrides the directory). Without it they are not built and their tests are skipped.
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
 export const NVN_INCLUDE = process.env.NXNATIVE_NVN_INCLUDE ?? join(NXNATIVE, "dm", "gfx", "nvn", "include");
-export const GFX_MODULES: Record<string, [src: string, ...flags: string[]]> = { cube: ["cube.c"], cube2: ["cube2.c"], mx: ["mx.c"], mx_bad: ["mx.c", "-DBAD"], syncg: ["syncg.c"], stress_gfx: ["stress_gfx.c"] };
+export const GFX_MODULES: Record<string, [src: string, ...flags: string[]]> = { cube: ["cube.c"], cube2: ["cube2.c"], mx: ["mx.c"], mx_bad: ["mx.c", "-DBAD"], mx_builder: ["mx.c", "-DBUILDER"], mx_ext: ["mx.c", "-DEXT"], syncg: ["syncg.c"], stress_gfx: ["stress_gfx.c"] };
 // The hand-assembled Maxwell programs of tools/shaders (python only), as C arrays for the mx guests, and their keys
 export const MAXWELL = join(OUT, "maxwell");
 export function maxwellBlobs(): void {

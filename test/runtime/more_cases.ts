@@ -386,6 +386,12 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     const c = await mx("mx", { translator: standIn, store }, p => p.shaders!.stats.fromStore === 2 && draws(p).issued >= 3, "quad");
     eq([asked, c.p.shaders!.stats.fromStore, c.p.shaders!.stats.translated], [2, 2, 0], "second run: translator calls in all, from the store, translated");
     lines.push(`second run: both stages from the store, the translator was not asked`);
+    // the two ways in that reach the recorder's SetShaders inside src/gfx: NVN2's builder and SetShadersExt
+    for (const m of ["mx_builder", "mx_ext"]) {
+      const r = await mx(m, { translator: standIn }, p => p.shaders!.stats.translated === 2 && draws(p).issued >= 3, "quad");
+      eq([r.p.shaders!.stats.translated, r.red.length], [2, 0], `${m}: translated, red lines: ` + r.red.join(" | "));
+      lines.push(`${m}: both stages translated in the page, ${draws(r.p).issued} drawn`);
+    }
     // (3) a stage that cannot be translated: one red line with its key; the other stage is fine; the process goes on
     const d = await mx("mx_bad", { library: lib, translator: standIn, store }, p => p.shaders!.stats.failed === 1 && p.gfx.stats.frames >= 6, "empty");
     eq(d.red.length, 1, "red lines: " + d.red.join(" | "));
