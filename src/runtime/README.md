@@ -320,6 +320,17 @@ There is no SDK and no rtld in the guest; the runtime plays both.
    entry's w0. `svc 0x07` (ExitProcess) ends it at once with w0 and runs none, as on Horizon, where the guest's
    own runtime has run them by then.
 
+## Start contract (SDK programs)
+
+A start set that defines `nnosInitialize` and `nnMain` (a game: its `sdk` module) starts as on hardware, where rtld
+enters the SDK's `nn::init::Start` (the order of nxnative `dm/host/main.c`). The main thread calls, each as a guest
+call returning to `<rt.start>`, those that are defined: `_init_libc0`, `nnosInitialize(x0 = the main thread's
+handle, x1 = 0)`, `_init_libc1`, `nninitInitializeSdkModule`, `nninitStartup`, `_init_libc2`; then rtld's
+InitModules: each module's `DT_INIT` in load order (an SDK module's `_init` runs its own `init_array`; the array
+is called only for a module with no `DT_INIT`); then `nnMain`, entered as the entry is in step 3 above. The SDK's
+constructors need nn::os up (the TLS slots of `SdkAllocateTlsSlot`). The module's crt0 is not run. Returning from
+`nnMain` is a clean exit as in step 4.
+
 `loadFlat(image, sidecar)` runs a flat guest of the contract's test ABI instead: one image at `base`, all registers
 zero (x1, `tpidr`, `tpidrro` cleared after the kernel made the thread), and `svc 0x1E` answered by the contract's
 counter (0, 1000, ...) instead of the kernel's clock.
