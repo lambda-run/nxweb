@@ -112,6 +112,26 @@
   "file": "storage_buffer.frag"
  },
  {
+  "name": "subgroup_arith",
+  "file": "subgroup_arith.frag"
+ },
+ {
+  "name": "subgroup_ballot",
+  "file": "subgroup_ballot.frag"
+ },
+ {
+  "name": "subgroup_lane",
+  "file": "subgroup_lane.vert"
+ },
+ {
+  "name": "subgroup_shuffle",
+  "file": "subgroup_shuffle.frag"
+ },
+ {
+  "name": "subgroup_vote",
+  "file": "subgroup_vote.frag"
+ },
+ {
   "name": "switch_fallthrough",
   "file": "switch_fallthrough.frag"
  },

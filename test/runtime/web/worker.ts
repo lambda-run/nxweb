@@ -54,7 +54,7 @@ self.onmessage = async (ev: MessageEvent) => {
         return st;
       },
       shaderLibrary: list.shaders.library ? await bytes("/shaders/maxwell.nxsl") : undefined, shaderWhy: list.shaders.why,
-      shaderTranslator: list.shaders.translator ? () => workerTranslator({ worker: "/shader_worker.js", framework: location.origin + "/shaders/xlate_wasm/_framework", naga: location.origin + "/shaders/nx_naga.wasm" }) : undefined,
+      shaderTranslator: list.shaders.translator ? () => workerTranslator({ worker: "/shader_worker.js", framework: location.origin + "/shaders/xlate_wasm/_framework", naga: location.origin + "/shaders/nx_naga.wasm", subgroups: GfxHost.hasSubgroups(gpu?.device) }) : undefined,
       shaderStore: async name => { const id = "nxweb-rt-test-shaders-" + name; await (self as any).caches.delete(id); return webShaderStore(id); },
       // a new Cache API cache per run and name
       cacheStore: async name => { const id = "nxweb-rt-test-" + name; await (self as any).caches.delete(id); return webCacheStore(id); },

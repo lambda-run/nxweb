@@ -12,24 +12,25 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { load } from "./naga_node.mts";
 import { convertStage } from "../../src/shaders/convert.ts";
+import type { SubgroupPath } from "../../src/shaders/spv_subgroups.ts";
 import { writeLibrary, type Reflection } from "../../src/shaders/library.ts";
 
 export interface Report { name: string; key: string; stage: string; ok: boolean; error?: string; notes?: string[]; spvBytes?: number; wgslBytes?: number; ms?: number }
 export function glslToSpv(file: string): Uint8Array {
   const d = mkdtempSync(join(tmpdir(), "nxsl-"));
   try {
-    execFileSync("glslangValidator", ["-V", "--quiet", file, "-o", join(d, "o.spv")], { stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("glslangValidator", ["-V", "--quiet", ...(/GL_KHR_shader_subgroup/.test(readFileSync(file, "utf8")) ? ["--target-env", "vulkan1.1"] : []), file, "-o", join(d, "o.spv")], { stdio: ["ignore", "pipe", "pipe"] });
     return new Uint8Array(readFileSync(join(d, "o.spv")));
   } catch (e: any) { throw new Error(`glslangValidator: ${(e.stdout?.toString() || e.message).trim().split("\n").slice(0, 3).join(" | ")}`); } finally { rmSync(d, { recursive: true, force: true }); }
 }
 
-export async function build(opts: { spv?: string; glsl?: string; chain?: string }) {
+export async function build(opts: { spv?: string; glsl?: string; chain?: string; subgroups?: SubgroupPath }) {
   const naga = await load();
   const entries: { key: string; wgsl: string; reflection: Reflection }[] = [], report: Report[] = [];
   const one = (name: string, key: string, stage: string, get: () => Uint8Array, mode: "nxweb" | "keep", c1?: string) => {
     const t = performance.now();
     try {
-      const spv = get(), c = convertStage(naga, spv, { bindings: mode, c1 });
+      const spv = get(), c = convertStage(naga, spv, { bindings: mode, c1, subgroups: opts.subgroups });
       entries.push({ key, wgsl: c.wgsl, reflection: c.reflection });
       report.push({ name, key, stage, ok: true, notes: c.reflection.notes, spvBytes: spv.length, wgslBytes: c.wgsl.length, ms: +(performance.now() - t).toFixed(2) });
     } catch (e: any) { report.push({ name, key, stage, ok: false, error: String(e.message ?? e) }); }
@@ -40,7 +41,7 @@ export async function build(opts: { spv?: string; glsl?: string; chain?: string 
     const file = join(opts.glsl, r.file), key = r.key ?? createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16);
     one(r.name, key, file.endsWith(".vert") ? "vs" : "ps", () => glslToSpv(file), "keep");
   }
-  const library = writeLibrary(entries, { chain: opts.chain ?? "nxweb-shaders-3 (dmsh_xlate -> src/shaders/spv.ts -> naga 30.0.1)", built: entries.length, failed: report.filter(r => !r.ok).length });
+  const library = writeLibrary(entries, { chain: opts.chain ?? "nxweb-shaders-4 (dmsh_xlate -> src/shaders/spv.ts -> naga 30.0.1)", subgroups: opts.subgroups ?? "single", built: entries.length, failed: report.filter(r => !r.ok).length });
   return { library, report, entries };
 }
 

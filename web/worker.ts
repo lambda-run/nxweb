@@ -72,9 +72,10 @@ async function init() {
   const [r, kernel, loader, translator, helpers, g, fsm, hlem, aud] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"].map(mod));
   mods = { rt: r, kernel, loader, translator, helpers, gfx: g, fs: fsm, hle: hlem, audio: aud };
   // the in-page shader translator, when the build put its files beside the page (build/web/shaders)
-  try { if ((await fetch("shaders/xlate_wasm/_framework/dotnet.js", { method: "HEAD" })).ok && (await fetch("shaders/nx_naga.wasm", { method: "HEAD" })).ok)
-    shaderTranslator = workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href }); } catch { /* none */ }
   try { device = await requestDevice(); } catch (e: any) { gpuInfo = "no WebGPU device (" + (e?.message ?? e) + "): the null replayer (nothing is drawn)"; }
+  // (after the device: whether it has WebGPU subgroups decides how warp operations are translated)
+  try { if ((await fetch("shaders/xlate_wasm/_framework/dotnet.js", { method: "HEAD" })).ok && (await fetch("shaders/nx_naga.wasm", { method: "HEAD" })).ok)
+    shaderTranslator = workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href, subgroups: GfxHost.hasSubgroups(device) }); } catch { /* none */ }
   log("page: runtime modules compiled; " + gpuInfo);
 }
 const ready = init().catch(e => log("[RED] page: " + (e?.message ?? e)));

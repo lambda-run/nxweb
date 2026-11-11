@@ -2,7 +2,7 @@
 // published for browser-wasm (tools/shaders/build_xlate_wasm.sh; the .NET runtime interprets it), then the SPIR-V
 // pass (src/shaders/spv.ts) and naga as WebAssembly. One stage per request:
 //   (over a BroadcastChannel named like the Worker, see the end of the file)
-//   in:  { init: { framework, naga } }  once: where `_framework/dotnet.js` and nx_naga.wasm are served
+//   in:  { init: { framework, naga, subgroups } }  once: where `_framework/dotnet.js` and nx_naga.wasm are served; whether the device has WebGPU subgroups
 //        { id, key, control, code }     a stage as the game passed it (control section, code area)
 //   out: { id, wgsl, reflection } | { id, error }
 // The job is src/shaders/job.ts jobFor (nxnative dmsh_build.py job_for, NVN and NVN2), without a per-game answer table:
@@ -13,7 +13,9 @@ import { jobFor } from "../shaders/job.ts";
 import type { FixOptions } from "../shaders/spv.ts";
 
 let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null;
-async function start(init: { framework: string; naga: string }) {
+let subgroups: "native" | "single" = "single";   // FixOptions.subgroups for every stage (init)
+async function start(init: { framework: string; naga: string; subgroups?: boolean }) {
+  subgroups = init.subgroups ? "native" : "single";
   const { dotnet } = await import(/* @vite-ignore */ init.framework + "/dotnet.js");
   const lines: string[] = [];
   // (no console forwarding: in a Worker the runtime's start waits on its forwarding socket and never finishes)
@@ -37,7 +39,7 @@ async function translate(key: string, control: Uint8Array, code: Uint8Array) {
   let res: { sbufs?: FixOptions["sbufs"] } = {};
   try { res = JSON.parse(FS.readFile(`${out}/${key}.res.json`, { encoding: "utf8" })); } catch { /* not written: no storage buffers to place */ }
   for (const f of [`/w/${key}.bin`, `/w/jobs${n}.json`, `${out}/${key}.spv`, `${out}/${key}.res.json`]) { try { FS.unlink(f); } catch { /* not written */ } }
-  const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh, c1: job.c1 });
+  const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh, c1: job.c1, subgroups });
   return { wgsl: c.wgsl, reflection: c.reflection };
 }
 // Requests do not come as messages to the Worker itself: the .NET runtime, started in a Worker, never finishes its

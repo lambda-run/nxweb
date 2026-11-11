@@ -119,7 +119,7 @@ const SRGB_TWIN: Record<string, string> = {};
 for (const b of ["rgba8unorm", "bgra8unorm", "bc1-rgba-unorm", "bc2-rgba-unorm", "bc3-rgba-unorm", "bc7-rgba-unorm", ...[[4, 4], [5, 4], [5, 5], [6, 5], [6, 6], [8, 5], [8, 6], [8, 8], [10, 5], [10, 6], [10, 8], [10, 10], [12, 10], [12, 12]].map(([w, h]) => `astc-${w}x${h}-unorm`)]) { SRGB_TWIN[b] = b + "-srgb"; SRGB_TWIN[b + "-srgb"] = b; }
 // Features asked of the adapter when it has them, and the limits raised to what it offers (GfxHost.deviceDescriptor)
 const FEATURES = ["texture-compression-bc", "texture-compression-astc", "rg11b10ufloat-renderable", "depth32float-stencil8", "depth-clip-control", "texture-formats-tier1", "bgra8unorm-storage",
-  "dual-source-blending", "float32-filterable", "clip-distances"];
+  "dual-source-blending", "float32-filterable", "clip-distances", "subgroups"];
 const LIMITS = ["maxUniformBuffersPerShaderStage", "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage", "maxStorageTexturesPerShaderStage",
   "maxDynamicUniformBuffersPerPipelineLayout", "maxVertexAttributes", "maxVertexBuffers", "maxColorAttachmentBytesPerSample", "maxBindingsPerBindGroup", "maxInterStageShaderVariables", "maxBufferSize",
   "maxStorageBufferBindingSize", "maxUniformBufferBindingSize", "maxTextureDimension2D", "maxTextureArrayLayers", "maxBindGroups", "maxBindGroupsPlusVertexBuffers"];
@@ -204,6 +204,9 @@ export class GfxHost {
   // What to ask an adapter for: every feature the replayer can use that it has, and the per-stage limits raised to
   // what it offers (WebGPU's defaults are 12 uniform buffers, 16 sampled textures and 16 samplers a stage; a game's
   // shader stage can declare 14 uniform blocks plus the support buffer and 32 textures)
+  // Whether a device's shaders may use WGSL's subgroup builtins (asked for by deviceDescriptor when the adapter has them): the in-page translator's path
+  // for warp operations (rt_shaders.ts workerTranslator subgroups, src/shaders/spv_subgroups.ts)
+  static hasSubgroups(device: GPU | undefined): boolean { return !!device?.features?.has?.("subgroups"); }
   static deviceDescriptor(adapter: GPU): { requiredFeatures: string[]; requiredLimits: Record<string, number> } {
     const requiredLimits: Record<string, number> = {};
     for (const l of LIMITS) if (typeof adapter.limits?.[l] === "number") requiredLimits[l] = adapter.limits[l];
