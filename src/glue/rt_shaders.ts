@@ -27,7 +27,7 @@ export interface ShaderOptions {
 }
 
 export class RtShaders {
-  stats = { stages: 0, registered: 0, fromLibrary: 0, fromStore: 0, translated: 0, failed: 0, unknown: 0, translateMs: 0, maxMs: 0, prioritized: 0 };
+  stats = { readAhead: 0, waits: 0, waitMs: 0, stages: 0, registered: 0, fromLibrary: 0, fromStore: 0, translated: 0, failed: 0, unknown: 0, translateMs: 0, maxMs: 0, prioritized: 0 };
   readonly library: ShaderLibrary | null;
   private state = new Map<string, "ready" | "pending" | "failed" | "unknown">();
   private waiting: Promise<unknown>[] = [];
@@ -64,7 +64,7 @@ export class RtShaders {
   // earlier run first needed them, so the next AHEAD entries of that order are fetched while the game is busy with the current one
   private static readonly AHEAD = 48;
   private order: string[] | null = null; private orderAt = 0; private orderAsked = false;
-  private ahead = new Map<string, Promise<Translated | null>>();
+  private ahead = new Map<string, { p: Promise<Translated | null>; v: Translated | null; done: boolean }>();
   private readAhead(chain: string): void {
     const st = this.o.store;
     if (!st?.ids) return;
@@ -72,18 +72,23 @@ export class RtShaders {
     if (!this.order) return;
     while (this.ahead.size < RtShaders.AHEAD && this.orderAt < this.order.length) {
       const id = this.order[this.orderAt++];
-      if (!this.state.has(id.slice(0, id.indexOf("/")))) this.ahead.set(id, st.get(id).catch(() => null));
+      if (this.state.has(id.slice(0, id.indexOf("/")))) continue;
+      const e = { p: st.get(id).catch(() => null), v: null as Translated | null, done: false };
+      void e.p.then(v => { e.v = v; e.done = true; });
+      this.ahead.set(id, e);
     }
   }
   private fromStore(id: string, chain: string): Promise<Translated | null> {
-    const p = this.ahead.get(id);
-    if (p) this.ahead.delete(id);
+    const e = this.ahead.get(id);
+    if (e) this.ahead.delete(id);
     this.readAhead(chain);
-    return p ?? (this.o.store ? this.o.store.get(id) : Promise.resolve(null));
+    return e?.p ?? (this.o.store ? this.o.store.get(id) : Promise.resolve(null));
   }
   pending(keys: string[]): Promise<unknown> | null {
     const ps = keys.map(k => this.jobs.get(k)).filter((p): p is Promise<void> => !!p);
-    return ps.length ? Promise.allSettled(ps) : null;
+    if (!ps.length) return null;
+    const t0 = performance.now(); this.stats.waits++;
+    return Promise.allSettled(ps).then(() => { this.stats.waitMs += performance.now() - t0; });
   }
   private log(line: string): void { this.gfx.rt.log(line); }
   // the embedder registered this key itself
@@ -106,6 +111,14 @@ export class RtShaders {
     }
     const tr = this.o.translator;
     if (!tr) { this.state.set(key, "unknown"); this.stats.unknown++; return; }   // the recorder reports the key red at the first draw
+    // An entry the read-ahead already has is registered here and now: the stage is ready when the call that named it returns, and the game does not wait
+    const hit = this.ahead.get(`${key}/${tr.chain}`);
+    if (hit?.done && hit.v) {
+      this.ahead.delete(`${key}/${tr.chain}`); this.readAhead(tr.chain);
+      if (hit.v.failed) { this.fail(key, `translation failed: ${hit.v.failed}`); return; }
+      if (this.register(key, hit.v, "the store of earlier translations")) { this.stats.fromStore++; this.stats.readAhead++; }
+      return;
+    }
     // the recorder is told: draws that need the key are skipped without its "not in the shader map" line
     this.state.set(key, "pending"); this.gfx.host.shaderPending(key, "pending");
     let bytes: ShaderBlob;

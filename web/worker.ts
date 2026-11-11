@@ -250,7 +250,7 @@ let faultSeen = false;
 let stdoutSeen = 0, last: { t: number; frames: number; units: number; loop: number; host: number; exec: number } | undefined;
 function status() {
   const sh = shaderLookup?.stats;
-  const more = rt ? `${cacheNote}; ${rt.disposed ? 0 : rt.a64.units.length} units, ${rt.a64.translatedInsns} instructions translated now; shaders: ${sh ? `${sh.registered} ready (${sh.fromLibrary} library, ${sh.fromStore} stored, ${sh.translated} translated), ${sh.failed} failed` : "–"}${shaderTranslator ? "" : ", no in-page translator"}; ${fsNote}${fsys ? `, ${fsys.stats.calls} nn::fs calls` : ""}` : "";
+  const more = rt ? `${cacheNote}; ${rt.disposed ? 0 : rt.a64.units.length} units, ${rt.a64.translatedInsns} instructions translated now; shaders: ${sh ? `${sh.registered} ready (${sh.fromLibrary} library, ${sh.fromStore} stored, ${sh.translated} translated), ${sh.failed} failed, ${sh.readAhead} read ahead, the game waited ${sh.waits} times for ${(sh.waitMs / 1000).toFixed(1)} s` : "–"}${shaderTranslator ? "" : ", no in-page translator"}; ${fsNote}${fsys ? `, ${fsys.stats.calls} nn::fs calls` : ""}` : "";
   const m: any = { type: "status", more, state: rt ? STATES[rt.r.rt_state()] : "Empty", frames: gfx?.stats.frames ?? 0, nvnCalls: gfx?.stats.nvnCalls ?? 0, waiting: rt?.waitingOutside ?? 0, gpu: gpuInfo, options: optionsNote, redTotal, guard: { now: guardNow, next: guardWanted, auto: guardAuto, byDefault: GUARD_DEFAULT },
     modules: modRows, takeovers: tk };
   if (rt && doomState?.rt === rt) m.doom = { ...doomState, rt: undefined };
