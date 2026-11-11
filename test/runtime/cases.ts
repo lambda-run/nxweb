@@ -263,6 +263,8 @@ export function cases(env: Env): Case[] {
   };
   test("c threads: 4 cores, SDK mutex and condition variable, events with timeout, sleep, exit and join", () => {
     const rt = threads({});
+    const hot = rt.hotCode(3);
+    ok(hot.length >= 2 && /^\d+ slice ends sampled at \d+ pcs$/.test(hot[0]) && /^ *\d+\.\d% .+; hottest pc 0x[0-9a-f]+ is /.test(hot[1]), "hot code lines: " + hot.join(" | "));
     return [`${rt.stats.slices} slices, ${rt.stats.svcs} SVCs, ${rt.units} budget units, guest clock at the end ${(Number(rt.guestNs()) / 1e6).toFixed(3)} ms`];
   });
   test("c threads: identical output across 20 runs", () => {

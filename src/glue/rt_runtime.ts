@@ -216,6 +216,7 @@ export class Runtime {
   set: LoadedSet | null = null;
   modules: ModuleInfo[] = [];
   mainThread = 0;
+  private hotPcs = new Map<number, number>();   // pc at the end of each time slice that ran to its end -> times
   stats = { slices: 0, svcs: 0, hostCalls: 0, runMs: 0, grows: 0, entries: 0, moduleLoads: 0, moduleUnloads: 0, finiCalls: 0, clockParks: 0 };
   disposed = false;
 
@@ -761,11 +762,7 @@ export class Runtime {
     const lines = this.logs.slice(from).filter(l => l.startsWith("[RED] "));
     this.stop = { kind: "fault", code: 0, fault: { kind: FAULT_NAMES[kind], thread: handle, threadIndex: index, pc: dv.getBigUint64(f + 8, true), aux, detail, lines } };
   }
-  // After the register dump: where pc and x30 are (module, symbol) and the thread's last SVCs
-  private faultLines(kind: number, index: number, handle: number, ctx: number): void {
-    const dv = this.dv(), pc = Number(dv.getBigUint64(ctx + 0x100, true)), x30 = Number(dv.getBigUint64(ctx + 30 * 8, true));
-    if (kind === FAULT.trap && this.opts.preciseFaults !== 2)
-      this.log("[RED]   the registers are as last written back (the function's entry or its last call), pc excepted; preciseFaults: 2 (the page: ?precise=2) makes them exact");
+  private codePlaces() {
     const mods: CodeRange[] = [];
     for (const t of this.text) {
       if (t.handle >= 0) { const m = this.ld.info(t.handle); mods.push({ name: m.name, handle: t.handle, base: m.base, lo: t.lo, hi: t.hi }); }
@@ -773,6 +770,35 @@ export class Runtime {
     }
     const sym = (h: number, a: number) => h >= 0 ? this.ld.symbolAt(h, a) : undefined;
     const stub = (a: number) => { const id = a >= STUBS.base && a < STUBS.base + 4 * STUBS.cap ? this.ld.stubId(a) : -1; return id >= 0 && id < this.ld.x.ld_host_count() ? this.ld.hostFunction(id).name : undefined; };
+    return { mods, sym, stub };
+  }
+  // Where the guest's time goes: the pc each time slice ended at, by function (a symbol, else the 4 KB page of its
+  // module), the hottest first, with each function's hottest pc. Slices that ended in a host call or a fault are left out.
+  hotCode(max = 12): string[] {
+    let total = 0;
+    for (const n of this.hotPcs.values()) total += n;
+    if (!total) return [];
+    const { mods, sym, stub } = this.codePlaces();
+    const by = new Map<string, { n: number; top: number; topN: number }>();
+    for (const [at, n] of this.hotPcs) {
+      const st = stub(at), m = st === undefined ? mods.find(m => at >= m.lo && at < m.hi) : undefined, s = m ? sym(m.handle, at) : undefined;
+      const off = m ? at - m.base : 0;
+      const key = st !== undefined ? `the host stub of ${st}` : !m ? "not in the text of a loaded module" : s ? `${m.name} ${s.name}` : `${m.name}+${hex(off - off % 4096)} page (no symbol)`;
+      const e = by.get(key);
+      if (!e) by.set(key, { n, top: at, topN: n });
+      else { e.n += n; if (n > e.topN) { e.top = at; e.topN = n; } }
+    }
+    const rows = [...by].sort((x, y) => y[1].n - x[1].n);
+    const out = rows.slice(0, max).map(([k, e]) => `${(100 * e.n / total).toFixed(1).padStart(5)}% ${k}; hottest pc ${hex(e.top)} is ${placeOf(e.top, mods, sym, stub)}`);
+    if (rows.length > max) out.push(`(${rows.length - max} more functions, ${(100 * rows.slice(max).reduce((t, r) => t + r[1].n, 0) / total).toFixed(1)}%)`);
+    return [`${total} slice ends sampled at ${this.hotPcs.size} pcs`, ...out];
+  }
+  // After the register dump: where pc and x30 are (module, symbol) and the thread's last SVCs
+  private faultLines(kind: number, index: number, handle: number, ctx: number): void {
+    const dv = this.dv(), pc = Number(dv.getBigUint64(ctx + 0x100, true)), x30 = Number(dv.getBigUint64(ctx + 30 * 8, true));
+    if (kind === FAULT.trap && this.opts.preciseFaults !== 2)
+      this.log("[RED]   the registers are as last written back (the function's entry or its last call), pc excepted; preciseFaults: 2 (the page: ?precise=2) makes them exact");
+    const { mods, sym, stub } = this.codePlaces();
     this.log(`[RED]   pc=${hex(pc)} is ${placeOf(pc, mods, sym, stub)}; x30=${hex(x30)} is ${placeOf(x30, mods, sym, stub)}`);
     const fp = Number(dv.getBigUint64(ctx + 29 * 8, true));
     const frames = frameLines(dv, fp, GUARD_BASE, dv.byteLength, 16, a => placeOf(a, mods, sym, stub));
@@ -1191,6 +1217,10 @@ export class Runtime {
       let trap: unknown;
       try { c.run(); } catch (e) { trap = e ?? new Error("unknown exception"); }
       this.ticked(wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value));
+      if (trap === undefined) {
+        const p = c.pc.value as bigint;
+        if (p < PC_SPECIAL || p > PC_SPECIAL_END) { const at = Number(p), n = this.hotPcs.get(at); if (n !== undefined) this.hotPcs.set(at, n + 1); else if (this.hotPcs.size < 65536) this.hotPcs.set(at, 1); }
+      }
       if (wall) r.rt_clock_slice_end(c.budget.value);
       if (trap instanceof GuestCallAbort && !this.pendFault && this.stopFlag) trap = undefined;   // the process ended inside a callback
       if ((this.state as State) === "Stopped") break;   // killed from inside a host function
