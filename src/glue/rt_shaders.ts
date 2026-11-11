@@ -77,7 +77,6 @@ export class RtShaders {
   }
   private register(key: string, t: Translated, from: string): boolean {
     const r = t.reflection;
-    if (r.stage === "compute") return this.fail(key, `${from} has it as a compute stage, which src/gfx does not run`);
     if (r.extra?.length) return this.fail(key, `${from} has it with bindings src/gfx does not provide: ${r.extra.map(x => x.kind).join(", ")}`);
     if (this.gfx.host.registerShader(key, { ...r, entry: r.entry ?? "main", wgsl: t.wgsl } as any) < 0) return this.fail(key, "registerShader refused the record");
     this.state.set(key, "ready"); this.stats.registered++;

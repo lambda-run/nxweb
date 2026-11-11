@@ -24,6 +24,7 @@ import { viInit, viFrameQueued, viLayerSize, viLayerCrop, viNativeWindow } from 
 import { roInit, roRefuse, roLoadedCount } from "./ro";
 import { jitInit, jitEnvCount } from "./jit";
 import { movieInit } from "./movie";
+import { cvInit, picAlloc, picPtr, cvComplete, cvNativeImage, cvNativeWrites } from "./codec_video";
 import { sha256 } from "./sha256";
 import { HleExitReason } from "../kit/gen/tables";
 export * from "../kit/exports";
@@ -56,7 +57,7 @@ export function hle_init(): void {
   zero(STUB_SEEN, 2048); zero(CALLS, 8192);
   baseInit(); seInit(); opsInit(); exitInit(); oeInit(); netInit(); timeInit(); miscInit(); sfInit(); swkbdInit(); webInit(); osInit(); nvdrvInit(); libcInit();
   sdk16Init();
-  hidInit(); viInit(); roInit(); jitInit(); movieInit();
+  hidInit(); viInit(); roInit(); jitInit(); movieInit(); cvInit();
 }
 // ---------- the table ----------
 export function hle_count(): i32 { return COUNT; }
@@ -106,7 +107,7 @@ function enter(id: i32, args: usize): u64 {
     store<u32>(CALLS + (<usize>id << 2), load<u32>(CALLS + (<usize>id << 2)) + 1);
     const fl = load<u8>(FLAGS + <usize>id);
     if (fl & F_CUT) {
-      if (!load<u8>(STUB_SEEN + <usize>id)) { store<u8>(STUB_SEEN + <usize>id, 1); ls(); ps("[RED] "); pz(hle_demangled(id), 400); ps(" is cut (movies and video codecs are not played): it fails as in nxnative without a decoder"); le(); }
+      if (!load<u8>(STUB_SEEN + <usize>id)) { store<u8>(STUB_SEEN + <usize>id, 1); ls(); ps("[RED] "); pz(hle_demangled(id), 400); ps(" is cut (movie::Decoder movies are not played): it fails as in nxnative without a decoder"); le(); }
       r = (fl & F_OPS) ? runOps(id, load<u32>(OP_OFF + (<usize>id << 2)), f) : dispatch(id, f);
     }
     else if (fl & F_OPS) r = runOps(id, load<u32>(OP_OFF + (<usize>id << 2)), f);
@@ -232,5 +233,14 @@ export function hle_ro_refuse(sha: usize): void { if (!inited) hle_init(); roRef
 export function hle_ro_loaded(): i32 { return roLoadedCount(); }
 export function hle_jit_envs(): i32 { return jitEnvCount(); }
 export function hle_sha256(p: usize, n: usize, out: usize): void { sha256(p, n, out); }
+// nn::codec's pictures from the embedder's video decoder (HleEnv.video, src/hle/codec_video.ts): a tight I420
+// picture's id (0: no room) and its memory, then the packet's completion (pic 0: none) with the colour matrix
+// (H.273 code, 2 not given) and range; 1 when the picture was kept
+export function hle_cv_pic_alloc(w: u32, h: u32): u32 { return picAlloc(w, h); }
+export function hle_cv_pic_ptr(id: u32): usize { return picPtr(id); }
+export function hle_cv_picture(dec: u32, gen: u32, seq: u64, pic: u32, cs: u32, full: u32): i32 { return cvComplete(dec, gen, seq, pic, cs, full); }
+// A native image handle's picture memory (u64), size (u64), width, height, stride (u32) at out; 0 when it names none
+export function hle_cv_native_image(handle: u32, out: usize): i32 { return cvNativeImage(handle, out) ? 1 : 0; }
+export function hle_cv_native_writes(): u64 { return cvNativeWrites(); }
 // The end of this module's static data, for the embedder's layout check
 export function hle_static_end(): usize { return __heap_base; }

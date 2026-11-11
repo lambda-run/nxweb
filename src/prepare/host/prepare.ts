@@ -4,6 +4,7 @@
 // hash is the one recorded with a finished output is skipped, so a run that was cancelled, failed or lost its tab
 // goes on where it stopped, and `redo(stage)` is: forget that record, run. See ../README.md.
 import { A64Scanner, SCAN_FORMAT, scanLines, type ModuleScan } from "../../glue/a64_scan.ts";
+import { HLE_SCAN_KEY, dynSymbols, takeOverSymbols, hleGaps, hleHeadline, hleLines, type HleGap, type DynSymbol } from "../../glue/hle_scan.ts";
 import { PrepWasm, type FailReason, type Counts, type PrepState, type Cut, type NpdmInfo, type MatchRule, type MatchOutcome } from "./wasm.ts";
 import type { PrepTree, TreeListing, TreeFile } from "./tree.ts";
 import type { PrepStore } from "./store.ts";
@@ -12,6 +13,8 @@ import { PrepError, detectLayout, pickVersion, identityDir, checkDlc, loadOrder,
 import { DirRomDevice, PrepStorage, treeSource, blobSource, type RomIndex } from "./romdev.ts";
 import { packSource, type NupPack, type NupOptions } from "./nup.ts";
 import type { FsDevice, FsStorage } from "../../glue/fs_host.ts";
+import { prewarm, PrewarmCancelled, type ShaderPrewarm, type PrewarmOut, type ScanFile } from "./shader_prewarm.ts";
+import { isJunk } from "./tree.ts";
 
 export const PREPARE_FORMAT = 3;                        // in every input hash: a change of this file's outputs bumps it
 export const SHADER_CHAIN = "nxweb-shaders-1/page";     // src/glue/rt_shaders.ts SHADER_CHAIN (checked by the tests)
@@ -76,12 +79,15 @@ export interface ProfileOut {
 export interface CodeScan { module: string; buildId: string; scan: ModuleScan }
 export interface CodeOut {
   scan?: CodeScan[];                       // when the embedder gave a scanner; the modules as the game ships them, before cuts
+  hle: HleGap[];                           // SDK functions nxnative takes over that nxweb does not answer (src/glue/hle_scan.ts)
   modules: { name: string; buildId: string; from: "folder" | "store"; path: string; size: number; sha256: string; imageSize: number; cuts: number }[]; cuts: number;
   // what became of each function-matched patch, and the cuts that were placed (applied like registered ones)
   matched: (MatchOutcome & { module: string; buildId: string; from: string })[];
   matchCuts: AppliedCut[];
 }
-export interface ShadersOut { mode: "on-demand"; chain: string; store: string; prewarm: null }
+// mode: the runtime still translates on demand what is not in the store; prewarm: what the stage's scan found and
+// translated ahead (null when the embedder gave no prewarm)
+export interface ShadersOut { mode: "on-demand"; chain: string; store: string; prewarm: PrewarmOut | null }
 
 export interface AppliedCut extends Cut { module: string; buildId: string }
 // A translator hook at a pc (the other way to express a patch: return a constant, skip a call, call a host
@@ -136,6 +142,9 @@ export interface PrepareOptions {
   // instructions it has no translation for are recorded (CodeOut.scan). `key` names the translator binary (its
   // hash): the stage runs again when it changes, so a recorded scan is never one of an older translator.
   scanner?: { scan: A64Scanner; key: string };
+  // The Shaders stage's scan and translation ahead (shader_prewarm.ts): the game's shader containers are found and
+  // their stages translated into the runtime's store. Without it the stage records "on demand" and does nothing.
+  shaders?: ShaderPrewarm;
 }
 class Cancelled extends Error {}
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -264,14 +273,20 @@ export class Prepare {
         () => this.profile(det, l, profile, pid === det.titleId ? "title" : pid ? "build" : null, sdk), () => {});
       // ---- Code ----
       const loadFiles = prof.load.map(n => l.files.find(f => f.path === det.exefs + n)!);
-      await stage<CodeOut>("code", this.hash(["code", loadFiles.map(fileKey), prof.load.map(n => det.modules.find(m => m.name === n)!.buildId), prof.cuts, prof.match, ...(this.o.scanner ? [["scan", SCAN_FORMAT, this.o.scanner.key]] : [])]), () => this.code(det, prof),
+      await stage<CodeOut>("code", this.hash(["code", loadFiles.map(fileKey), prof.load.map(n => det.modules.find(m => m.name === n)!.buildId), prof.cuts, prof.match, ["hle", HLE_SCAN_KEY], ...(this.o.scanner ? [["scan", SCAN_FORMAT, this.o.scanner.key]] : [])]), () => this.code(det, prof),
         o => { this.w.setCount("cuts", o.cuts); this.w.setCount("modules", o.modules.length); });
       // ---- Shaders ----
-      await stage<ShadersOut>("shaders", this.hash(["shaders", SHADER_CHAIN, SHADER_STORE, det.titleId]), async () => {
+      const pw = this.o.shaders;
+      // what the scan reads: main, then the RomFS and the add-on contents' files
+      const shMain = pw ? l.files.filter(f => f.path === det.exefs + "main") : [], roots = [det.romfs, ...det.dlc.map(d => d.root)];
+      const shRom = pw ? l.files.filter(f => roots.some(r => f.path.startsWith(r)) && !isJunk(f.path)) : [];
+      const scanFiles: ScanFile[] = [...shMain.map(f => ({ path: f.path, size: f.size, module: true })), ...shRom.map(f => ({ path: f.path, size: f.size, module: false }))];
+      await stage<ShadersOut>("shaders", this.hash(pw ? ["shaders", SHADER_CHAIN, SHADER_STORE, det.titleId, pw.key, [...shMain, ...shRom].map(fileKey)] : ["shaders", SHADER_CHAIN, SHADER_STORE, det.titleId]), async () => {
         await this.point("shaders:work");
-        // translate on demand, cached: nothing is done ahead; the runtime's RtShaders gets this chain and store
-        return { mode: "on-demand", chain: SHADER_CHAIN, store: SHADER_STORE, prewarm: null };
-      }, () => {});
+        // without a prewarm: translate on demand, cached; the runtime's RtShaders gets this chain and store
+        if (!pw) return { mode: "on-demand", chain: SHADER_CHAIN, store: SHADER_STORE, prewarm: null };
+        return { mode: "on-demand", chain: SHADER_CHAIN, store: SHADER_STORE, prewarm: await this.prewarmShaders(pw, scanFiles) };
+      }, o => { const p = o.prewarm; this.w.setCount("shFound", p?.found ?? 0); this.w.setCount("shTranslated", p ? p.translated + p.cached : 0); this.w.setCount("shFailed", p?.failed ?? 0); });
       await this.save(); this.changed();
       return { state: "Ready", skipped, ran };
     } catch (e) {
@@ -298,6 +313,22 @@ export class Prepare {
   }
 
   // ---- the stages' work ----
+
+  private async prewarmShaders(pw: ShaderPrewarm, files: ScanFile[]): Promise<PrewarmOut> {
+    this.w.setCount("total", files.length); this.w.setCount("bytesTotal", files.reduce((n, f) => n + f.size, 0));
+    for (const k of ["shFound", "shTranslated", "shFailed"] as const) this.w.setCount(k, 0);
+    let last = 0;
+    try {
+      return await prewarm(pw, files, {
+        cancelled: () => this.cancelFlag, log: l => this.w.log(l),
+        progress: p => {
+          this.w.setCount("done", p.filesDone); this.w.setCount("bytesDone", p.bytesDone);
+          this.w.setCount("shFound", p.found); this.w.setCount("shTranslated", p.translated); this.w.setCount("shFailed", p.failed);
+          const now = Date.now(); if (now - last >= 100 || p.filesDone === files.length) { last = now; this.changed(); }
+        },
+      });
+    } catch (e) { if (e instanceof PrewarmCancelled) throw new Cancelled(); throw e instanceof PrepError ? e : new PrepError("internal", `the shader scan stopped: ${(e as Error).message}`); }
+  }
   private async detect(l: TreeListing, layout: Layout, root: string): Promise<DetectOut> {
     const size = (p: string) => l.files.find(f => f.path === p)!.size;
     const npdmOf = async (r: string): Promise<NpdmInfo> => {
@@ -408,8 +439,8 @@ export class Prepare {
   }
 
   private async code(det: DetectOut, prof: ProfileOut): Promise<CodeOut> {
-    const out: CodeOut = { modules: [], cuts: 0, matched: [], matchCuts: [], ...(this.o.scanner ? { scan: [] } : {}) };
-    const mods = prof.load.map(n => det.modules.find(m => m.name === n)!);
+    const out: CodeOut = { modules: [], cuts: 0, matched: [], matchCuts: [], hle: [], ...(this.o.scanner ? { scan: [] } : {}) };
+    const mods = prof.load.map(n => det.modules.find(m => m.name === n)!), syms: { module: string; symbols: DynSymbol[] }[] = [];
     this.w.setCount("total", mods.length); this.w.setCount("bytesTotal", mods.reduce((n, m) => n + m.size, 0));
     for (const m of mods) {
       await this.point("code:work");
@@ -443,10 +474,12 @@ export class Prepare {
           out.matchCuts.push(...c.cuts.map(x => ({ ...x, module: m.name, buildId: m.buildId })));
         }
       }
+      // the module as the game ships it (before the cuts): its dynamic symbols for the take-over scan, then (with a
+      // scanner) the instruction scan: the text goes to the translator's decoder in pieces, with the page drawn and a
+      // Cancel taken between them
+      const si = this.w.scanInput(file);
+      if (si) syms.push({ module: m.name, symbols: takeOverSymbols(dynSymbols(si.image)) });
       if (this.o.scanner) {
-        // the instruction scan, on the module as the game ships it (before the cuts): the text goes to the
-        // translator's decoder in pieces, with the page drawn and a Cancel taken between them
-        const si = this.w.scanInput(file);
         if (si) {
           // (the row's bar: unpacking took it to 90 % of this module, the scan takes it on from there)
           const scan = await this.o.scanner.scan.scan(si.text, si.textOff, si.functions, async (done, total) => {
@@ -469,6 +502,8 @@ export class Prepare {
       this.w.addCount("done", 1); this.w.addCount("bytesDone", m.size); this.changed();
       } finally { this.w.close(); }
     }
+    out.hle = hleGaps(syms);
+    if (out.hle.length) { this.w.log("prepare: hle: " + hleHeadline(out.hle) + ":"); for (const l of hleLines(out.hle, 40)) this.w.log("prepare: hle: " + l); }
     return out;
   }
 

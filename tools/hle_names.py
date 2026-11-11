@@ -42,7 +42,7 @@ SCOPE = {
     "hle_movie.c": "movie", "hle_movie_av1.c": "movie", "hle_movie_avc.c": "movie", "hle_codec_video.c": "codec_video",
 }
 # In scope, but cut: every entry resolves to a stub (see the module docstring)
-CUT = {"hle_movie.c": "movies", "hle_codec_video.c": "video codecs"}
+CUT = {"hle_movie.c": "movies"}
 # Not this area's, with the owner the task names
 OUT_OF_SCOPE = {
     "hle_fs.c": "file system (src/fs)", "hle_audio.c": "audio", "hle_audren.c": "audio", "hle_codec.c": "audio",

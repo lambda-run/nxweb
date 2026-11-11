@@ -44,6 +44,11 @@ export const H_BUF_READBACK: u32 = 32;     // +8 u64 address, +16 u32 size: a st
 export const H_REPORT: u32 = 33;           // +8 u32 id: a counter report at this point of the stream (report.ts). The replayer notes the segment it lies in
 export const H_REPORT_COMMIT: u32 = 34;    // the reports since the last one land together, when the GPU has finished the segment this record is in: gfx_report_land(id, start, end, done) each
 
+// Mesh draws (lower.ts meshDraw; the replayer's "mesh draws"). Between BEGIN and RUN no pass is open; the bindings before TASK and RUN are the task's and the mesh shader's, sent as compute's
+export const H_MESH_BEGIN: u32 = 35;       // +8 u32 flags (1 indirect, 2 with a task shader), +12 u32 first, +16 u32 count, +24 u64 address of {count, first} (indirect), +32 u32 mesh shader id, +36 i32 task shader id (-1 none)
+export const H_MESH_TASK: u32 = 36;        // +8 u32 compute pipeline of the task shader
+export const H_MESH_RUN: u32 = 37;         // +8 u32 compute pipeline of the mesh shader
+export const H_MESH_DRAW: u32 = 38;        // +8 u32 render pipeline (the pass is open): the slots of the last RUN are drawn
 const CAP: usize = 1 << 20;
 let BUF: usize = 0;
 export function hostInit(): void { BUF = arenaAlloc(CAP); }

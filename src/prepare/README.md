@@ -44,7 +44,7 @@ exefs/ and romfs/ directly in the folder count as base/
 | `../../web/prepare.html`, `prepare.ts`, `prepare_build.mts` | "Open a game": the page and its build, the frame at the top of the main page (`web/index.html`), whose Play hands over to the page's Worker |
 
 ```
-npm run prepare:test [-- <filter>]   # Node, 32 tests, about 25 s after the builds (the first run compiles 92 modules with unwind tables)
+npm run prepare:test [-- <filter>]   # Node, 36 tests, about 25 s after the builds (the first run compiles 92 modules with unwind tables)
 npm run prepare:browser              # headless Chromium (Playwright), 14 tests: the page, a .nup and a folder, OPFS, a reload mid-stage, Play in a Worker
 npm run web:shots                    # screenshots of the landing state and a verdict card into build/web-shots/
 npm run prepare:measure [-- <files>] # the directory device against a packed image, 50,000 files
@@ -98,7 +98,22 @@ predicts and never fails the prepare: its lines in the log are plain, not red. T
 scanner's key, so a new translator binary runs the Code stage (and only it) again. The page shows the result as a
 line in the stage's row ("3 kinds of instruction in this game are not supported yet"), a sentence on the verdict
 card and the table under its technical details; `HandOff.scan` / `HandOffMessage.scan` carry it to the runtime, for
-the report text. Without a scanner nothing changes: no `scan`, the same stage hash as before.
+the report text. Without a scanner there is no `scan`.
+
+### The take-over scan (Code stage)
+
+The "grep ahead" for SDK functions: every module's dynamic symbol table (MOD0, `DT_SYMTAB` / `DT_STRTAB`, the count
+from `DT_HASH` / `DT_GNU_HASH`, read from the image `scan_image` unpacks; `src/glue/hle_scan.ts`) against
+`src/hle/gen/coverage.ts`, the names nxnative takes over by name and nxweb does not answer (made by
+`tools/hle_coverage.py`, `src/hle/README.md` "Coverage"). An HLE_FORCE name is a gap in every module that defines or
+imports it; an HLE name (and the GL / Vulkan tables) where a module imports it and none of the game's modules defines
+it, as nxnative's loader takes them over. It runs with or without a scanner, records `CodeOut.hle` (module, mangled
+and demangled name, nxnative file, forced, defines or imports), logs plain lines (`prepare: hle: ...`), never fails
+the prepare. The stage's input hash holds `HLE_SCAN_KEY` (the format and the list's hash), so a new answer in nxweb
+runs the Code stage again. The page shows "N SDK functions nxnative replaces are not answered here yet" in the stage's
+row and on the verdict card, the table under the technical details. `npm run prepare:scan -- <game folder | exefs
+folder | NSO file>` prints the same (the version the prepare picks; `--version N`, `--json`, `--max N`; exit 1 when
+something is not answered).
 
 ### The manifest
 
@@ -437,24 +452,45 @@ or SVC, no live register written", is checkable there), not a rewrite of the mod
 
 ## Shaders stage
 
-The stage records "translate on demand, cached": the runtime's `RtShaders` with `workerTranslator` and
-`webShaderStore` (`src/glue/rt_shaders.ts`) does the work when the game first binds a program; prepare hands over
-the chain version and store name and does nothing ahead. The stage exists so that a pre-warm has its place in the
-machine and the manifest.
+The stage scans the game's files for shader stages and translates them ahead, so that a stage the translator
+cannot take shows on the Prepare page instead of at the game's first bind (`host/shader_scan.ts`,
+`host/shader_prewarm.ts`; in the page `web/prepare_shaders.ts` and the scan Worker `web/prepare_shader_worker.ts`).
+Without the `shaders` option of `Prepare` (an embedder that gives none) the stage records "translate on demand" as
+before and does nothing.
 
-**The pre-warm is not in this round**, except the BNSH container scan (`bnsh.ts`): the reader as
-`shader_split.py` `bnsh_shaders` / `check` / `skey` have it, tested on a synthetic container built in the test from
-the hand-assembled Maxwell programs of `tools/shaders/maxwell_asm.py`: every stage is found and its key is the one
-the chain computes. What a pre-warm would still need, counted in `shader_split.py` (3,250 lines, 167 functions):
-BNSH is 1 of the 27 source kinds its header lists; the others include BAHS, Unity bundles and serialized files,
-GLSLC outputs in `main`, Unreal shader archives (Oodle, decoded by the game's own code in nxnative), MonoGame
-effects and some twenty engine archives, with six helper modules (`cra`, `cpk`, `frostbite`, `smash_arc`, `unityfs`,
-`vbf`). Even for BNSH alone a pre-warm needs the wrappers it sits in: zstd, Yaz0 and SARC. NVN2 control sections,
-task and mesh stages and `shader_key_skip` are not read here (reported per stage, not dropped silently).
+- **What is read** (after nxnative's `dm/gfx/tools/shader_split.py`, the kinds that carry most games' shaders):
+  `main` (its segments unpacked first) and every RomFS and add-on content file; in each, the wrappers zstd (`fzstd`,
+  already the container reader's decoder: no new dependency; a frame that needs a dictionary is reported), Yaz0 and
+  SARC (ported here), nested up to 16 deep with a bound on how far members may expand; then BNSH containers (`bnsh.ts`)
+  and GLSLC outputs (magic `0x19866891`, one stage per output or several by the section headers: in `main` always,
+  in a loose file when nothing else is found in it, as `scan_file_in` does). The key is the chain's
+  (`sha256(control[:ctl_len] + code)[:16]`); the same key from two places is one stage.
+- **What is done with each stage**: it goes to the runtime's own in-page translator (`workerTranslator`, the same
+  `shader_worker.js` and `shaders/` that `web:build` makes; two Workers on a machine with 8 or more threads) unless
+  the runtime's store (`webShaderStore`, Cache Storage `nxweb-shaders`) already holds `<key>/<chain>`; the
+  translation is stored under that id, so the game's first bind of the stage is a store hit. A build without the
+  translator scans and reports only ("untranslated").
+- **What is reported** (`ShadersOut.prewarm`, in the manifest and the hand-off; the row on the page): files and
+  bytes read, stages found by kind, translated, already cached, failed with the translator's message grouped (keys,
+  file paths and exit codes taken out so equal causes group; a stage the runtime would refuse, compute or a binding
+  `src/gfx` lacks, counts as failed with that reason), unreadable records (damaged wrappers, BNSH records that fail
+  the checks, NVN2 control sections) and the kinds **not read**, by name, with example files.
+- **Not read** (detected by magic and named; shader_split.py reads them): BAHS, Unity bundles, MSHD, NDSR/NDVE,
+  KTGL RDB (G2S) and SPKG, RE Engine PAK (SDF), Snowdrop SDF, Trinity packs, MT Framework ARC, Bezel Engine (BEA),
+  MonoGame XNB and MGFX, FromSoftware dvdbnd, Criterion Bundle 2, PlatinumGames PKZ, CRA and NARC (Camelot), phx
+  PDAT, CRI CPK, zip, Retro Studios RFRM, Game Freak GFPAK, Monolith (HCPS / xbc1 / DRSM), Next Level Games HNSH,
+  Sumo NVNsh, PhyreEngine / VBF, Unreal Engine 3 shader caches, HAL .cmp, gzip and LZ4 frames; files over 512 MB
+  (not read whole); NVN2 GLSLC outputs and NVN2 control sections (the translator refuses them); task and mesh
+  stages and `shader_key_skip`.
+- **The machine**: no new state; the stage's work runs between `shaders:work` and `shaders:end`, its input hash
+  holds the scanned files' path, size and mtime and the prewarm's key (the translator build), so an unchanged game
+  skips it and a changed file redoes it (stored translations then answer from the store). Progress is the counters
+  `done`/`total` (files), `bytesDone`/`bytesTotal`, `shFound`, `shTranslated`, `shFailed`; Cancel is looked at every
+  50 ms while a file is scanned or a stage translated and ends the scan Worker and the translators at once.
 
 ## Verified
 
-`npm run prepare:test` (32 tests; the last eight are the container's and the verdict's, described below; two are about ZBIC modules, the segment compression of system 22.0.0 on: a folder and a container whose modules are ZBIC compressed go through every stage and run, cut and uncut, a module opened in steps is unpacked once and freed by a Cancel, a damaged one stops Code with the loader's reason): SHA-256 against node:crypto; NPDM fields and 5 refusals; build IDs and damaged
+`npm run prepare:test` (36 tests; three are the Shaders stage's: its scan of synthetic BNSH, SARC, Yaz0, zstd and GLSLC containers, its translation ahead with a stand-in translator, and the stage in the prepare; the last eight are the container's and the verdict's, described below; two are about ZBIC modules, the segment compression of system 22.0.0 on: a folder and a container whose modules are ZBIC compressed go through every stage and run, cut and uncut, a module opened in steps is unpacked once and freed by a Cancel, a damaged one stops Code with the loader's reason): SHA-256 against node:crypto; NPDM fields and 5 refusals; build IDs and damaged
 modules; **11 layout variants** and **24 malformed folders**, each with its reason; RomFS paths that cannot be;
 the entry-API tree with stand-in entries; the directory device against `mkromfs.py`'s reader; a cut applied (exit
 code 42 → 7 and changed read-only data, in the runtime) and refused (mismatch, out of range, malformed); **the whole
@@ -466,7 +502,7 @@ every profile's address-space verdict against `settingsFor`; the machine; BNSH; 
 groups of cases on hand-made images (relocation, changed code and callees, imports, system call wrappers, ambiguity,
 several functions, several implementations, overlap, damaged unwind data, 400 mutations), the fingerprints and the
 write table against nxnative and Capstone, and the pipeline (a patch placed by its function, the game exits with
-7 instead of 42); **the converter on a synthetic nxnative tree** (patch files it cannot evaluate, `--strict`).
+7 instead of 42); **the converter on a synthetic nxnative tree** (patch files it cannot evaluate, `--strict`); **the take-over scan** on a synthetic two-module game (forced, weak, defined elsewhere, answered; the stage output, the log, `prepare:scan`).
 
 Containers (`test/prepare/nup_tests.mts`): the listing and bytes of a synthetic container with raw and zstd files
 (open reads the superblock and table only; of a 9 MB raw file only the range asked for is read); **44 damaged or

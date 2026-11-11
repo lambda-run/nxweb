@@ -83,7 +83,7 @@ export function refusedTotal(parts: { name: string; x: KitPart }[]): number { re
 
 // ---- one text block for a bug report ----
 export interface ReportInput {
-  title: string; when: string; userAgent: string;
+  title: string; when: string; userAgent: string; build?: string;
   adapter: string;                         // the WebGPU adapter and device, or why there is none
   optionsKey: string;                      // the translator's options key (cache version and every code-changing option)
   options: string;                         // the process's options in words (clock, guard, ...)
@@ -94,11 +94,13 @@ export interface ReportInput {
   counters: Record<string, string | number>;
   log: string[];                           // log lines WITHOUT the guest's own output (that is guest memory)
   redTotal: number;
+  fs?: string[];                           // RtFs.lines: the most called nn::fs functions, the last files opened
+  hot?: string[];                          // RtRuntime.hotCode: where the guest's time goes, by function
   scan?: string[];                         // the prepare step's instruction scan (a64_scan.ts scanLines): opcode classes, counts, module offsets
 }
 export function reportText(r: ReportInput): string {
   const out: string[] = [];
-  out.push(`${r.title}`, `when: ${r.when}`, `browser: ${r.userAgent}`, `graphics: ${r.adapter}`, `translator options key: ${r.optionsKey}`, `options: ${r.options}`, "");
+  out.push(`${r.title}`, `build: ${r.build ?? "unknown"}`, `when: ${r.when}`, `browser: ${r.userAgent}`, `graphics: ${r.adapter}`, `translator options key: ${r.optionsKey}`, `options: ${r.options}`, "");
   out.push(`process: ${r.state}${r.stop ? " (" + r.stop + ")" : ""}`);
   out.push(r.fault.length ? "fault:" : "fault: none", ...r.fault.map(l => "  " + l), "");
   out.push("modules:");
@@ -112,6 +114,8 @@ export function reportText(r: ReportInput): string {
   for (const m of r.machines) if (m.live || m.steps || m.taken) out.push(`  ${m.name}: ${m.live || "-"} | ${m.taken}/${m.transitions} | ${m.last || "-"}${m.modules ? " [" + m.modules + "]" : ""}`);
   out.push(`  (${r.machines.filter(m => !(m.live || m.steps || m.taken)).length} machines of ${r.machines.length} not stepped: ${r.machines.filter(m => !(m.live || m.steps || m.taken)).map(m => m.name).join(", ") || "none"})`, "");
   out.push("counters:", ...Object.entries(r.counters).map(([k, v]) => `  ${k}: ${v}`), "");
+  if (r.fs?.length) out.push("nn::fs: the most called functions:", ...r.fs.map(l => "  " + l), "");
+  if (r.hot?.length) out.push("where the guest's time goes (the pc each time slice ended at, by function):", ...r.hot.map(l => "  " + l), "");
   if (r.scan) out.push("instructions the translator does not have (static scan of the code modules with its own decoder; opcode classes and offsets, no game data):",
     ...(r.scan.length ? r.scan.map(l => "  " + l) : ["  (no scan: the game was not opened through the prepare step, or its translator binary has no scanner)"]), "");
   out.push(`log: the last ${r.log.length} lines (guest output left out), ${r.redTotal} red in all:`, ...r.log.map(l => "  " + l));

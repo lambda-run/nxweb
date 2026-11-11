@@ -106,7 +106,7 @@ async function corpus(m: RuntimeModules, set: Flat[], o: object, host: Host): Pr
     if (!rt.loadFlat(g.image, g.side)) fail(`${g.name}: load failed: ${rt.red.join(" | ")}`);
     host.gc?.();   // every program on a collected heap (V8 collects by itself when a 6 GiB memory is made, above 4 GB)
     const r = rt.run();
-    if (r.stop?.kind !== "exit") fail(`${g.name}: stopped by ${r.stop?.kind}: ${rt.red.at(-2) ?? ""}`);
+    if (r.stop?.kind !== "exit") fail(`${g.name}: stopped by ${r.stop?.kind}: ${r.stop?.fault?.lines[0] ?? rt.red.at(-2) ?? ""}`);
     if (g.side.exit_code !== undefined && r.stop!.code !== Number(g.side.exit_code)) fail(`${g.name}: exit code ${r.stop!.code}, expected ${g.side.exit_code}`);
     if (!eqBytes(rt.stdoutBytes(), g.expected)) fail(`${g.name}: stdout differs from the reference (${rt.stdoutBytes().length} bytes, expected ${g.expected.length})`);
     const s = phases(rt, 0, rt.stats.runMs - rt.a64.translateNs / 1e6);

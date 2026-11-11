@@ -17,7 +17,9 @@ import { ROOT, WASM } from "../../src/prepare/host/build.mts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { buildPreparePage, servePrepare } from "../../web/prepare_build.mts";
 import * as rth from "../runtime/harness.mts";
-import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, type Files } from "./synth.mts";
+import { SCRATCH, guest, npdm, blob, fnv64, writeTree, version, prefixed, bnsh, sarc, yaz0, type Files } from "./synth.mts";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { writeNup, tlv, nacp, KIND, T, STANDALONE } from "./nup_synth.mts";
 import { writeFileSync, mkdirSync } from "node:fs";
 
@@ -124,10 +126,10 @@ try {
       const w = new Worker("/test-worker.js");
       const out = await new Promise<any>((res, rej) => { w.onmessage = ev => res(ev.data); w.onerror = e => rej(new Error(e.message)); w.postMessage({ handoff: msg }); });
       w.terminate();
-      return { out, text: document.getElementById("handoff")!.textContent, shape: { modules: msg.modules.map((m: any) => [m.name, m.file instanceof Blob, m.cuts]), rom: msg.rom.files.length, romBlobs: msg.rom.files.every((f: any) => f instanceof File), aoc: msg.aoc.map((a: any) => a.index), saveId: msg.saveId, shaders: msg.shaders, provisional: msg.profile.provisional, hooks: msg.hooks.length } };
+      return { out, text: document.getElementById("handoff")!.textContent, shape: { modules: msg.modules.map((m: any) => [m.name, m.file instanceof Blob, m.cuts]), rom: msg.rom.files.length, romBlobs: msg.rom.files.every((f: any) => f instanceof File), aoc: msg.aoc.map((a: any) => a.index), saveId: msg.saveId, shaders: { ...msg.shaders, prewarm: msg.shaders.prewarm && { found: msg.shaders.prewarm.found, failed: msg.shaders.prewarm.failed } }, provisional: msg.profile.provisional, hooks: msg.hooks.length } };
     });
     if (!r.out.ok) throw new Error(r.out.error);
-    eq(r.shape, { modules: [["main", true, 0], ["sdk", true, 0]], rom: 2, romBlobs: true, aoc: [2], saveId: "nxweb-save-" + APP_HEX, shaders: { mode: "on-demand", chain: "nxweb-shaders-1/page", store: "nxweb-shaders", prewarm: null }, provisional: true, hooks: 0 }, "message");
+    eq(r.shape, { modules: [["main", true, 0], ["sdk", true, 0]], rom: 2, romBlobs: true, aoc: [2], saveId: "nxweb-save-" + APP_HEX, shaders: { mode: "on-demand", chain: "nxweb-shaders-1/page", store: "nxweb-shaders", prewarm: { found: 0, failed: 0 } }, provisional: true, hooks: 0 }, "message");
     eq([r.out.kind, r.out.code, r.out.red, r.out.romSync], ["exit", 0, [], true], "run");
     eq(r.out.stdout, "lib: DT_INIT\nlib: init_array[0]\nlib: init_array[1]\n" + fsgOut(b1) + "lib: fini_array[0]\nlib: DT_FINI\n", "stdout");
     let sum = 0; for (const f of ["c.txt", "pack/a.bin", "pack/b.bin"]) { const b = gameFiles[`dlc/${dlcId}/0/romfs/${f}`]; for (const v of typeof b === "string" ? Buffer.from(b) : b) sum = (sum * 31 + v) >>> 0; }
@@ -537,6 +539,46 @@ try {
     const clean = await manifest(storeDir);
     eq([clean.stages.code.output.scan.length >= 1, clean.stages.code.output.scan.every((s: any) => s.scan.unsupported === 0)], [true, true], "the first game's scan");
     return table.split("\n").filter(l => l).join(" | ");
+  });
+
+  await run("the Shaders stage in the page: a game whose RomFS holds BNSH containers (loose and in a Yaz0 SARC) has its stages found by the scan Worker and translated by the runtime's own in-page translator into the runtime's Cache Storage under <key>/<chain>; failures by reason and unread kinds in the row; a second prepare of another folder with the same shaders is all store hits", async () => {
+    const mx = join(SCRATCH, "maxwell");
+    execFileSync("python3", [join(ROOT, "tools", "shaders", "maxwell_asm.py"), mx], { stdio: "ignore" });
+    const load = (n: string) => ({ control: new Uint8Array(readFileSync(join(mx, n + ".ctl"))), code: new Uint8Array(readFileSync(join(mx, n + ".code"))) });
+    const vs = load("vs_quad_ubo"), ps = load("ps_tex_tint"), ps2 = load("ps_ops");
+    const key = (x: { control: Uint8Array; code: Uint8Array }) => createHash("sha256").update(x.control.subarray(0, 0x880)).update(x.code).digest("hex").slice(0, 16);
+    const translator = existsSync(join(ROOT, "build", "web", "shader_worker.js")) && existsSync(join(ROOT, "build", "web", "shaders", "nx_naga.wasm"));
+    const root = `Shaders-${tag}`;
+    const files: Files = { "exefs/main": guest("hello"), "exefs/main.npdm": npdm({ programId: APP + 0x8000n }),
+      "romfs/shader/a.bnsh": bnsh([[{ stage: 0, ...vs }, { stage: 4, ...ps }]]),
+      "romfs/shader/b.szs": yaz0(sarc({ "b.bnsh": bnsh([[{ stage: 0, ...vs }, { stage: 4, ...ps2 }]]) })),
+      "romfs/shader/c.bars": new Uint8Array([0x42, 0x41, 0x48, 0x53, ...new Uint8Array(60)]) };
+    await page.evaluate(async () => { await caches.delete("nxweb-shaders"); });
+    await putGame(root, files);
+    await open(); await fakePicker(root);
+    await page.click("#pick");
+    await page.waitForFunction(() => ["Ready", "Failed"].includes(document.getElementById("machine")!.dataset.state!) && !!(window as any).nxwebLastRun, undefined, { timeout: 240000 });
+    eq(await state(), "Ready", "state: " + await page.textContent("#error"));
+    const out = (await manifest("nxweb-prepare-" + root)).stages.shaders.output.prewarm;
+    const row = (await page.evaluate(() => [...document.querySelectorAll("#stages .stage .info")].map(td => td.textContent)))[4]!;
+    eq([out.found, out.files, out.byStage, out.notRead.map((n: any) => n.reason), out.containers], [3, 4, { vs: 1, ps: 2 }, ["BAHS (agl / gsys shader archives)"], { bnsh: 2, glslc: 0, sarc: 1, yaz0: 1, zstd: 0 }], "the stage's output");
+    if (!row.startsWith("3 shader stages found in 4 files (2 BNSH, 1 SARC, 1 YAZ0)") || !row.includes("not read: BAHS (agl / gsys shader archives) (1)")) throw new Error("shaders row: " + row);
+    if (!translator) { eq([out.chain, out.untranslated], [null, 3], "scan only"); return `no build/web/shader_worker.js (web:build): scanned only; row: ${row}`; }
+    const xlateFailed = out.failures.filter((f: any) => !/^a compute|^bindings/.test(f.reason)).reduce((n: number, f: any) => n + f.count, 0);
+    eq([out.chain, out.translated + out.cached + xlateFailed], ["nxweb-shaders-1/page", 3], `every stage translated or failed with a reason (${JSON.stringify(out.failures)})`);
+    const cached = await page.evaluate(async (ids: string[]) => { const c = await caches.open("nxweb-shaders"); const o: Record<string, number> = {}; for (const id of ids) { const r = await c.match("/shader-cache/" + encodeURIComponent(id)); o[id] = r ? ((await r.json()).wgsl as string).length : 0; } return o; }, [vs, ps, ps2].map(x => `${key(x)}/nxweb-shaders-1/page`));
+    const stored = Object.values(cached).filter(n => n > 0).length;
+    eq(stored, out.translated, `the translations in the runtime's store (${JSON.stringify(cached)})`);
+    // the same shaders in another folder: the store answers, the translator is not asked
+    const root2 = root + "-again";
+    await putGame(root2, { ...files, "exefs/main.npdm": npdm({ programId: APP + 0x9000n }) });
+    await open(); await fakePicker(root2);
+    await page.click("#pick");
+    await page.waitForFunction(() => ["Ready", "Failed"].includes(document.getElementById("machine")!.dataset.state!) && !!(window as any).nxwebLastRun, undefined, { timeout: 240000 });
+    eq(await state(), "Ready", "the second folder: " + await page.textContent("#error") + " " + JSON.stringify(await lastRun()));
+    const again = (await manifest("nxweb-prepare-" + root2)).stages.shaders.output.prewarm;
+    eq([again.translated, again.cached], [0, out.translated], "a second folder: store hits");
+    return `row: ${row}; ${stored} WGSL translations in Cache Storage nxweb-shaders`;
   });
 
   if (errors.length) { failed++; console.log(`[RED] page errors: ${errors.join(" | ")}`); }

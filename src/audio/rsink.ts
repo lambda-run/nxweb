@@ -223,6 +223,7 @@ export function capture(i: i32, dest: i32, mix: usize, samples: u32, rate: u32, 
     loud |= v;
   }
   s.frames++; if (loud) s.nonsilent++;
+  if (loud && s.nonsilent == 1) { begin(); puts("audren: renderer "); putu(i); puts(" rendered its first frame that is not silent, frame "); putu(s.frames); end(); }
   if (s.frames == 200 || s.frames % 12000 == 0) { begin(); puts("audren: renderer "); putu(i); puts(" rendered "); putu(s.frames); puts(" frames, "); putu(s.nonsilent); puts(" of them not silent"); end(); }
   if (dest == 0) s.frameN = nout;
   else if (dest == 1) { store<u32>(s.cqN + (<usize>(s.cqTail % CQ) << 2), nout); s.cqTail++; }

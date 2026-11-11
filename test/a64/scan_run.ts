@@ -80,8 +80,14 @@ await test("literal pools: with a function table, what the functions' PC-relativ
   return scanLines("f", s).join(" | ");
 });
 await test("the answer is the decoder's: words the translator translates and words it does not", () => {
-  const yes = [NOP, RET, 0xD65F0FFF, 0xD73F0921, 0xF8E10002 /* ldaddal */, 0xC8E4FC05 /* casal */, 0x4868FC0A /* caspal */, 0x38BFC001 /* ldaprb */];
-  const no = [SVE1, ERETAA, HVC, MRS_SCTLR, UDF, JUNK, 0xCE608000 /* sha512h */];
+  const yes = [NOP, RET, 0xD65F0FFF, 0xD73F0921, 0xF8E10002 /* ldaddal */, 0xC8E4FC05 /* casal */, 0x4868FC0A /* caspal */, 0x38BFC001 /* ldaprb */,
+    0xCE608000 /* sha512h */, 0xCEC08000 /* sha512su0 */, 0xCE608C00 /* rax1 */, 0xCE000000 /* eor3 */, 0xCE200000 /* bcax */,
+    0xCE800000 /* xar */, 0xCE400000 /* sm3ss1 */, 0xCE408000 /* sm3tt1a */, 0xCE60C000 /* sm3partw1 */, 0xCEC08400 /* sm4e */,
+    0xCE60C800 /* sm4ekey */, 0x1E7E0000 /* fjcvtzs */,
+    0x4E829420 /* sdot v0.4s, v1.16b, v2.16b */, 0x2E829484 /* udot v4.2s */, 0x6FB1E820 /* udot v0.4s, v1.16b, v17.4b[3] */, 0x0FA2E023 /* sdot v3.2s, .., v2.4b[1] */];
+  const no = [SVE1, ERETAA, HVC, MRS_SCTLR, UDF, JUNK, 0xCE60CC00 /* unallocated (sha512 group, O=1 opcode=3) */,
+    0xCE600000 /* unallocated (four-register Op0=3) */, 0x9E7E0000 /* fjcvtzs with sf=1 */,
+    0x4E429420 /* dot with size 01 */, 0x0F62E023 /* dot by element, size 01 */];
   for (const w of yes) if (!scanner.implemented(w)) throw new Error(`0x${w.toString(16)} is said not to be implemented`);
   for (const w of no) if (scanner.implemented(w)) throw new Error(`0x${w.toString(16)} is said to be implemented`);
   return `${yes.length} + ${no.length} words`;

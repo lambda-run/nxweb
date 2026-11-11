@@ -5,10 +5,11 @@ import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { kLock, kUnlock, ACT_CONTINUE, ACT_SWITCH, ACT_STOP, FOREVER, WAITERS_BIT, guestOk, ld32, lineStart, lineEnd, puts, putx } from "./base";
 import { handlesInit, handlesUsed, handlesCountEvents, eventsLive, evRefs, O_THREAD, O_EVENT_R, O_EVENT_W, MAX_EVENTS, hPeek, hNew } from "./handle";
 import { KThread, thr, MAX_THREADS, NCORES, threadsInit, threadNew, threadOfCtx, threadsAlive, threadObjects, WK_LOCK, WK_SYNC } from "./thread";
-import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent } from "./sched";
+import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent, schedPreemptHold } from "./sched";
 import { syncInit, expire, nextDeadline, wakeClockWaiters } from "./sync";
 import { clockInit, clockSetNow, clockFreeze, clockReasons, guestNs, guestTicks, hostTimeOf, entropySeed, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
+import { ringInit, ringClear, ringEnter, ringLeave, ringResume, ringTotal, ringCopy } from "./ring";
 import { svc, procInit, setMainThread, isMainThread, threadExit, stopProcess, stopReason, exitCode, STOP_NONE, STOP_EXIT, STOP_KILL,
   hostEventNew, hostDupReadable, hostEventSignal, hostEventClear, closeHandle, clockWait } from "./svc";
 
@@ -29,7 +30,7 @@ const F_NO_INHERIT: u64 = 4;   // lock owners do not inherit their waiters' prio
 export function kernel_init(cfg: usize): i32 {
   kLock();
   const flags: u64 = cfg ? load<u64>(cfg, 112) : 0;
-  handlesInit(); threadsInit(); syncInit();
+  handlesInit(); threadsInit(); syncInit(); ringInit();
   schedInit(!(flags & F_NO_INHERIT));
   clockInit((flags & F_SWITCH2) != 0);
   procInit(cfg ? load<u64>(cfg, 104) : 0, cfg ? load<u64>(cfg, 120) : 0);
@@ -51,6 +52,7 @@ export function kernel_create_main_thread(entry: u64, stackTop: u64): u32 {
   if (t != null) {
     h = hNew(O_THREAD, <u32>t.index);
     t.handle = h; t.setX(1, h);
+    ringClear(t);
     setMainThread(t);
     t.m.step(KthreadE.Start); schedReady(t);
   }
@@ -71,7 +73,9 @@ export function kernel_svc(n: i32, ctx: usize): i32 {
       lineStart("[RED] kernel: svc "); putx(n); puts(" from a context that is not a running thread: "); putx(ctx); lineEnd();
       act = ACT_SWITCH;
     } else {
+      ringEnter(t, n);
       svc(t, n);
+      ringLeave(t, t.waitKind != 0, stopReason != STOP_NONE || !t.used || t.exited);
       act = stopReason != STOP_NONE ? ACT_STOP : schedMustSwitch(t) ? ACT_SWITCH : ACT_CONTINUE;
     }
   }
@@ -83,6 +87,7 @@ export function kernel_svc(n: i32, ctx: usize): i32 {
 export function kernel_schedule(): usize {
   kLock();
   const t = stopReason == STOP_NONE ? scheduleNext() : null;
+  if (t != null) ringResume(t);
   kUnlock();
   return t != null ? t.ctx : 0;
 }
@@ -90,6 +95,7 @@ export function kernel_schedule(): usize {
 export function kernel_schedule_core(core: i32): usize {
   kLock();
   const t = stopReason == STOP_NONE && core >= 0 && core < NCORES ? scheduleCore(core) : null;
+  if (t != null) ringResume(t);
   kUnlock();
   return t != null ? t.ctx : 0;
 }
@@ -101,6 +107,9 @@ export function kernel_preempt(ctx: usize): void {
   if (t != null) schedSliceEnded(t);
   kUnlock();
 }
+// A host function runs guest code on the current thread (on 1, off 0): until off, a running thread is not switched
+// away from at an SVC because a better one became ready; it still blocks (the embedder reports that as a fault)
+export function kernel_preempt_hold(on: i32): void { kLock(); schedPreemptHold(on != 0); kUnlock(); }
 // The thread returned from its entry function (pc = 0xFFFF_FFF0). The main thread: the process ends with exit code
 // w0 (test guest ABI). Any other thread: a red line, and it exits as by ExitThread.
 export function kernel_thread_returned(ctx: usize): i32 {
@@ -225,6 +234,10 @@ export function kernel_thread_info(index: i32, out: usize): i32 {
   store<i32>(out, t.wowner, 88);
   return 1;
 }
+// The last SVCs of thread record index (ring.ts, 80 bytes each, oldest first) to out: at most cap of them. Returns
+// how many; kernel_svc_total(index) is how many SVCs the thread made in all.
+export function kernel_svc_ring(index: i32, out: usize, cap: u32): u32 { return ringCopy(index, out, cap); }
+export function kernel_svc_total(index: i32): u32 { return ringTotal(index); }
 // 0 handles in use, 1 threads alive, 2 thread records, 3 events alive, 4 MapMemory mappings, 5 heap size,
 // 6 bytes mapped in the alias region
 export function kernel_count(what: i32): u64 {

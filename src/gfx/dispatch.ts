@@ -30,6 +30,22 @@ const NDEVINFO: u32 = 0x60;
 // The API version a game's own driver would report follows its SDK: 55.15 from SDK 11, 53.313 before. Games check it
 let apiMajor: i32 = 55, apiMinor: i32 = 15;
 export function setApi(major: i32, minor: i32): void { apiMajor = major; apiMinor = minor; }
+// The Switch 2's NVN2 (nxnative g_devinfo2, SDK 21.4.4's newest values): Ampere's limits; -1 (DEVINFO_RT) are items NVN2 reads from
+// the GPU's own description at run time, which keep the X1 value below 0x60 and answer 0 with a red line above it. The host
+// overrides the constants the game's own sdk holds for its driver's switch (gfx_set_devinfo2: the GPU code versions move with the SDK)
+const DEVINFO2: usize = memory.data<i32>([
+  231, 39, 14, 65536, 256, 8, 16, 4, 16, 32, 16, 4, 4, 4, 32, 32, 32, 256, 256, 4, 8, 512, 256, -1,
+  -1, 4096, 16384, 16, 1024, 1024, 64, 1024, 2147483647, 65535, 65535, 8, 1048576, 4096, 16, 4096, 1, 1, 1, -1, 16, -1,
+  201, 201, 20, 0, 1, 8, 8, 4, 32, -1, -1, 128, -1, 1, 4, -1, -1, -1, -1, -1, 1, 1,
+  1, 1, 5, 1, 1, 1, 1, 1, 1, 16, 2048, 32, 4096, 65536, 65536, 256, 16384, 262144, 4096, 1, 4, 2, 0, 4096, 16384,
+  4096, 128, 32, 65535, 1, -1, 256, 16, 65535, 65535, 256, 1, 16, 16, 16, 1, 1, 1, 256, 0, 16, 8, 16, 32,
+  31, 536870912, 16777216, 16777216, 1073741824, 32, 1, 64, -1, 1, 2147483647, 32, 32, 4194303, 512, 256, 32, 16383, -1, 8, 0,
+  0, 4, 256, 16, 0, 1, 31, 0, 64, 1, 58368, 24576, 0, 256, 262144, -1, -1, 0, 201, 14, 201, 20, 163840, 8,
+  4, 256, 256, 4, 65536, 201, 5, 1]);
+const NDEVINFO2: u32 = 0xAA;
+let nvn2 = false;
+export function setNvn2(on: bool): void { nvn2 = on; }
+export function setDevinfo2(item: u32, v: i32): void { if (item < NDEVINFO2) store<i32>(DEVINFO2 + (<usize>item << 2), v); }
 
 const UNIMPL_SEEN: usize = memory.data(1024);
 const TMP_L: usize = memory.data(40);
@@ -127,6 +143,8 @@ let condRed: u32 = 0;
 let nowNs: u64 = 0;
 export function setNow(ns: u64): void { nowNs = ns; }
 
+const ARGS2: usize = memory.data(64);   // the arguments of a call one function makes to another
+const SD_PLAIN: usize = memory.data(6 * 16);   // nvnProgramSetShadersExt's stages as plain { data, control } pairs
 export function call(fn: i32, a: usize): u64 {
   switch (fn) {
     // ---------- Device ----------
@@ -145,6 +163,13 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnDeviceGetProcAddress: return <u64>lookupAddress(P(a, 1));
     case F.nvnDeviceGetInteger: {
       const w = <u32>I(a, 1), out = P(a, 2);
+      if (nvn2 && w < NDEVINFO2 && (load<i32>(DEVINFO2 + (<usize>w << 2)) != -1 || w >= NDEVINFO)) {
+        const v = load<i32>(DEVINFO2 + (<usize>w << 2));
+        if (v == -1) { L.red("nvnDeviceGetInteger item 0x"); L.hex(w); L.str(": NVN2 reads it from the GPU at run time, not known here; returning 0"); L.end(); }
+        store<i32>(out, w == 0 ? apiMajor : w == 1 ? apiMinor : v == -1 ? 0 : v);
+        return 0;
+      }
+      if (w == 0x67) { store<i32>(out, 256); return 0; }   // shader code alignment in a pool (SDK 19); the host reads shaders by key
       if (w >= NDEVINFO) { L.red("nvnDeviceGetInteger unknown item 0x"); L.hex(w); L.str(", returning 0"); L.end(); store<i32>(out, 0); return 0; }
       store<i32>(out, w == 0 ? apiMajor : w == 1 ? apiMinor : load<i32>(DEVINFO + (<usize>w << 2)));
       return 0;
@@ -177,8 +202,24 @@ export function call(fn: i32, a: usize): u64 {
       store<u32>(p, O.MAGIC_POOL); store<u32>(p, flags, O.POOL_flags);
       store<u64>(p, load<u64>(b, O.PB_mem), O.POOL_mem); store<u64>(p, load<u64>(b, O.PB_size), O.POOL_size);
       store<u64>(p, 0, O.POOL_vp); store<i32>(p, 0, O.POOL_vmode);
-      // DEPARTS: a virtual pool (flags 0x200) gets no address range of its own yet (nxnative reserves one; sparse mapping is not ported)
-      if (!load<u64>(p, O.POOL_mem)) { if (flags & O.POOLF_VIRTUAL) L.redLine("MemoryPoolInitialize: virtual pools are not mapped yet (no storage)"); else L.redLine("MemoryPoolInitialize: non-virtual pool has no storage"); }
+      // DEPARTS: a virtual pool (flags 0x200) has no storage until MapVirtual points it at a physical pool (nxnative reserves an address range
+      // first, and maps true sparse pools page by page; here only one contiguous mapping is taken)
+      if (!load<u64>(p, O.POOL_mem) && !(flags & O.POOLF_VIRTUAL)) L.redLine("MemoryPoolInitialize: non-virtual pool has no storage");
+      return 1;
+    }
+    // Requests (nxnative map_req): { pool *phys, i64 physical offset, i64 virtual offset, u64 size, i32 storage class, pad }
+    case F.nvnMemoryPoolMapVirtual: {
+      const p = P(a, 0), n = I(a, 1), rq = P(a, 2), vsize = load<u64>(p, O.POOL_size);
+      for (let i = 0; i < n; i++) {
+        const r = rq + <usize>i * 40, ph = <usize>load<u64>(r);
+        if (!ph) continue;   // unmapping: the storage stays as it is
+        const pmem = load<u64>(ph, O.POOL_mem), poff = load<i64>(r, 8), voff = load<i64>(r, 16), size = load<u64>(r, 24);
+        if (!pmem) { L.redLine("MapVirtual: the physical pool has no storage"); return 0; }
+        if (voff < 0 || <u64>voff + size > vsize || <u64>poff + size > load<u64>(ph, O.POOL_size)) { L.redLine("MapVirtual: request out of range"); return 0; }
+        const base = pmem + <u64>poff - <u64>voff, cur = load<u64>(p, O.POOL_mem);
+        if (cur && cur != base) { L.redLine("MapVirtual: non-contiguous mapping (true sparse) not implemented"); return 0; }
+        store<u64>(p, base, O.POOL_mem);
+      }
       return 1;
     }
     case F.nvnMemoryPoolFinalize: store<u32>(P(a, 0), 0); return 0;
@@ -369,6 +410,19 @@ export function call(fn: i32, a: usize): u64 {
 
     // ---------- Programs ----------
     case F.nvnProgramInitialize: memory.fill(P(a, 0), 0, O.PROG_SIZE); store<u32>(P(a, 0), O.MAGIC_PROG); return 1;
+    // NVN2's program builder (nxnative prog_builder_t { device, shader data, count }): InitializeFromBuilder is Initialize + SetShaders
+    case F.nvnProgramBuilderSetDefaults: memory.fill(P(a, 0), 0, 24); return 0;
+    case F.nvnProgramBuilderSetDevice: store<u64>(P(a, 0), X(a, 1)); return 0;
+    case F.nvnProgramBuilderGetDevice: return load<u64>(P(a, 0));
+    case F.nvnProgramBuilderSetShaders: store<u64>(P(a, 0), X(a, 2), 8); store<i32>(P(a, 0), I(a, 1), 16); return 0;
+    case F.nvnProgramBuilderGetShaderCount: return <u64>load<i32>(P(a, 0), 16);
+    case F.nvnProgramInitializeFromBuilder: {
+      const p = X(a, 0), b = P(a, 1), n = load<i32>(b, 16);
+      store<u64>(ARGS2, p); call(F.nvnProgramInitialize, ARGS2);
+      if (!n) return 1;
+      store<u64>(ARGS2, p); store<u64>(ARGS2, <u64>n, 8); store<u64>(ARGS2, load<u64>(b, 8), 16);
+      return call(F.nvnProgramSetShaders, ARGS2);
+    }
     case F.nvnProgramFinalize: T.progFree(load<u64>(P(a, 0), O.PROG_serial)); store<u32>(P(a, 0), 0); return 0;
     case F.nvnProgramSetDebugLabel: return 0;
     case F.nvnProgramSetShaders: {
@@ -382,17 +436,46 @@ export function call(fn: i32, a: usize): u64 {
       return 1;
     }
 
+    // NVN 55: each stage is 0x18 bytes, { data, control } plus an extension field the host does not use (as nxnative): SetShaders on the pairs
+    case F.nvnProgramSetShadersExt: {
+      const n = I(a, 1), sd = P(a, 2);
+      if (n < 0 || n > 6) { L.red("ProgramSetShadersExt stage count "); L.i(n); L.end(); return 0; }
+      for (let i = 0; i < n; i++) memory.copy(SD_PLAIN + (<usize>i << 4), sd + <usize>i * 24, 16);
+      store<u64>(ARGS2, X(a, 0)); store<u64>(ARGS2, <u64>n, 8); store<u64>(ARGS2, <u64>SD_PLAIN, 16);
+      return call(F.nvnProgramSetShaders, ARGS2);
+    }
+
     // ---------- Sync, queue ----------
     case F.nvnSyncInitialize: syncInitialize(P(a, 0)); return 1;
     case F.nvnSyncFinalize: syncFinalize(P(a, 0)); return 0;
     case F.nvnSyncSetDebugLabel: return 0;
     case F.nvnSyncWait: return syncWait(P(a, 0), X(a, 1));
+    // Events: a 32-bit word in a memory pool the game gave as storage (nxnative ev_t); the CPU and command buffers write it
+    case F.nvnEventBuilderSetDefaults: memory.fill(P(a, 0), 0, O.EVB_SIZE); return 0;
+    case F.nvnEventBuilderSetStorage: store<u64>(P(a, 0), X(a, 1), O.EVB_pool); store<u64>(P(a, 0), X(a, 2), O.EVB_off); return 0;
+    case F.nvnEventBuilderGetStorage: { const b = P(a, 0), o = P(a, 1); if (o) store<u64>(o, load<u64>(b, O.EVB_off)); return load<u64>(b, O.EVB_pool); }
+    case F.nvnEventBuilderGetMemoryPool: return load<u64>(P(a, 0), O.EVB_pool);
+    case F.nvnEventBuilderGetMemoryOffset: return load<u64>(P(a, 0), O.EVB_off);
+    case F.nvnEventInitialize: {
+      const e = P(a, 0), b = P(a, 1), pool = <usize>load<u64>(b, O.EVB_pool);
+      if (!pool || !load<u64>(pool, O.POOL_mem)) { L.red("EventInitialize has no storage"); L.end(); return 0; }
+      store<u32>(e, O.MAGIC_EVENT); store<u64>(e, load<u64>(pool, O.POOL_mem) + load<u64>(b, O.EVB_off), O.EV_val);
+      store<u64>(e, pool, O.EV_pool); store<u64>(e, load<u64>(b, O.EVB_off), O.EV_off);
+      return 1;
+    }
+    case F.nvnEventFinalize: store<u32>(P(a, 0), 0); return 0;
+    case F.nvnEventGetMemoryPool: return load<u64>(P(a, 0), O.EV_pool);
+    case F.nvnEventGetMemoryOffset: return load<u64>(P(a, 0), O.EV_off);
+    case F.nvnEventGetValue: return load<u32>(<usize>load<u64>(P(a, 0), O.EV_val));
+    case F.nvnEventSignal: C.eventPublish(<usize>load<u64>(P(a, 0), O.EV_val), I(a, 1), <u32>I(a, 2)); return 0;
     case F.nvnQueueBuilderSetDefaults: {
       const b = P(a, 0), d = load<u64>(b);
       memory.fill(b, 0, O.QB_SIZE); store<u64>(b, d);
       store<u64>(b, 65536, O.QB_cmd_sz); store<u64>(b, 262144, O.QB_comp_sz); store<u64>(b, 16384, O.QB_ctl_sz); store<u64>(b, 4096, O.QB_flush);
       return 0;
     }
+    // NVN2 ties a queue to a primary one; the host runs every queue's submissions in order on its one queue, so the tie needs no work
+    case F.nvnQueueBuilderSetPrimaryQueue: return 0;
     case F.nvnQueueBuilderSetDevice: store<u64>(P(a, 0), X(a, 1), O.QB_dev); return 0;
     case F.nvnQueueBuilderSetFlags: store<u32>(P(a, 0), I(a, 1), O.QB_flags); return 0;
     case F.nvnQueueBuilderSetCommandMemorySize: store<u64>(P(a, 0), X(a, 1), O.QB_cmd_sz); return 0;
@@ -419,6 +502,9 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnQueueFinish: passBreak(); finishFence = fenceNew(); store<u64>(hostRec(H_FENCE, 16), finishFence, 8); hostRec(H_FLUSH, 8); hostFlush(); return 0;
     case F.nvnQueueFenceSync: passBreak(); emitFence(P(a, 1)); hostFlush(); return 0;
     case F.nvnQueuePresentTexture: windowPresent(P(a, 1), I(a, 2)); return 0;
+    // nxnative queues a wait for the sync's fence ahead of the queue's later work. Here every queue's submissions run in
+    // order on one host queue, so a fence submitted before the wait is already ahead of what follows it: nothing to add
+    case F.nvnQueueWaitSync: return 1;
     case F.nvnQueueAcquireTexture: return windowAcquire(P(a, 1), 0, P(a, 2));
 
     // ---------- Windows ----------
@@ -432,6 +518,11 @@ export function call(fn: i32, a: usize): u64 {
       return 0;
     }
     case F.nvnWindowBuilderSetPresentInterval: store<i32>(P(a, 0), I(a, 1), O.WB_interval); return 0;
+    // The first n of the swap chain's textures are handed out (0 or more than there are: all of them)
+    case F.nvnWindowBuilderSetNumActiveTextures: store<i32>(P(a, 0), I(a, 1), O.WB_nactive); return 0;
+    case F.nvnWindowBuilderGetNumActiveTextures: { const b = P(a, 0), n = load<i32>(b, O.WB_ntex), k = load<i32>(b, O.WB_nactive); return k > 0 && (k < n || !n) ? k : n; }
+    case F.nvnWindowSetNumActiveTextures: store<i32>(P(a, 0), I(a, 1), O.WIN_nactive); return 0;
+    case F.nvnWindowGetNumActiveTextures: { const w = P(a, 0), n = load<i32>(w, O.WIN_ntex), k = load<i32>(w, O.WIN_nactive); return k > 0 && k < n ? k : n; }
     case F.nvnWindowBuilderGetPresentInterval: return <u64><u32>load<i32>(P(a, 0), O.WB_interval);
     case F.nvnWindowBuilderGetNativeWindow: return load<u64>(P(a, 0), O.WB_native);
     case F.nvnWindowInitialize: return windowInitialize(P(a, 0), P(a, 1));
@@ -565,6 +656,9 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferDrawElements: C.drawElements(P(a, 0), I(a, 1), I(a, 2), I(a, 3), X(a, 4), 0, 0, 1); return 0;
     case F.nvnCommandBufferDrawElementsBaseVertex: C.drawElements(P(a, 0), I(a, 1), I(a, 2), I(a, 3), X(a, 4), I(a, 5), 0, 1); return 0;
     case F.nvnCommandBufferDrawElementsInstanced: C.drawElements(P(a, 0), I(a, 1), I(a, 2), I(a, 3), X(a, 4), I(a, 5), I(a, 6), I(a, 7)); return 0;
+    // NVN2 mesh shading (lower.ts meshDraw): count task workgroups from first, or mesh workgroups in a program with no task shader; the indirect record {count, first} is the GPU's
+    case F.nvnCommandBufferDrawMeshTasks: C.drawMeshTasks(P(a, 0), I(a, 1), I(a, 2), 0); return 0;
+    case F.nvnCommandBufferDrawMeshTasksIndirect: C.drawMeshTasks(P(a, 0), 0, 0, X(a, 1)); return 0;
     case F.nvnCommandBufferDrawArraysIndirect: C.drawArraysIndirect(P(a, 0), I(a, 1), X(a, 2), 0, 0); return 0;
     case F.nvnCommandBufferDrawElementsIndirect: C.drawElementsIndirect(P(a, 0), I(a, 1), I(a, 2), X(a, 3), X(a, 4), 0, 0); return 0;
     // Multi-draws become `max` indirect draws that carry the count's address and their index (nxnative does the same up to 1024)
@@ -591,6 +685,19 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferGetCopyRowStride: return load<u64>(P(a, 0), O.CMD_copy_row);
     case F.nvnCommandBufferGetCopyImageStride: return load<u64>(P(a, 0), O.CMD_copy_image);
     case F.nvnCommandBufferFenceSync: C.fenceSync(P(a, 0), X(a, 1)); return 0;
+    // Sampler reduction (min / max of the covered texels) is kept for the getters; WebGPU samplers have no reduction mode, so draws filter as usual
+    case F.nvnSamplerBuilderSetReductionFilter: store<u8>(P(a, 0), <u8>I(a, 1), O.SB_p + O.SP_reduction); return 0;
+    case F.nvnSamplerBuilderGetReductionFilter: return load<u8>(P(a, 0), O.SB_p + O.SP_reduction);
+    case F.nvnSamplerGetReductionFilter: return load<u8>(P(a, 0), O.SAMP_p + O.SP_reduction);
+    case F.nvnTextureBuilderGetStorageClass: return 0;
+    // Guest memory is the GPU's memory: the dirty scan and pool flushes find written texels; nothing to flush here (as nxnative)
+    case F.nvnTextureFlushTexels: return 0;
+    // Compute runs in submission order on the one host queue, with no overlap or priority (as nxnative)
+    case F.nvnCommandBufferSetComputeOverlapMode: return 0;
+    case F.nvnCommandBufferSetComputeWorkloadPriority: return 0;
+    case F.nvnCommandBufferSetRecordingMode: return 0;   // the host records every command buffer alike (as nxnative)
+    case F.nvnCommandBufferSignalEvent: C.signalEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 5)); return 0;
+    case F.nvnCommandBufferWaitEvent: C.waitEvent(P(a, 0), load<u64>(P(a, 1), O.EV_val), I(a, 2), <u32>I(a, 3)); return 0;
     case F.nvnCommandBufferBindStorageBuffer: C.bindStorageBuffer(P(a, 0), I(a, 1), I(a, 2), X(a, 3), X(a, 4)); return 0;
     case F.nvnCommandBufferBindStorageBuffers: { const rg = P(a, 4); for (let i = 0, n = I(a, 3); i < n; i++) C.bindStorageBuffer(P(a, 0), I(a, 1), I(a, 2) + i, load<u64>(rg + (<usize>i << 4)), load<u64>(rg + (<usize>i << 4), 8)); return 0; }
     case F.nvnCommandBufferBindImage: store<u64>(RANGE, X(a, 3)); C.bindTextures(P(a, 0), I(a, 1), I(a, 2), 1, RANGE, O.OP_BIND_IMG); return 0;

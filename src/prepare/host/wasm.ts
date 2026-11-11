@@ -4,7 +4,7 @@ export const STATES = ["Idle", "Detect", "Index", "Profile", "Code", "Shaders", 
 export type PrepState = typeof STATES[number];
 export const REASONS = ["", "layout", "npdm", "arch", "version", "dlc", "module", "romfs", "profile", "cut", "read", "storage", "internal"] as const;
 export type FailReason = Exclude<typeof REASONS[number], "">;
-export const COUNT = { done: 0, total: 1, bytesDone: 2, bytesTotal: 3, files: 4, modules: 5, cuts: 6, romFiles: 7, romDirs: 8, aoc: 9, skipped: 10, ran: 11 } as const;
+export const COUNT = { done: 0, total: 1, bytesDone: 2, bytesTotal: 3, files: 4, modules: 5, cuts: 6, romFiles: 7, romDirs: 8, aoc: 9, skipped: 10, ran: 11, shFound: 12, shTranslated: 13, shFailed: 14 } as const;
 export type Counts = { -readonly [k in keyof typeof COUNT]: number };
 
 interface X {
@@ -148,7 +148,7 @@ export class PrepWasm {
   // For the instruction scan (src/glue/a64_scan.ts): the module's text and the functions of its unwind table as
   // [start, end) module offsets sorted by start (null: no table). `text` is a view of this module's memory: it is
   // good until the next call that allocates here, so scan it before anything else is asked of this object.
-  scanInput(file: Uint8Array): { text: Uint8Array; textOff: number; functions: Uint32Array | null } | null {
+  scanInput(file: Uint8Array): { text: Uint8Array; textOff: number; functions: Uint32Array | null; image: Uint8Array } | null {
     try {
       this.x.prep_error_clear();
       const image = this.x.scan_image(this.filePtr(file), file.length) >>> 0;
@@ -160,7 +160,7 @@ export class PrepWasm {
         functions = new Uint32Array(2 * n);
         for (let i = 0; i < n; i++) { functions[2 * i] = raw[2 * i + 1]; functions[2 * i + 1] = raw[2 * i]; }   // u64 start << 32 | end, little endian
       }
-      return { text: this.u8(image + textOff, textSize), textOff, functions };
+      return { text: this.u8(image + textOff, textSize), textOff, functions, image: this.u8(image, this.x.nso_image_size() >>> 0) };
     } finally { this.done(); }
   }
   // Registered cuts on a module file: the cut module (an NSO again), or the red line and the cut that stopped it

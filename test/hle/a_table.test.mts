@@ -47,10 +47,10 @@ test("table: every inventoried in-scope name resolves, with its kind; the stubs 
     assert.equal(e.name, r.mangled);
     assert.equal(e.forced, forcedNames.has(r.mangled), `${r.mangled}: lookup gives the forced entry when the name has one`);
     assert.equal(e.implemented, !r.status.startsWith("stub"), `${r.mangled} is implemented, or cut`);
-    assert.equal(r.status.startsWith("stub"), r.file === "hle_movie.c" || r.file === "hle_codec_video.c", `${r.mangled}: only movies and video codecs are stubs`);
+    assert.equal(r.status.startsWith("stub"), r.file === "hle_movie.c", `${r.mangled}: only movies are stubs`);
     assert.equal((h.x.hle_flags(id) & 64) !== 0, r.status.startsWith("stub (cut"), `${r.mangled}: the cut flag`);
   }
-  assert.equal(st.filter(r => r.status.startsWith("stub")).length, 128);
+  assert.equal(st.filter(r => r.status.startsWith("stub")).length, 27);
   assert.equal(h.host.lookup("_ZN2nn2fs9MountRomEPKcPvm"), -1, "a file system name is not this table's");
   assert.equal(h.host.lookup(""), -1);
   assert.equal(h.host.lookup("zzzz"), -1);
@@ -78,7 +78,7 @@ test("table: every entry can be called with zero arguments without trapping (twi
   assert.ok(waits > 0, "some calls wait (PopNotificationMessage, Poll with a timeout, WaitForExit)");
   assert.equal(noReturn, 2 * 7, "the three aborts, ExecuteProgram and the JIT plugin's three fatal helpers do not return");
   assert.equal(h.red.filter(l => l.endsWith(" unimplemented")).length, 0);
-  assert.equal(h.red.filter(l => l.includes(" is cut (movies and video codecs are not played)")).length, 128, "one red line per cut function, however often it is called");
+  assert.equal(h.red.filter(l => l.includes(" is cut (movie::Decoder movies are not played)")).length, 27, "one red line per cut function, however often it is called");
   assert.equal(h.x.hle_call_count(h.id("_ZN2nn2oe16GetOperationModeEv")), 2);
 });
 

@@ -2,24 +2,30 @@
 // Pure: the caller supplies naga (tools/shaders/naga.mts instantiates the WebAssembly build), so this runs offline and in a page alike.
 import { fixForWgsl, type FixOptions, type Binding } from "./spv.ts";
 import type { Reflection } from "./library.ts";
+import { wrapStage, type MeshStage } from "./meshstage.ts";
 
 export interface Converter { spvToWgsl(spv: Uint8Array, flags?: number): string }
 export interface Converted { wgsl: string; reflection: Reflection; bindings: Binding[]; fixedSpv: Uint8Array }
 
-export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions = {}): Converted {
+// opts.mesh: a task or mesh shader the translator read as compute (job.ts): its entry is wrapped (meshstage.ts) and the reflection names its stage
+export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions & { mesh?: MeshStage } = {}): Converted {
   const f = fixForWgsl(spv, opts);
+  if (opts.mesh && f.stage !== "compute") throw new Error(`a ${opts.mesh.kind} shader that is not compute after the translator`);
   // WGSL refuses an implicit-derivative sample (textureSample, dpdx) under control flow that differs between pixels; Maxwell code does it freely (a TEX after a
   // predicate), with the derivative then undefined, as on the hardware. The directive turns WGSL's error off for the module
-  const wgsl = (f.stage === "fragment" ? "diagnostic(off, derivative_uniformity);\n" : "") + naga.spvToWgsl(f.spv);
-  const cb = f.bindings.filter(b => b.kind === "cbuf"), tex = f.bindings.filter(b => b.kind === "tex");
+  let wgsl = (f.stage === "fragment" ? "diagnostic(off, derivative_uniformity);\n" : "") + naga.spvToWgsl(f.spv);
+  if (opts.mesh) wgsl = wrapStage(wgsl, opts.mesh);
+  const cb = f.bindings.filter(b => b.kind === "cbuf"), tex = f.bindings.filter(b => b.kind === "tex"), sb = f.bindings.filter(b => b.kind === "storage");
   for (const t of tex) if (t.sampleType === "sint" || t.sampleType === "uint") f.notes.push(`texture slot ${t.reg} is sampled as ${t.sampleType}: src/gfx declares every texture float or depth`);
   const reflection: Reflection = {
-    stage: f.stage, entry: "main",
+    stage: opts.mesh ? (opts.mesh.kind === "ts" ? "task" : "mesh") : f.stage, entry: "main",
+    ...(opts.mesh ? { mesh: opts.mesh } : {}),
     ubos: cb.map(b => b.reg!).sort((a, b) => a - b),
     textures: tex.map(t => ({ slot: t.reg!, dim: t.dim!, depth: t.sampleType === "depth", ...(t.handle ? { handle: t.handle } : {}) })).sort((a, b) => a.slot - b.slot),
     fixup: f.bindings.some(b => b.kind === "fixup"),
+    ...(sb.length ? { storage: sb.map(b => ({ slot: b.reg!, write: !!b.write })).sort((a, b) => a.slot - b.slot) } : {}),
     uboSize: Object.fromEntries(cb.map(b => [b.reg, b.size ?? 0])),
-    extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank })),
+    extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup", "storage"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank })),
     notes: f.notes,
   };
   if (f.stage === "vertex") { reflection.attributes = f.inputs.map(i => i.location); reflection.attributeTypes = Object.fromEntries(f.inputs.map(i => [i.location, i.type])); }

@@ -330,7 +330,18 @@ export function updateUniformBuffer(c: usize, buf: u64, off: i64, n: u64, data: 
   const r = rec(c, O.OP_UPDATE_UB, 16 + <usize>n);
   if (r) { store<u64>(r, buf + off); store<u64>(r, n, 8); memory.copy(r + 16, data, <usize>n); }
 }
+// Events (OP_SIGNAL_EVENT / OP_WAIT_EVENT, nxnative's records): { u64 word address, u32 mode, u32 value }
+export function signalEvent(c: usize, word: u64, mode: i32, v: u32): void { const r = rec(c, O.OP_SIGNAL_EVENT, 16); if (r) { store<u64>(r, word); store<i32>(r, mode, 8); store<u32>(r, v, 12); } }
+export function waitEvent(c: usize, word: u64, mode: i32, v: u32): void { const r = rec(c, O.OP_WAIT_EVENT, 16); if (r) { store<u64>(r, word); store<i32>(r, mode, 8); store<u32>(r, v, 12); } }
+// Signal mode 1 (ADD) adds the value to the word, any other mode writes it
+export function eventPublish(word: usize, mode: i32, v: u32): void { if (!word) return; store<u32>(word, mode == 1 ? load<u32>(word) + v : v); }
 export function fenceSync(c: usize, sync: u64): void { const r = rec(c, O.OP_FENCE_SYNC, 8); if (r) store<u64>(r, sync); }
+// DrawMeshTasks(Indirect): an OP_DRAW of primitive MESH_PRIM (nxnative DM_PRIM_MESH_TASKS, no NVN primitive has it), first and count, or the address of {count, first}
+export const MESH_PRIM: i32 = 0x40;
+export function drawMeshTasks(c: usize, first: i32, n: i32, ind: u64): void {
+  const r = rec(c, O.OP_DRAW, O.P_DRAW_SIZE);
+  if (r) { store<i32>(r, MESH_PRIM); store<i32>(r, first, 4); store<i32>(r, n, 8); store<i32>(r, 1, 12); store<u64>(r, ind, O.P_DRAW_ind); }
+}
 // Indirect draws carry the address of their arguments (read at submit); cnt / i: draw i of a multi-draw with a count in memory
 export function drawArraysIndirect(c: usize, prim: i32, ind: u64, cnt: u64, i: i32): void {
   const r = rec(c, O.OP_DRAW, O.P_DRAW_SIZE);

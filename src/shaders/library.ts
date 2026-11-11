@@ -1,4 +1,5 @@
 // The nxweb shader library: one file that maps a stage's key to its WGSL and its reflection record.
+import type { MeshStage } from "./meshstage.ts";
 // Plain TypeScript, no Node or browser API beyond TextEncoder / TextDecoder: the offline build writes it (tools/shaders/build_lib.mts), the page reads it.
 //
 // File (little endian):
@@ -8,7 +9,7 @@
 //   +12  u32 metaLength    bytes of a UTF-8 JSON object after the index: { chain: "<what built it>", ... }, free-form, for people and for cache invalidation
 //   +16  count x 24 bytes  the index, sorted by key as an unsigned 64-bit little-endian number:
 //          +0  8 bytes  key: sha256(control section + code area)[0..8], the bytes in digest order (src/gfx/shader.ts shaderKey; hex of these 8 bytes = keyHex)
-//          +8  u32      stage: 0 vertex, 1 fragment, 2 compute
+//          +8  u32      stage: 0 vertex, 1 fragment, 2 compute, 3 task, 4 mesh
 //          +12 u32      offset of the entry's payload from the start of the file
 //          +16 u32      wgslLength: bytes of UTF-8 WGSL at the offset
 //          +20 u32      reflLength: bytes of UTF-8 JSON (a Reflection) right after the WGSL
@@ -17,8 +18,9 @@
 
 export interface Reflection {
   // the record src/gfx asks for (src/gfx/README.md, "what the shader chain must emit", item 5): GfxHost.registerShader(key, { wgsl, ...reflection })
-  stage: "vertex" | "fragment" | "compute";
+  stage: "vertex" | "fragment" | "compute" | "task" | "mesh";
   entry: string;
+  mesh?: MeshStage;                                                      // task / mesh: the stage's facts (src/shaders/meshstage.ts); its WGSL is compute, wrapped
   ubos: number[];                                                        // game uniform slots read
   // `handle`: a bindless texture. `slot` is then only where its binding is; the host reads the handle (texture ID | sampler ID << 20) from the word at byte
   // `offset` of game uniform slot `ubo` at each draw; `sampler`: a second word ORed in, or a constant sampler ID (src/gfx/README.md "Bindless textures")
@@ -26,6 +28,7 @@ export interface Reflection {
   attributes?: number[];                                                 // vertex: locations read
   outputs?: number[];                                                    // fragment: colour targets written
   fixup: boolean;                                                        // vertex: reads the position fix-up at @group(2) @binding(0)
+  storage?: { slot: number; write?: boolean }[];                         // storage buffer slots, at @group(0) @binding(128 + stage * 16 + slot)
   // more than src/gfx reads today (tools/shaders/README.md, "What src/gfx must change"):
   uboSize: Record<string, number>;                                       // slot -> bytes the WGSL type covers: the host binds at least this, zero-filled past what the game bound
   attributeTypes?: Record<string, "float" | "sint" | "uint">;            // vertex: the class each input is declared with
@@ -39,7 +42,7 @@ const MAGIC = 0x4c53584e, HEAD = 16, ROW = 24;
 const hexKey = (b: Uint8Array) => Array.from(b, v => v.toString(16).padStart(2, "0")).join("");
 const keyBytes = (hex: string) => { if (!/^[0-9a-f]{16}$/.test(hex)) throw new Error(`shader key "${hex}" is not 16 lowercase hex digits`); return Uint8Array.from(hex.match(/../g)!, h => parseInt(h, 16)); };
 const order = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset, 8).getBigUint64(0, true);
-export const STAGES = ["vertex", "fragment", "compute"] as const;
+export const STAGES = ["vertex", "fragment", "compute", "task", "mesh"] as const;
 
 export function writeLibrary(entries: { key: string; wgsl: string; reflection: Reflection }[], meta: Record<string, unknown> = {}): Uint8Array {
   const enc = new TextEncoder();

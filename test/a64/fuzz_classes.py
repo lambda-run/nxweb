@@ -179,3 +179,4 @@ try:
 except ImportError:
     pass
 import fuzz_classes_v8x  # noqa: E402,F401  (ARMv8.1+: what a Switch 2 title adds; Unicorn's "max" model)
+import fuzz_classes_fpcr  # noqa: E402,F401  (FPCR.RMode/FZ/DN variants of the FP classes)

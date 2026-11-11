@@ -57,6 +57,7 @@ const requestDevice = async (): Promise<any> => {
 // any program when the page was opened with ?mem64=1 (for measuring the mode)
 let mods64: Promise<RuntimeModules> | undefined;
 const forceMem64 = new URLSearchParams(self.location?.search ?? "").get("mem64") === "1";
+const precise = ({ "1": 1, "2": 2 } as const)[new URLSearchParams(self.location?.search ?? "").get("precise") ?? ""];
 function modules64(): Promise<RuntimeModules> {
   return mods64 ??= (async () => {
     const mod = async (n: string) => WebAssembly.compileStreaming(fetch(`wasm/${n}64.wasm`));
@@ -121,7 +122,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
     try { if (!hasMemory64()) throw new Error("this browser has no 64-bit WebAssembly memory"); set = await modules64(); }
     catch (e: any) { log(`[RED] page: this program needs the 64-bit memory mode and it cannot be had here (${e?.message ?? e})`); rt = undefined as any; status(); return; }
   }
-  const me = rt = new Runtime(set, { clock: "wall", guard, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
+  const me = rt = new Runtime(set, { clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
     layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
   optionsNote = (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
     (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");
@@ -220,6 +221,10 @@ function counters(): Record<string, string | number> {
   if (!rt) return {};
   const c: Record<string, string | number> = { slices: rt.stats.slices, SVCs: rt.stats.svcs, "host calls": rt.stats.hostCalls, "budget units": rt.units, "translated units": rt.disposed ? 0 : rt.a64.units.length,
     "instructions translated": rt.a64.translatedInsns, "module loads at run time": rt.stats.moduleLoads, "threads waiting outside the guest": rt.waitingOutside, "kit refusals": rt.disposed ? "-" : refusedTotal(kitParts()) };
+  if (!rt.disposed) {
+    const l = rt.libcStats.filter(x => x.calls);
+    c["libc intrinsic calls"] = l.length ? l.map(x => `${x.name} ${x.calls} (${(x.bytes / 1048576).toFixed(1)} MB)`).join(", ") : "none (no module defines memcpy, strlen, ... or none was called)";
+  }
   if (gfx) Object.assign(c, { frames: gfx.stats.frames, "NVN calls": gfx.stats.nvnCalls, "SyncWait parked / timed out": `${gfx.stats.syncParked} / ${gfx.stats.syncTimeouts}`, "QueueFinish parked": gfx.stats.finishParked });
   if (audio) Object.assign(c, { "nn::audio calls": audio.stats.calls, "audio ticks": audio.stats.ticks, "audio event signals": audio.stats.signals });
   if (fsys) c["nn::fs calls"] = fsys.stats.calls;
@@ -264,13 +269,18 @@ function status() {
 setInterval(status, 250);
 // The bug report: one block of text. Machine states, the modules, counters, the adapter, the options key, the last
 // 200 log lines. Nothing of it is read from guest memory: the guest's own output lines are left out.
+// which build this is (build.json beside the worker script), for the report
+let buildStamp = "unknown";
+fetch("build.json", { cache: "no-store" }).then(r => r.json()).then((b: { commit: string; branch: string; dirty: boolean; date: string; md5: string }) => {
+  buildStamp = `${b.commit}${b.dirty ? "+changes" : ""} (${b.branch}), built ${b.date}, md5 ${b.md5}`;
+}, () => {});
 function report(userAgent: string): string {
   const lines = history.filter(l => l.kind !== "out").map(l => l.text);
-  const fault = rt && rt.r.rt_stop_kind() === 3 ? rt.red.filter(l => /^\[RED\] (fault: |  x0=)/.test(l)).slice(-2) : [];
+  const fault = rt && rt.r.rt_stop_kind() === 3 ? rt.stopInfo?.fault?.lines ?? [] : [];
   const live = liveStates();
-  return reportText({ title: title || "nxweb report (no program loaded)", when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
+  return reportText({ title: title || "nxweb report (no program loaded)", build: buildStamp, when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
     state: rt ? STATES[rt.r.rt_state()] : "Empty", stop: live.process?.match(/\((.*)\)$/)?.[1] ?? "", fault, modules: modRows, takeovers: tk,
-    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), log: lines.slice(-200), redTotal, scan: scanReport });
+    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, fs: fsys ? fsys.lines() : undefined, log: lines.slice(-200), redTotal, scan: scanReport });
 }
 let lastMachines: ReturnType<typeof machineRows> = [], lastOptionsKey = "";
 let scanReport: string[] | undefined;   // the instruction scan of the program that is loaded, when the prepare step handed it off (its Code stage)
@@ -315,7 +325,16 @@ async function demo(which: string) {
   await load([{ name: "cube", bytes: new Uint8Array(nso) }], await demoShaders(), info.instructionsPerUnit, { name: "the built-in demo (cube.nso)", hooks: me => me.register({ name: "demo_frames", fn: () => 0 }) });
 }
 
-self.onmessage = async (ev: MessageEvent) => {
+// The messages that end or make a process take turns: two loads at once would both end the old process, then both
+// make one, and the first would run on unseen while the second never starts (run loop already taken)
+let turn: Promise<void> = Promise.resolve();
+const PROCESS = new Set(["demo", "load", "handoff", "resume", "stop"]);
+self.onmessage = (ev: MessageEvent) => {
+  if (!PROCESS.has(ev.data?.type) || ev.data.audio) { void handle(ev); return; }
+  const mine = turn.then(() => handle(ev));
+  turn = mine.catch(() => { /* handle logs its own */ });
+};
+async function handle(ev: MessageEvent): Promise<void> {
   const m = ev.data;
   try {
     if (m.audio) { audio?.handle(m); rt?.requestWake(); }
@@ -367,4 +386,4 @@ self.onmessage = async (ev: MessageEvent) => {
       else log("page: there is no WebGPU device to lose");
     }
   } catch (e: any) { log("[RED] page: " + (e?.stack ?? e)); }
-};
+}

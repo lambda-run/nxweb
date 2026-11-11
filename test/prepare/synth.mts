@@ -175,3 +175,80 @@ export function withImport(image: Uint8Array, name: string, plt = 0x1800, slot =
   [A64.adrp(16, plt, slot), (0xF9400211 | ((lo / 8) << 10)) >>> 0, A64.addi(16, 16, lo), 0xD61F0220].forEach((w, k) => dv.setUint32(plt + 4 * k, w, true));
   return out;
 }
+// An image (matchImage's 0x4000 bytes) as a stored NSO: text 0..0x2000, rodata ..0x3000, data the rest; no hashes
+export function nsoOf(image: Uint8Array, id = 0x5A): Uint8Array {
+  const out = new Uint8Array(0x100 + image.length), dv = new DataView(out.buffer);
+  out.set([0x4E, 0x53, 0x4F, 0x30]);
+  [[0, 0x2000], [0x2000, 0x3000], [0x3000, image.length]].forEach(([a, b], i) => {
+    dv.setUint32(0x10 + i * 16, 0x100 + a, true); dv.setUint32(0x14 + i * 16, a, true); dv.setUint32(0x18 + i * 16, b - a, true); dv.setUint32(0x60 + i * 4, b - a, true);
+  });
+  out.fill(id, 0x40, 0x60); out.set(image, 0x100);
+  return out;
+}
+// The image with a dynamic table (0x2100) naming `symbols`: DT_HASH (0x2280, one bucket), symbols (0x2300), strings (0x2A00)
+export function withSymbols(image: Uint8Array, symbols: { name: string; defined: boolean }[]): Uint8Array {
+  const out = image.slice(), dv = new DataView(out.buffer), n = symbols.length + 1;
+  dv.setInt32(0x24, 0x2100 - 0x20, true);
+  ([[4, 0x2280], [6, 0x2300], [5, 0x2A00], [11, 24], [0, 0]] as const).forEach(([tag, value], i) => { dv.setBigInt64(0x2100 + i * 16, BigInt(tag), true); dv.setBigUint64(0x2108 + i * 16, BigInt(value), true); });
+  dv.setUint32(0x2280, 1, true); dv.setUint32(0x2284, n, true);
+  let at = 1;
+  symbols.forEach((s, i) => {
+    const e = 0x2300 + 24 * (i + 1), b = new TextEncoder().encode(s.name);
+    dv.setUint32(e, at, true); out[e + 4] = 0x12; dv.setUint16(e + 6, s.defined ? 1 : 0, true); dv.setBigUint64(e + 8, s.defined ? 0x100n : 0n, true);
+    out.set(b, 0x2A00 + at); at += b.length + 1;
+  });
+  if (0x2300 + 24 * n > 0x2A00 || 0x2A00 + at > 0x3000) throw new Error("withSymbols: too many symbols");
+  return out;
+}
+
+// ---- the wrappers shader_split.py unwraps (the Shaders stage's scan, src/prepare/host/shader_scan.ts) ----
+// A SARC archive (little-endian): header, SFAT with one 16-byte entry per member (name attribute, data start, data
+// end relative to the data), SFNT with the 4-byte aligned names, then the data
+export function sarc(members: Record<string, Uint8Array>): Uint8Array {
+  const names = Object.keys(members), enc = new TextEncoder();
+  const nameBytes: number[] = [], nameAt: number[] = [];
+  for (const n of names) { nameAt.push(nameBytes.length / 4); nameBytes.push(...enc.encode(n), 0); while (nameBytes.length & 3) nameBytes.push(0); }
+  const sfat = 0x14, sfnt = sfat + 12 + 16 * names.length, data = (sfnt + 8 + nameBytes.length + 0xFF) & ~0xFF;
+  const offs: number[] = []; let top = 0;
+  for (const n of names) { top = (top + 0x7F) & ~0x7F; offs.push(top); top += members[n].length; }
+  const out = new Uint8Array(data + top), dv = new DataView(out.buffer);
+  out.set([0x53, 0x41, 0x52, 0x43], 0); dv.setUint16(4, 0x14, true); dv.setUint16(6, 0xFEFF, true); dv.setUint32(8, out.length, true); dv.setUint32(12, data, true); dv.setUint16(16, 0x100, true);
+  out.set([0x53, 0x46, 0x41, 0x54], sfat); dv.setUint16(sfat + 4, 12, true); dv.setUint16(sfat + 6, names.length, true); dv.setUint32(sfat + 8, 0x65, true);
+  names.forEach((n, i) => { const e = sfat + 12 + 16 * i; dv.setUint32(e + 4, (1 << 24 | nameAt[i]) >>> 0, true); dv.setUint32(e + 8, offs[i], true); dv.setUint32(e + 12, offs[i] + members[n].length, true); });
+  out.set([0x53, 0x46, 0x4E, 0x54], sfnt); dv.setUint16(sfnt + 4, 8, true); out.set(nameBytes, sfnt + 8);
+  names.forEach((n, i) => out.set(members[n], data + offs[i]));
+  return out;
+}
+// A Yaz0 stream: literal groups, with one back-reference per group of 16 equal bytes so that both kinds are read
+export function yaz0(b: Uint8Array): Uint8Array {
+  const out: number[] = [0x59, 0x61, 0x7A, 0x30, b.length >>> 24, (b.length >>> 16) & 255, (b.length >>> 8) & 255, b.length & 255, 0, 0, 0, 0, 0, 0, 0, 0];
+  let i = 0;
+  while (i < b.length) {
+    const hi = out.length; out.push(0);
+    let h = 0;
+    for (let bit = 0; bit < 8 && i < b.length; bit++) {
+      let run = 0; while (i >= 1 && run < 15 && i + run < b.length && b[i + run] === b[i - 1]) run++;
+      if (run >= 3) { out.push(((run - 2) << 4) | 0, 0); i += run; }   // distance 1, length run
+      else { h |= 0x80 >> bit; out.push(b[i++]); }
+    }
+    out[hi] = h;
+  }
+  return Uint8Array.from(out);
+}
+// A GLSLC output (shader_split.py glslc_layout, glslc_section): magic, +0x44 the output's length, +0x4C the section
+// count, section headers from +0x90 (0x90 apart: size, data offset, type 0 = GPU code, +0x30 control offset, +0x34 code
+// offset, +0x38 code length, +0x3C control length); each stage's control section with its code area right after it
+export function glslc(stages: { control: Uint8Array; code: Uint8Array }[]): Uint8Array {
+  const first = 0x90, data = (first + 0x90 * stages.length + 0xFF) & ~0xFF;
+  const at: number[] = []; let top = data;
+  for (const s of stages) { at.push(top); top = (top + s.control.length + s.code.length + 0xFF) & ~0xFF; }
+  const out = new Uint8Array(top), dv = new DataView(out.buffer);
+  out.set([0x91, 0x68, 0x86, 0x19], 0); dv.setUint32(0x44, top, true); dv.setUint32(0x4C, stages.length, true);
+  stages.forEach((s, i) => {
+    const h = first + 0x90 * i;
+    dv.setUint32(h, s.control.length + s.code.length, true); dv.setUint32(h + 4, at[i], true); dv.setUint32(h + 8, 0, true);
+    dv.setUint32(h + 0x30, 0, true); dv.setUint32(h + 0x34, s.control.length, true); dv.setUint32(h + 0x38, s.code.length, true); dv.setUint32(h + 0x3C, s.control.length, true);
+    out.set(s.control, at[i]); out.set(s.code, at[i] + s.control.length);
+  });
+  return out;
+}

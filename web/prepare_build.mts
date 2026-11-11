@@ -12,6 +12,8 @@ export function buildPreparePage(): void {
   build();
   mkdirSync(join(WEB, "wasm"), { recursive: true }); mkdirSync(join(WEB, "profiles"), { recursive: true });
   buildSync({ entryPoints: ["web/prepare.ts"], bundle: true, format: "iife", outfile: "build/web/prepare.js", logLevel: "warning", absWorkingDir: ROOT });
+  // the Shaders stage's scan Worker; the translation is the runtime's shader_worker.js and shaders/ (web:build)
+  buildSync({ entryPoints: ["web/prepare_shader_worker.ts"], bundle: true, format: "iife", outfile: "build/web/prepare_shader_worker.js", logLevel: "warning", absWorkingDir: ROOT });
   copyFileSync(join(ROOT, "web", "prepare.html"), join(WEB, "prepare.html"));
   copyFileSync(WASM, join(WEB, "wasm", "prepare.wasm"));
   // the Code stage's instruction scan decodes with the translator binary itself: the one the runtime's build made

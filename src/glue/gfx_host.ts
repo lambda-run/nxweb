@@ -3,6 +3,7 @@
 // file reads each record and the tables it points to from the shared linear memory and makes the WebGPU call for it.
 // Record layouts: src/gfx/hostops.ts. Pipeline key: src/gfx/pipeline.ts. Texture description: nvn_texdesc (obj.ts).
 // Browser code (WebGPU types are left loose: the tree has no @webgpu/types).
+import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
 export type { Capture, CaptureImage } from "./gfx_capture.ts";
@@ -42,7 +43,8 @@ export type VinClass = "float" | "sint" | "uint";
 //   @group(2) @binding(0)                       the position fix-up (vertex, `fixup`)
 //   vertex inputs @location(l) = NVN attribute l, fragment outputs @location(i) = colour target i
 export interface ShaderInfo {
-  stage: "vertex" | "fragment" | "compute";
+  stage: "vertex" | "fragment" | "compute" | "task" | "mesh";   // task, mesh: compute WGSL wrapped by src/shaders/meshstage.ts, drawn by "mesh draws" below
+  mesh?: MeshStage;        // task, mesh: the stage's facts (output layout, payload, limits)
   wgsl: string;
   entry?: string;
   ubos?: number[];
@@ -86,7 +88,8 @@ export interface GfxHostOptions {
 
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
   BLEND_COLOR: 12, STENCIL_REF: 13, DRAW: 14, DRAW_IDX: 15, CLEAR_RECT: 16, COPY_B2T: 17, COPY_T2T: 18, SNAPSHOT: 19, PRESENT: 20, FENCE: 21, FLUSH: 22, MEM_DIRTY: 23, TEX_DATA: 24, COPY_T2B: 25, FIXUP: 26,
-  UBO_DATA: 27, SSBO: 28, IMG: 29, BEGIN_COMPUTE: 30, DISPATCH: 31, BUF_READBACK: 32 };
+  UBO_DATA: 27, SSBO: 28, IMG: 29, BEGIN_COMPUTE: 30, DISPATCH: 31, BUF_READBACK: 32,
+  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38 };
 // Pipeline key offsets (src/gfx/pipeline.ts)
 const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8, samples: 9, ncolor: 10, depthFmt: 11, colorFmt: 12, a2c: 20, flags: 21, blendEn: 22, stencilV: 23, stencilW: 24,
   itype: 25, chmask: 28, ds: 32, blend: 40, offset: 104, attrMask: 116, attr: 120, stream: 248, vin: 376 };
@@ -96,7 +99,7 @@ interface Tex { serial: number; target: number; format: number; flags: number; s
   gpu?: GPU; snap?: GPU; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
 interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo"; dyn: boolean; write: boolean }
 interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
-  dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU }
+  mesh?: boolean; dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU }
 interface Chunk { buf: GPU; staging: Uint8Array; used: number }
 interface UaSlot { c: Chunk; off: number; size: number }
 interface GpuRange { addr: number; size: number; buf: GPU; hash: number; pending: number }
@@ -133,7 +136,8 @@ export class GfxHost {
   canvasFormat = "bgra8unorm";
   lastPresented = 0;
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
-    clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0 };
+    clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0,
+    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
   caps = 0;
   // Hooks for the embedder (the kernel's waits): a fence completed (everything submitted before it is done on the GPU
@@ -230,7 +234,7 @@ export class GfxHost {
     this.textures.clear(); this.shaders = [];
     this.pipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
     this.converted.clear(); this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
-    this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null;
+    this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.readbacks = [];
     // nobody waits on a replayer that is gone
     const waiters = this.fenceWaiters; this.fenceWaiters = []; this.fencesPending.clear();
@@ -280,8 +284,13 @@ export class GfxHost {
     this.reportsLost();
     this.onDeviceLost?.(info ?? {});
     if (this.opts.requestDevice) {
-      try { const d = await this.opts.requestDevice(); if (d) this.restore(d); else this.log("[RED] no new WebGPU device after the loss: nothing is drawn"); }
-      catch (e: any) { this.log(`[RED] no new WebGPU device after the loss: ${e?.message ?? e}`); }
+      const gen = this.gen;
+      try {
+        const d = await this.opts.requestDevice();
+        // disposed while the browser was asked: the new device has nobody to draw for
+        if (gen !== this.gen || this.disposed) return;
+        if (d) this.restore(d); else this.log("[RED] no new WebGPU device after the loss: nothing is drawn");
+      } catch (e: any) { this.log(`[RED] no new WebGPU device after the loss: ${e?.message ?? e}`); }
     }
   }
   // A new device after a loss: every GPU object is dropped and made again from guest state. Textures whose content is
@@ -294,7 +303,7 @@ export class GfxHost {
     for (const s of this.shaders) if (s) { s.module = undefined; s.variants = undefined; }
     this.pipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
     this.converted.clear(); this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
-    this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null;
+    this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.adopt(device);
     this.lost = false;
     this.x.gfx_host_caps?.(this.caps);
@@ -310,7 +319,8 @@ export class GfxHost {
     const dv = this.dv, r = Number(this.x.gfx_scratch()), bit = (a?: number[]) => (a ?? []).reduce((m, i) => m | (1 << i), 0) >>> 0;
     const unknown = (info.extra ?? []).filter(e => e.kind !== "support");
     if (unknown.length) { this.log(`[RED] shader ${keyHex} needs bindings the replayer does not provide (${unknown.map(e => e.kind).join(", ")}): not registered`); return -1; }
-    const support = info.support || (info.extra ?? []).some(e => e.kind === "support"), st = info.stage === "vertex" ? 0 : info.stage === "fragment" ? 1 : 2;
+    if ((info.stage === "task" || info.stage === "mesh") && info.mesh?.kind !== (info.stage === "task" ? "ts" : "ms")) { this.log(`[RED] ${info.stage} shader ${keyHex} has no stage facts (reflection "mesh"): not registered`); return -1; }
+    const support = info.support || (info.extra ?? []).some(e => e.kind === "support"), st = info.stage === "vertex" ? 0 : info.stage === "fragment" ? 1 : info.stage === "task" ? 3 : info.stage === "mesh" ? 4 : 2;
     new Uint8Array(this.memory.buffer, r, 400).fill(0);
     let depth = 0, bindless = 0;
     for (const t of info.textures ?? []) {
@@ -339,6 +349,7 @@ export class GfxHost {
       for (const l of info.attributes ?? []) vin |= BigInt(Math.max(0, CLASSES.indexOf(info.attributeTypes[l] ?? "float"))) << BigInt(l * 2);
       dv.setBigUint64(r + 128, vin, true); dv.setUint32(r + 136, 1, true);
     }
+    if (info.mesh?.task) dv.setUint32(r + 136, dv.getUint32(r + 136, true) | 4, true);   // RF_flags 4: the mesh shader reads its task's payload
     const b = keyHex.match(/../g)!.map(h => parseInt(h, 16));
     const lo = (b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, hi = (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0;
     const id = this.x.gfx_shader_register(lo, hi, r);
@@ -579,6 +590,13 @@ export class GfxHost {
     if (this.enc) { this.device.queue.submit([this.enc.finish()]); this.enc = null; this.stats.submits++; }
     this.segAfterSubmit(stamps);
     const gen = this.gen;
+    this.meshCtlAt = 0; for (const b of this.meshOld.splice(0)) this.kill(b);
+    for (const q of this.meshSamples.splice(0)) this.readbacks.push(q.buf.mapAsync(1).then(() => {
+      if (gen !== this.gen) return;
+      const w = new Uint32Array(q.buf.getMappedRange().slice(0)); q.buf.unmap(); this.kill(q.buf);
+      const line = `mesh draw ${q.n}: {count ${w[0]}, first ${w[1]}}${q.task ? `, tasks launched up to ${w[5]} mesh workgroups each` : ""}, ${w[9]} output slots drawn (${w[9] * w[20]} vertices)${q.indirect ? " (indirect: counts read on the GPU)" : ""}`;
+      if (w[10]) this.log(`[RED] ${line}: cut to the ${w[16]} slots the output buffer holds, the rest are not drawn`); else this.log(line);
+    }, () => {}));
     for (const q of this.queued.splice(0)) this.readbacks.push(q.buf.mapAsync(1).then(() => {
       if (gen !== this.gen) return;
       const src = new Uint8Array(q.buf.getMappedRange()), mem = this.u8;
@@ -784,7 +802,7 @@ export class GfxHost {
       const counts: [string, number, string, number][] = [
         ["uniform buffers", (s.ubos?.length ?? 0) + (s.support ? 1 : 0) + (st === 0 && fixup ? 1 : 0), "maxUniformBuffersPerShaderStage", 12],
         ["sampled textures", s.textures?.length ?? 0, "maxSampledTexturesPerShaderStage", 16], ["samplers", s.textures?.length ?? 0, "maxSamplersPerShaderStage", 16],
-        ["storage buffers", s.storage?.length ?? 0, "maxStorageBuffersPerShaderStage", 8], ["storage textures", s.images?.length ?? 0, "maxStorageTexturesPerShaderStage", 4]];
+        ["storage buffers", (s.storage?.length ?? 0) + (s.stage === "mesh" ? (s.mesh?.task ? 3 : 2) : s.stage === "task" ? 2 : 0), "maxStorageBuffersPerShaderStage", 8], ["storage textures", s.images?.length ?? 0, "maxStorageTexturesPerShaderStage", 4]];
       if (st === 0) counts.push(["vertex attributes", s.attributes?.length ?? 0, "maxVertexAttributes", 16]);
       const who = `the ${["vertex", "fragment", "compute"][st]} shader ${this.shaders.find(x => x?.info === s)?.key ?? ""}`;
       for (const [what, n, limit, fallback] of counts) { const max = this.limit(limit, fallback); if (n > max) red(who, n, what, max, limit, " a stage"); }
@@ -803,6 +821,8 @@ export class GfxHost {
       this.pipes.set(id, pipe);
       if (this.overLimits(id, stages, false)) { this.pipeFailed(id); return; }
       const { layouts, g0 } = this.groupLayouts(stages, false);
+      if (cs.mesh) layouts.push(this.layoutOf([0, 1, 2].filter(b => b !== (cs.mesh!.kind === "ts" ? 1 : cs.mesh!.task ? -1 : 2))
+        .map(b => ({ binding: b, visibility: 4, buffer: { type: b === 2 && cs.mesh!.kind === "ms" ? "read-only-storage" : "storage" } }))));
       pipe.layouts = layouts; pipe.g0 = g0;
       pipe.desc = { layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }), compute: { module: this.module(csId), entryPoint: cs.entry } };
       this.device.createComputePipelineAsync(pipe.desc).then((p: GPU) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
@@ -810,6 +830,7 @@ export class GfxHost {
       return;
     }
     const vsId = dv.getUint16(k + PK.vs, true), fsId = dv.getUint16(k + PK.fs, true), vs = this.shaders[vsId].info, fs = this.shaders[fsId].info, flags = dv.getUint8(k + PK.flags);
+    const mesh = vs.stage === "mesh" ? vs.mesh! : null;     // a mesh draw: the vertex shader is made from the mesh shader's outputs (meshVertexModule)
     const buffers: any[] = [], classes: Record<number, VinClass> = {};
     for (let loc = 0, m = dv.getUint32(k + PK.attrMask, true); m; loc++, m >>>= 1) {
       if (!(m & 1)) continue;
@@ -822,7 +843,7 @@ export class GfxHost {
     }
     for (let i = 0; i < buffers.length; i++) buffers[i] ??= null;
     const prim = dv.getUint8(k + PK.prim), itype = dv.getUint8(k + PK.itype), cull = dv.getUint8(k + PK.cull);
-    const primitive: any = { topology: TOPOLOGY[prim], cullMode: cull === 1 ? "front" : cull === 2 ? "back" : "none", frontFace: dv.getUint8(k + PK.front) ? "ccw" : "cw" };
+    const primitive: any = { topology: mesh ? TOPOLOGY_OF[mesh.verts!] : TOPOLOGY[prim], cullMode: cull === 1 ? "front" : cull === 2 ? "back" : "none", frontFace: dv.getUint8(k + PK.front) ? "ccw" : "cw" };
     if (itype) primitive.stripIndexFormat = itype === 3 ? "uint32" : "uint16";
     if (flags & 1) { if (this.device.features?.has?.("depth-clip-control")) primitive.unclippedDepth = true; else this.red("clamp", "depth clamp needs the WebGPU feature depth-clip-control, which this device lacks: depth is clipped"); }
     const ncolor = dv.getUint8(k + PK.ncolor), chmask = dv.getUint32(k + PK.chmask, true), blendEn = dv.getUint8(k + PK.blendEn), written = new Set(fs.outputs ?? []);
@@ -838,18 +859,19 @@ export class GfxHost {
       }
       targets.push(t);
     }
-    const stages = [{ info: vs, st: 0 }, { info: fs, st: 1 }];
-    const pipe: Pipe = { id, compute: false, desc: null, stages: [vsId, fsId], key: k, layouts: [], g0: [], gen };
+    const stages = mesh ? [{ info: fs, st: 1 }] : [{ info: vs, st: 0 }, { info: fs, st: 1 }];
+    const pipe: Pipe = { id, compute: false, desc: null, stages: mesh ? [fsId] : [vsId, fsId], key: k, layouts: [], g0: [], gen, mesh: !!mesh };
     this.pipes.set(id, pipe);
-    if (this.overLimits(id, stages, !!vs.fixup)) { this.pipeFailed(id); return; }
-    const { layouts, g0 } = this.groupLayouts(stages, !!vs.fixup);
+    if (this.overLimits(id, stages, !mesh && !!vs.fixup)) { this.pipeFailed(id); return; }
+    const { layouts, g0 } = this.groupLayouts(stages, !mesh && !!vs.fixup);
+    if (mesh) layouts.push(this.layoutOf([{ binding: 0, visibility: 1, buffer: { type: "uniform" } }, { binding: 1, visibility: 1, buffer: { type: "read-only-storage" } }]));
     pipe.layouts = layouts; pipe.g0 = g0; pipe.dynOnly = g0.length > 0 && g0.every(s => s.dyn);
     // Vertex inputs of another class than the shader declares (flag 2, decided by the recorder): the module must be a variant
-    const vmod = flags & 2 ? this.variantModule(vsId, classes) : this.module(vsId);
+    const vmod = mesh ? this.meshVertexModule(id, vsId, fsId) : flags & 2 ? this.variantModule(vsId, classes) : this.module(vsId);
     if (!vmod) { this.pipeFailed(id); return; }
     const desc: any = {
       layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }),
-      vertex: { module: vmod, entryPoint: vs.entry, buffers }, primitive,
+      vertex: { module: vmod, entryPoint: mesh ? "main" : vs.entry, buffers: mesh ? [] : buffers }, primitive,
       multisample: { count: dv.getUint8(k + PK.samples) || 1, alphaToCoverageEnabled: dv.getUint8(k + PK.a2c) !== 0 && (dv.getUint8(k + PK.samples) || 1) > 1 },
       fragment: { module: this.module(fsId), entryPoint: fs.entry, targets },
     };
@@ -863,7 +885,7 @@ export class GfxHost {
         d.stencilBack = { compare: COMPARE[fld(11, 4)], failOp: STENCIL_OP[fld(27, 4)], depthFailOp: STENCIL_OP[fld(31, 4)], passOp: STENCIL_OP[fld(35, 4)] };
         d.stencilReadMask = dv.getUint8(k + PK.stencilV); d.stencilWriteMask = dv.getUint8(k + PK.stencilW);
       }
-      if ((dv.getUint8(k + PK.offsetEn) & 4) && df.kind === "depth" && prim >= 4) {
+      if ((dv.getUint8(k + PK.offsetEn) & 4) && df.kind === "depth" && (mesh ? mesh.verts === 3 : prim >= 4)) {
         d.depthBias = Math.round(dv.getFloat32(k + PK.offset + 4, true)); d.depthBiasSlopeScale = dv.getFloat32(k + PK.offset, true); d.depthBiasClamp = dv.getFloat32(k + PK.offset + 8, true);
       }
       desc.depthStencil = d;
@@ -971,7 +993,7 @@ export class GfxHost {
     } else g0 = this.group(layouts[0], e0);
     this.pass.setBindGroup(0, g0, offs);
     this.pass.setBindGroup(1, g1.length ? this.group(layouts[1], g1) : (c.empty1 ??= this.group(layouts[1], g1)));
-    if (layouts[2]) {
+    if (layouts[2] && !c.mesh && !c.compute) {
       const key = this.fix.join(",");
       let g = this.fixGroups.get(key);
       if (!g) { const b = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(b, 0, new Float32Array(this.fix)); g = this.device.createBindGroup({ layout: layouts[2], entries: [{ binding: 0, resource: { buffer: b } }] }); this.fixGroups.set(key, g); }
@@ -993,6 +1015,133 @@ export class GfxHost {
     this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
   }
 
+
+  // ---- mesh draws (src/gfx/lower.ts meshDraw, src/shaders/meshstage.ts) ----
+  // MESH_BEGIN: the draw's control words (CTL_WORDS of a ring, one slice a draw in a submission) are written, an indirect draw's {count, first} copied over them
+  // from where the GPU or the CPU wrote it, a compute pass begins and a helper turns the counts into the first grid. MESH_TASK runs the task shader over it and
+  // a helper turns the largest launch count into the mesh grid; MESH_RUN runs the mesh shader into the output slots and ends the pass; MESH_DRAW draws the
+  // slots in the render pass begun again (drawIndirect: the vertex count is the GPU's). One output buffer and one task buffer serve every mesh draw, in order
+  // The grids and draw arguments are copied (by the helpers) into a second ring, the one dispatchWorkgroupsIndirect and drawIndirect read: a
+  // buffer may not be both a dispatch's writable storage and its indirect source
+  private meshCtls: GPU[] = []; private meshArgs: GPU[] = []; private meshCtlAt = 0; private meshOut: GPU = null; private meshTask: GPU = null; private meshOld: GPU[] = [];
+  private meshCur: { ctl: GPU; args: GPU; off: number; task: boolean } | null = null;
+  private meshHelp: { prep: GPU; fin: GPU; layout: GPU } | null = null;
+  private meshSamples: { buf: GPU; n: number; task: boolean; indirect: boolean }[] = [];
+  private meshShown = 0; private fixBufs = new Map<string, GPU>();
+  private layoutOf(entries: any[]): GPU {
+    const key = JSON.stringify(entries);
+    let l = this.layouts.get(key);
+    if (!l) { l = this.device.createBindGroupLayout({ entries }); this.layouts.set(key, l); }
+    return l;
+  }
+  private meshVertexModule(id: number, msId: number, fsId: number): GPU {
+    const ms = this.shaders[msId], fs = this.shaders[fsId];
+    try {
+      const code = pullVertexShader(ms.info.mesh!, fragmentInputs(fs.info.wgsl));
+      if (this.meshShown++ < 8) { const m = ms.info.mesh!; this.log(`mesh pipeline ${id}: mesh shader ${ms.key} (${m.maxV} vertices, ${m.maxP} ${["", "points", "lines", "triangles"][m.verts!]}, ${m.vertex!.length} + ${m.primitive!.length} output words a vertex / primitive${m.task ? ", reads a task's payload" : ""}) runs as compute; fragment shader ${fs.key} draws its outputs`); }
+      return this.device.createShaderModule({ code });
+    } catch (e: any) { this.log(`[RED] mesh pipeline ${id} (mesh shader ${ms.key}, fragment shader ${fs.key}): ${e?.message ?? e}: its draws are skipped`); return null; }
+  }
+  private meshHelpers() {
+    if (this.meshHelp) return this.meshHelp;
+    const layout = this.layoutOf([0, 1].map(binding => ({ binding, visibility: 4, buffer: { type: "storage" } })));
+    const m = this.device.createShaderModule({ code: `@group(0) @binding(0) var<storage, read_write> c: array<u32, ${CTL_WORDS}>;
+@group(0) @binding(1) var<storage, read_write> a: array<u32, 16>;
+fn draw(n: u32) { c[9] = n; c[12] = n * c[20]; c[13] = 1u; c[14] = 0u; c[15] = 0u; for (var i = 0u; i < 16u; i++) { a[i] = c[i]; } }
+@compute @workgroup_size(1) fn prep() {
+  let cap = select(c[16], c[17], c[18] != 0u); let n = min(c[0], cap);
+  c[2] = min(n, ${0xffff}u); c[3] = (n + ${0xfffe}u) / ${0xffff}u; c[4] = 1u; c[5] = 0u; c[10] = select(0u, 1u, c[0] > cap);
+  if (c[18] == 0u) { draw(n); } else { draw(0u); }
+}
+@compute @workgroup_size(1) fn fin() {
+  let tasks = min(min(c[0], c[17]), ${0xffff}u); let ml = min(c[5], ${0xffff}u); let total = tasks * ml;
+  c[6] = ml; c[7] = select(tasks, 0u, ml == 0u); c[8] = 1u;
+  if (total > c[16]) { c[10] = 1u; }
+  draw(min(total, c[16]));
+}` });
+    const pl = this.device.createPipelineLayout({ bindGroupLayouts: [layout] });
+    return (this.meshHelp = { layout, prep: this.device.createComputePipeline({ layout: pl, compute: { module: m, entryPoint: "prep" } }), fin: this.device.createComputePipeline({ layout: pl, compute: { module: m, entryPoint: "fin" } }) });
+  }
+  private meshBuf(cur: GPU, size: number, budget: number): GPU {
+    if (cur && cur.size >= size) return cur;
+    if (cur) this.meshOld.push(cur);
+    return this.newBuffer({ size: Math.max(size, Math.min(budget, (cur?.size ?? 32768) * 2)), usage: 0x80 | 0x08 | 0x04 });
+  }
+  private meshBegin(dv: DataView, p: number) {
+    this.endPass(); this.meshCur = null; this.cur = null;
+    const flags = dv.getUint32(p + 8, true), first = dv.getUint32(p + 12, true), count = dv.getUint32(p + 16, true), ind = this.u64(dv, p + 24);
+    const msId = dv.getUint32(p + 32, true), tsId = dv.getInt32(p + 36, true), task = (flags & 2) !== 0, indirect = (flags & 1) !== 0;
+    const m = this.shaders[msId]?.info.mesh, tm = task ? this.shaders[tsId]?.info.mesh : undefined;
+    if (!m || m.kind !== "ms" || (task && tm?.kind !== "ts")) { this.red("meshinfo", "a mesh draw names shaders that are not a registered mesh (and task) shader: skipped"); this.stats.meshFailed++; return; }
+    const SW = slotWords(m), TS = tm ? taskStride(tm) : 0, budget = Math.min(this.limit("maxStorageBufferBindingSize", 134217728), 64 << 20);
+    const slotCap = Math.max(1, Math.floor(budget / (SW * 4))), taskCap = tm ? Math.max(1, Math.floor(budget / (TS * 4))) : 0;
+    if (!indirect && count > (task ? taskCap : slotCap))
+      this.red("meshcut", `a mesh draw of ${count} ${task ? "task" : "mesh"} workgroups is over the ${task ? taskCap : slotCap} its buffer holds (${budget >> 20} MB at ${(task ? TS : SW) * 4} bytes each): the rest are not drawn`);
+    this.meshOut = this.meshBuf(this.meshOut, (!indirect && !task ? Math.min(count, slotCap) : slotCap) * SW * 4, budget);
+    if (task) this.meshTask = this.meshBuf(this.meshTask, (indirect ? taskCap : Math.min(count, taskCap)) * TS * 4, budget);
+    const at = this.meshCtlAt++, off = (at & 1023) * CTL_WORDS * 4;
+    const ctl = (this.meshCtls[at >> 10] ??= this.newBuffer({ size: 1024 * CTL_WORDS * 4, usage: 0x80 | 0x08 | 0x04 }));
+    const args = (this.meshArgs[at >> 10] ??= this.newBuffer({ size: 1024 * CTL_WORDS * 4, usage: 0x80 | 0x100 }));
+    const w = new Uint32Array(CTL_WORDS);
+    w[0] = indirect ? 0 : count; w[1] = first; w[16] = slotCap; w[17] = taskCap; w[18] = task ? 1 : 0; w[19] = TS; w[20] = m.maxP! * m.verts!;
+    this.device.queue.writeBuffer(ctl, off, w);
+    if (indirect) {
+      const src = ind % 4 === 0 ? this.upload(ind, 8, 3) : null;
+      if (src) this.encoder().copyBufferToBuffer(src, this.upOff, ctl, off, 8);
+      else this.red("meshind", `an indirect mesh draw's {count, first} at 0x${ind.toString(16)} is ${ind % 4 ? "not 4-byte aligned" : "in no memory the replayer has"}: drawn as no workgroups`);
+    }
+    const h = this.meshHelpers();
+    this.pass = this.encoder().beginComputePass(); this.computePass = true; this.stats.computePasses++;
+    this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
+    this.pass.setPipeline(h.prep); this.pass.setBindGroup(0, this.device.createBindGroup({ layout: h.layout, entries: this.meshHelpEntries(ctl, args, off) }));
+    this.pass.dispatchWorkgroups(1);
+    this.meshCur = { ctl, args, off, task };
+    this.stats.meshDraws++; if (indirect) this.stats.meshIndirect++; if (task) this.stats.meshWithTask++;
+    const n = this.stats.meshDraws;
+    if (n <= 3 || (n & (n - 1)) === 0 && n <= 4096) {      // a few draws' counts as the GPU had them, logged after the submission (flush)
+      const buf = this.newBuffer({ size: CTL_WORDS * 4, usage: 0x01 | 0x08 });
+      this.meshSamples.push({ buf, n, task, indirect }); (this.meshCur as any).sample = buf;
+    }
+  }
+  private meshHelpEntries(ctl: GPU, args: GPU, off: number) {
+    return [{ binding: 0, resource: { buffer: ctl, offset: off, size: CTL_WORDS * 4 } }, { binding: 1, resource: { buffer: args, offset: off, size: 64 } }];
+  }
+  private meshCompute(pipe: number, entries: any[], at: number): boolean {
+    const mc = this.meshCur!;
+    if (!this.usePipeline(pipe) || !this.bind()) { this.stats.meshFailed++; return false; }
+    this.pass.setBindGroup(2, this.device.createBindGroup({ layout: this.cur!.layouts[2], entries: [{ binding: 0, resource: { buffer: mc.ctl, offset: mc.off, size: CTL_WORDS * 4 } }, ...entries] }));
+    this.pass.dispatchWorkgroupsIndirect(mc.args, mc.off + at); this.stats.dispatches++;
+    return true;
+  }
+  private meshTaskRun(pipe: number) {
+    const mc = this.meshCur;
+    if (!mc || !this.computePass) return;
+    this.meshCompute(pipe, [{ binding: 2, resource: { buffer: this.meshTask } }], 8);
+    this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
+    const h = this.meshHelp!;
+    this.pass.setPipeline(h.fin); this.pass.setBindGroup(0, this.device.createBindGroup({ layout: h.layout, entries: this.meshHelpEntries(mc.ctl, mc.args, mc.off) }));
+    this.pass.dispatchWorkgroups(1); this.cur = null;
+  }
+  private meshRun(pipe: number) {
+    const mc = this.meshCur;
+    if (!mc || !this.computePass) return;
+    this.meshCompute(pipe, [{ binding: 1, resource: { buffer: this.meshOut } }, ...(mc.task ? [{ binding: 2, resource: { buffer: this.meshTask } }] : [])], mc.task ? 24 : 8);
+    this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
+    this.endPass(); this.cur = null;
+    const sample = (mc as any).sample;
+    if (sample) this.encoder().copyBufferToBuffer(mc.ctl, mc.off, sample, 0, CTL_WORDS * 4);
+  }
+  private meshDraw() {
+    const mc = this.meshCur, c = this.cur;
+    if (!mc || !c || !this.pass) return;
+    if (this.bindDirty && !this.bind()) return;
+    const key = this.fix.join(",");
+    let fb = this.fixBufs.get(key);
+    if (!fb) { fb = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(fb, 0, new Float32Array(this.fix)); this.fixBufs.set(key, fb); }
+    this.pass.setBindGroup(2, this.device.createBindGroup({ layout: c.layouts[2], entries: [{ binding: 0, resource: { buffer: fb } }, { binding: 1, resource: { buffer: this.meshOut } }] }));
+    this.pass.drawIndirect(mc.args, mc.off + 48);
+    this.stats.draws++;
+  }
 
   // ---- helper pipelines: clears drawn as a triangle, blits ----
   private clearRect(dv: DataView, p: number) {
@@ -1222,6 +1371,10 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.DISPATCH: this.dispatch(dv, p); break;
         case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (dv.getUint32(p + 28, true) & 1) !== 0 }); this.bindDirty = true; break;
         case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null }); this.bindDirty = true; break; }
+        case H.MESH_BEGIN: this.meshBegin(dv, p); break;
+        case H.MESH_TASK: this.meshTaskRun(dv.getUint32(p + 8, true)); break;
+        case H.MESH_RUN: this.meshRun(dv.getUint32(p + 8, true)); break;
+        case H.MESH_DRAW: this.meshDraw(); break;
         case H.BUF_READBACK: this.bufReadback(this.u64(dv, p + 8), dv.getUint32(p + 16, true)); break;
         case H.UBO_DATA: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: 0, size: 0, need: 0, data: this.u8.slice(p + 24, p + 24 + dv.getUint32(p + 16, true)) }); this.bindDirty = true; break;
         case H.VIEWPORT: this.pass.setViewport(dv.getFloat32(p + 8, true), dv.getFloat32(p + 12, true), dv.getFloat32(p + 16, true), dv.getFloat32(p + 20, true), dv.getFloat32(p + 24, true), Math.max(dv.getFloat32(p + 24, true), dv.getFloat32(p + 28, true))); break;

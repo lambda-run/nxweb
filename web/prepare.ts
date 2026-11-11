@@ -11,6 +11,9 @@ import { fetchProfiles } from "../src/prepare/host/profiles.ts";
 import { Prepare, STAGES, type StageName, type Snapshot, type DetectOut, type ProfileOut, type CodeOut, type IndexOut, type HandOffMessage, type PrepResult } from "../src/prepare/host/prepare.ts";
 import { verdictFor, failureSentence, explainFile, type Verdict } from "../src/prepare/host/verdict.ts";
 import { A64Scanner, scanHeadline, scanLines } from "../src/glue/a64_scan.ts";
+import { hleHeadline, hleLines } from "../src/glue/hle_scan.ts";
+import { pagePrewarm } from "./prepare_shaders.ts";
+import type { PrewarmOut } from "../src/prepare/host/shader_prewarm.ts";
 
 const $ = (id: string) => document.getElementById(id)!;
 const params = new URLSearchParams(location.search);
@@ -77,6 +80,7 @@ function stageLine(s: StageName, snap: Snapshot): string {
     if (s === "detect") return `${c.files} files seen`;
     if (s === "index") return `${c.romFiles} files, ${c.romDirs} directories (${c.done} of ${c.total} trees)`;
     if (s === "code") return `module ${c.done} of ${c.total}, ${fmtBytes(c.bytesDone)} of ${fmtBytes(c.bytesTotal)}, ${c.cuts} cuts`;
+    if (s === "shaders" && c.total > 0) return `file ${c.done} of ${c.total}, ${fmtBytes(c.bytesDone)} of ${fmtBytes(c.bytesTotal)}; ${c.shFound} stages found, ${c.shTranslated} translated, ${c.shFailed} failed`;
     return "";
   }
   if (rec.state === "failed") return esc(rec.error ?? "");
@@ -85,15 +89,28 @@ function stageLine(s: StageName, snap: Snapshot): string {
   if (s === "index") { const i = o as IndexOut; return `${i.rom.files} files, ${i.rom.dirs} directories, ${fmtBytes(i.rom.bytes)}, read in place${i.aoc.length ? `; ${i.aoc.length} add-on contents` : ""}`; }
   if (s === "profile") { const p = o as ProfileOut; return p.found ? `${esc(p.name)} (${p.id}${p.by === "build" ? ", found by main's build ID" : ""})${p.registered ? "" : "; not a registered build"}` : "no profile: provisional"; }
   if (s === "code") {
-    const k = o as CodeOut, head = k.scan ? scanHeadline(k.scan) : "";
-    return `${k.modules.map(m => m.name).join(", ")}; ${k.cuts} cuts applied` + (head ? `<br><b id="scanline" class="warn">${esc(head)}</b>` : "");
+    const k = o as CodeOut, head = k.scan ? scanHeadline(k.scan) : "", hle = hleHeadline(k.hle ?? []);
+    return `${k.modules.map(m => m.name).join(", ")}; ${k.cuts} cuts applied` + (head ? `<br><b id="scanline" class="warn">${esc(head)}</b>` : "") + (hle ? `<br><b id="hleline" class="warn">${esc(hle)}</b>` : "");
   }
-  return "translated on demand in the page and cached; nothing to do ahead";
+  return shadersLine(o.prewarm as PrewarmOut | null);
+}
+// the Shaders stage's scan: what was found and translated ahead, what failed and why, what was not read
+function shadersLine(p: PrewarmOut | null): string {
+  if (!p) return "translated on demand in the page and cached; nothing to do ahead";
+  const kinds = Object.entries(p.containers).filter(([, n]) => n).map(([k, n]) => `${n} ${k.toUpperCase()}`).join(", ");
+  const list = (rs: PrewarmOut["failures"]) => rs.map(r => `${esc(r.reason)} (${r.count})`).join("; ");
+  let t = `${p.found} shader stages found in ${p.files} files${kinds ? ` (${kinds})` : ""}`;
+  t += p.chain ? `; ${p.translated} translated, ${p.cached} already cached, ${p.failed} failed` : `; not translated ahead: this build has no in-page translator (web:build makes it)`;
+  if (p.failures.length) t += `<br><b class="warn" id="shaderfail">failed: ${list(p.failures)}</b>`;
+  if (p.unreadable.length) t += `<br>unreadable: ${list(p.unreadable)}`;
+  if (p.notRead.length) t += `<br><span id="shadernotread">not read: ${list(p.notRead)}</span>`;
+  return t;
 }
 // how far a running stage is, 0..1, or -1 when it has no measure
 function fraction(s: StageName, c: Counts): number {
   if (s === "code" && c.bytesTotal > 0) return Math.min(1, c.bytesDone / c.bytesTotal);
   if (s === "index" && c.total > 0) return Math.min(1, c.done / c.total);
+  if (s === "shaders" && c.bytesTotal > 0) return Math.min(1, c.bytesDone / c.bytesTotal);
   return -1;
 }
 function drawVerdict(snap: Snapshot): void {
@@ -123,10 +140,13 @@ function drawVerdict(snap: Snapshot): void {
   // the instruction scan of the Code stage, once it is done: a gap in plain words, the table under the details
   const codeRec = snap.manifest.stages.code, scans = codeRec.state === "done" ? (codeRec.output as CodeOut | null)?.scan ?? [] : [];
   const scanHead = scanHeadline(scans);
-  const gaps = [...(v?.gaps ?? []), ...(scanHead ? [`${scanHead}: the game stops if it reaches one.`] : [])];
+  // and its take-over scan: SDK functions nxnative replaces that are not answered here
+  const hle = codeRec.state === "done" ? (codeRec.output as CodeOut | null)?.hle ?? [] : [], hleHead = hleHeadline(hle);
+  const gaps = [...(v?.gaps ?? []), ...(scanHead ? [`${scanHead}: the game stops if it reaches one.`] : []), ...(hleHead ? [`${hleHead}: the game stops if it calls one.`] : [])];
   $("gaps").innerHTML = gaps.map(g => `<li>${esc(g)}</li>`).join("");
   $("vdetails").innerHTML = (v?.details ?? []).map(d => `<li>${esc(d)}</li>`).join("") +
-    (scans.length ? `<li id="scantable">instructions the translator does not have yet (a scan of each module's code with the translator's own decoder; opcode classes and offsets only):<pre>${esc(scans.flatMap(s => scanLines(s.module, s.scan)).join("\n"))}</pre></li>` : "");
+    (scans.length ? `<li id="scantable">instructions the translator does not have yet (a scan of each module's code with the translator's own decoder; opcode classes and offsets only):<pre>${esc(scans.flatMap(s => scanLines(s.module, s.scan)).join("\n"))}</pre></li>` : "") +
+    (hle.length ? `<li id="hletable">SDK functions nxnative takes over that nxweb does not answer yet (each module's dynamic symbols against src/hle/gen/coverage.ts; module, nxnative file, function):<pre>${esc(hleLines(hle).join("\n"))}</pre></li>` : "");
   const play = $("play") as HTMLButtonElement;
   play.disabled = snap.state !== "Ready";
   play.textContent = v?.level === "no" ? "Try anyway" : "Play";
@@ -179,14 +199,23 @@ function tick(): void {
 }
 setInterval(tick, 250);
 
-async function start(tree: PrepTree, o: { redo?: StageName; version?: number } = {}): Promise<PrepResult | null> {
-  if (prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state)) return null;
+// A start or an open between its check and its run (the module and the scanner are awaited first): a second click
+// then would make a second Prepare beside the first, or find the first running and show an internal error; a folder
+// picked or dropped meanwhile is ignored before it replaces the "Continue with" target
+let busy = false;
+const idle = () => !busy && !(prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state));
+async function start(tree: PrepTree, o: { redo?: StageName; version?: number } = {}, inner = false): Promise<PrepResult | null> {
+  if (!inner && !idle()) return null;
+  busy = true;
+  try { return await startIn(tree, o); } finally { if (!inner) busy = false; }
+}
+async function startIn(tree: PrepTree, o: { redo?: StageName; version?: number }): Promise<PrepResult | null> {
   $("handoff").textContent = "";
   hideExplain();
   storeDir = "nxweb-prepare-" + tree.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
   if (!prep || prep.o.tree !== tree || (o.version !== undefined && prep.o.version !== o.version)) {
     prep = new Prepare({ wasm: new PrepWasm(await compiled(), log), tree, store: new OpfsStore(storeDir), profiles, onChange: draw, version: o.version,
-      unpackStep, at: p => p === hold ? new Promise<void>(() => {}) : undefined, scanner: await scanner() });
+      unpackStep, at: p => p === hold ? new Promise<void>(() => {}) : undefined, scanner: await scanner(), shaders: await pagePrewarm(tree, await compiled()) });
   }
   (window as any).nxwebPrepare = prep;
   (window as any).nxwebLastRun = null;
@@ -196,7 +225,7 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
     lastRun = res; runEnded = Date.now();
     // a folder that holds one .nup and no game files: the container is what was meant
     const inside = res.state === "Failed" && res.reason === "layout" ? (tree as { filesMatching?: (re: RegExp) => { path: string; file: File }[] }).filesMatching?.(/^[^/]+\.nup$/i) ?? [] : [];
-    if (inside.length === 1) { log(`the folder holds ${inside[0].path}: opening that`); prep = null; return await openFile(inside[0].file); }
+    if (inside.length === 1) { log(`the folder holds ${inside[0].path}: opening that`); prep = null; return await openFile(inside[0].file, undefined, true); }
     (window as any).nxwebLastRun = res;
     draw(prep.snapshot());
     return res;
@@ -204,8 +233,12 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
 }
 
 // ---- a file: a NUP container is opened; anything else is explained ----
-async function openFile(file: File, handle?: unknown): Promise<PrepResult | null> {
-  if (prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state)) return null;
+async function openFile(file: File, handle?: unknown, inner = false): Promise<PrepResult | null> {
+  if (!inner && !idle()) return null;
+  busy = true;
+  try { return await openIn(file, handle); } finally { if (!inner) busy = false; }
+}
+async function openIn(file: File, handle?: unknown): Promise<PrepResult | null> {
   hideExplain();
   let head: Uint8Array;
   try { head = new Uint8Array(await file.slice(0, 0x200).arrayBuffer()); }
@@ -227,7 +260,7 @@ async function openFile(file: File, handle?: unknown): Promise<PrepResult | null
   for (const n of tree.notes) log(`${file.name}: ${n}`);
   await remember(handle ?? null);
   showResume(handle ? file.name : "");
-  return start(tree);
+  return start(tree, {}, true);
 }
 const showResume = (name: string) => { const b = $("resume"); b.hidden = !name; b.textContent = name ? `Continue with ${name}` : "Continue"; };
 
@@ -248,7 +281,7 @@ $("pick").addEventListener("click", async () => {
     let h: any;
     try { h = await picker.call(window, { id: "nxweb-game", mode: "read" }); }
     catch (e) { if (!refused(e)) return; log(`the folder picker is not available here (${(e as Error).name}): using the file input`); }
-    if (h) { await remember(h); showResume(h.name); await start(new HandleTree(h)); return; }
+    if (h) { if (!idle()) return; await remember(h); showResume(h.name); await start(new HandleTree(h)); return; }
   }
   ($("dirinput") as HTMLInputElement).click();
 });
@@ -269,7 +302,7 @@ $("fileinput").addEventListener("change", async ev => {
 });
 $("dirinput").addEventListener("change", async ev => {
   const files = (ev.target as HTMLInputElement).files;
-  if (files && files.length) { await remember(null); showResume(""); await start(new FileListTree(files)); }
+  if (files && files.length && idle()) { await remember(null); showResume(""); await start(new FileListTree(files)); }
 });
 
 // ---- a drop: on the drop area, or anywhere on the main page (web/main.ts passes the event's DataTransfer on) ----
@@ -289,9 +322,9 @@ function takeDrop(dt: DataTransfer | null | undefined): void {
       showExplain("Several files were dropped", "Drop one .nup file, or the game's folder itself (not the files inside it).", "", all.map(name).join(", ")); (window as any).nxwebExplained = "several"; return;
     }
     // File System Access where the browser has it (the handle survives a reload), else the entry API every browser has
-    if (one.h?.kind === "directory") { await remember(one.h); showResume(one.h.name); await start(new HandleTree(one.h)); return; }
+    if (one.h?.kind === "directory") { if (!idle()) return; await remember(one.h); showResume(one.h.name); await start(new HandleTree(one.h)); return; }
     if (one.h?.kind === "file") { await openFile(await one.h.getFile(), one.h); return; }
-    if (one.entry?.isDirectory) { await remember(null); showResume(""); await start(new EntryTree(one.entry)); return; }
+    if (one.entry?.isDirectory) { if (!idle()) return; await remember(null); showResume(""); await start(new EntryTree(one.entry)); return; }
     if (one.file) await openFile(one.file);
   })();
 }
@@ -329,7 +362,7 @@ $("play").addEventListener("click", async () => {
   } catch (e) { const msg = String(e instanceof Error ? e.message : e); log("[RED] prepare: " + msg); $("handoff").textContent = "could not start: " + msg; }
 });
 
-draw({ state: "Idle", reason: "", error: "", counts: { done: 0, total: 0, bytesDone: 0, bytesTotal: 0, files: 0, modules: 0, cuts: 0, romFiles: 0, romDirs: 0, aoc: 0, skipped: 0, ran: 0 },
+draw({ state: "Idle", reason: "", error: "", counts: { done: 0, total: 0, bytesDone: 0, bytesTotal: 0, files: 0, modules: 0, cuts: 0, romFiles: 0, romDirs: 0, aoc: 0, skipped: 0, ran: 0, shFound: 0, shTranslated: 0, shFailed: 0 },
   stages: { detect: "pending", index: "pending", profile: "pending", code: "pending", shaders: "pending" }, manifest: Prepare.blank("") });
 void remembered().then(h => { if (h) showResume(h.name); });
 if (!(window as any).showDirectoryPicker) $("pick").title = "This browser has no folder picker: the file input is used";
