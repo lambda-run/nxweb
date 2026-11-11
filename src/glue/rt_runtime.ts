@@ -216,7 +216,8 @@ export class Runtime {
   set: LoadedSet | null = null;
   modules: ModuleInfo[] = [];
   mainThread = 0;
-  private hotPcs = new Map<number, number>();   // pc at the end of each time slice that ran to its end -> times
+  private hotPcs = new Map<number, number>();
+  private hotCallers = new Map<number, Map<string, number>>();   // pc -> "x30,[x29+8]" -> times   // pc at the end of each time slice that ran to its end -> times
   stats = { slices: 0, svcs: 0, hostCalls: 0, runMs: 0, grows: 0, entries: 0, moduleLoads: 0, moduleUnloads: 0, finiCalls: 0, clockParks: 0 };
   disposed = false;
 
@@ -773,23 +774,28 @@ export class Runtime {
     return { mods, sym, stub };
   }
   // Where the guest's time goes: the pc each time slice ended at, by function (a symbol, else the 4 KB page of its
-  // module), the hottest first, with each function's hottest pc. Slices that ended in a host call or a fault are left out.
+  // module), the hottest first, with each function's hottest pc and its callers (x30 <- the frame record's return). Slices that ended in a host call or a fault are left out.
   hotCode(max = 12): string[] {
     let total = 0;
     for (const n of this.hotPcs.values()) total += n;
     if (!total) return [];
     const { mods, sym, stub } = this.codePlaces();
-    const by = new Map<string, { n: number; top: number; topN: number }>();
+    const by = new Map<string, { n: number; top: number; topN: number; from: Map<string, number> }>();
     for (const [at, n] of this.hotPcs) {
       const st = stub(at), m = st === undefined ? mods.find(m => at >= m.lo && at < m.hi) : undefined, s = m ? sym(m.handle, at) : undefined;
       const off = m ? at - m.base : 0;
       const key = st !== undefined ? `the host stub of ${st}` : !m ? "not in the text of a loaded module" : s ? `${m.name} ${s.name}` : `${m.name}+${hex(off - off % 4096)} page (no symbol)`;
-      const e = by.get(key);
-      if (!e) by.set(key, { n, top: at, topN: n });
+      let e = by.get(key);
+      if (!e) by.set(key, e = { n, top: at, topN: n, from: new Map() });
       else { e.n += n; if (n > e.topN) { e.top = at; e.topN = n; } }
+      for (const [ck, cn] of this.hotCallers.get(at) ?? []) e.from.set(ck, (e.from.get(ck) ?? 0) + cn);
     }
+    const from = (e: { n: number; from: Map<string, number> }) => [...e.from].sort((x, y) => y[1] - x[1]).slice(0, 3).map(([ck, cn]) => {
+      const [lr, up] = ck.split(",").map(Number);
+      return `        ${(100 * cn / e.n).toFixed(0).padStart(3)}% from ${hex(lr)} ${placeOf(lr, mods, sym, stub)}` + (up && up !== lr ? ` <- ${hex(up)} ${placeOf(up, mods, sym, stub)}` : "");
+    });
     const rows = [...by].sort((x, y) => y[1].n - x[1].n);
-    const out = rows.slice(0, max).map(([k, e]) => `${(100 * e.n / total).toFixed(1).padStart(5)}% ${k}; hottest pc ${hex(e.top)} is ${placeOf(e.top, mods, sym, stub)}`);
+    const out = rows.slice(0, max).flatMap(([k, e]) => [`${(100 * e.n / total).toFixed(1).padStart(5)}% ${k}; hottest pc ${hex(e.top)} is ${placeOf(e.top, mods, sym, stub)}`, ...from(e)]);
     if (rows.length > max) out.push(`(${rows.length - max} more functions, ${(100 * rows.slice(max).reduce((t, r) => t + r[1].n, 0) / total).toFixed(1)}%)`);
     return [`${total} slice ends sampled at ${this.hotPcs.size} pcs`, ...out];
   }
@@ -1219,7 +1225,20 @@ export class Runtime {
       this.ticked(wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value));
       if (trap === undefined) {
         const p = c.pc.value as bigint;
-        if (p < PC_SPECIAL || p > PC_SPECIAL_END) { const at = Number(p), n = this.hotPcs.get(at); if (n !== undefined) this.hotPcs.set(at, n + 1); else if (this.hotPcs.size < 65536) this.hotPcs.set(at, 1); }
+        if (p < PC_SPECIAL || p > PC_SPECIAL_END) {
+          const at = Number(p), n = this.hotPcs.get(at);
+          if (n !== undefined || this.hotPcs.size < 65536) {
+            this.hotPcs.set(at, (n ?? 0) + 1);
+            // who called it: x30, and the return address of the frame record at x29 (the caller's caller for a leaf)
+            const sc = r.rt_ctx_scratch(); c.save_ctx(sc);
+            const dv = this.dv(), lr = Number(dv.getBigUint64(sc + 30 * 8, true)), fp = Number(dv.getBigUint64(sc + 29 * 8, true));
+            const up = fp % 8 === 0 && fp >= GUARD_BASE && fp + 16 <= dv.byteLength ? Number(dv.getBigUint64(fp + 8, true)) : 0;
+            let cs = this.hotCallers.get(at);
+            if (!cs) this.hotCallers.set(at, cs = new Map());
+            const ck = `${lr},${up}`, cn = cs.get(ck);
+            if (cn !== undefined || cs.size < 8) cs.set(ck, (cn ?? 0) + 1);
+          }
+        }
       }
       if (wall) r.rt_clock_slice_end(c.budget.value);
       if (trap instanceof GuestCallAbort && !this.pendFault && this.stopFlag) trap = undefined;   // the process ended inside a callback

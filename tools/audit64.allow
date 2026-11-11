@@ -1458,6 +1458,7 @@ src/glue/rt_runtime.ts	B	1	if (((x & 0xFFC0001F) >>> 0) === 0x7100001F) lim = (x
 src/glue/rt_runtime.ts	B	1	if (this.k.kernel_clock_reasons() & 2) {
 src/glue/rt_runtime.ts	B	1	jitAlloc(rxSize: number, roSize: number): { rx: bigint; ro: bigint } | null {
 src/glue/rt_runtime.ts	B	1	private borrowed: { lo: number; hi: number } | null = null;
+src/glue/rt_runtime.ts	B	1	private hotCallers = new Map<number, Map<string, number>>();
 src/glue/rt_runtime.ts	B	1	private pendFault: { kind: number; detail: string; aux: bigint; exact: boolean } | null = null;
 src/glue/rt_runtime.ts	V	1	private sleeper: Int32Array | null = null;
 src/glue/rt_runtime.ts	B	1	private wake: (() => void) | null = null;
