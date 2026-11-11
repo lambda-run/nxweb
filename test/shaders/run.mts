@@ -198,6 +198,12 @@ await test("Maxwell -> SPIR-V -> WGSL: the library of the translated programs, w
   if (!b.reflection.notes.some(n => /fp_t_cb5_A is bindless: slot 0 takes its handle from uniform slot 2 \+ 0x28/.test(n))) throw new Error(`no bindless note: ${b.reflection.notes}`);
   const got: any[] = []; new ShaderLibrary(maxwell.library).registerAll({ registerShader: (key, info) => (got.push({ key, ...info }), got.length - 1) });
   eq(got.find(g => g.key === b.key)?.textures, b.reflection.textures, "registerAll passes the handle on");
+  // TMML (OpImageQueryLod): computed from derivatives; the driver's banks: c[24] push constants, c[1] with the code area's c1 segment, c[0] / c[2] words
+  const q = byName(maxwell, "ps_query_lod").entry!, k = byName(maxwell, "ps_banks").entry!;
+  if (!/dpdx/.test(q.wgsl) || !/dpdy/.test(q.wgsl) || !/log2/.test(q.wgsl) || !q.reflection.notes.some(n => /LOD queries/.test(n))) throw new Error(q.wgsl);
+  eq(k.reflection.extra.map(e => [e.kind, e.binding, e.bank ?? null, e.data ?? null]),
+    [["push", 215, 24, null], ["c1", 212, null, "0000803e0000003f0000403f0000803f"], ["drvcb", 213, 0, null], ["drvcb", 214, 2, null]], "ps_banks: pixel stage (1): 208 + 4 + k");
+  eq(new ShaderLibrary(maxwell.library).registerAll({ registerShader: () => 0 }).skipped, [], "registerAll takes the host blocks");
   if (/c25/.test(v.wgsl.replace(/var<private> \w+c25_/, "")) === false) throw new Error("expected the bound-size table as a private constant");
   if (/var<uniform> \w*c25/.test(v.wgsl + f.wgsl)) throw new Error("the bound-size table is still a uniform buffer");
   return `${maxwell.report.length} stages, ${maxwell.library.length} bytes`;

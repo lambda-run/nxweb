@@ -1,6 +1,6 @@
 // Builds an nxweb shader library (src/shaders/library.ts) from SPIR-V or, for tests, from GLSL.
 //   node tools/shaders/build_lib.mts --spv <dir> -o <library.nxsl> [--report <file.json>]
-//       <dir>/xlate.json as tools/shaders/xlate.py writes it: [{ name, stage, key, spv, res }]; bindings come from the translator's names
+//       <dir>/xlate.json as tools/shaders/xlate.py writes it: [{ name, stage, key, spv, res, c1 }]; bindings come from the translator's names, c1 (hex) is the stage's c1 segment
 //   node tools/shaders/build_lib.mts --glsl <dir> -o <library.nxsl> [--report <file.json>]
 //       <dir>/manifest.json: [{ name, file, key? }], stage from the file's extension (.vert / .frag); compiled with glslangValidator -V; the GLSL carries the nxweb
 //       set and binding numbers itself (a combined sampler at binding b gets its sampler at b + 1). key defaults to sha256(source)[0..8], a test key and nothing else
@@ -26,16 +26,16 @@ export function glslToSpv(file: string): Uint8Array {
 export async function build(opts: { spv?: string; glsl?: string; chain?: string }) {
   const naga = await load();
   const entries: { key: string; wgsl: string; reflection: Reflection }[] = [], report: Report[] = [];
-  const one = (name: string, key: string, stage: string, get: () => Uint8Array, mode: "nxweb" | "keep") => {
+  const one = (name: string, key: string, stage: string, get: () => Uint8Array, mode: "nxweb" | "keep", c1?: string) => {
     const t = performance.now();
     try {
-      const spv = get(), c = convertStage(naga, spv, { bindings: mode });
+      const spv = get(), c = convertStage(naga, spv, { bindings: mode, c1 });
       entries.push({ key, wgsl: c.wgsl, reflection: c.reflection });
       report.push({ name, key, stage, ok: true, notes: c.reflection.notes, spvBytes: spv.length, wgslBytes: c.wgsl.length, ms: +(performance.now() - t).toFixed(2) });
     } catch (e: any) { report.push({ name, key, stage, ok: false, error: String(e.message ?? e) }); }
   };
   if (opts.spv) for (const r of JSON.parse(readFileSync(join(opts.spv, "xlate.json"), "utf8")))
-    one(r.name, r.key, r.stage, () => new Uint8Array(readFileSync(join(opts.spv!, r.spv))), "nxweb");
+    one(r.name, r.key, r.stage, () => new Uint8Array(readFileSync(join(opts.spv!, r.spv))), "nxweb", r.c1);
   if (opts.glsl) for (const r of JSON.parse(readFileSync(join(opts.glsl, "manifest.json"), "utf8"))) {
     const file = join(opts.glsl, r.file), key = r.key ?? createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16);
     one(r.name, key, file.endsWith(".vert") ? "vs" : "ps", () => glslToSpv(file), "keep");
