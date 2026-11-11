@@ -1473,19 +1473,21 @@ src/glue/rt_audio.ts	B	1	if (kind & 1) cpu.setX(0, dv.getBigUint64(this.req + 8,
 src/glue/rt_audio.ts	V	1	if (kind === RET.V0) { cpu.setD(0, BigInt(d.getUint32(block + 64, true))); return; }
 src/glue/rt_audio.ts	B	1	return kind & 1 ? d.getBigUint64(block, true) : undefined;
 src/glue/rt_fs.ts	B	1	if (this.openFile < 0 && /^nn::fs::OpenFile$/.test(shortName(n.name))) this.openFile = n.id;
+src/glue/rt_gfx.ts	B	1	case " ": return cpu => { this.needStages(Number(cpu.x(2)), cpu.w(1) | 0, 16); return this.call(id, cpu.argsX()); };
+src/glue/rt_gfx.ts	B	1	case " ": return cpu => { this.needStages(Number(cpu.x(2)), cpu.w(1) | 0, 24); return this.call(id, cpu.argsX()); };
 src/glue/rt_gfx.ts	B	1	const SYNC_FOREVER = 1n << 62n;
 src/glue/rt_gfx.ts	B	1	const abi = this.abi[id] ?? 0, floats = abi & 15, retF = (abi & 16) !== 0;
 src/glue/rt_gfx.ts	B	1	const done = this.host.fence(x.gfx_finish_fence() >>> 0);
 src/glue/rt_gfx.ts	B	1	const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= mem.length;
 src/glue/rt_gfx.ts	B	1	const interval = Math.max(1, this.x.gfx_present_interval(Number(cpu.x(0))) | 0);
 src/glue/rt_gfx.ts	V	1	const le = (n: bigint | number, bytes: number) => { const b = new Uint8Array(bytes), dv = new DataView(b.buffer); if (bytes === 8) dv.setBigUint64(0, BigInt.asU
-src/glue/rt_gfx.ts	B	1	const n = cpu.w(1) | 0, sd = Number(cpu.x(2));
 src/glue/rt_gfx.ts	B	1	const ok = nvn(" ", t, tb) & 0xffn;
 src/glue/rt_gfx.ts	B	1	const res = this.call(id, k.args), fence = x.gfx_wait_fence() >>> 0;
 src/glue/rt_gfx.ts	V	1	const u32 = (cpu: HostCpu, a: bigint) => new DataView(cpu.read(a, 4).buffer).getUint32(0, true);
 src/glue/rt_gfx.ts	B	1	const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
 src/glue/rt_gfx.ts	B	1	for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
 src/glue/rt_gfx.ts	B	1	if (!(nvn(" ", i + 0x20n, pb) & 0xffn)) { cpu.log(" "); return 0n; }
+src/glue/rt_gfx.ts	V	1	if (b && b + 24 <= dv.byteLength) this.needStages(Number(dv.getBigUint64(b + 8, true)), dv.getInt32(b + 16, true), 16);
 src/glue/rt_gfx.ts	B	1	if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
 src/glue/rt_gfx.ts	B	1	nativeImageOf: ((handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null) | null = null;
 src/glue/rt_gfx.ts	B	1	private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
@@ -1519,7 +1521,7 @@ src/glue/rt_runtime.ts	B	1	const c = this.core, pc = Number(c.pc.value as bigint
 src/glue/rt_runtime.ts	V	1	const closing = n === 0x16 && this.closeHooks.length ? this.dv().getUint32(ctx, true) : 0;
 src/glue/rt_runtime.ts	V	1	const dv = this.dv(), lo = Number(dv.getBigUint64(q, true)), size = Number(dv.getBigUint64(q + 8, true)), state = dv.getUint32(q + 16, true);
 src/glue/rt_runtime.ts	V	1	const handle = index >= 0 ? this.dv().getUint32((this.threadInfo(index)) + 28, true) : 0;
-src/glue/rt_runtime.ts	V	1	const insn = this.dv().getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
+src/glue/rt_runtime.ts	V	1	const dv = this.dv(), insn = dv.getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
 src/glue/rt_runtime.ts	V	1	const kind = dv.getUint32(this.threadInfo(i) + 8, true);
 src/glue/rt_runtime.ts	B	1	const leb = (v: number) => { const n: number[] = []; do { let b = v & 0x7F; v >>>= 7; if (v) b |= 0x80; n.push(b); } while (v); return n; };
 src/glue/rt_runtime.ts	B	2	const r = Number((c.x0.value as bigint) & M32);

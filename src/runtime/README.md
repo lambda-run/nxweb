@@ -711,6 +711,12 @@ return", and the pc it returns to:
 [RED]     #1 svc 0x27 OutputDebugString(x0=0x780ffee8 x1=0x1f) -> 0x0, returns to 0x80004b4
 ```
 
+When base + offset of the trapped access is a valid address and only the translator's folded form traps (an
+immediate offset carried in the wasm memory operand, `A64Host.memargFold`: the base below the guard, or base +
+offset wrapping), the first line says so instead: `... loads or stores through x5 = 0x... + offset 0x20 = 0x..., a
+valid address: base + offset wraps or the base is below the guard, and the memarg-offset fold ... traps where
+hardware would not`. That is a translator limit, not a guest bug.
+
 | Fault | Comes from | pc |
 |---|---|---|
 | `unimplemented` | the translator's `unimpl(pc, insn)` import | exact; `aux` = the instruction word |
