@@ -61,6 +61,8 @@ export interface KernelExports extends KitExports {
   kernel_alias_arena(base: number, size: number): number;
   kernel_alias_leaves(what: number): number;
   kernel_check(): number;
+  kernel_svc_ring(index: number, out: number, cap: number): number;
+  kernel_svc_total(index: number): number;
 }
 
 export const defs: MachineDef[] = loadDefs();

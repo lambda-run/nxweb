@@ -22,7 +22,8 @@ const COUNTS: usize = memory.data(128);
 // Counter indices (host/wasm.ts COUNT): what a progress display reads beside the state
 //   0 stage units done, 1 stage units total (0 = not known), 2 bytes done in the stage, 3 bytes total,
 //   4 files seen in the folder, 5 code modules, 6 cuts applied, 7 RomFS files, 8 RomFS directories,
-//   9 add-on contents, 10 stages skipped in this run, 11 stages run in this run
+//   9 add-on contents, 10 stages skipped in this run, 11 stages run in this run, 12 shader stages found, 13 shader
+//   stages translated (or already in the store), 14 shader stages that failed
 
 function init(): void { if (!inited) { M.init(PREPARE, 0); inited = true; } }
 export function prep_reset(): void { M.init(PREPARE, 0); inited = true; memory.fill(COUNTS, 0, 128); arenaReset(); errorClear(); }
