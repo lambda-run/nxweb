@@ -4,7 +4,7 @@ export const STATES = ["Idle", "Detect", "Index", "Profile", "Code", "Shaders", 
 export type PrepState = typeof STATES[number];
 export const REASONS = ["", "layout", "npdm", "arch", "version", "dlc", "module", "romfs", "profile", "cut", "read", "storage", "internal"] as const;
 export type FailReason = Exclude<typeof REASONS[number], "">;
-export const COUNT = { done: 0, total: 1, bytesDone: 2, bytesTotal: 3, files: 4, modules: 5, cuts: 6, romFiles: 7, romDirs: 8, aoc: 9, skipped: 10, ran: 11 } as const;
+export const COUNT = { done: 0, total: 1, bytesDone: 2, bytesTotal: 3, files: 4, modules: 5, cuts: 6, romFiles: 7, romDirs: 8, aoc: 9, skipped: 10, ran: 11, shFound: 12, shTranslated: 13, shFailed: 14 } as const;
 export type Counts = { -readonly [k in keyof typeof COUNT]: number };
 
 interface X {

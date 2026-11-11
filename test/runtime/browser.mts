@@ -56,9 +56,15 @@ const port = (server.address() as any).port;
 const channel = process.env.RT_BROWSER_CHANNEL ?? "chromium";
 // WebGPU in headless Chromium on a machine without a GPU: SwiftShader (the flags the gfx tests use)
 const GPU_ARGS = ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=swiftshader", "--use-vulkan=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"];
+// Audio output through Chromium's fake output stream (a steady 48 kHz clock, the worklet and the port as in any browser),
+// not the system's: every new output stream through PulseAudio here (a server with a null sink, no sound device) plays
+// about 3 quanta, then calls back no more for about 1.9 s; the module's stall watchdog moved the tone case to the silent
+// sink every run (measured with a bare worklet, no nxweb code; src/runtime/README.md). RT_BROWSER_AUDIO=device uses
+// the system's output.
+const AUDIO_ARGS = process.env.RT_BROWSER_AUDIO === "device" ? [] : ["--disable-audio-output"];
 // the page a person opens runs in a browser of its own with the default autoplay policy: its audio must start from a click
-const pageBrowser = await chromium.launch({ headless: true, ...(channel === "shell" ? {} : { channel }), args: GPU_ARGS });
-const browser = await chromium.launch({ headless: true, ...(channel === "shell" ? {} : { channel }), args: [...GPU_ARGS, "--autoplay-policy=no-user-gesture-required", ...(process.env.RT_BROWSER_LOG ? ["--enable-logging=stderr", "--v=0"] : [])] });
+const pageBrowser = await chromium.launch({ headless: true, ...(channel === "shell" ? {} : { channel }), args: [...GPU_ARGS, ...AUDIO_ARGS] });
+const browser = await chromium.launch({ headless: true, ...(channel === "shell" ? {} : { channel }), args: [...GPU_ARGS, ...AUDIO_ARGS, "--autoplay-policy=no-user-gesture-required", ...(process.env.RT_BROWSER_LOG ? ["--enable-logging=stderr", "--v=0"] : [])] });
 let failed = 0, ran = 0;
 try {
   const p = await browser.newPage();
