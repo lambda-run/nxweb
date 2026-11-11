@@ -236,6 +236,10 @@ export class RtGfx implements HleGfx {
     const key = Array.from(rt.sha256Of([keyControl(mem.subarray(c, c + nctl)), hasCode ? mem.subarray(data, data + ncode) : new Uint8Array(0)]).subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
     return { key, blob: () => ({ key, control: control(), code: code() }) };
   }
+  private needStages(sd: number, n: number, stride: number): void {
+    if (!this.shaders || !sd || n <= 0 || n > 6) return;
+    for (let i = 0; i < n; i++) { const st = this.stageOf(sd + stride * i); if (st) this.shaders.need(st.key, st.blob); }
+  }
   private workDone(): Promise<unknown> | null {
     if (!this.live) return null;
     try { return this.host.device.queue.onSubmittedWorkDone(); } catch { return null; }   // a device that is gone
@@ -266,9 +270,13 @@ export class RtGfx implements HleGfx {
       case "nvnDeviceGetCurrentTimestampInNanoseconds": return cpu => { x.gfx_set_now(this.guestNow()); return this.call(id, cpu.argsX()); };
       // nvnProgramSetShaders(program, count, NVNshaderData[]): every stage's key is looked up (library, in-page
       // translation) before the recorder notes the keys
-      case "nvnProgramSetShaders": return cpu => {
-        const n = cpu.w(1) | 0, sd = Number(cpu.x(2));
-        if (this.shaders && sd && n > 0 && n <= 6) for (let i = 0; i < n; i++) { const st = this.stageOf(sd + 16 * i); if (st) this.shaders.need(st.key, st.blob); }
+      case "nvnProgramSetShaders": return cpu => { this.needStages(Number(cpu.x(2)), cpu.w(1) | 0, 16); return this.call(id, cpu.argsX()); };
+      // the same for the two ways in that reach the recorder's SetShaders inside src/gfx (not through this stub):
+      // NVN 55's stages of 0x18 bytes, and NVN2's builder { device, shader data, count } (nn::ndve's movie network)
+      case "nvnProgramSetShadersExt": return cpu => { this.needStages(Number(cpu.x(2)), cpu.w(1) | 0, 24); return this.call(id, cpu.argsX()); };
+      case "nvnProgramInitializeFromBuilder": return cpu => {
+        const b = Number(cpu.x(1)), dv = this.rt.dv();
+        if (b && b + 24 <= dv.byteLength) this.needStages(Number(dv.getBigUint64(b + 8, true)), dv.getInt32(b + 16, true), 16);
         return this.call(id, cpu.argsX());
       };
       // nvnSyncWait(sync, timeout ns). The recorder never blocks and says through gfx_wait_fence() when the thread is

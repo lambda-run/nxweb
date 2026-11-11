@@ -3,6 +3,8 @@
 // control section and code area. A textured quad over the left half of the window: the vertex stage places it with
 // uniform slot 0, the pixel stage samples texture slot 0 and multiplies by the colour in its uniform slot 0.
 // -DBAD: the pixel stage's code area is cut off after its header (nothing can translate it).
+// -DBUILDER: the program is made through NVN2's program builder (nvnProgramInitializeFromBuilder), as nn::ndve does;
+// -DEXT: through nvnProgramSetShadersExt (stages of 0x18 bytes).
 #include "gfx.h"
 #include "maxwell_blobs.h"
 u32 mutex_slow;
@@ -23,7 +25,19 @@ int rt_entry(u64 x0, Handle main_thread) {
 #else
   NVNshaderData sd[2] = { stage(mx_vs_quad_ubo_code, sizeof mx_vs_quad_ubo_code, mx_vs_quad_ubo_ctl), stage(mx_ps_tex_tint_code, sizeof mx_ps_tex_tint_code, mx_ps_tex_tint_ctl) };
 #endif
+#if defined(BUILDER)
+  static u64 builder[3];   // { device, shader data, count }
+  ((void (*)(void *))nvnDeviceGetProcAddress(&g_dev, "nvnProgramBuilderSetDefaults"))(builder);
+  ((void (*)(void *, NVNdevice *))nvnDeviceGetProcAddress(&g_dev, "nvnProgramBuilderSetDevice"))(builder, &g_dev);
+  ((void (*)(void *, int, const NVNshaderData *))nvnDeviceGetProcAddress(&g_dev, "nvnProgramBuilderSetShaders"))(builder, 2, sd);
+  if (!((NVNboolean (*)(NVNprogram *, const void *))nvnDeviceGetProcAddress(&g_dev, "nvnProgramInitializeFromBuilder"))(&prog, builder)) say("[guest] program failed");
+#elif defined(EXT)
+  static struct { NVNshaderData d; u64 ext; } sx[2];
+  for (int i = 0; i < 2; i++) { sx[i].d = sd[i]; sx[i].ext = 0; }
+  if (!nvnProgramInitialize(&prog, &g_dev) || !((NVNboolean (*)(NVNprogram *, int, const void *))nvnDeviceGetProcAddress(&g_dev, "nvnProgramSetShadersExt"))(&prog, 2, sx)) say("[guest] program failed");
+#else
   if (!nvnProgramInitialize(&prog, &g_dev) || !nvnProgramSetShaders(&prog, 2, sd)) say("[guest] program failed");
+#endif
   static const float quad[] = { -1, -1, 0, 1,   1, -1, 1, 1,   -1, 1, 0, 0,   -1, 1, 0, 0,   1, -1, 1, 1,   1, 1, 1, 0 };   // x, y, u, v
   NVNbufferAddress vb = data_put(quad, sizeof quad, 0);
   static const float vs_u[8] = { 0.5f, 1.0f, -0.5f, 0.0f, 0.5f, 0, 0, 0 };     // scale.xy, offset.xy, z
