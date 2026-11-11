@@ -31,7 +31,7 @@ the movie and video codec names as stubs (cut). Not here: file system, graphics,
 npm run hle:names     # inventory, status, gen/table.ts, the coverage (gen/coverage.ts) and the tables in this file, from nxnative's sources
 npm run hle:check     # fails when one of them is out of date
 npm run hle:build     # build/hle/hle.wasm
-npm run hle:test      # 97 tests, and the coverage rule for the fifteen machines as the module drives them
+npm run hle:test      # 102 tests, and the coverage rule for the fifteen machines as the module drives them
 npm run kit:test      # the machines' tables on their own (test/hle/hle.machine.test.mts)
 ```
 
@@ -160,14 +160,13 @@ window, no motor and no loader, and what cannot be answered is one red line.
 
 An entry with neither a compilable body nor a function is a stub: `[RED] <demangled name> unimplemented` once, then
 `STUB_RET[cname]` (the tool's table for results that are evident from nxnative's "nothing to do" case) or 0. There is
-none of that kind today. The 128 stubs of the status table are the cut files' (next section).
+none of that kind today. The 27 stubs of the status table are the cut file's (next section).
 
-## Cut: movies and video codecs
+## Cut: movies
 
-`hle_movie.c` (27 names) and `hle_codec_video.c` (101) are in scope so that every name resolves, and cut: each entry
-is a stub (flag bit 1 clear, bit 6 set) that logs `[RED] <demangled name> is cut (movies and video codecs are not
-played): it fails as in nxnative without a decoder` once and then answers (`cut_ops` in the tool; `movie.ts`,
-`codec_video.ts` for the few that write an object, return a struct or read the stack):
+`hle_movie.c` (27 names) is in scope so that every name resolves, and cut: each entry is a stub (flag bit 1 clear,
+bit 6 set) that logs `[RED] <demangled name> is cut (movie::Decoder movies are not played): it fails as in nxnative
+without a decoder` once and then answers (`cut_ops` in the tool; `movie.ts` for the few that write an object):
 
 - **`movie::Decoder`: nxnative has a "no decoder" path, and this is it.** There a Decoder constructed with a type or
   output format the host does not decode gets the SDK's vtable and a null implementation, one red line ("every method
@@ -179,17 +178,35 @@ played): it fails as in nxnative without a decoder` once and then answers (`cut_
 - **`movie::Extractor::SetDataSource` returns `0x1000`.** This entry is under `#if 0` in nxnative today (27 counts it):
   it is nxnative's answer from before it played movies ("the host does not demux, opening reports failure"), which is
   the state here, so it is active in this table.
-- **`nn::codec` (the Switch 2's decoders): nxnative has no "cannot decode" path.** Its initializers always succeed.
-  The stubs answer what its calls answer for a decoder or pool type with no host object behind it (`cv_of` /
-  `pool_of` null): module 111 description 2004 (`0xFA86F`) from Register, Unregister, Start, Submit, Acquire and the
-  property reads; success from Finalize, Stop, Flush; no submission event; no native image handle; a black picture
-  from the readers (video black from `Nv12`). The initializers and the pool create nothing, null the type's host
-  pointer and return the same 2004; the work size queries answer 0x1000 / 0x1000 as there; the preference (a value)
-  is filled. Whether every Switch 2 player takes 2004 from `InitializeXxxDecoder` as "no movie" is not known: none
-  has run here.
-- `nn::syncpt` events and `nn::gs::TryWaitNativeSync` live in the same file: a sync handle no decoder made reads as
-  reached (as in nxnative), so `CreateSyncPointEvent` binds its SystemEvent, `RequestSyncPointEvent` signals it at
-  once, and the multi-wait holder, try-wait and destroy calls go to the SDK's `nn::os` as there.
+
+## nn::codec: the Switch 2's video decoders (`codec_video.ts`)
+
+All 101 names of `hle_codec_video.c` are taken over by hand, with nxnative's protocol (movies.md, "The Switch 2's
+decoder API"): one image pool per output picture, registered under an index into an 8-deep queue of acquirable
+buffers; `Release…OutputBuffer` gives a buffer back to be filled and `Acquire…OutputBuffer` takes the oldest (3604
+when none); `Get…OutputBufferProperties` gives size, time and end of stream once filled (3604 until then);
+`Submit…InputBuffer` takes a packet or answers 3603 (busy). The submission-ready event (the decoder type + 0x100) is
+signalled at Initialize and Start, rises when a packet was taken or room came back, goes down at 4 pictures waiting;
+packets are refused only at 12 ("The submission-ready event counted as packets"). A refusal is logged plainly, never as
+a red line: NintendoSDK_movie retries 3603 and aborts on anything else. The SDK 22 (transfer / remote memory, stack
+arguments), SDK 19 and older initializer forms are all there; sync handles (16 bytes: magic, decoder, index,
+generation), `nn::gs::TryWaitNativeSync` and the `nn::syncpt` events are the host's as in nxnative.
+
+The decoder is the embedder's (`HleEnv.video`): in a browser WebCodecs' `VideoDecoder` (`src/glue/video_webcodecs.ts`:
+AV1 with the codec string from the stream's sequence header, VP9, VP8; software decoding preferred so pictures are
+planar in memory). It is asynchronous: a packet it takes is in flight until its picture comes back
+(`HleHost.videoPicture` → `hle_cv_picture`), and in-flight packets count with the waiting pictures for the event and
+for 3603. A completion fills the next released buffer and signals its sync point event from outside any guest call.
+H.264 (and AV1 / VP9 / VP8 where the browser has no decoder, or with no `HleEnv.video`, as in Node): every packet gives
+a picture of video black of the stream's size, with one red line per decoder, so a player still runs through its movie
+(nxnative: the movie module aborts on a decoder that does not initialize). Pictures are kept as I420 in host memory;
+the NV12 and RGBA readers convert them as `md_nv12` / `md_rgba` do (matrix and range from the stream: not given,
+BT.709 from 720 lines up, else BT.601). A pool a native image handle was asked for also gets every picture as RGBA in
+its own memory (16 KB aligned, 64-byte rows), which is what `nvnTextureInitializeFromNativeImage` makes its linear
+texture over (`HleHost.nativeImage(handle)`). Not served: HDR readback (black, one red line), encrypted input (2004),
+parts of a picture. The log of a run shows the path: `[codec] AV1 decoder 1: WxH, input format …, output format …
+(WebCodecs VideoDecoder on the host)`, `[codec] AV1 decoder 1: WebCodecs av01.…`, `first picture …`, `end of stream
+after N pictures`, `finalized: N packets, M pictures`.
 
 ## Status
 
@@ -200,7 +217,7 @@ Generated by `npm run hle:names` from the inventory.
 |---|---|---|---|---|---|---|---|
 | `gfx/hle_vi.c` | 31 | 31 | 0 | 12 | 19 | 0 | `src/hle/vi.ts` |
 | `hle_account.c` | 41 | 41 | 0 | 14 | 27 | 0 | `src/hle/account.ts` |
-| `hle_codec_video.c` | 101 | 101 | 0 | 0 | 0 | 101 | `src/hle/codec_video.ts` (cut: video codecs) |
+| `hle_codec_video.c` | 101 | 101 | 0 | 101 | 0 | 0 | `src/hle/codec_video.ts` |
 | `hle_friends.c` | 33 | 33 | 0 | 2 | 31 | 0 | `src/hle/friends.ts` |
 | `hle_hid.c` | 169 | 169 | 0 | 96 | 73 | 0 | `src/hle/hid.ts` |
 | `hle_jit.c` | 7 | 7 | 0 | 5 | 2 | 0 | `src/hle/jit.ts` |
@@ -226,7 +243,7 @@ Generated by `npm run hle:names` from the inventory.
 | `hle_movie_av1.c` | 0 | 0 | 0 | 0 | 0 | 0 | no table entries (see below) |
 | `hle_movie_avc.c` | 0 | 0 | 0 | 0 | 0 | 0 | no table entries (see below) |
 | `hle_touch.c` | 0 | 0 | 0 | 0 | 0 | 0 | no table entries (see below) |
-| **in scope** | **1113** | **1049** | **64** | **388** | **597** | **128** | |
+| **in scope** | **1113** | **1049** | **64** | **489** | **597** | **27** | |
 | `hle_audio.c` | 64 | 64 | 0 | | | | out of scope: audio |
 | `hle_audren.c` | 22 | 22 | 0 | | | | out of scope: audio |
 | `hle_codec.c` | 32 | 32 | 0 | | | | out of scope: audio |

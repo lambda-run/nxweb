@@ -1374,7 +1374,10 @@ src/glue/gfx_host.ts	V	1	} else { const first = dv.getUint32(p + 8, true); src =
 src/glue/hle_host.ts	B	1	LSL: 1n << 24n, LSR: 1n << 25n, RSL: 1n << 26n, RSR: 1n << 27n, SHAKE: 1n << 63n } as const;
 src/glue/hle_host.ts	B	1	Plus: 1n << 10n, Minus: 1n << 11n, Left: 1n << 12n, Up: 1n << 13n, Right: 1n << 14n, Down: 1n << 15n,
 src/glue/hle_host.ts	V	1	[snap.lx, snap.ly, snap.rx, snap.ry].forEach((v, i) => dv.setInt32(0x10 + 4 * i, Math.max(-STICK_MAX, Math.min(STICK_MAX, Math.round(v ?? 0))), true));
+src/glue/hle_host.ts	B	1	const at = this.x.hle_cv_pic_ptr(id), b = new Uint8Array(this.memory.buffer), w = pic.w, h = pic.h, cw = (w + 1) >> 1, ch = (h + 1) >> 1;
+src/glue/hle_host.ts	B	1	const id = pic ? this.x.hle_cv_pic_alloc(pic.w, pic.h) >>> 0 : 0;
 src/glue/hle_host.ts	V	1	const n = Math.min(16, snap.touches.length); dv.setUint32(0xE8, n, true);
+src/glue/hle_host.ts	B	1	const n = env.video ? enc.encode(env.video.open(d >>> 0, codec >>> 0, w >>> 0, h >>> 0)).subarray(0, cap) : new Uint8Array(0);
 src/glue/hle_host.ts	B	1	dv.setBigUint64(8, (u64(snap.buttons ?? 0) & ~BTN.SHAKE) | (snap.shake ? BTN.SHAKE : 0n), true);
 src/glue/hle_host.ts	V	1	dv.setBigUint64(o, u64(j.buttons ?? 0), true); dv.setInt32(o + 8, Math.round(j.stick?.[0] ?? 0), true); dv.setInt32(o + 12, Math.round(j.stick?.[1] ?? 0), true)
 src/glue/hle_host.ts	V	1	dv.setInt32(out, z.offset, true); dv.setInt32(out + 4, z.dst ? 1 : 0, true);
@@ -1383,6 +1386,7 @@ src/glue/hle_host.ts	V	1	dv.setUint32(4, (snap.sourceId ?? 0) >>> 0, true);
 src/glue/hle_host.ts	B	1	env.exitRequest(EXIT_REASON[reason] ?? " ", u64(value), new Uint8Array(mem()).slice(p, p + (n >>> 0))),
 src/glue/hle_host.ts	V	1	env.textRequest({ title: s(0), sub: s(8), guide: s(16), initial: s(24), maxChars: dv.getInt32(q + 32, true), minChars: dv.getInt32(q + 36, true),
 src/glue/hle_host.ts	V	1	env.vibration({ player: dv.getInt32(q, true), epoch: dv.getBigUint64(q + 8, true), motors: [v(16), v(32)] });
+src/glue/hle_host.ts	B	1	env.video ? env.video.decode(d >>> 0, gen >>> 0, u64(seq), n ? new Uint8Array(mem(), p, n) : null, eos !== 0) : 0,
 src/glue/hle_host.ts	B	1	export const BTN = { A: 1n << 0n, B: 1n << 1n, X: 1n << 2n, Y: 1n << 3n, LS: 1n << 4n, RS: 1n << 5n, L: 1n << 6n, R: 1n << 7n, ZL: 1n << 8n, ZR: 1n << 9n,
 src/glue/hle_host.ts	B	1	f |= IN.joyL << side;
 src/glue/hle_host.ts	V	1	for (let i = 0; i < n; i++) dv.setInt32(p + 4 * i, indices[i], true);
@@ -1391,6 +1395,8 @@ src/glue/hle_host.ts	B	1	get holds(): (keyof typeof HOLD)[] { const m = this.x.h
 src/glue/hle_host.ts	B	1	get padSlotMask(): number { return this.x.hle_pad_slot(4, 0) >>> 0; }
 src/glue/hle_host.ts	B	1	get viCrop(): { x: number; y: number; w: number; h: number } | null {
 src/glue/hle_host.ts	B	1	get viLayer(): { w: number; h: number } | null { const v = this.x.hle_vi_layer_size() >>> 0; return v ? { w: v & 0xFFFF, h: v >>> 16 } : null; }
+src/glue/hle_host.ts	B	1	hle_cv_close: (d: number) => env.video?.close(d >>> 0),
+src/glue/hle_host.ts	B	1	hle_cv_reset: (d: number, gen: number) => env.video?.reset(d >>> 0, gen >>> 0),
 src/glue/hle_host.ts	B	1	hle_event_clear: (h: number) => env.eventClear(h >>> 0) ? 1 : 0,
 src/glue/hle_host.ts	B	1	hle_event_dup_readable: (h: number) => env.eventDupReadable(h >>> 0),
 src/glue/hle_host.ts	V	1	hle_event_new: (w: number) => { const e = env.eventNew(); if (w) new DataView(mem()).setUint32(w, e.w, true); return e.r; },
@@ -1400,6 +1406,7 @@ src/glue/hle_host.ts	B	1	hle_native_image_blank_free: (h: number) => env.nativeI
 src/glue/hle_host.ts	B	1	hle_vi_crop: (cx: number, cy: number, w: number, h: number) => env.viCrop?.(cx >>> 0, cy >>> 0, w >>> 0, h >>> 0),
 src/glue/hle_host.ts	B	1	hle_vi_layer: (w: number, h: number) => env.viLayer?.(w >>> 0, h >>> 0),
 src/glue/hle_host.ts	B	1	hle_web_open: (path: number, cb: number, hidden: number, delay: number, pulse: number) => env.webOpen(str(path), str(cb), hidden !== 0, delay >>> 0, pulse >>> 0
+src/glue/hle_host.ts	B	1	if (!this.x.hle_cv_native_image(handle >>> 0, out)) return null;
 src/glue/hle_host.ts	B	1	if (f & RET.d0) r.d0 = u64(x.hle_ret_d0());
 src/glue/hle_host.ts	B	1	if (f & RET.wait) r.wait = { handle: x.hle_wait_handle() >>> 0, timeoutNs: BigInt.asIntN(64, x.hle_wait_timeout()) };
 src/glue/hle_host.ts	B	1	if (f & RET.x1) r.x1 = u64(x.hle_ret_x1());
@@ -1408,14 +1415,18 @@ src/glue/hle_host.ts	B	1	if (j.motion) { f |= IN.jmotionL << side; v3(o + 0x10, 
 src/glue/hle_host.ts	V	1	if (j.mouse) { f |= IN.mouseL << side; const q = 0xD0 + 12 * side; dv.setInt32(q, j.mouse.dx, true); dv.setInt32(q + 4, j.mouse.dy, true); dv.setUint32(q + 8, (
 src/glue/hle_host.ts	B	1	jitMemory?(rxSize: bigint, roSize: bigint): { rx: bigint; ro: bigint } | null;
 src/glue/hle_host.ts	V	1	kind: dv.getInt32(q + 40, true) ? " " : " " });
+src/glue/hle_host.ts	B	1	nativeImage(handle: number): { mem: number; size: number; w: number; h: number; stride: number } | null {
 src/glue/hle_host.ts	B	1	padSlot(op: " " | " " | " " | " ", sourceId: number): number { return this.x.hle_pad_slot(op === " " ? 0 : op === " " ? 1 : op === " " ? 2 : 3, sourceId >>> 0);
 src/glue/hle_host.ts	B	1	playerNpad(player: number): number { return this.x.hle_player_npad(player) >>> 0; }
 src/glue/hle_host.ts	B	1	return u64(env.roLoad(u64(image), size >>> 0, new Uint8Array(mem()).slice(sha, sha + 32), alone !== 0));
 src/glue/hle_host.ts	B	1	return v ? { x: Number(v & 0xFFFFn), y: Number((v >> 16n) & 0xFFFFn), w: Number((v >> 32n) & 0xFFFFn), h: Number(v >> 48n) } : null;
 src/glue/hle_host.ts	V	1	return { buttons: Number(dv.getBigUint64(p, true)), axes: [dv.getInt32(p + 8, true), dv.getInt32(p + 12, true), dv.getInt32(p + 16, true), dv.getInt32(p + 20, t
+src/glue/hle_host.ts	V	1	return { mem: Number(dv.getBigUint64(out, true)), size: Number(dv.getBigUint64(out + 8, true)), w: dv.getUint32(out + 16, true), h: dv.getUint32(out + 20, true)
+src/glue/hle_host.ts	B	1	this.x.hle_cv_picture(dec >>> 0, gen >>> 0, BigInt.asUintN(64, seq), id, pic ? pic.matrix >>> 0 : 2, pic?.fullRange ? 1 : 0);
 src/glue/hle_rt.ts	B	1	const name = /\(([^)]+)\)$/.exec(d.toString())?.[1]?.split(" ").map(w => w[0]).join("") ?? " ";
 src/glue/hle_rt.ts	B	1	eventDupReadable: h => rt.k.kernel_event_dup_readable(h) >>> 0,
 src/glue/hle_rt.ts	V	1	eventNew: () => { const p = o.scratch ?? (rt.r.rt_scratch_ptr() + 3080); const r = rt.k.kernel_event_new(p) >>> 0; return { r, w: new DataView(rt.memory.buffer)
+src/glue/hle_rt.ts	B	1	nativeImageOf?: ((handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null) | null;
 src/glue/hle_scan.ts	B	1	const SYM_MAX = 1 << 20;
 src/glue/hle_scan.ts	V	1	const dyn = mod0 + dv.getInt32(mod0 + 4, true);
 src/glue/hle_scan.ts	V	1	const e: number = sym + 24 * i, at: number = str + dv.getUint32(e, true);
@@ -1435,11 +1446,16 @@ src/glue/rt_gfx.ts	B	1	const abi = this.abi[id] ?? 0, floats = abi & 15, retF = 
 src/glue/rt_gfx.ts	B	1	const done = this.host.fence(x.gfx_finish_fence() >>> 0);
 src/glue/rt_gfx.ts	B	1	const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= mem.length;
 src/glue/rt_gfx.ts	B	1	const interval = Math.max(1, this.x.gfx_present_interval(Number(cpu.x(0))) | 0);
+src/glue/rt_gfx.ts	V	1	const le = (n: bigint | number, bytes: number) => { const b = new Uint8Array(bytes), dv = new DataView(b.buffer); if (bytes === 8) dv.setBigUint64(0, BigInt.asU
 src/glue/rt_gfx.ts	B	1	const n = cpu.w(1) | 0, sd = Number(cpu.x(2));
+src/glue/rt_gfx.ts	B	1	const ok = nvn(" ", t, tb) & 0xffn;
 src/glue/rt_gfx.ts	B	1	const res = this.call(id, k.args), fence = x.gfx_wait_fence() >>> 0;
+src/glue/rt_gfx.ts	V	1	const u32 = (cpu: HostCpu, a: bigint) => new DataView(cpu.read(a, 4).buffer).getUint32(0, true);
 src/glue/rt_gfx.ts	B	1	const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
 src/glue/rt_gfx.ts	B	1	for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
+src/glue/rt_gfx.ts	B	1	if (!(nvn(" ", i + 0x20n, pb) & 0xffn)) { cpu.log(" "); return 0n; }
 src/glue/rt_gfx.ts	B	1	if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
+src/glue/rt_gfx.ts	B	1	nativeImageOf: ((handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null) | null = null;
 src/glue/rt_gfx.ts	B	1	private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
 src/glue/rt_gfx.ts	B	1	this.shownAt[n & 255] = BigInt(Math.round(performance.now() * 1e6));
 src/glue/rt_gfx.ts	B	1	viLayerCrop: { x: number; y: number; w: number; h: number } | null = null;
@@ -1503,6 +1519,17 @@ src/glue/rt_runtime.ts	V	1	this.sleeper ??= new Int32Array(new SharedArrayBuffer
 src/glue/rt_runtime.ts	B	1	unimpl: (pc: bigint, insn: number) => this.fault(FAULT.unimplemented, ` $ $ `, BigInt(insn >>> 0), true),
 src/glue/rt_runtime.ts	B	1	w: (i: number) => Number((c[" " + i].value as bigint) & M32),
 src/glue/rt_shader_worker.ts	B	1	let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null;
+src/glue/video_host.ts	B	1	const at = (i: number) => (b[i >> 3] >> (7 - (i & 7))) & 1;
+src/glue/video_host.ts	B	1	const h = b[p], type = (h >> 3) & 15, ext = (h >> 2) & 1, hasSize = (h >> 1) & 1;
+src/glue/video_host.ts	B	1	const profile = ((b[0] >> 5) & 1) | (((b[0] >> 4) & 1) << 1);
+src/glue/video_host.ts	B	1	else if (o.end > o.start) { const h = b[o.start]; key = !(h & 0x80) && ((h >> 5) & 3) === 0; }
+src/glue/video_host.ts	B	1	export function vp8Key(b: Uint8Array): boolean { return b.length > 0 && (b[0] & 1) === 0; }
+src/glue/video_host.ts	B	1	f(n: number): number { let v = 0; for (let i = 0; i < n; i++) { const byte = (this.p >> 3); if (byte >= this.end) throw new Error(" "); v = v * 2 + ((this.b[byt
+src/glue/video_host.ts	B	1	for (let i = 0; i < 8 && p < end; i++) { const c = b[p++]; v += (c & 0x7f) * 2 ** (7 * i); if (!(c & 0x80)) return [v, p]; }
+src/glue/video_host.ts	B	1	if (!b.length || (b[0] >> 6) !== 2) return false;
+src/glue/video_webcodecs.ts	B	1	const cw = (w + 1) >> 1, ch = (h + 1) >> 1;
+src/glue/video_webcodecs.ts	B	1	const deep = /^I420A?P(10|12)$/.exec(fmt);
+src/glue/video_webcodecs.ts	B	1	for (let yy = 0; yy < ph; yy++) for (let x = 0; x < pw; x++) o[yy * pw + x] = Math.min(255, dv.getUint16(yy * s + 2 * x, true) >> shift);
 src/hle/account.ts	D	1	store<i32>(n, 0)
 src/hle/account.ts	D	1	store<i32>(n, 1)
 src/hle/account.ts	D	1	store<i32>(n, k)
@@ -1539,11 +1566,78 @@ src/hle/cal.ts	D	1	store<i32>(p, tSec)
 src/hle/cal.ts	D	1	store<i32>(p, tWday, 24)
 src/hle/cal.ts	D	1	store<i32>(p, tYday, 28)
 src/hle/cal.ts	D	1	store<i32>(p, tYear, 20)
-src/hle/codec_video.ts	C	1	<u32><u16>X(a, 2)
-src/hle/codec_video.ts	C	1	<u32><u16>X(a, 3)
+src/hle/codec_video.ts	C	1	<i32>(NDEC * 112)
+src/hle/codec_video.ts	C	2	<i32>(NDEC * CV_HOLD * 16)
+src/hle/codec_video.ts	C	1	<i32>(NDEC * NBUF * 4)
+src/hle/codec_video.ts	C	1	<i32>(NDEC * NBUF * 48)
+src/hle/codec_video.ts	C	1	<i32>(NDEC * NFIFO * 4)
+src/hle/codec_video.ts	C	1	<i32>(NPIC * 40)
+src/hle/codec_video.ts	C	1	<i32>(NPOOL * 40)
+src/hle/codec_video.ts	C	1	<i32>(NPOOL * POOL_IMGS * 4)
+src/hle/codec_video.ts	C	1	<i32>(bu * kc * 65536)
+src/hle/codec_video.ts	C	1	<i32>(gu * kc * 65536)
+src/hle/codec_video.ts	C	1	<i32>(gv * kc * 65536)
+src/hle/codec_video.ts	C	1	<i32>(ky * 65536)
+src/hle/codec_video.ts	C	1	<i32>(rv * kc * 65536)
+src/hle/codec_video.ts	C	1	<i32>k
+src/hle/codec_video.ts	C	1	<i32>load<u8>(ru + (x >> 1))
+src/hle/codec_video.ts	C	1	<i32>load<u8>(rv_ + (x >> 1))
+src/hle/codec_video.ts	C	1	<i32>load<u8>(ry + x)
+src/hle/codec_video.ts	C	2	<u32>(v >> 32)
+src/hle/codec_video.ts	C	3	<u32><u16>X(a, 2)
+src/hle/codec_video.ts	C	4	<u32><u16>X(a, 3)
+src/hle/codec_video.ts	C	3	<u32><u16>X(a, 4)
+src/hle/codec_video.ts	C	2	<u32><u16>X(a, 5)
+src/hle/codec_video.ts	C	1	<u32>b << 16
+src/hle/codec_video.ts	C	1	<u32>g << 8
+src/hle/codec_video.ts	C	1	<u32>h
+src/hle/codec_video.ts	C	1	<u32>load<u16>(p)
+src/hle/codec_video.ts	C	1	<u32>load<u16>(p, 2)
+src/hle/codec_video.ts	C	1	<u32>load<u16>(pr)
+src/hle/codec_video.ts	C	1	<u32>load<u16>(pr, 2)
+src/hle/codec_video.ts	C	1	<u32>r | (<u32>g << 8)
+src/hle/codec_video.ts	C	2	<u32>stackArg(0)
+src/hle/codec_video.ts	C	2	<u32>v
+src/hle/codec_video.ts	C	1	<u32>w
+src/hle/codec_video.ts	D	2	load<u32>(at)
+src/hle/codec_video.ts	D	1	load<u32>(e + 0x48)
+src/hle/codec_video.ts	D	1	load<u32>(e + 0x4c)
+src/hle/codec_video.ts	D	1	load<u32>(e + 0x50)
+src/hle/codec_video.ts	D	1	load<u32>(e + 0x54)
+src/hle/codec_video.ts	D	1	load<u32>(fifoAt(id, d.fhead))
+src/hle/codec_video.ts	D	1	load<u32>(pendAt(id, d.phead))
+src/hle/codec_video.ts	D	3	load<u32>(poolPicAt(slot, i))
+src/hle/codec_video.ts	D	1	load<u32>(pr, 4)
+src/hle/codec_video.ts	D	1	load<u32>(pr, 8)
+src/hle/codec_video.ts	D	1	load<u32>(s)
+src/hle/codec_video.ts	D	1	load<u32>(s, 12)
+src/hle/codec_video.ts	D	1	load<u32>(s, 4)
+src/hle/codec_video.ts	D	1	load<u32>(s, 8)
+src/hle/codec_video.ts	D	1	load<u32>(tmp + (<usize>k << 2))
+src/hle/codec_video.ts	D	1	store<u32>(at, pid)
+src/hle/codec_video.ts	D	1	store<u32>(cs, 0)
+src/hle/codec_video.ts	D	1	store<u32>(e + 0x40, 0)
+src/hle/codec_video.ts	D	1	store<u32>(e + 0x40, CV_SYNC)
+src/hle/codec_video.ts	D	3	store<u32>(e + 0x44, 0)
+src/hle/codec_video.ts	D	1	store<u32>(e + 0x44, 1)
+src/hle/codec_video.ts	D	1	store<u32>(fifo ? fifoAt(id, k) : pendAt(id, k), load<u32>(tmp + (<usize>k << 2)))
+src/hle/codec_video.ts	D	2	store<u32>(fifoAt(id, (d.fhead + d.fcount) % NFIFO), i)
+src/hle/codec_video.ts	D	1	store<u32>(idx, i)
+src/hle/codec_video.ts	D	1	store<u32>(o + (<usize>x << 2), 0xff000000)
+src/hle/codec_video.ts	D	1	store<u32>(o + (<usize>x << 2), <u32>r | (<u32>g << 8) | (<u32>b << 16) | 0xff000000)
 src/hle/codec_video.ts	D	1	store<u32>(out, CV_MAGIC, 12)
 src/hle/codec_video.ts	D	1	store<u32>(out, W(a, 2), 4)
 src/hle/codec_video.ts	D	1	store<u32>(out, W(a, 3), 8)
+src/hle/codec_video.ts	D	1	store<u32>(out, nativeStride(p.w), 24)
+src/hle/codec_video.ts	D	1	store<u32>(out, p.h, 20)
+src/hle/codec_video.ts	D	1	store<u32>(out, p.w, 16)
+src/hle/codec_video.ts	D	1	store<u32>(pendAt(id, (d.phead + d.pcount) % NBUF), i)
+src/hle/codec_video.ts	D	2	store<u32>(poolPicAt(slot, i), 0)
+src/hle/codec_video.ts	D	1	store<u32>(sync, CV_SYNC)
+src/hle/codec_video.ts	D	1	store<u32>(sync, buf(id, i).gen, 12)
+src/hle/codec_video.ts	D	1	store<u32>(sync, i, 8)
+src/hle/codec_video.ts	D	1	store<u32>(sync, id, 4)
+src/hle/codec_video.ts	D	1	store<u32>(tmp + (<usize>n << 2), v)
 src/hle/haptics.ts	C	1	<u32>1 << p
 src/hle/haptics.ts	D	1	load<i32>(e)
 src/hle/haptics.ts	D	1	load<i32>(e, 4)
