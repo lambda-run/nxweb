@@ -14,3 +14,34 @@ export function ndveRole(key: string): string | null {
     : i === 13 ? "the resampler (4/3, to 2560x1440)" : "a U-Net layer (HMMA.16816.F16 convolutions over the picture packed 2x2 at 960x540)";
   return `nn::ndve's movie network, dispatch ${at} of 14: ${what}`;
 }
+
+// ?ndve=bypass (off by default), a diagnostic stand-in: when the network's dispatches cannot run (a shader not yet translated, failed, or a pipeline
+// that did not build; nxweb has no HMMA lowering), the movie picture is resampled bilinearly into the image the network's last dispatch (the resampler)
+// writes, so the rest of the frame (HUD, present) has a picture. It is not the network's picture: nxnative runs the network as host kernels
+// (docs/ndve.md). The bindings are the model's, as nxnative's nvn_ndve.inc reads them: the first U-Net layer reads the picture at compute texture slot 1,
+// the last convolution adds the picture at slot 4, the resampler writes image slot 1 and flips rows when push constant word 19 is set (row base: word 18)
+export const NDVE_PICTURE_SLOT = 1, NDVE_ADDED_SLOT = 4, NDVE_OUTPUT_IMAGE = 1, NDVE_FLIP_ON = 19, NDVE_FLIP_BASE = 18;
+export class NdveBypass {
+  readonly keys: readonly string[];
+  pic = 0;          // serial of this frame's picture (the network's input), 0 none seen yet
+  broken = 0;       // dispatches of this frame's network before the resampler that could not run
+  frames = 0;       // frames the stand-in wrote
+  constructor(keys: readonly string[] = NDVE_KEYS) { this.keys = keys; }
+  // the dispatch's place in the model (by key: the colour conversion, the first and last convolutions and the resampler are keys of their own), -1 not the model's
+  pos(key: string): number { return this.keys.indexOf(key); }
+  // the resampler (pos) is about to run: true when this frame's network did not run, so the stand-in writes its output instead
+  replaces(pos: number): boolean {
+    if (pos !== this.keys.length - 1 || !this.broken || !this.pic) return false;
+    this.broken = 0; return true;
+  }
+  // a dispatch of the model went by (ran: it ran; tex: the serial bound at a texture slot). True when the stand-in writes the output now (the resampler could not run)
+  saw(pos: number, ran: boolean, tex: (slot: number) => number): boolean {
+    const last = this.keys.length - 1;
+    if (pos === 0) { this.pic = 0; this.broken = 0; return false; }
+    if (pos === 1) this.pic = tex(NDVE_PICTURE_SLOT) || this.pic;
+    else if (pos === last - 1 && !this.pic) this.pic = tex(NDVE_ADDED_SLOT);
+    if (pos < last) { if (!ran) this.broken++; return false; }
+    const take = !ran && this.pic > 0;
+    this.broken = 0; return take;
+  }
+}

@@ -87,6 +87,7 @@ export function libRegister(key: u64, refl: usize): i32 {
   return <i32>(libCount - 1);
 }
 export function libRefl(id: i32): usize { return LIB + <usize>id * LE_SIZE + 8; }
+export function libKey(id: i32): u64 { return load<u64>(LIB + <usize>id * LE_SIZE); }
 function libFind(key: u64): i32 {
   for (let i: u32 = 0; i < libCount; i++) if (load<u64>(LIB + <usize>i * LE_SIZE) == key) return <i32>i;
   return -1;
@@ -136,6 +137,32 @@ function reportMissing(key: u64): void {
   for (let b = 0; b < 8; b++) L.hex((key >> (<u64>b * 8)) & 0xff, 2);
   L.str(" is not in the shader map");
   L.end();
+}
+
+// The key of a program's first stage that is not in the library, 0 when all are (a dispatch the recorder cannot run)
+export function progMissingKey(prog: usize): u64 {
+  const e = progEntry(load<u64>(prog, PROG_serial));
+  if (!e) return 0;
+  const n = min<u32>(load<u32>(prog, PROG_nstage), 6), ok = <u32>load<u8>(e, PE_ok);
+  for (let i: u32 = 0; i < n; i++) {
+    if (!((ok >> i) & 1)) continue;
+    const k = load<u64>(e + PE_key + (<usize>i << 3));
+    if (libFind(k) < 0) return k;
+  }
+  return 0;
+}
+// Keys whose dispatches the embedder is told of when they cannot run (gfx_watch_key; GfxHost's NDVE stand-in)
+const WATCH_N: u32 = 16, WATCH: usize = memory.data(16 * 8);
+let nWatch: u32 = 0;
+export function watched(key: u64): bool {
+  for (let i: u32 = 0; i < nWatch; i++) if (load<u64>(WATCH + (<usize>i << 3)) == key) return true;
+  return false;
+}
+export function watchKey(key: u64): bool {
+  if (!key || watched(key)) return key != 0;
+  if (nWatch == WATCH_N) return false;
+  store<u64>(WATCH + (<usize>nWatch << 3), key); nWatch++;
+  return true;
 }
 
 // The library id of the stage with shader stage number `want` (0 vertex, 1 fragment, 2 compute, 3 task, 4 mesh) of the program object at `prog`,

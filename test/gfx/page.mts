@@ -9,7 +9,8 @@ import { scenes4 } from "./scenes4.mts";
 import { scenes5 } from "./scenes5.mts";
 import { scenes6 } from "./scenes6.mts";
 import { scenes7 } from "./scenes7.mts";
-const scenes = [...scenes1, ...scenes2, ...scenes3, ...scenes4, ...scenes5, ...scenes6, ...scenes7];
+import { scenes8 } from "./scenes8.mts";
+const scenes = [...scenes1, ...scenes2, ...scenes3, ...scenes4, ...scenes5, ...scenes6, ...scenes7, ...scenes8];
 import { GfxHost } from "../../src/glue/gfx_host.ts";
 
 async function main() {

@@ -10,7 +10,7 @@ import { deviceInit, deviceLost, deviceRestored, deviceState, deviceLosses } fro
 import { setHostCaps } from "./fmt";
 import { astcRows } from "./astc";
 import { lowerInit, stat, passState } from "./lower";
-import { libRegister, shaderInit, shaderPending, shaderKeyState } from "./shader";
+import { libRegister, shaderInit, shaderPending, shaderKeyState, watchKey } from "./shader";
 import { arenaInit, ARENA_BYTES } from "./arena";
 import { pipelineDone, pipelineState, pipelineCount, pipelineInit } from "./pipeline";
 import { fenceDone, fenceSignal, fenceDonePtr, fenceLast, sampTablePtr, tablesInit } from "./tables";
@@ -59,6 +59,8 @@ export function gfx_shader_register(keyLo: u32, keyHi: u32, refl: usize): i32 { 
 // What the embedder does about a key that is not registered: 1 it is on its way (draws that need it are skipped without
 // a line), 2 it failed (the embedder says so itself), 0 nothing any more. 1 = taken, 0 = not in the key's state
 export function gfx_shader_pending(keyLo: u32, keyHi: u32, what: i32): i32 { return shaderPending(<u64>keyLo | <u64>keyHi << 32, what) ? 1 : 0; }
+// The replayer is told of this key's dispatches when they cannot run (H_DISPATCH_SKIPPED). 0: the table (16 keys) is full
+export function gfx_watch_key(keyLo: u32, keyHi: u32): i32 { return watchKey(<u64>keyLo | <u64>keyHi << 32) ? 1 : 0; }
 export function gfx_shader_state(keyLo: u32, keyHi: u32): i32 { return shaderKeyState(<u64>keyLo | <u64>keyHi << 32); }   // 0 Unknown, 1 Pending, 2 Failed, 3 Ready
 // The replayer's reports
 export function gfx_pipeline_done(id: u32, ok: i32): void { pipelineDone(id, ok != 0); }
