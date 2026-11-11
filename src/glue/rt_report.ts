@@ -95,6 +95,7 @@ export interface ReportInput {
   log: string[];                           // log lines WITHOUT the guest's own output (that is guest memory)
   redTotal: number;
   fs?: string[];                           // RtFs.lines: the most called nn::fs functions, the last files opened
+  idle?: string[];                         // RtRuntime.idleWaitLines: what the threads wait on while none can run
   hot?: string[];                          // RtRuntime.hotCode: where the guest's time goes, by function
   scan?: string[];                         // the prepare step's instruction scan (a64_scan.ts scanLines): opcode classes, counts, module offsets
 }
@@ -115,6 +116,7 @@ export function reportText(r: ReportInput): string {
   out.push(`  (${r.machines.filter(m => !(m.live || m.steps || m.taken)).length} machines of ${r.machines.length} not stepped: ${r.machines.filter(m => !(m.live || m.steps || m.taken)).map(m => m.name).join(", ") || "none"})`, "");
   out.push("counters:", ...Object.entries(r.counters).map(([k, v]) => `  ${k}: ${v}`), "");
   if (r.fs?.length) out.push("nn::fs: the most called functions:", ...r.fs.map(l => "  " + l), "");
+  if (r.idle?.length) out.push("what the guest waits for when no thread can run:", ...r.idle.map(l => "  " + l), "");
   if (r.hot?.length) out.push("where the guest's time goes (the pc each time slice ended at, by function):", ...r.hot.map(l => "  " + l), "");
   if (r.scan) out.push("instructions the translator does not have (static scan of the code modules with its own decoder; opcode classes and offsets, no game data):",
     ...(r.scan.length ? r.scan.map(l => "  " + l) : ["  (no scan: the game was not opened through the prepare step, or its translator binary has no scanner)"]), "");
