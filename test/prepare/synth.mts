@@ -175,6 +175,31 @@ export function withImport(image: Uint8Array, name: string, plt = 0x1800, slot =
   [A64.adrp(16, plt, slot), (0xF9400211 | ((lo / 8) << 10)) >>> 0, A64.addi(16, 16, lo), 0xD61F0220].forEach((w, k) => dv.setUint32(plt + 4 * k, w, true));
   return out;
 }
+// An image (matchImage's 0x4000 bytes) as a stored NSO: text 0..0x2000, rodata ..0x3000, data the rest; no hashes
+export function nsoOf(image: Uint8Array, id = 0x5A): Uint8Array {
+  const out = new Uint8Array(0x100 + image.length), dv = new DataView(out.buffer);
+  out.set([0x4E, 0x53, 0x4F, 0x30]);
+  [[0, 0x2000], [0x2000, 0x3000], [0x3000, image.length]].forEach(([a, b], i) => {
+    dv.setUint32(0x10 + i * 16, 0x100 + a, true); dv.setUint32(0x14 + i * 16, a, true); dv.setUint32(0x18 + i * 16, b - a, true); dv.setUint32(0x60 + i * 4, b - a, true);
+  });
+  out.fill(id, 0x40, 0x60); out.set(image, 0x100);
+  return out;
+}
+// The image with a dynamic table (0x2100) naming `symbols`: DT_HASH (0x2280, one bucket), symbols (0x2300), strings (0x2A00)
+export function withSymbols(image: Uint8Array, symbols: { name: string; defined: boolean }[]): Uint8Array {
+  const out = image.slice(), dv = new DataView(out.buffer), n = symbols.length + 1;
+  dv.setInt32(0x24, 0x2100 - 0x20, true);
+  ([[4, 0x2280], [6, 0x2300], [5, 0x2A00], [11, 24], [0, 0]] as const).forEach(([tag, value], i) => { dv.setBigInt64(0x2100 + i * 16, BigInt(tag), true); dv.setBigUint64(0x2108 + i * 16, BigInt(value), true); });
+  dv.setUint32(0x2280, 1, true); dv.setUint32(0x2284, n, true);
+  let at = 1;
+  symbols.forEach((s, i) => {
+    const e = 0x2300 + 24 * (i + 1), b = new TextEncoder().encode(s.name);
+    dv.setUint32(e, at, true); out[e + 4] = 0x12; dv.setUint16(e + 6, s.defined ? 1 : 0, true); dv.setBigUint64(e + 8, s.defined ? 0x100n : 0n, true);
+    out.set(b, 0x2A00 + at); at += b.length + 1;
+  });
+  if (0x2300 + 24 * n > 0x2A00 || 0x2A00 + at > 0x3000) throw new Error("withSymbols: too many symbols");
+  return out;
+}
 
 // ---- the wrappers shader_split.py unwraps (the Shaders stage's scan, src/prepare/host/shader_scan.ts) ----
 // A SARC archive (little-endian): header, SFAT with one 16-byte entry per member (name attribute, data start, data

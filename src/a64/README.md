@@ -305,7 +305,7 @@ npm run a64:extra            # feature tests: fault pcs, code ranges, cntpct yie
 npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py), then 30,000
                              #         cases in memory64 and 30,000 with code and memory window above 4 GB
     python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N] [--mem64 | --hi] [--total N]
-npm run a64:fuzz:mem64       # the full 446,000 cases in memory64, and again above 4 GB
+npm run a64:fuzz:mem64       # the full 450,000 cases in memory64, and again above 4 GB
 npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out, then again with
                              #         budget=50, without wasm tail calls, on a shared memory; in memory64; in
                              #         memory64 with the images linked at 0x1_8000_0000 (test/a64/guests/out_hi,
@@ -441,6 +441,10 @@ state still coming from Unicorn.
   the helper computes in f64 exactly (add, sub, mul, conversions), with innocuous double rounding (div, sqrt) or
   rounded to odd (the fused forms) and rounds once to half, with ARM's NaN rules: bit-exact against Unicorn,
   NaNs included. FPCR.FZ16 / DN / AHP are not modelled, FPSR flags are not set (as for S and D).
+- DotProd (ARMv8.2): SDOT/UDOT, vector (`Vd.2S/4S, Vn.8B/16B, Vm.8B/16B`) and by element (`Vm.4B[0..3]`, Vm in
+  v0..v31): two widening byte multiplies (`i16x8.extmul_low/high_i8x16_s/u`, the products fit 16 bits), pairwise
+  widening adds to 32 bits, an even/odd lane shuffle and an add into Vd; the 2S forms clear the upper half. Other
+  element sizes stay unallocated.
 
 ## Known gaps
 
@@ -478,19 +482,20 @@ Behavioural differences:
 
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
-- Gate 1 (FP16 and crypto together): 223 classes x 2000 cases = 446000 cases, 0 failures; memory64 and above 4 GB
-  30105 cases each, 0 failures.
+- Gate 1 (FP16, crypto and DotProd together): 225 classes x 2000 cases = 450000 cases, 0 failures; memory64 and above 4 GB
+  30150 cases each, 0 failures.
 - Gate 1 (FP16 branch): 216 classes x 2000 cases = 432000 cases, 0 failures (the 34 FP16 and FHM classes, 68000 cases, also with
   `--strictnan --shared --seed 5`, `--mem64`, `--hi` and `--nonan --nofma --seed 9`: 0 failures).
+- Gate 1: 191 classes x 2000 cases = 382000 cases, 0 failures; again with `--strictnan --shared --seed 5`, 0 failures.
 - Crypto extensions and FJCVTZS (#17): Gate 1 189 classes x 2000 = 378000 cases, 0 failures in memory32, memory64
   and above 4 GB; the 7 new classes x 30000 cases, 0 failures in each of the three; `--strictnan --shared --seed 5`
   x 5000, 0 failures.
 - Gate 2 (Node, with FP16): 88 guest images (61 shared, 27 own, `a64_fp16` among them), 88 pass in each of
   default, `--budget 50`, `--notail`, `--shared`, `--mem64` and the four above-4 GB runs.
-- Gate 2 (Node, before FP16): 75 guest images, 75 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
-  `--precise 2`, `--cntyield` and warm from the translation cache. Feature tests: 9 of 9.
-- Gate 2 (Chromium, Worker): 75 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
-  (569 units from the Cache API on the warm pass, 0 instructions translated); feature tests 9 of 9.
+- Gate 2 (Node): 86 guest images, 86 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
+  `--precise 2`, `--cntyield` and warm from the translation cache (75 images, earlier run). Feature tests: 23 of 23.
+- Gate 2 (Chromium, Worker): 86 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
+  (718 units from the Cache API on the warm pass, 0 instructions translated); feature tests 23 of 23.
 - Runtime (`npm run rt:test`, `rt:browser`): 25 of 25 and 31 of 31 after the matching edits in `rt_layout.ts`
   (three a64 ranges, `A64` export) and `rt_runtime.ts` (layout option, `fillPcMap` for the stub region).
 - Speed, shared corpus, 15 interleaved runs each, total run time min / median ms: default 351 / 495;

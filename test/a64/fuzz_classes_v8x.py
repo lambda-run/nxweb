@@ -175,3 +175,8 @@ def _jscvt(r, f, pre):
 
 
 E("fjcvtzs", "0001 1110 0111 1110 0000 00 Rn:5 Rd:5", setup=_jscvt)
+
+
+# ------------------------------------------------------------------------------ DotProd
+E("dotprod_vec", "0 Q:1 U:1 01110 10 0 Rm:5 1 0010 1 Rn:5 Rd:5")                     # SDOT / UDOT Vd.2S/4S, Vn.8B/16B, Vm
+E("dotprod_elem", "0 Q:1 U:1 01111 10 L:1 M:1 Rm:4 1110 H:1 0 Rn:5 Rd:5")            # SDOT / UDOT Vd.2S/4S, Vn, Vm.4B[H:L]

@@ -932,12 +932,33 @@ function threeDiff(insn: u32, scalar: bool): bool {
   return true;
 }
 
+// SDOT / UDOT: each 32-bit lane of Vd += the sum of four products of the bytes of Vn and Vm in that lane.
+// Products of bytes fit 16 bits signed (-128 * -128 = 16384) and unsigned (255 * 255); widened by pairs to 32 bits.
+function dot(U: bool, n: u32, m: u32, rd: i32, Q: bool): void {
+  let A = tv(0), B = tv(1);
+  lget(n); lget(m); simd(U ? 0x9E : 0x9C); simd(U ? 0x7F : 0x7E); lset(A);
+  lget(n); lget(m); simd(U ? 0x9F : 0x9D); simd(U ? 0x7F : 0x7E); lset(B);
+  for (let j = 0; j < 16; j++) SH[j] = <u8>((j & 3) + 8 * (j >> 2));
+  lget(A); lget(B); shuffle();
+  for (let j = 0; j < 16; j++) SH[j] += 4;
+  lget(A); lget(B); shuffle();
+  simd(0xAE); vget(rd); simd(0xAE);
+  finish(rd, Q ? 0 : 1);
+}
+
 function indexed(insn: u32, scalar: bool): bool {
   let Q = ((insn >> 30) & 1) != 0, U = ((insn >> 29) & 1) != 0, sz = (insn >> 22) & 3;
   let opcode = (insn >> 12) & 15;
   let L = (insn >> 21) & 1, M = (insn >> 20) & 1, H = (insn >> 11) & 1;
   let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31), rm = <i32>((insn >> 16) & 15);
   let E = tv(2);
+  if (opcode == 14) { // SDOT / UDOT by element: Vm.4B[H:L], Vm in 0..31
+    if (scalar || sz != 2) return false;
+    vget(rm | <i32>(M << 4)); simd(0x1B); b((H << 1) | L); simd(0x11); lset(E);
+    vget(rn); lset(tv(3));
+    dot(U, tv(3), E, rd, Q);
+    return true;
+  }
   let isF = !U && (opcode == 1 || opcode == 5 || opcode == 9);
   let idx: u32;
   if (isF) {
@@ -1088,6 +1109,11 @@ export function trSimd(pc: u64, insn: u32): bool {
         let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31), rm = <i32>((insn >> 16) & 31);
         if (k == 7) return false;
         vopBegin(k < 3 ? 4 + k : k == 3 ? 8 : k == 4 ? 10 : k == 5 ? 11 : 13); vget(rd); vget(rn); vget(rm); vopEnd(); vset(rd);
+        return true;
+      }
+      if (!scalar && (insn & 0x00C0FC00) == 0x00809400) { // SDOT / UDOT (vector, 4S / 2S)
+        vget(<i32>((insn >> 5) & 31)); lset(tv(3)); vget(<i32>((insn >> 16) & 31)); lset(tv(4));
+        dot(U != 0, tv(3), tv(4), <i32>(insn & 31), ((insn >> 30) & 1) != 0);
         return true;
       }
       if (scalar || (insn & 0x8000) != 0) return false;

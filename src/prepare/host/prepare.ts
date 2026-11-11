@@ -4,6 +4,7 @@
 // hash is the one recorded with a finished output is skipped, so a run that was cancelled, failed or lost its tab
 // goes on where it stopped, and `redo(stage)` is: forget that record, run. See ../README.md.
 import { A64Scanner, SCAN_FORMAT, scanLines, type ModuleScan } from "../../glue/a64_scan.ts";
+import { HLE_SCAN_KEY, dynSymbols, takeOverSymbols, hleGaps, hleHeadline, hleLines, type HleGap, type DynSymbol } from "../../glue/hle_scan.ts";
 import { PrepWasm, type FailReason, type Counts, type PrepState, type Cut, type NpdmInfo, type MatchRule, type MatchOutcome } from "./wasm.ts";
 import type { PrepTree, TreeListing, TreeFile } from "./tree.ts";
 import type { PrepStore } from "./store.ts";
@@ -78,6 +79,7 @@ export interface ProfileOut {
 export interface CodeScan { module: string; buildId: string; scan: ModuleScan }
 export interface CodeOut {
   scan?: CodeScan[];                       // when the embedder gave a scanner; the modules as the game ships them, before cuts
+  hle: HleGap[];                           // SDK functions nxnative takes over that nxweb does not answer (src/glue/hle_scan.ts)
   modules: { name: string; buildId: string; from: "folder" | "store"; path: string; size: number; sha256: string; imageSize: number; cuts: number }[]; cuts: number;
   // what became of each function-matched patch, and the cuts that were placed (applied like registered ones)
   matched: (MatchOutcome & { module: string; buildId: string; from: string })[];
@@ -271,7 +273,7 @@ export class Prepare {
         () => this.profile(det, l, profile, pid === det.titleId ? "title" : pid ? "build" : null, sdk), () => {});
       // ---- Code ----
       const loadFiles = prof.load.map(n => l.files.find(f => f.path === det.exefs + n)!);
-      await stage<CodeOut>("code", this.hash(["code", loadFiles.map(fileKey), prof.load.map(n => det.modules.find(m => m.name === n)!.buildId), prof.cuts, prof.match, ...(this.o.scanner ? [["scan", SCAN_FORMAT, this.o.scanner.key]] : [])]), () => this.code(det, prof),
+      await stage<CodeOut>("code", this.hash(["code", loadFiles.map(fileKey), prof.load.map(n => det.modules.find(m => m.name === n)!.buildId), prof.cuts, prof.match, ["hle", HLE_SCAN_KEY], ...(this.o.scanner ? [["scan", SCAN_FORMAT, this.o.scanner.key]] : [])]), () => this.code(det, prof),
         o => { this.w.setCount("cuts", o.cuts); this.w.setCount("modules", o.modules.length); });
       // ---- Shaders ----
       const pw = this.o.shaders;
@@ -437,8 +439,8 @@ export class Prepare {
   }
 
   private async code(det: DetectOut, prof: ProfileOut): Promise<CodeOut> {
-    const out: CodeOut = { modules: [], cuts: 0, matched: [], matchCuts: [], ...(this.o.scanner ? { scan: [] } : {}) };
-    const mods = prof.load.map(n => det.modules.find(m => m.name === n)!);
+    const out: CodeOut = { modules: [], cuts: 0, matched: [], matchCuts: [], hle: [], ...(this.o.scanner ? { scan: [] } : {}) };
+    const mods = prof.load.map(n => det.modules.find(m => m.name === n)!), syms: { module: string; symbols: DynSymbol[] }[] = [];
     this.w.setCount("total", mods.length); this.w.setCount("bytesTotal", mods.reduce((n, m) => n + m.size, 0));
     for (const m of mods) {
       await this.point("code:work");
@@ -472,10 +474,12 @@ export class Prepare {
           out.matchCuts.push(...c.cuts.map(x => ({ ...x, module: m.name, buildId: m.buildId })));
         }
       }
+      // the module as the game ships it (before the cuts): its dynamic symbols for the take-over scan, then (with a
+      // scanner) the instruction scan: the text goes to the translator's decoder in pieces, with the page drawn and a
+      // Cancel taken between them
+      const si = this.w.scanInput(file);
+      if (si) syms.push({ module: m.name, symbols: takeOverSymbols(dynSymbols(si.image)) });
       if (this.o.scanner) {
-        // the instruction scan, on the module as the game ships it (before the cuts): the text goes to the
-        // translator's decoder in pieces, with the page drawn and a Cancel taken between them
-        const si = this.w.scanInput(file);
         if (si) {
           // (the row's bar: unpacking took it to 90 % of this module, the scan takes it on from there)
           const scan = await this.o.scanner.scan.scan(si.text, si.textOff, si.functions, async (done, total) => {
@@ -498,6 +502,8 @@ export class Prepare {
       this.w.addCount("done", 1); this.w.addCount("bytesDone", m.size); this.changed();
       } finally { this.w.close(); }
     }
+    out.hle = hleGaps(syms);
+    if (out.hle.length) { this.w.log("prepare: hle: " + hleHeadline(out.hle) + ":"); for (const l of hleLines(out.hle, 40)) this.w.log("prepare: hle: " + l); }
     return out;
   }
 

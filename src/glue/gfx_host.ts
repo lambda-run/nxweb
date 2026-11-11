@@ -280,8 +280,13 @@ export class GfxHost {
     this.reportsLost();
     this.onDeviceLost?.(info ?? {});
     if (this.opts.requestDevice) {
-      try { const d = await this.opts.requestDevice(); if (d) this.restore(d); else this.log("[RED] no new WebGPU device after the loss: nothing is drawn"); }
-      catch (e: any) { this.log(`[RED] no new WebGPU device after the loss: ${e?.message ?? e}`); }
+      const gen = this.gen;
+      try {
+        const d = await this.opts.requestDevice();
+        // disposed while the browser was asked: the new device has nobody to draw for
+        if (gen !== this.gen || this.disposed) return;
+        if (d) this.restore(d); else this.log("[RED] no new WebGPU device after the loss: nothing is drawn");
+      } catch (e: any) { this.log(`[RED] no new WebGPU device after the loss: ${e?.message ?? e}`); }
     }
   }
   // A new device after a loss: every GPU object is dropped and made again from guest state. Textures whose content is
