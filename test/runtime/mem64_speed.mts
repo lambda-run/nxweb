@@ -23,7 +23,7 @@ import { PerformanceObserver } from "node:perf_hooks";
 import { ROOT, OUT, corpusList } from "./harness.mts";
 import { Runtime, type RuntimeModules } from "../../src/glue/rt_runtime.ts";
 import { layoutFor } from "../../src/glue/rt_process.ts";
-import { bench, report, workloadNames, sameCode, CONFIGS, type BenchInput, type Flat, type Samples, type Launch } from "./mem64_core.ts";
+import { bench, report, workloadNames, sameCode, bootstrapMedian, CONFIGS, type BenchInput, type Flat, type Samples, type Launch } from "./mem64_core.ts";
 
 const argv = process.argv.slice(2);
 const arg = (name: string, d: string) => { const i = argv.indexOf("--" + name); return i >= 0 ? argv[i + 1] : d; };
@@ -50,6 +50,23 @@ export function loadInput(o: { doomFrames: number; doomRef: string[] | null }): 
 }
 
 // ---- a measuring process ----
+// --coverage [simulations]: how often the bootstrap interval holds the true median, for 3 and for `--launches`
+// launches of `--rounds` rounds, launch effects N(0, 1) and rounds N(0, k^2) within a launch
+if (argv[0] === "--coverage") {
+  const sims = Number(argv[1] ?? 400); let s = 12345;
+  const u = () => (s = (s * 1103515245 + 12345) % 2147483648, (s + 0.5) / 2147483648);
+  const n = () => Math.sqrt(-2 * Math.log(u())) * Math.cos(2 * Math.PI * u());
+  for (const L of [3, launches]) for (const k of [0.5, 1, 2, 4]) {
+    let hit = 0;
+    for (let i = 0; i < sims; i++) {
+      const b = bootstrapMedian(Array.from({ length: L }, () => { const m = n(); return Array.from({ length: rounds }, () => m + k * n()); }), 2000, i + 1);
+      if (b.lo <= 0 && b.hi >= 0) hit++;
+    }
+    console.log(`${L} launches x ${rounds} rounds, round sd ${k} x launch sd: the 95 % interval holds the median in ${(hit / sims * 100).toFixed(1)} % of ${sims}`);
+  }
+  process.exit(0);
+}
+
 if (argv[0] === "--child") {
   const ref = existsSync(join(MEM, "doom_ref.txt")) ? readFileSync(join(MEM, "doom_ref.txt"), "utf8").split("\n").filter(Boolean) : null;
   const input = loadInput({ doomFrames, doomRef: ref });
