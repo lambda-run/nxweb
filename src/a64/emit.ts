@@ -342,6 +342,7 @@ export const insSite = mk<u8>(INS_CAP);   // which kind of site (WB_* / RL_*): p
 // an insertion at a call with a summary (sRI): the function called, and INS_CALL (write back dirty & (R | W)),
 // INS_BACK (it did not come back: write back dirty & ~W) or INS_AFTER (reload needed & W; dirty & ~(R | W) stays dirty)
 export const INS_CALL: u8 = 1, INS_BACK: u8 = 2, INS_AFTER: u8 = 3;
+export const INS_SEQ: u8 = 4;   // a write-back on the block's straight path (precise faults): every register is clean after it
 export const insMode = mk<u8>(INS_CAP);
 export const insG = mk<u16>(INS_CAP);
 export let nIns: i32 = 0;
@@ -371,6 +372,7 @@ function insSum(mode: u8, g: i32): void {
   if (nIns == 0 || overflow) return;
   insMode[nIns - 1] = mode; insG[nIns - 1] = <u16>g;
 }
+export function writebackSeq(): void { writeback(WB_OTHER); insSum(INS_SEQ, 0); }
 
 // rollback support (used when an instruction turns out not to be translatable)
 export function rollback(p: usize, e: i32, i: i32): void { P = p; nEv = e; nIns = i; ifDepth = 0; }
