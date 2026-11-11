@@ -9,7 +9,8 @@ import { scenes4 } from "./scenes4.mts";
 import { scenes5 } from "./scenes5.mts";
 import { scenes6 } from "./scenes6.mts";
 import { scenes7 } from "./scenes7.mts";
-const scenes = [...scenes1, ...scenes2, ...scenes3, ...scenes4, ...scenes5, ...scenes6, ...scenes7];
+import { scenes8 } from "./scenes8.mts";
+const scenes = [...scenes1, ...scenes2, ...scenes3, ...scenes4, ...scenes5, ...scenes6, ...scenes7, ...scenes8];
 import { GfxHost } from "../../src/glue/gfx_host.ts";
 
 async function main() {
@@ -42,6 +43,9 @@ async function main() {
     console.log = log;
     if (e) { const h = new Uint8Array(e.g.memory.buffer, e.g.x.kit_hits_ptr(), e.g.x.kit_hits_size()); if (!hits.length) hits = Array.from(h); else h.forEach((v, i) => { if (v) hits[i] = 1; }); }
     results.push({ name: s.name, error, notes, files: t.files, checks: t.checks, ms: Math.round(performance.now() - t0), calls: e?.g.calls ?? 0, logs: error ? e?.g.logs.slice(-12) : undefined, stats: e?.host.stats });
+    // each scene's guest memory goes before the next is made: 60 and more 64-bit memories grown above 4 GB (?mem=64hi) are more than V8 gives a page
+    e?.host.dispose(); e = undefined;
+    (globalThis as any).gc?.();
   }
   return { results, hits, adapter: adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "", features: want, limits };
 }

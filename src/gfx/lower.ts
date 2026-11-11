@@ -20,7 +20,7 @@ import { GFX_PASS, GfxPassE, GfxPassS } from "../kit/gen/tables";
 import * as O from "./obj";
 import * as H from "./hostops";
 import { dpoolBase, texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
-import { progShader, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID } from "./shader";
+import { progShader, progMissingKey, libKey, watched, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID } from "./shader";
 import { fmtClass, fmtCanon, fmtTwin } from "./fmt";
 import * as PK from "./pipeline";
 import { syncFence } from "./sync";
@@ -522,6 +522,18 @@ function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
     if (hasView) memory.copy(r + 32, e + TDE_view, O.VIEW_SIZE);
   }
 }
+// A dispatch that cannot run (its shader is not registered, or its pipeline failed) of a key the embedder watches (gfx_watch_key): the replayer is told,
+// inside a compute pass as the dispatch would have been, with the compute stage's bound textures, images and push constants (GfxHost's NDVE stand-in).
+// Its images count as written by the GPU: the embedder may write them in its place. Keys not watched: nothing is recorded
+function skippedDispatch(key: u64, x: u32, y: u32, z: u32): void {
+  if (!key || !watched(key)) return;
+  passEvent(GfxPassE.Dispatch);
+  const r = H.hostRec(H.H_DISPATCH_SKIPPED, H.H_DISPATCH_SKIPPED_SIZE);
+  store<u64>(r, key, 8); store<u32>(r, x, 16); store<u32>(r, y, 20); store<u32>(r, z, 24);
+  for (let s: u32 = 0; s < 32; s++) { const sr = handleSerial(texHandle(2, s)); if (sr) contentNeed(sr); store<u64>(r + 32 + (<usize>s << 3), sr); }
+  for (let i: u32 = 0; i < 8; i++) { const sr = handleSerial(load<u64>(IMGH + (<usize>(16 + i) << 3))); if (sr) contentGpuWrite(sr); store<u64>(r + 288 + (<usize>i << 3), sr); }
+  memory.copy(r + 352, PUSH + 256, 256);
+}
 // nvnCommandBufferDispatchCompute(Indirect). A compute pipeline is its shader alone; the pass machine opens a compute
 // pass, which consecutive dispatches share. Every binding the shader uses is sent with each dispatch
 let curCsPipe: i32 = -1, curCs: i32 = -1;
@@ -531,7 +543,7 @@ function dispatch(r: usize): void {
   if (ind) { x = load<u32>(ind); y = load<u32>(ind, 4); z = load<u32>(ind, 8); }      // CPU-visible at submit, as indirect draws
   if (!progC || load<u32>(progC) != O.MAGIC_PROG) { if (once(36)) L.redLine("compute dispatch without a bound compute program: skipped"); nSkipped++; return; }
   const cs = progShader(progC, 2);
-  if (cs < 0) { nSkipped++; return; }
+  if (cs < 0) { skippedDispatch(progMissingKey(progC), x, y, z); nSkipped++; return; }
   if (!x || !y || !z) return;
   if (cs != curCs) {
     const k = PK.KEY;
@@ -540,7 +552,7 @@ function dispatch(r: usize): void {
     curCsPipe = PK.pipelineGet(); curCs = cs;
     dirty |= D_PIPE;                         // the key record no longer holds the draw pipeline's key
   }
-  if (curCsPipe < 0) { curCs = -1; nSkipped++; return; }
+  if (curCsPipe < 0) { curCs = -1; skippedDispatch(libKey(cs), x, y, z); nSkipped++; return; }
   passEvent(GfxPassE.Dispatch);
   store<u32>(DIM, x); store<u32>(DIM, y, 4); store<u32>(DIM, z, 8);
   emitUbos(2, cs); emitTexs(2, cs); emitStorage(2, cs);

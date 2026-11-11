@@ -6,6 +6,7 @@
 import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
+import { NdveBypass, NDVE_KEYS, NDVE_OUTPUT_IMAGE, NDVE_FLIP_ON, NDVE_FLIP_BASE } from "./ndve.ts";
 export type { Capture, CaptureImage } from "./gfx_capture.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -95,7 +96,7 @@ export interface GfxHostOptions {
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
   BLEND_COLOR: 12, STENCIL_REF: 13, DRAW: 14, DRAW_IDX: 15, CLEAR_RECT: 16, COPY_B2T: 17, COPY_T2T: 18, SNAPSHOT: 19, PRESENT: 20, FENCE: 21, FLUSH: 22, MEM_DIRTY: 23, TEX_DATA: 24, COPY_T2B: 25, FIXUP: 26,
   UBO_DATA: 27, SSBO: 28, IMG: 29, BEGIN_COMPUTE: 30, DISPATCH: 31, BUF_READBACK: 32,
-  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38, CLEAR_TEX: 39 };
+  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38, CLEAR_TEX: 39, DISPATCH_SKIPPED: 40 };
 // Pipeline key offsets (src/gfx/pipeline.ts)
 const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8, samples: 9, ncolor: 10, depthFmt: 11, colorFmt: 12, a2c: 20, flags: 21, blendEn: 22, stencilV: 23, stencilW: 24,
   itype: 25, chmask: 28, ds: 32, blend: 40, offset: 104, attrMask: 116, attr: 120, stream: 248, vin: 376 };
@@ -145,7 +146,7 @@ export class GfxHost {
   lastPresented = 0;
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0,
-    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0 };
+    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
   caps = 0;
   // Hooks for the embedder (the kernel's waits): a fence completed (everything submitted before it is done on the GPU
@@ -240,7 +241,7 @@ export class GfxHost {
     this.live.clear();
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.views.clear(); }
     this.textures.clear(); this.shaders = [];
-    this.pipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
+    this.pipes.clear(); this.ndvePipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
     this.converted.clear(); this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
     this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.readbacks = [];
@@ -261,6 +262,15 @@ export class GfxHost {
   // on a 32-bit memory hands an i32 over, which is negative from 2 GB on)
   imports() { return { gfx_exec: (ptr: number, len: number) => this.exec(ptr < 0 ? ptr + 4294967296 : ptr, len >>> 0) }; }
   attach(x: GfxExports) { this.x = x; x.gfx_host_caps?.(this.caps); }
+  // ?ndve=bypass: the diagnostic stand-in for nn::ndve's movie network (src/glue/ndve.ts NdveBypass). The recorder is asked to report the model's dispatches
+  // that cannot run; keys: the model's (tests give their own). Off until called: the stream and the replay are as before
+  ndveBypass(keys: readonly string[] = NDVE_KEYS): void {
+    this.ndve = new NdveBypass(keys);
+    for (const k of new Set(keys)) { const b = k.match(/../g)!.map(h => parseInt(h, 16)); this.x.gfx_watch_key((b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0); }
+    this.log("ndve=bypass: when nn::ndve's movie network cannot run, a bilinear stand-in writes its output (diagnostic; off by default)");
+  }
+  private ndve: NdveBypass | null = null;
+  private ndvePipes = new Map<string, { pipe: GPU; layout: GPU }>();
   private red(key: string, line: string) { if (!this.redOnce.has(key)) { this.redOnce.add(key); this.log(`[RED] ${line}`); } }
   private get dv() { return new DataView(this.memory.buffer); }
   private memView: Uint8Array | null = null;
@@ -309,7 +319,7 @@ export class GfxHost {
     this.live.clear();   // they belonged to the device that is gone
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.views.clear(); }
     for (const s of this.shaders) if (s) { s.module = undefined; s.variants = undefined; }
-    this.pipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
+    this.pipes.clear(); this.ndvePipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
     this.converted.clear(); this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
     this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.adopt(device);
@@ -1026,6 +1036,67 @@ export class GfxHost {
     this.bindDirty = false;
     return true;
   }
+  // ---- ?ndve=bypass (src/glue/ndve.ts) ----
+  // A dispatch with the stand-in armed: as dispatch() for any key, with the model's dispatches noted and the resampler's taken over when the frame's network did not run
+  private ndveDispatch(dv: DataView, p: number) {
+    const nd = this.ndve!, id = dv.getUint32(p + 8, true), sid = this.pipes.get(id)?.stages[0], pos = sid === undefined ? -1 : nd.pos(this.shaders[sid]?.key ?? "");
+    const tex = (slot: number) => this.tex.get(2 * 64 + slot)?.serial ?? 0, img = (slot: number) => this.img.get(2 * 8 + slot)?.serial ?? 0, push = () => this.ubo.get(uboKey(2, 19))?.data ?? null;
+    if (pos >= 0 && nd.replaces(pos)) { this.ndveStandIn(img(NDVE_OUTPUT_IMAGE), push()); this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); return; }
+    const ran = this.usePipeline(id) && this.bind();
+    if (pos >= 0 && nd.saw(pos, ran, tex)) this.ndveStandIn(img(NDVE_OUTPUT_IMAGE), push());
+    if (!ran) return;
+    this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
+    this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
+  }
+  // H_DISPATCH_SKIPPED: a watched key's dispatch the recorder could not run, with the compute stage's bindings (hostops.ts)
+  private dispatchSkipped(dv: DataView, p: number) {
+    const nd = this.ndve;
+    this.stats.ndveSkipped++;
+    if (!nd || !this.pass || !this.computePass) return;
+    const pos = nd.pos(Array.from({ length: 8 }, (_, i) => dv.getUint8(p + 8 + i).toString(16).padStart(2, "0")).join(""));
+    if (pos < 0) return;
+    if (nd.saw(pos, false, slot => this.u64(dv, p + 32 + slot * 8))) this.ndveStandIn(this.u64(dv, p + 288 + NDVE_OUTPUT_IMAGE * 8), this.u8.slice(p + 352, p + 608));
+  }
+  // The stand-in: the frame's picture resampled bilinearly (texel centres, edges clamped) into the image the resampler writes, rows flipped as its push constants
+  // say, alpha 1. In the open compute pass, where the resampler would have run
+  private ndveStandIn(outSerial: number, push: Uint8Array | null) {
+    const nd = this.ndve!, src = this.texture(nd.pic), dst = this.texture(outSerial);
+    if (!src?.gpu || !dst?.gpu) { this.red("ndvetex", `ndve=bypass: the movie network's ${src?.gpu ? "output image" : "input picture"} is no live texture: no stand-in`); return; }
+    const fmt = dst.gpu.format;
+    if (!(dst.gpu.usage & 0x08) || !STORAGE_FORMATS.has(fmt) || dst.gpu.dimension !== "2d" || src.gpu.dimension !== "2d" || src.gpu.sampleCount > 1 || src.fmt.kind !== "float") {
+      this.red("ndvefmt", `ndve=bypass: the movie network writes a ${fmt} ${dst.gpu.dimension} image (a 2D storage format is needed) from a ${src.gpu.format} picture: no stand-in`); return;
+    }
+    let k = this.ndvePipes.get(fmt);
+    if (!k) {
+      const module = this.device.createShaderModule({ code: `struct P { base: i32, flip: u32 }
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var dst: texture_storage_2d<${fmt}, write>;
+@group(0) @binding(2) var<uniform> p: P;
+@compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) g: vec3u) {
+  let ds = textureDimensions(dst);
+  if (g.x >= ds.x || g.y >= ds.y) { return; }
+  let ss = vec2i(textureDimensions(src)); let hi = ss - vec2i(1);
+  let c = (vec2f(g.xy) + 0.5) * vec2f(ss) / vec2f(ds) - 0.5; let f = floor(c); let w = c - f;
+  let a = clamp(vec2i(f), vec2i(0), hi); let b = clamp(vec2i(f) + vec2i(1), vec2i(0), hi);
+  let t = mix(mix(textureLoad(src, a, 0), textureLoad(src, vec2i(b.x, a.y), 0), w.x), mix(textureLoad(src, vec2i(a.x, b.y), 0), textureLoad(src, b, 0), w.x), w.y);
+  var y = i32(g.y);
+  if (p.flip != 0u) { y = p.base - y; }
+  if (y < 0 || y >= i32(ds.y)) { return; }
+  textureStore(dst, vec2i(i32(g.x), y), vec4f(t.rgb, 1.0));
+}` });
+      const pipe = this.device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
+      this.ndvePipes.set(fmt, k = { pipe, layout: pipe.getBindGroupLayout(0) });
+    }
+    const pw = push && push.length >= 80 ? new DataView(push.buffer, push.byteOffset, push.byteLength) : null, flip = pw ? pw.getUint32(NDVE_FLIP_ON * 4, true) : 0;
+    const ub = this.newBuffer({ size: 16, usage: 0x40 | 0x08 });
+    this.device.queue.writeBuffer(ub, 0, new Int32Array([pw ? pw.getInt32(NDVE_FLIP_BASE * 4, true) : 0, flip ? 1 : 0, 0, 0]));
+    this.inUse.push(ub);
+    const group = this.device.createBindGroup({ layout: k.layout, entries: [{ binding: 0, resource: this.view(src, src.gpu, null, "2d", true) }, { binding: 1, resource: this.view(dst, dst.gpu, null, "2d", true) }, { binding: 2, resource: { buffer: ub } }] });
+    this.pass.setPipeline(k.pipe); this.pass.setBindGroup(0, group);
+    this.pass.dispatchWorkgroups(Math.ceil(dst.gpu.width / 8), Math.ceil(dst.gpu.height / 8));
+    this.cur = null; this.bindDirty = true; this.stats.ndveStandIns++;
+    if (!nd.frames++) this.log(`[RED] ndve=bypass: nn::ndve's movie network did not run (its shaders are not ready or failed; nxweb has no HMMA lowering): a stand-in replaced it, the ${src.gpu.width}x${src.gpu.height} picture resampled bilinearly into the network's ${dst.gpu.width}x${dst.gpu.height} ${fmt} output${flip ? " (rows flipped)" : ""}. Diagnostic only: not the network's picture`);
+  }
   private zero: GPU = null;
   private zeroBuffer(): GPU { return (this.zero ??= this.newBuffer({ size: 65536, usage: 0x40 | 0x08 })); }
   private scratchSt: GPU = null;
@@ -1033,6 +1104,7 @@ export class GfxHost {
   private dispatch(dv: DataView, p: number) {
     if (!this.pass || !this.computePass) return;
     this.stats.dispatches++;
+    if (this.ndve) { this.ndveDispatch(dv, p); return; }
     if (!this.usePipeline(dv.getUint32(p + 8, true))) return;
     if (!this.bind()) return;
     this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
@@ -1442,6 +1514,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.END_PASS: { const targets = !this.computePass && this.pass ? this.passInfo?.targets : undefined; this.endPass(); if (this.cap && targets) this.captureTargets(targets); break; }
         case H.BEGIN_COMPUTE: this.endPass(); this.pass = this.encoder().beginComputePass(); this.computePass = true; this.cur = null; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); this.stats.computePasses++; break;
         case H.DISPATCH: this.dispatch(dv, p); break;
+        case H.DISPATCH_SKIPPED: this.dispatchSkipped(dv, p); break;
         case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (dv.getUint32(p + 28, true) & 1) !== 0 }); this.bindDirty = true; break;
         case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null }); this.bindDirty = true; break; }
         case H.MESH_BEGIN: this.meshBegin(dv, p); break;

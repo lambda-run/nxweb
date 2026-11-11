@@ -951,6 +951,9 @@ src/gfx/lower.ts	D	7	store<u32>(r, st, 8)
 src/gfx/lower.ts	D	1	store<u32>(r, stencil, 24)
 src/gfx/lower.ts	D	1	store<u32>(r, w | (hasView ? 2 : 0), 24)
 src/gfx/lower.ts	D	1	store<u32>(r, w, 28)
+src/gfx/lower.ts	D	1	store<u32>(r, x, 16)
+src/gfx/lower.ts	D	1	store<u32>(r, y, 20)
+src/gfx/lower.ts	D	1	store<u32>(r, z, 24)
 src/gfx/lower.ts	D	1	store<u32>(w, load<i32>(a, 8) == 1 ? load<u32>(w) + v : v)
 src/gfx/pipeline.ts	H	4	<i32>i
 src/gfx/pipeline.ts	C	1	<i32>instOf(id)
@@ -1028,9 +1031,9 @@ src/gfx/shader.ts	C	1	<i32>(libCount - 1)
 src/gfx/shader.ts	C	1	<i32>Inst.at(p)
 src/gfx/shader.ts	C	2	<i32>i
 src/gfx/shader.ts	C	1	<i32>load<i16>(slot)
-src/gfx/shader.ts	C	1	<u32>(load<u32>(prog, PROG_nstage), 6)
+src/gfx/shader.ts	C	2	<u32>(load<u32>(prog, PROG_nstage), 6)
 src/gfx/shader.ts	C	1	<u32>(nMissing, 64)
-src/gfx/shader.ts	C	1	<u32>load<u8>(e, PE_ok)
+src/gfx/shader.ts	C	2	<u32>load<u8>(e, PE_ok)
 src/gfx/shader.ts	D	1	load<u32>(c)
 src/gfx/shader.ts	D	1	load<u32>(c, 0x20)
 src/gfx/shader.ts	D	1	load<u32>(c, 0x44)
@@ -1038,7 +1041,7 @@ src/gfx/shader.ts	D	1	load<u32>(c, 0x704)
 src/gfx/shader.ts	D	1	load<u32>(c, 4)
 src/gfx/shader.ts	D	1	load<u32>(e, PE_shader + 12)
 src/gfx/shader.ts	D	1	load<u32>(libRefl(id), RF_stage)
-src/gfx/shader.ts	D	1	load<u32>(prog, PROG_nstage)
+src/gfx/shader.ts	D	2	load<u32>(prog, PROG_nstage)
 src/gfx/shader.ts	D	1	store<u32>(CTL, 0, 0x30)
 src/gfx/shader.ts	D	1	store<u32>(e, libVersion, PE_shader + 12)
 src/gfx/sync.ts	D	2	load<u32>(s)
@@ -1300,10 +1303,12 @@ src/glue/gfx_host.ts	V	1	const msId = dv.getUint32(p + 32, true), tsId = dv.getI
 src/glue/gfx_host.ts	B	1	const n = down4(size + 3), buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
 src/glue/gfx_host.ts	V	1	const n = dv.getUint32(p + 8, true), flags = dv.getUint32(p + 12, true);
 src/glue/gfx_host.ts	V	1	const ncolor = dv.getUint8(k + PK.ncolor), chmask = dv.getUint32(k + PK.chmask, true), blendEn = dv.getUint8(k + PK.blendEn), written = new Set(fs.outputs ?? []
+src/glue/gfx_host.ts	V	1	const nd = this.ndve!, id = dv.getUint32(p + 8, true), sid = this.pipes.get(id)?.stages[0], pos = sid === undefined ? -1 : nd.pos(this.shaders[sid]?.key ?? "");
 src/glue/gfx_host.ts	B	1	const nib = (chmask >>> (4 * i)) & 15, t: any = { format: f.tex, writeMask: written.has(i) ? nib : 0 };
 src/glue/gfx_host.ts	V	1	const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
 src/glue/gfx_host.ts	V	1	const pi = this.passInfo!, kind = dv.getUint32(p + 8, true), index = dv.getUint32(p + 12, true), mask = dv.getUint32(p + 16, true);
 src/glue/gfx_host.ts	B	1	const pw = Math.max(1, t.width >> level), ph = t.target === 0 || t.target === 3 ? 1 : Math.max(1, t.height >> level), w = Math.ceil(pw / t.fmt.bw), h = Math.cei
+src/glue/gfx_host.ts	V	1	const pw = push && push.length >= 80 ? new DataView(push.buffer, push.byteOffset, push.byteLength) : null, flip = pw ? pw.getUint32(NDVE_FLIP_ON * 4, true) : 0;
 src/glue/gfx_host.ts	B	1	const read = this.newBuffer({ size: n * 8, usage: 0x01 | 0x08 });
 src/glue/gfx_host.ts	V	1	const row = dv.getUint32(p + 56, true) || bx * f.bpb, rows = dv.getUint32(p + 60, true) ? Math.floor(dv.getUint32(p + 60, true) / row) : by;
 src/glue/gfx_host.ts	V	1	const serial = this.u64(dv, p + 8), d = p + 16, format = dv.getInt32(d + 4, true);
@@ -1311,7 +1316,7 @@ src/glue/gfx_host.ts	V	1	const serial = this.u64(dv, p + 8), t = this.texture(se
 src/glue/gfx_host.ts	B	1	const src = this.newTexture({ size: { width: w, height: h }, format: " ", usage: 0x04 | 0x02 });
 src/glue/gfx_host.ts	S	1	const src = this.u8.subarray(addr, addr + size), wide = new Uint16Array((size + 1) & ~1);
 src/glue/gfx_host.ts	B	1	const sw = Math.max(1, s.width >> sl), sh = Math.max(1, s.height >> sl);
-src/glue/gfx_host.ts	B	1	const ub = this.newBuffer({ size: 16, usage: 0x40 | 0x08 });
+src/glue/gfx_host.ts	B	2	const ub = this.newBuffer({ size: 16, usage: 0x40 | 0x08 });
 src/glue/gfx_host.ts	V	1	const v = [0, 1, 2, 3].map(i => src === 1 ? dv.getUint32(p + 56 + i * 4, true) : src === 2 ? dv.getInt32(p + 56 + i * 4, true) : dv.getFloat32(p + 56 + i * 4, t
 src/glue/gfx_host.ts	V	1	const vf = hostFormat(dv.getUint32(o + 16, true), this.caps)?.tex, af = vf && vf === SRGB_TWIN[t.fmt.tex!] ? vf : t.fmt.tex!;
 src/glue/gfx_host.ts	V	1	const w = Math.min(dv.getUint32(p + 28, true), lw - x), h = Math.min(dv.getUint32(p + 32, true), lh - y), rows = h / f.bh;
@@ -1328,9 +1333,11 @@ src/glue/gfx_host.ts	V	1	dv.setUint32(r + 20, bit((info.storage ?? []).map(b => 
 src/glue/gfx_host.ts	V	1	dv.setUint32(r + 28, (bit((info.images ?? []).map(b => b.slot)) | bit((info.images ?? []).filter(b => (b.access ?? " ") !== " ").map(b => b.slot)) << 8) >>> 0, 
 src/glue/gfx_host.ts	V	1	dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0) | (bit(hostBlocks.map(b => b.k)) << 16)) >>> 0, true); dv.setUint32(r +
 src/glue/gfx_host.ts	V	1	for (const [slot, size] of Object.entries(info.uboSize ?? {})) if (+slot < 14) dv.setUint32(r + 64 + +slot * 4, size, true);
+src/glue/gfx_host.ts	B	1	for (const k of new Set(keys)) { const b = k.match(/../g)!.map(h => parseInt(h, 16)); this.x.gfx_watch_key((b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, (
 src/glue/gfx_host.ts	B	1	for (const l of info.attributes ?? []) vin |= BigInt(Math.max(0, CLASSES.indexOf(info.attributeTypes[l] ?? " "))) << BigInt(l * 2);
 src/glue/gfx_host.ts	B	1	for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? " "))); if (t.depth) depth |= 1 << t.slot; }
 src/glue/gfx_host.ts	V	1	for (let loc = 0, m = dv.getUint32(k + PK.attrMask, true); m; loc++, m >>>= 1) {
+src/glue/gfx_host.ts	B	1	if (!(dst.gpu.usage & 0x08) || !STORAGE_FORMATS.has(fmt) || dst.gpu.dimension !== " " || src.gpu.dimension !== " " || src.gpu.sampleCount > 1 || src.fmt.kind !=
 src/glue/gfx_host.ts	B	1	if (!(m & 1)) continue;
 src/glue/gfx_host.ts	B	1	if (!(t.gpu.usage & 0x10) || f.conv || (ds && !whole)) {
 src/glue/gfx_host.ts	B	1	if (!fb) { fb = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(fb, 0, new Float32Array(this.fix)); this.fixBufs.set(key, fb); }
@@ -1392,9 +1399,10 @@ src/glue/gfx_host.ts	V	1	this.blit(sv, [sr[0] / sw, sr[1] / sh, sr[3] / sw, sr[4
 src/glue/gfx_host.ts	B	1	this.caps = (has(" ") && !this.opts.forceAstcDecode ? 1 : 0) | (has(" ") ? 2 : 0);
 src/glue/gfx_host.ts	V	1	this.device.queue.writeBuffer(buf, 0, new Uint32Array(out));
 src/glue/gfx_host.ts	V	1	this.device.queue.writeBuffer(ub, 0, kind === " " ? new Uint32Array(num) : kind === " " ? new Int32Array(num) : new Float32Array(num));
+src/glue/gfx_host.ts	V	1	this.device.queue.writeBuffer(ub, 0, new Int32Array([pw ? pw.getInt32(NDVE_FLIP_BASE * 4, true) : 0, flip ? 1 : 0, 0, 0]));
 src/glue/gfx_host.ts	B	1	this.dummy ??= this.newTexture({ size: { width: 1, height: 1, depthOrArrayLayers: 6 }, format: " ", usage: 0x04 | 0x02 });
 src/glue/gfx_host.ts	B	1	this.encoder().copyTextureToTexture({ texture: g, mipLevel: l }, { texture: t.snap, mipLevel: l }, { width: Math.max(1, g.width >> l), height: Math.max(1, g.hei
-src/glue/gfx_host.ts	V	1	this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
+src/glue/gfx_host.ts	V	2	this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
 src/glue/gfx_host.ts	V	1	this.pass.drawIndexed(count, dv.getUint32(p + 16, true), 0, dv.getInt32(p + 24, true), dv.getUint32(p + 20, true));
 src/glue/gfx_host.ts	V	1	this.pass.setScissorRect(dv.getUint32(p + 36, true), dv.getUint32(p + 40, true), w, h);
 src/glue/gfx_host.ts	V	1	this.passInfo = { colorFmt, depthFmt, samples, w: dv.getUint32(p + 24, true), h: dv.getUint32(p + 28, true), targets };
@@ -1519,9 +1527,9 @@ src/glue/rt_report.ts	V	1	let p = blob0 + dv.getUint32(rec + 4, true);
 src/glue/rt_runtime.ts	B	1	const act = (a: Omit<Action, typeof ACTION> & { kind: " " | " " | " " }): Action => ({ [ACTION]: a.kind, pc: a.pc, event: a.event, timeout: a.timeout, resume: a
 src/glue/rt_runtime.ts	B	1	const c = this.core, pc = Number(c.pc.value as bigint), id = (pc - STUBS.base) >>> 2;
 src/glue/rt_runtime.ts	V	1	const closing = n === 0x16 && this.closeHooks.length ? this.dv().getUint32(ctx, true) : 0;
+src/glue/rt_runtime.ts	V	1	const dv = this.dv(), insn = dv.getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
 src/glue/rt_runtime.ts	V	1	const dv = this.dv(), lo = Number(dv.getBigUint64(q, true)), size = Number(dv.getBigUint64(q + 8, true)), state = dv.getUint32(q + 16, true);
 src/glue/rt_runtime.ts	V	1	const handle = index >= 0 ? this.dv().getUint32((this.threadInfo(index)) + 28, true) : 0;
-src/glue/rt_runtime.ts	V	1	const dv = this.dv(), insn = dv.getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
 src/glue/rt_runtime.ts	V	1	const kind = dv.getUint32(this.threadInfo(i) + 8, true);
 src/glue/rt_runtime.ts	B	1	const leb = (v: number) => { const n: number[] = []; do { let b = v & 0x7F; v >>>= 7; if (v) b |= 0x80; n.push(b); } while (v); return n; };
 src/glue/rt_runtime.ts	B	2	const r = Number((c.x0.value as bigint) & M32);
