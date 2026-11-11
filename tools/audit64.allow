@@ -1489,7 +1489,7 @@ src/glue/rt_runtime.ts	B	1	const c = this.core, pc = Number(c.pc.value as bigint
 src/glue/rt_runtime.ts	V	1	const closing = n === 0x16 && this.closeHooks.length ? this.dv().getUint32(ctx, true) : 0;
 src/glue/rt_runtime.ts	V	1	const dv = this.dv(), lo = Number(dv.getBigUint64(q, true)), size = Number(dv.getBigUint64(q + 8, true)), state = dv.getUint32(q + 16, true);
 src/glue/rt_runtime.ts	V	1	const handle = index >= 0 ? this.dv().getUint32((this.threadInfo(index)) + 28, true) : 0;
-src/glue/rt_runtime.ts	V	1	const insn = this.dv().getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
+src/glue/rt_runtime.ts	V	1	const dv = this.dv(), insn = dv.getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
 src/glue/rt_runtime.ts	V	1	const kind = dv.getUint32(this.threadInfo(i) + 8, true);
 src/glue/rt_runtime.ts	B	1	const leb = (v: number) => { const n: number[] = []; do { let b = v & 0x7F; v >>>= 7; if (v) b |= 0x80; n.push(b); } while (v); return n; };
 src/glue/rt_runtime.ts	B	2	const r = Number((c.x0.value as bigint) & M32);
