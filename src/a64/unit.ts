@@ -183,9 +183,10 @@ function translateInsn(pc: u64, insn: u32): void {
   let ok = false;
   let op0 = (insn >> 25) & 15;
   if (optPrecise != 0 && ((op0 & 5) == 4 || (insn & 0xFFFFFFE0) == 0xD50B7420)) {
-    // precise faults: the embedder sees this pc (and with level 2 every register) if the access traps
-    i64c(<i64>pc); gset(G_PC);
-    if (optPrecise >= 2) writebackSeq();
+    // precise faults: level 1 writes this pc for the embedder; level 2 every dirty register, the pc coming from the
+    // trap's stack and the side table (A64Host.faultFromError) as at level 0
+    if (optPrecise == 1) { i64c(<i64>pc); gset(G_PC); }
+    else writebackSeq();
   }
   prof(10, 1); if (!structOn) prof(30, 1); prof((op0 & 5) == 4 ? 11 : (op0 & 14) == 8 ? 12 : (op0 & 14) == 10 ? 13 : (op0 & 7) == 5 ? 14 : 15, 1);
   ok = decode(pc, insn);

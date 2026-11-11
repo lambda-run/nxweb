@@ -232,11 +232,14 @@ to be untouched.
 
 **Fault pcs.** Default (no run-time cost): every unit carries a side table (module byte offset -> guest pc, 8 bytes
 per instruction, kept by the glue) and a name section (`f_<hex pc>` per function). `host.faultFromError(e)` reads
-the innermost wasm frame of the trap's stack (`f_8000000 (wasm://wasm/..:wasm-function[N]:0xOFFSET)`, the same in
+the innermost translated frame of the trap's stack (a trap in a helper the instruction called, e.g. a C library
+intrinsic, is that instruction's) (`f_8000000 (wasm://wasm/..:wasm-function[N]:0xOFFSET)`, the same in
 Node and Chromium), finds the unit by the function name and the instruction by the offset. Registers are then those
 of the last write-back (dirty cached registers are lost with the wasm frame). `preciseFaults: 1` writes `pc` before
-every memory instruction; `preciseFaults: 2` also writes back the dirty registers there, which makes pc and all
-registers exact at the faulting instruction (see Status). That write-back is on the block's straight path, so the
+every memory instruction; `preciseFaults: 2` writes back the dirty registers there instead, which makes all
+registers exact at the faulting instruction (see Status); its pc comes from the side table as at level 0 (the
+runtime puts `faultFromError`'s pc into the context; the `pc` global is not written: 344 fewer i64 stores per
+1000 zstd_bench guest insns, 147 -> 135 ms in memory64). That write-back is on the block's straight path, so the
 may-dirty analysis counts every register clean after it (insertion mode `INS_SEQ`): each memory instruction writes
 back only what changed since the one before (zstd_bench: 9028 -> 1062 registers per 1000 guest insns, run time 503 -> 136 ms in memory64).
 

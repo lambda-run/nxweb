@@ -77,9 +77,8 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     let err: unknown;
     try { t.call(BASE); } catch (e) { err = e; }
     if (!err) throw new Error("no trap");
-    eq("pc global", t.c.pc.value, BigInt(BASE + 0x10));
+    eq("fault pc", t.host.faultFromError(err)?.pc, BASE + 0x10);
     eq("x1", t.c.x1.value, 6n); eq("x2", BigInt.asUintN(64, t.c.x2.value), 0xFFFFFFFFFFFFF000n); eq("x3", t.c.x3.value, 1n);
-    eq("side table agrees", t.host.faultFromError(err)?.pc, BASE + 0x10);
     return "pc, x1, x2, x3 exact";
   });
   test("preciseFaults=2: registers changed between earlier accesses and in a loop are exact at a later fault", () => {
@@ -101,10 +100,46 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     let err: unknown;
     try { t.call(BASE); } catch (e) { err = e; }
     if (!err) throw new Error("no trap");
-    eq("pc global", t.c.pc.value, BigInt(BASE + 0x24));
+    eq("fault pc", t.host.faultFromError(err)?.pc, BASE + 0x24);
     eq("x1", t.c.x1.value, 8n); eq("x9", t.c.x9.value, 7n); eq("x6", t.c.x6.value, 0n); eq("x8", t.c.x8.value, 42n);
     eq("x5", t.c.x5.value, BigInt(DATA)); eq("x2", BigInt.asUintN(64, t.c.x2.value), 0xFFFFFFFFFFFFF000n);
     return "x1, x9, x6, x8, x5, x2 exact after three loop passes";
+  });
+  test("preciseFaults=2: LDP whose second access faults, post-index STR with a bad base: registers as at the instruction", () => {
+    const t = mk(m, { preciseFaults: 2 });
+    const end = t.memory.buffer.byteLength;
+    t.put(BASE, [0xD2800161, 0xD28002C2, 0xA94008A1, RET]);   // mov x1, #11; mov x2, #22; ldp x1, x2, [x5]; ret
+    t.put(BASE + 0x40, [0xD28000E1, 0x9281FFE5, 0xF80084A1, RET]);   // mov x1, #7; mov x5, #-0x1000; str x1, [x5], #8; ret
+    t.host.addCode(BASE, 0x50);
+    let err: unknown;
+    t.c.x5.value = BigInt(end - 8);
+    try { t.call(BASE); } catch (e) { err = e; }
+    if (!err) throw new Error("ldp: no trap");
+    eq("ldp pc", t.host.faultFromError(err)?.pc, BASE + 8); eq("x1", t.c.x1.value, 11n); eq("x2", t.c.x2.value, 22n); eq("x5", t.c.x5.value, BigInt(end - 8));
+    err = undefined;
+    try { t.call(BASE + 0x40); } catch (e) { err = e; }
+    if (!err) throw new Error("str: no trap");
+    eq("str pc", t.host.faultFromError(err)?.pc, BASE + 0x48); eq("x1", t.c.x1.value, 7n); eq("x5", BigInt.asUintN(64, t.c.x5.value), 0xFFFFFFFFFFFFF000n);
+    t.c.x5.value = BigInt(end - 0x100);
+    t.call(BASE);
+    eq("ldp near the end, in bounds", t.c.x1.value, 0n);
+    return `end 0x${end.toString(16)}: ldp and post-index str exact; in bounds 256 bytes before the end`;
+  });
+  test("preciseFaults=2 with the guard: integer, pair, SIMD, exclusive, DC ZVA below the guard: pc and a dirty register exact", () => {
+    const G = DATA + 0x1000;
+    const t = mk(m, { preciseFaults: 2, guardBase: G });
+    const acc = [0xF9000001, 0xF9400001, 0xA9000801, 0x3D800000, 0xFD400000, 0x4C407000, 0xC85F7C01, 0xD50B7420];
+    acc.forEach((a, i) => t.put(BASE + i * 0x40, [0xD2800549, a, RET]));   // mov x9, #42; <access through x0>; ret
+    t.host.addCode(BASE, acc.length * 0x40);
+    acc.forEach((a, i) => {
+      t.call(BASE + i * 0x40, [BigInt(G)]);
+      let err: unknown;
+      t.c.x9.value = 0n;
+      try { t.call(BASE + i * 0x40, [BigInt(G - 16)]); } catch (e) { err = e; }
+      if (!err) throw new Error(`access ${i} (0x${a.toString(16)}) below the guard base did not trap`);
+      eq(`access ${i} pc`, t.host.faultFromError(err)?.pc, BASE + i * 0x40 + 4); eq(`access ${i} x9`, t.c.x9.value, 42n);
+    });
+    return `${acc.length} accesses: pc and x9 exact below the guard, no trap at it`;
   });
   test("preciseFaults=1: pc is exact, registers are not written", () => {
     const t = mk(m, { preciseFaults: 1 });
