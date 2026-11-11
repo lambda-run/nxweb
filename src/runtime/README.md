@@ -230,7 +230,8 @@ tests.
   mapped region from static data, the rest from an arena at the top of the code region which the layout sizes
   (`ProcessLayout.aliasArena`, 30 MB for a 10.8 GB region) and the runtime hands over (`kernel_alias_arena`).
 - *The page* (`web/worker.ts`): a game whose hand-off layout is a 64-bit one gets the wasm64 set (fetched and
-  compiled then), anything else the wasm32 set; `?mem64=1` puts every program in the mode. The Options row says
+  compiled then), anything else the wasm32 set; `?mem64=1` puts every program in the mode, `?precise=1` / `?precise=2` sets `preciseFaults` (2: a trap's
+  register dump is exact). The Options row says
   "64-bit memory mode" and why. The translation cache key has the mode (`m32` / `m64...`).
 - *Tests.* Every runner goes through `tools/modes.mjs`: memory32, memory64, and memory64 with **the whole process
   above 4 GB** (`NX_MEM=64hi`: code region at 0x1_8000_0000 with heap, stacks, thread-local, alias regions and
@@ -675,11 +676,28 @@ system, the shader lookup and `runAsync()`.
 `Empty -Load-> Loading -LoadOk-> Ready -Start-> Running <-Pause/Resume-> Paused`, and `Stopped` (final) from
 `Running` by `Exit`, `Break`, `Fault`, from `Loading` by `Fault`, and from `Ready`, `Running` or `Paused` by `Kill`
 (the embedder's stop). `Stopped` carries `kind << 32 | value`:
-exit code, break, or the fault kind. Every fault logs two red lines and `run()` returns; nothing is thrown:
+exit code, break, or the fault kind. Every fault logs its red lines and `run()` returns; nothing is thrown. The
+lines are also `StopInfo.fault.lines` (the page's report copies them into its fault block). What, where and in which
+thread; x0..x30, sp, pc, nzcv, tpidr_el0 and tpidrro_el0 on four lines; for a trap without `preciseFaults: 2` a note that the registers are
+as last written back; pc and x30 as module + offset from its image base and, when the module's symbol table has a
+function symbol there, symbol + offset (`Loader.symbolAt`), or the host stub's name; the frame records from x29 (at
+most 16, each return address placed the same way); then the thread's last SVCs (at most 16, the kernel's ring
+`src/kernel/ring.ts`), each with its arguments, its results (and a QueryMemory's MemoryInfo) or "waiting" / "did not
+return", and the pc it returns to:
 
 ```
-[RED] fault: wasm trap in thread 0x1001 (#0) at pc=0x8000128: memory access out of bounds: the instruction 0xb9400268 at 0x8000128 loads or stores through x19 at an address below 0x8000000 (a null or host-area pointer) or beyond the end of the memory
-[RED]   x0=0x0 x1=0x1f x2=0x0 x3=0x0 x29=0x780fffe0 x30=0x8000124 sp=0x780ffee0 nzcv=0x8
+[RED] fault: wasm trap in thread 0x1001 (#0) at pc=0x8000090: memory access out of bounds: the instruction 0xb9400000 at 0x8000090 loads or stores through x0 at an address below 0x7dc0000 (a null or host-area pointer) or beyond the end of the memory
+[RED]   x0=0x0 x1=0x1f x2=0x0 x3=0x0 x4=0x0 x5=0x0 x6=0x0 x7=0x0
+[RED]   x8=0x1f x9=0x780ffee8 x10=0xa x11=0x8001039 x12=0x0 x13=0x1e x14=0x0 x15=0x0
+[RED]   x16=0x8002108 x17=0x8000090 x18=0x0 x19=0x0 x20=0x0 x21=0x0 x22=0x0 x23=0x0
+[RED]   x24=0x0 x25=0x0 x26=0x0 x27=0x0 x28=0x0 x29=0x780ffed0 x30=0x80000b0 sp=0x780ffec0 pc=0x8000090 nzcv=0x8 tpidr=0x17c02000 tpidrro=0x17c01000
+[RED]   the registers are as last written back (the function's entry or its last call), pc excepted; preciseFaults: 2 (the page: ?precise=2) makes them exact
+[RED]   pc=0x8000090 is fault_null+0x90 (read_word+0x0); x30=0x80000b0 is fault_null+0xb0 (read_through+0x10)
+[RED]   the frames from x29=0x780ffed0, innermost first:
+[RED]     frame 1: fp=0x780ffed0 returns to 0x800016c, fault_null+0x16c (no symbol)
+[RED]     frame 2: fp=0x780fffe0 returns to 0xfffffff0, not in the text of a loaded module
+[RED]   the last 1 of the 1 SVCs of thread 0x1001, oldest first:
+[RED]     #1 svc 0x27 OutputDebugString(x0=0x780ffee8 x1=0x1f) -> 0x0, returns to 0x80004b4
 ```
 
 | Fault | Comes from | pc |

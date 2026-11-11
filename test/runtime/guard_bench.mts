@@ -12,7 +12,7 @@ const once = (guard: boolean): number => {
     const rt = new Runtime(env.mods, { guard });
     if (!rt.loadFlat(g.image, g.side)) throw new Error(g.name + ": load failed");
     const r = rt.run();
-    if (r.stop?.kind !== "exit") throw new Error(`${g.name} with guard ${guard}: ${rt.red.at(-2) ?? r.stop?.kind}`);
+    if (r.stop?.kind !== "exit") throw new Error(`${g.name} with guard ${guard}: ${r.stop?.fault?.lines[0] ?? r.stop?.kind}`);
     ms += rt.stats.runMs - rt.a64.translateNs / 1e6;
   }
   return ms;

@@ -210,6 +210,58 @@ test("an SVC that is not implemented: `[RED] svc 0xNN unimplemented` once, and n
     "[RED] svc 0x7f unimplemented (x0=0xaa x1=0x99 x2=0x77; answered 0)"]);
 });
 
+test("the SVC ring: each thread's last 16 SVCs with arguments and results; a wait's results when it ends; an exit that does not return", () => {
+  const k = new Kernel(), m = k.main;
+  const ring = (t: Thread) => {
+    const out = k.alloc(16 * 112), n = k.x.kernel_svc_ring(t.index, out, 16), dv = k.dv;
+    return Array.from({ length: n }, (_, i) => {
+      const r = out + 112 * i;
+      return { seq: dv.getUint32(r, true), n: dv.getUint16(r + 4, true), flags: dv.getUint16(r + 6, true),
+        x: Array.from({ length: 6 }, (_, j) => dv.getBigUint64(r + 16 + 8 * j, true)), res: [dv.getBigUint64(r + 64, true), dv.getBigUint64(r + 72, true)],
+        mi: [dv.getBigUint64(r + 80, true), dv.getBigUint64(r + 88, true), BigInt(dv.getUint32(r + 96, true)), BigInt(dv.getUint32(r + 104, true))] };
+    });
+  };
+  const base = k.x.kernel_svc_total(m.index);
+  assert.equal(k.call(m, 0x0C, 0, CUR_THREAD), 0);
+  let last = ring(m).at(-1)!;
+  assert.deepEqual([last.seq, last.n, last.flags, last.x[1], last.res], [base + 1, 0x0C, 0, BigInt(CUR_THREAD), [0n, 44n]], "GetThreadPriority(w1) -> 0, w1 44");
+  assert.equal(k.call(m, 0x0D, 0x7777, 30), R.BAD_HANDLE);
+  last = ring(m).at(-1)!;
+  assert.deepEqual([last.n, last.x[0], last.x[1], last.res[0]], [0x0D, 0x7777n, 30n, BigInt(R.BAD_HANDLE)], "a failing SVC: its result code");
+  const info = k.alloc(40);
+  assert.equal(k.call(m, 0x06, info, 0, L.stack), 0);
+  last = ring(m).at(-1)!;
+  assert.deepEqual([last.n, last.x[0], last.x[2]], [0x06, BigInt(info), BigInt(L.stack)], "QueryMemory(x0, x2)");
+  assert.deepEqual(last.mi, [k.dv.getBigUint64(info, true), k.dv.getBigUint64(info + 8, true), BigInt(k.dv.getUint32(info + 16, true)), BigInt(k.dv.getUint32(info + 24, true))], "the MemoryInfo it wrote");
+  assert.ok(last.mi[1] > 0n, "a region of some size");
+  for (let i = 0; i < 19; i++) k.call(m, 0x24, 0, CUR_THREAD);
+  const all = ring(m);
+  assert.equal(k.x.kernel_svc_total(m.index), base + 22);
+  assert.deepEqual(all.map(r => r.seq), Array.from({ length: 16 }, (_, i) => base + 7 + i), "the newest 16, oldest first");
+  assert.equal(k.x.kernel_svc_ring(m.index, k.alloc(112 * 3), 3), 3, "at most cap");
+  // a wait: no results while it waits, the wake's once the thread runs again
+  const e = k.event(), hs = k.alloc(4); k.w32(hs, e.r);
+  const b = k.thread(44, 1);
+  assert.notEqual(k.svc(m, 0x18, 0, hs, 1, -1), ACT.CONTINUE);
+  last = ring(m).at(-1)!;
+  assert.deepEqual([last.n, last.flags, last.x[1], last.x[2], last.x[3]], [0x18, 1, BigInt(hs), 1n, 0xFFFF_FFFF_FFFF_FFFFn], "WaitSynchronization waiting");
+  k.run(b);
+  assert.equal(k.call(b, 0x11, e.w), 0);
+  k.run(m);
+  last = ring(m).at(-1)!;
+  assert.deepEqual([last.n, last.flags, last.res], [0x18, 2, [0n, 0n]], "after the wait: result 0, index 0");
+  assert.deepEqual(ring(b).map(r => r.n), [0x11], "b's ring is its own");
+  // ExitThread does not return
+  k.run(b);
+  k.svc(b, 0x0A);
+  assert.deepEqual(ring(b).map(r => [r.n, r.flags]), [[0x11, 0], [0x0A, 4]]);
+  // a new thread record starts with an empty ring, whatever thread had the slot before
+  const c = k.thread(44, 1, { start: false });
+  assert.equal(k.x.kernel_svc_total(c.index), 0);
+  assert.equal(k.x.kernel_svc_ring(99999, k.alloc(112), 1), 0, "no such thread record");
+  k.check();
+});
+
 test("the kernel's machines never refuse an event in any of the scenarios above (spot check on a busy script)", () => {
   const k = new Kernel(), m = k.main, lock = k.word(), key = k.word(), e = k.event();
   const a = k.thread(30, 0), b = k.thread(50, 1);
