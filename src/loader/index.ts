@@ -45,6 +45,7 @@ export function ld_lookup_in(h: i32, name: usize, len: u32): u64 { return L.look
 export function ld_lookup_module(): i32 { return L.lookupModule(); }
 export function ld_unresolved(h: i32, out: usize, cap: u32): i32 { return L.unresolved(h, out, cap); }
 export function ld_code_entries(h: i32, out: usize, cap: u32): i32 { return L.codeEntries(h, out, cap); }
+export function ld_symbol_at(h: i32, addr: u64, out: usize): i32 { return L.symbolAt(h, addr, out); }
 
 // diagnostics
 export function ld_error_ptr(): usize { return errorPtr(); }

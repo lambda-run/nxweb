@@ -22,7 +22,7 @@ const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: ROOT
 
 // name -> source file and extra compiler flags
 export const MODULES: Record<string, [src: string, ...flags: string[]]> = {
-  big: ["big.c"], hello: ["hello.c"], two_main: ["two_main.c"], two_lib: ["two_lib.c"], threads: ["threads.c"], race: ["race.c"], heap: ["heap.c"],
+  big: ["big.c"], hello: ["hello.c"], two_main: ["two_main.c"], two_lib: ["two_lib.c"], sdk_main: ["sdk_main.c"], threads: ["threads.c"], race: ["race.c"], heap: ["heap.c"],
   host_main: ["host_main.c"], host_lib: ["host_lib.c"], argsg: ["argsg.c"], pads: ["pads.c"], tone: ["tone.c"], audren: ["audren.c", "-fno-builtin"], stress_threads: ["stress_threads.c"], stress_mem: ["stress_mem.c"], stress_ro: ["stress_ro.c"],
   fsg: ["fsg.c"], hleg: ["hleg.c"], ro_main: ["ro_main.c"], fini: ["fini.c"], clock: ["clock.c"], fault_null: ["fault.c", "-DMODE=6"], fault_host: ["fault.c", "-DMODE=7"],
   fault_jump: ["fault.c", "-DMODE=1"], fault_undef: ["fault.c", "-DMODE=2"], fault_load: ["fault.c", "-DMODE=3"], fault_load_hi: ["fault.c", "-DMODE=3", "-DFAR=0x3F0000000ul", '-DFAR_S="0x3f0000000"'], fault_stack: ["fault.c", "-DMODE=4"], break: ["fault.c", "-DMODE=5"],

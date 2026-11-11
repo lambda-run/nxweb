@@ -6,6 +6,12 @@
 import { AudioDeviceMain } from "../src/glue/audio_device_main.ts";
 
 const $ = (id: string) => document.getElementById(id)!;
+// which build this is (build/web/build.json, written by web:build), at the top of the page
+fetch("build.json", { cache: "no-store" }).then(r => r.json()).then((b: { commit: string; branch: string; dirty: boolean; date: string; md5: string }) => {
+  const el = $("build");
+  el.textContent = `${b.commit}${b.dirty ? "+changes" : ""} · ${b.date.slice(0, 16).replace("T", " ")} UTC · md5 ${b.md5.slice(0, 8)}`;
+  el.title = `branch ${b.branch}, commit ${b.commit}${b.dirty ? " with uncommitted changes" : ""}, built ${b.date}, md5 of the built files ${b.md5}`;
+}, () => { $("build").textContent = "build unknown"; });
 const worker = new Worker("worker.js" + location.search);   // (?mem64=1 reaches the worker: every program in the 64-bit memory mode)
 const canvas = ($("canvas") as HTMLCanvasElement).transferControlToOffscreen();
 worker.postMessage({ type: "init", canvas }, [canvas]);

@@ -83,7 +83,7 @@ export function refusedTotal(parts: { name: string; x: KitPart }[]): number { re
 
 // ---- one text block for a bug report ----
 export interface ReportInput {
-  title: string; when: string; userAgent: string;
+  title: string; when: string; userAgent: string; build?: string;
   adapter: string;                         // the WebGPU adapter and device, or why there is none
   optionsKey: string;                      // the translator's options key (cache version and every code-changing option)
   options: string;                         // the process's options in words (clock, guard, ...)
@@ -98,7 +98,7 @@ export interface ReportInput {
 }
 export function reportText(r: ReportInput): string {
   const out: string[] = [];
-  out.push(`${r.title}`, `when: ${r.when}`, `browser: ${r.userAgent}`, `graphics: ${r.adapter}`, `translator options key: ${r.optionsKey}`, `options: ${r.options}`, "");
+  out.push(`${r.title}`, `build: ${r.build ?? "unknown"}`, `when: ${r.when}`, `browser: ${r.userAgent}`, `graphics: ${r.adapter}`, `translator options key: ${r.optionsKey}`, `options: ${r.options}`, "");
   out.push(`process: ${r.state}${r.stop ? " (" + r.stop + ")" : ""}`);
   out.push(r.fault.length ? "fault:" : "fault: none", ...r.fault.map(l => "  " + l), "");
   out.push("modules:");

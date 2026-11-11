@@ -29,7 +29,7 @@ function once(m: RuntimeModules, set: typeof lo, o: object): number {
     const rt = new Runtime(m, o);
     if (!rt.loadFlat(g.image, g.side)) throw new Error(g.name + ": load failed: " + rt.red.join(" | "));
     const r = rt.run();
-    if (r.stop?.kind !== "exit") throw new Error(`${g.name}: ${rt.red.at(-2) ?? r.stop?.kind}`);
+    if (r.stop?.kind !== "exit") throw new Error(`${g.name}: ${r.stop?.fault?.lines[0] ?? r.stop?.kind}`);
     ms += rt.stats.runMs - rt.a64.translateNs / 1e6;
     rt.dispose();
   }
