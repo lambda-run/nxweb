@@ -217,6 +217,7 @@ export class Runtime {
   modules: ModuleInfo[] = [];
   mainThread = 0;
   private hotPcs = new Map<number, number>();
+  private hotThreads = new Map<number, { n: number; tls: number }>();   // kernel thread index -> slice ends, its TLS
   private hotCallers = new Map<number, Map<string, number>>();   // pc -> "x30,[x29+8]" -> times   // pc at the end of each time slice that ran to its end -> times
   stats = { slices: 0, svcs: 0, hostCalls: 0, runMs: 0, grows: 0, entries: 0, moduleLoads: 0, moduleUnloads: 0, finiCalls: 0, clockParks: 0 };
   disposed = false;
@@ -806,7 +807,27 @@ export class Runtime {
     const rows = [...by].sort((x, y) => y[1].n - x[1].n);
     const out = rows.slice(0, max).flatMap(([k, e]) => [`${(100 * e.n / total).toFixed(1).padStart(5)}% ${k}; hottest pc ${hex(e.top)} is ${placeOf(e.top, mods, sym, stub)}`, ...from(e)]);
     if (rows.length > max) out.push(`(${rows.length - max} more functions, ${(100 * rows.slice(max).reduce((t, r) => t + r[1].n, 0) / total).toFixed(1)}%)`);
-    return [`${total} slice ends sampled at ${this.hotPcs.size} pcs`, ...out];
+    let tn = 0;
+    for (const t of this.hotThreads.values()) tn += t.n;
+    const threads = [...this.hotThreads].sort((x, y) => y[1].n - x[1].n).slice(0, 8)
+      .map(([i, t]) => `  ${(100 * t.n / (tn || 1)).toFixed(1).padStart(5)}% thread #${i}${(nm => nm ? ` "${nm}"` : "")(this.threadName(t.tls))}`);
+    return [`${total} slice ends sampled at ${this.hotPcs.size} pcs`, ...out, ...(threads.length ? ["by guest thread (the name as nn::os keeps it, when one is found):", ...threads] : [])];
+  }
+  // A guest thread's nn::os name: the TLS's ThreadType pointer (+0x1F8), and in that ThreadType the first pointer
+  // to a short printable string (its name pointer, which points at its own name buffer unless set). Diagnostic only.
+  private threadName(tls: number): string {
+    const dv = this.dv(), u8 = this.u8(), ok = (a: number, n: number) => a >= GUARD_BASE && a + n <= dv.byteLength;
+    if (!ok(tls, 0x200)) return "";
+    const tt = Number(dv.getBigUint64(tls + 0x1F8, true));
+    if (tt % 8 || !ok(tt, 0x200)) return "";
+    for (let o = 0; o < 0x200; o += 8) {
+      const q = Number(dv.getBigUint64(tt + o, true));
+      if (!ok(q, 33)) continue;
+      let e = q;
+      while (e < q + 33 && u8[e] >= 0x20 && u8[e] < 0x7F) e++;
+      if (e - q >= 3 && e < q + 33 && u8[e] === 0) return String.fromCharCode(...u8.subarray(q, e));
+    }
+    return "";
   }
   // After the register dump: where pc and x30 are (module, symbol) and the thread's last SVCs
   private faultLines(kind: number, index: number, handle: number, ctx: number): void {
@@ -1246,6 +1267,8 @@ export class Runtime {
             if (!cs) this.hotCallers.set(at, cs = new Map());
             const ck = `${lr},${up}`, cn = cs.get(ck);
             if (cn !== undefined || cs.size < 8) cs.set(ck, (cn ?? 0) + 1);
+            const ht = this.hotThreads.get(this.curIndex);
+            if (ht) ht.n++; else this.hotThreads.set(this.curIndex, { n: 1, tls: Number(dv.getBigUint64(sc + 0x120, true)) });
           }
         }
       }
