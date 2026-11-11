@@ -19,7 +19,8 @@ import * as rsink from "./rsink";
 
 let sinkId: i32 = 0x13;
 let hdr6 = false, hdr21 = false, sink4 = false, sink5 = false;
-let layoutDone = false, histLogged = false, malformedLogged = false, skippedLogged = false, rateLogged = false;
+let layoutDone = false, histLogged = false, grewLogged = false, malformedLogged = false, skippedLogged = false, rateLogged = false;
+let firstN: u32 = 0;
 const SINK_LOGGED: usize = memory.data(4);   // per render sink
 const HIST: usize = memory.data(256);        // 64 i32
 
@@ -29,7 +30,7 @@ export function layout(): u32 { return (layoutDone ? 1 : 0) | (hdr6 ? 2 : 0) | (
 // A new process (the tests): nothing decided
 export function reset(): void {
   sinkId = 0x13; hdr6 = hdr21 = sink4 = sink5 = false;
-  layoutDone = histLogged = malformedLogged = skippedLogged = rateLogged = false;
+  layoutDone = histLogged = grewLogged = malformedLogged = skippedLogged = rateLogged = false; firstN = 0;
   store<u32>(SINK_LOGGED, 0);
 }
 export function sinkClosed(i: i32): void { if (i >= 0 && i < 4) store<u8>(SINK_LOGGED + i, 0); }
@@ -43,6 +44,14 @@ function cmdOk(q: usize, e: usize): bool {
   if (!hdr21 && load<u32>(q) != 0xcafebabe) return false;
   const n = cmdSize(q);
   return n >= <i32>header && <usize>n <= e - q;
+}
+function putHist(): void {
+  for (let k = 0, shown = 0; k < 64; k++) {
+    const n = load<i32>(HIST + (<usize>k << 2));
+    if (!n) continue;
+    if (++shown > 24) { puts(" ..."); break; }   // the line is bounded (nxnative: 512 bytes)
+    puts(" "); putu(k); puts("x"); putu(n);
+  }
 }
 // @ts-ignore: decorator
 @inline function sinkBody(): i32 { return hdr21 ? -8 : 0; }   // where DeviceSink's fields sit relative to SDK 8-20
@@ -100,14 +109,8 @@ export function capture(sink: i32, dest: i32, cl: usize, len: usize): u32 {
       if (hdr6 && (sz == 0x130 || sz == 0x138) && load<u32>(q, 0x120) - 1 < 6) { cand4 = cmdId(q); ncand4++; sink5 = sz == 0x138; }
       q += <usize>sz;
     }
-    begin(); puts("audren: first-frame commands "); putu(ncmd); puts(", by command ID:");
-    for (let k = 0, shown = 0; k < 64; k++) {
-      const n = load<i32>(HIST + (<usize>k << 2));
-      if (!n) continue;
-      if (++shown > 24) { puts(" ..."); break; }   // the line is bounded (nxnative: 512 bytes)
-      puts(" "); putu(k); puts("x"); putu(n);
-    }
-    end();
+    firstN = ncmd;
+    begin(); puts("audren: first-frame commands "); putu(ncmd); puts(", by command ID:"); putHist(); end();
     const have = load<i32>(HIST + (<usize>(sinkId & 63) << 2)) != 0;
     if (!have && ncand == 1) {
       begin(); puts("audren: no command with ID "); putx(sinkId); puts(" in the command list; the only 0x148-byte command is ID "); putx(cand); puts(", taking it as DeviceSink"); end();
@@ -119,6 +122,16 @@ export function capture(sink: i32, dest: i32, cl: usize, len: usize): u32 {
     } else if (!have) {
       red(); puts("audren: no DeviceSink (ID "); putx(sinkId); puts(") in the command list, "); putu(ncand); puts(" commands of "); putx(sinkSz); puts(" bytes: the game will have no sound"); end();
     }
+  }
+  if (histLogged && !grewLogged && firstN && ncmd > firstN) {
+    // The first list is often generated before the game starts a voice; the first longer one shows whether voices
+    // (data source, mix and volume commands) ever reach the list, which tells a game that plays nothing yet from a
+    // list that mixes into buffers the sink does not read
+    grewLogged = true;
+    memory.fill(HIST, 0, 256);
+    let q = cl + 0x20;
+    for (let i: u32 = 0; i < ncmd; i++) { const h = HIST + (<usize>(cmdId(q) & 63) << 2); store<i32>(h, load<i32>(h) + 1); q += <usize>cmdSize(q); }
+    begin(); puts("audren: the command list grew from "); putu(firstN); puts(" to "); putu(ncmd); puts(" commands, by command ID:"); putHist(); end();
   }
   c = cl + 0x20;
   for (let i: u32 = 0; i < ncmd; i++) {

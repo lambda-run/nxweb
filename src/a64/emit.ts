@@ -43,7 +43,7 @@ export let optFma: bool = true;     // relaxed-simd fused multiply-add
 export let optTail: bool = true;    // wasm tail calls for jumps
 export let optNan: bool = true;     // ARM NaN generation/propagation fix-up on FP arithmetic
 export let optChunk: u32 = 65536;   // region mode: a unit also takes the untranslated known entries in the entry's chunk (bytes, power of two; 0 = off)
-export let optRmArith: bool = true; // scalar FADD/FSUB/FMUL/FDIV/FSQRT honour FPCR.RMode (one FPCR test per operation)
+export let optRmArith: bool = true; // FP arithmetic honours FPCR.RMode/FZ/DN (one FPCR test per operation; off = always RN, FZ/DN ignored)
 export let optDepth: i32 = 160;     // nested guest calls before a call unwinds through the run loop (0 = off)
 export let optShared: bool = false; // modules import a shared memory; exclusives and LDAR/STLR are atomic
 export let optCntYield: bool = false; // `mrs cntpct_el0` is a yield point (write back, pc = the instruction, pc check after the import)
@@ -271,8 +271,8 @@ export const F_NAN2D = 9;
 export const F_NAN3S = 10;
 export const F_NAN3D = 11;
 export const F_RND = 12;
-export const F_RARS = 13;
-export const F_RARD = 14;
+export const F_SFS = 13;
+export const F_SFD = 14;
 export const F_LIBC = 15;
 export const NIMPF = 16;
 

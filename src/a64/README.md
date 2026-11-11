@@ -18,7 +18,8 @@ instantiates modules, owns the function table and the pc map and provides the im
 | `unit.ts` | function discovery, per-function assembly, register write-back/reload analysis, unit module builder, core module builder, `decode` (the one decoder), `probe` |
 | `scan.ts` | the static scan: `probe` over a module's text, a memo of distinct words, names for what is rejected (`classify`) |
 | `index.ts` | exports: `init, setOpt, setOptAddr, addRange, removeRange, setEntry, entryBuf, translate, outPtr, metaBuf, sideBuf, buildCore, probe, staticBase, staticEnd, addrBits`, and the scan's `scan*` |
-| `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding; `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `rarith{s,d}`: directed-rounding scalar arithmetic) |
+| `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding; `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `sf{s,d}`: scalar FP arithmetic under a non-default FPCR) |
+| `softfp.ts` | part of the helper module: bit-exact ARM FP (FPUnpack / FPProcessNaNs / FPRound) on raw bits for half, single and double, honouring FPCR.RMode, FZ and DN: add, sub, mul, div, sqrt, max/min(nm), fused multiply-add, FMULX, FRECPS/FRSQRTS, FABD, FRINT*, FCVT between formats, the FZ input flush |
 
 **Core module** (`buildCore()`, bytes produced by the same encoder). Imports `env.memory`,
 `env.table`, `env.translate(pc: i64) -> i32`. Defines and exports the contract globals (`x0..x30, sp,
@@ -240,10 +241,20 @@ sqrt, min/max, fused forms, step/mulx, scalar and vector) the result is tested (
 compare and a never-taken branch); only then a helper recomputes the ARM result from the operands
 (default NaN 0x7FF8.. for generated NaNs, FPProcessNaNs order and quieting for propagated ones).
 
-**Rounding mode.** FRINTI/FRINTX, SCVTF/UCVTF (scalar, vector, fixed-point) and FCVT d->s test
-FPCR.RMode and call a helper when it is not nearest. With `rmodeArith` (default on) scalar
-FADD/FSUB/FMUL/FNMUL/FDIV/FSQRT do the same (helper computes the exactly rounded directed result
-with error-free transforms). FZ, DN and AHP are ignored.
+**FPCR (rounding mode, FZ, DN).** With `rmodeArith` (default on) every FP arithmetic and conversion
+instruction, scalar and vector, tests FPCR & (RMode | FZ | DN) (one global load, an `and` and a
+never-taken branch under the default FPCR) and otherwise takes the native wasm f32/f64/f32x4/f64x2
+code. When the test is nonzero, scalar operations call `hlp.sfs`/`hlp.sfd` and vector ones call
+`hlp.vop` lanewise into `softfp.ts`, which implements the ARM pseudocode on integer bits, so the
+result (directed rounding, flushed inputs and outputs, the default NaN) is exact with or without a
+fused engine madd. Covered: FADD/FSUB/FMUL/FNMUL/FDIV/FSQRT/FABD/FMULX, FMAX/FMIN(NM), the FMADD
+family and FMLA/FMLS (vector and by element), FRECPS/FRSQRTS, FRINT*, FCVT between half, single and
+double (scalar, FCVTL/FCVTN), the pairwise and across-lanes max/min/add forms; FRECPE/FRSQRTE/FRECPX
+honour FZ and DN (and FRECPE's RMode-dependent overflow); FCMP/FCCMP, the vector compares and the
+float-to-int conversions flush their inputs under FZ. SCVTF/UCVTF (int to float never makes a
+denormal) test only RMode, as before. With `rmodeArith` off the translator emits round-to-nearest code
+and ignores FZ and DN, except for FRINTI/FRINTX, SCVTF/UCVTF and FCVT d->s, which still test RMode.
+AHP is ignored.
 
 **System.** NOP/hints, barriers, CLREX, MRS/MSR for TPIDR_EL0, TPIDRRO_EL0 (read), FPCR, FPSR, NZCV,
 CNTPCT_EL0/CNTVCT_EL0 (import `cntpct`), CNTFRQ_EL0 (19200000), DCZID_EL0 (4), CTR_EL0 (0x8444C004),
@@ -446,10 +457,11 @@ Not translated (compile to `unimpl`, reported only if executed):
   listed above.
 
 Behavioural differences:
-- Rounding mode: vector arithmetic and the FMADD family always round to nearest; FPCR.FZ/DN/AHP are
-  ignored; FRINTX does not raise inexact. FPSR cumulative flags and QC are never set.
-- FMADD/FMLA/FRECPS/FRSQRTS and the directed-rounding helpers are exact only when the engine's
-  relaxed-simd madd is fused (x64 with FMA3, arm64). With `fma` off the translator emits unfused code.
+- FPCR.AHP (alternative half precision) is ignored; FPCR.FZ16 does not apply (no fp16 arithmetic).
+  FPSR cumulative flags (including FZ's input-denormal and FRINTX's inexact) and QC are never set.
+- Under the default FPCR, FMADD/FMLA/FRECPS/FRSQRTS are exact only when the engine's relaxed-simd
+  madd is fused (x64 with FMA3, arm64); with `fma` off the translator emits unfused code. The
+  non-default-FPCR path (`softfp.ts`) is integer arithmetic and does not depend on it.
 - Unshared memory: exclusives are compare-and-store, fine for one thread at a time. Shared: see above
   (STXP 64-bit pair not atomic as a pair; atomic forms trap on misaligned addresses, where ARM's LDAR/STLR do not).
   A 16-byte CASP is atomic against other 16-byte CASPs (the pair lock), not against an STXP pair or two single-word

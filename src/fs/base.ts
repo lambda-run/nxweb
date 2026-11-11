@@ -53,6 +53,9 @@ export const EIO: i32 = 5, ENOSPC: i32 = 28;
 // @ts-ignore: decorator
 @external("fs", "save_failed") export declare function save_failed(err: i32): void;
 // @ts-ignore: decorator
+// More arena when a structure does not fit (a game's RomFS tables can be larger than the "fs arena" range): the
+// embedder returns the base of n zeroed bytes the module keeps for the process's life, below 4 GB, or 0 (none)
+@external("fs", "arena_more") declare function arena_more(n: usize): usize;
 @external("env", "log") declare function envLog(ptr: usize, len: i32): void;
 
 export function devErrno(st: i32): i32 { return st == DEV_NO_SPACE ? ENOSPC : EIO; }
@@ -112,17 +115,31 @@ export function bytesEq(a: usize, b: usize, n: usize): bool { return memory.comp
 // ---- the arena: every dynamic structure of the module (image tables, save trees, directory snapshots) ----
 // First fit over an address-ordered free list. A block is [u32 size | u32 next-free | 8 bytes pad] + payload,
 // sizes are multiples of 16 and include the 16-byte header.
-let aBase: usize = 0, aEnd: usize = 0, aHead: usize = 0, aUsed: usize = 0;
+let aBase: usize = 0, aEnd: usize = 0, aHead: usize = 0, aUsed: usize = 0, aMore: usize = 0;
+const MORE_MIN: usize = 16 << 20;
 export function arenaInit(base: usize, size: usize): void {
   aBase = (base + 15) & ~15; aEnd = (base + size) & ~15;
-  aUsed = 0; aHead = 0;
+  aUsed = 0; aHead = 0; aMore = 0;
   if (aEnd >= aBase + 64) { aHead = aBase; store<u32>(aHead, <u32>(aEnd - aBase)); store<u32>(aHead, 0, 4); }
 }
 export function arenaUsed(): usize { return aUsed; }
-export function arenaSize(): usize { return aEnd - aBase; }
-// 0 when the arena has no block of n bytes
+export function arenaSize(): usize { return aEnd - aBase + aMore; }
+// 0 when the arena has no block of n bytes and the embedder no more memory
 export function alloc(n: usize): usize {
   if (n > 0xFFFFFF00) return 0;
+  const p = allocIn(n);
+  return p || !arenaGrow(((n + 15) & ~15) + 16) ? p : allocIn(n);
+}
+// A block of at least `need` bytes (16 MB at least) from the embedder, freed into the list
+function arenaGrow(need: usize): bool {
+  const n: usize = ((need > MORE_MIN ? need : MORE_MIN) + 0xFFFF) & ~(<usize>0xFFFF);
+  const b = arena_more(n);
+  if (!b || (b & 15) || <u64>b + <u64>n > 0xFFFF_FFFF) return false;
+  store<u32>(b, <u32>n); aUsed += n; aMore += n;
+  free(b + 16);
+  return true;
+}
+function allocIn(n: usize): usize {
   const need: usize = ((n + 15) & ~15) + 16;
   let prev: usize = 0, cur = aHead;
   while (cur) {
