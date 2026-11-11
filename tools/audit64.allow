@@ -1297,6 +1297,7 @@ src/glue/gfx_host.ts	V	1	dv.setUint32(r + 140, bindless >>> 0, true);
 src/glue/gfx_host.ts	V	1	dv.setUint32(r + 20, bit((info.storage ?? []).map(b => b.slot)), true); dv.setUint32(r + 24, bit((info.storage ?? []).filter(b => b.write).map(b => b.slot)), tr
 src/glue/gfx_host.ts	V	1	dv.setUint32(r + 28, (bit((info.images ?? []).map(b => b.slot)) | bit((info.images ?? []).filter(b => (b.access ?? " ") !== " ").map(b => b.slot)) << 8) >>> 0, 
 src/glue/gfx_host.ts	V	1	dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0)) >>> 0, true); dv.setUint32(r + 8, bit((info.textures ?? []).map(t => t
+src/glue/gfx_host.ts	V	1	else { buf = this.alloc(256); this.device.queue.writeBuffer(buf, 0, new Int32Array([bv, bi, 0, 0])); this.inUse.push(buf); }
 src/glue/gfx_host.ts	V	1	for (const [slot, size] of Object.entries(info.uboSize ?? {})) if (+slot < 14) dv.setUint32(r + 64 + +slot * 4, size, true);
 src/glue/gfx_host.ts	B	1	for (const l of info.attributes ?? []) vin |= BigInt(Math.max(0, CLASSES.indexOf(info.attributeTypes[l] ?? " "))) << BigInt(l * 2);
 src/glue/gfx_host.ts	B	1	for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? " "))); if (t.depth) depth |= 1 << t.slot; }
@@ -1330,6 +1331,8 @@ src/glue/gfx_host.ts	B	1	if (s.gpu.format !== d.gpu.format || s.gpu.width !== Ma
 src/glue/gfx_host.ts	B	1	if (t.fmt.kind === " " && t.fmt.stencil) d.aspect = view && (view[0] & 0x20) && (view[0] >> 6) === 1 ? " " : " ";
 src/glue/gfx_host.ts	B	1	if (t.fmt.kind === " ") { a.depthLoadOp = flags & 2 ? " " : " "; a.depthStoreOp = " "; a.depthClearValue = Math.min(1, Math.max(0, dv.getFloat32(p + 16, true)))
 src/glue/gfx_host.ts	V	1	if (t.fmt.stencil) { a.stencilLoadOp = flags & 4 ? " " : " "; a.stencilStoreOp = " "; a.stencilClearValue = dv.getUint32(p + 20, true); }
+src/glue/gfx_host.ts	V	1	if (this.cur.drawParams) this.setDrawParams(op === H.DRAW ? dv.getUint32(p + 8, true) : dv.getInt32(p + 24, true), dv.getUint32(p + 20, true));
+src/glue/gfx_host.ts	V	1	if (this.uniformArena) { const s = this.uaAlloc(16), v = new DataView(s.c.staging.buffer, s.c.staging.byteOffset + s.off, 16); v.setInt32(0, bv, true); v.setInt
 src/glue/gfx_host.ts	B	1	if (u?.data) { const b = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(u.data.length)))); this.device.queue.writeBuffer(b, 0, u.data); this.inUse.push(b); r
 src/glue/gfx_host.ts	B	1	if (want && want !== t.fmt.tex) { if (want === SRGB_TWIN[t.fmt.tex!]) { d.format = want; d.usage = t.gpu.usage & ~0x08; } else this.red(` $ $ `, ` $ $ `); }
 src/glue/gfx_host.ts	B	1	images?: { slot: number; format: string; access?: " " | " " | " "; dim?: " " | " " | " " }[];
@@ -1342,6 +1345,7 @@ src/glue/gfx_host.ts	B	1	onImage: ((window: number, index: number, what: number)
 src/glue/gfx_host.ts	B	1	onShaderVariant: ((keyHex: string, classes: Record<number, VinClass>) => string | undefined) | null = null;
 src/glue/gfx_host.ts	B	1	private alloc(cap: number): GPU { return this.pool.get(cap)?.pop() ?? this.newBuffer({ size: cap, usage: 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80 }); }
 src/glue/gfx_host.ts	B	1	private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; records: number; m
+src/glue/gfx_host.ts	B	1	private drawSet: { pipe: Pipe; bv: number; bi: number } | null = null;
 src/glue/gfx_host.ts	B	1	private img = new Map<number, { serial: number; view: Uint8Array | null }>();
 src/glue/gfx_host.ts	B	1	private meshCur: { ctl: GPU; args: GPU; off: number; task: boolean } | null = null;
 src/glue/gfx_host.ts	B	1	private meshHelp: { prep: GPU; fin: GPU; layout: GPU } | null = null;

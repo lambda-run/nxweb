@@ -97,7 +97,7 @@ export class RtShaders {
 }
 
 // ---- the in-page translator: a Worker of its own (rt_shader_worker.ts, bundled as a module) ----
-export const SHADER_CHAIN = "nxweb-shaders-1/page";
+export const SHADER_CHAIN = "nxweb-shaders-2/page";
 export function workerTranslator(o: { worker: string | URL; framework: string; naga: string; chain?: string }): ShaderTranslator {
   let w: Worker | null = null, bc: BroadcastChannel | null = null, up = false, seq = 0;
   const calls = new Map<number, { res: (t: Translated) => void; rej: (e: Error) => void }>(), queue: unknown[] = [];

@@ -374,6 +374,7 @@ second vertex entry point. WebGPU has no negative viewport, so the split here is
   | `attributes: [l]`, `attributeTypes: { l: float \| sint \| uint }`, `variants` / `variant()` | `@location(l)` = NVN attribute `l` | see "Vertex input classes" |
   | `outputs: [i]` (fragment) | `@location(i)` = colour target `i` | targets the shader does not write get write mask 0 |
   | `fixup: true` (vertex) | `struct NxFix { fix: vec4f }` at `@group(2) @binding(0)` | last thing before returning the position: `pos.y *= nx.fix.y; pos.z = pos.z * nx.fix.z + pos.w * nx.fix.w` |
+  | `drawParams: true` (vertex) | `struct { bv: i32, bi: i32, di: i32 }` at `@group(2) @binding(2)`, a dynamic offset | the draw's base vertex (first vertex of a non-indexed draw), base instance and draw index (a multi-draw's record number, else 0): SPIR-V BaseVertex / BaseInstance / DrawIndex, which WGSL has no builtin for (nxnative: c0 + 0x640 / 0x644 / 0x648). The host writes them per draw (gfx_host.ts setDrawParams) |
 
   Any other `extra` kind (c1, driver segments) is refused at registration with a red line: the key then reads as
   missing and its draws are skipped. Fragment coordinates need no fix-up (the chain's README argues it; the support
@@ -410,7 +411,7 @@ stage. What is done here, in this order:
    (maxUniformBuffersPerShaderStage): 1 over. The pipeline cannot be built, its draws are skipped`. The pipeline is
    `Failed` and its draws are skipped; no WebGPU validation error is raised. Checked: uniform buffers (game slots +
    support buffer + the vertex fix-up), sampled textures, samplers, storage buffers, storage textures, vertex
-   attributes, bind groups (2, or 3 with the fix-up).
+   attributes, bind groups (2, or 3 with the fix-up or the draw parameters).
 
 `GfxHostOptions.limits` (name → value) lowers the limits as the replayer sees them: the tests use it, and it shows
 what a smaller device would refuse.

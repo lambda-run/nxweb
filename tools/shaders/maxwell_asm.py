@@ -115,6 +115,14 @@ PROGRAMS['ps_bindless'] = dict(stage='ps', imap=[0x0a], facts=dict(fout={'0': 'f
     ldc(10, 5, 0x28),
     texb(0, 0, 10)])
 
+# Vertex: the draw parameters and non-finite constants. Maxwell's instance ID (a[0x2f8]) leaves the draw's base instance out, which the translator writes for
+# Vulkan as InstanceIndex - BaseInstance; the vertex ID (a[0x2fc]) is VertexIndex. x += instance ID + vertex ID; z = max(min(z, +inf), NaN) = z (FMNMX returns
+# the number of a number and a NaN), so the constants stay in the program and change nothing
+PROGRAMS['vs_draw_params'] = dict(stage='vs', facts=dict(attr={'0': 'float'}), insts=[
+    ald(0, 0x80, 3), ald(4, 0x2f8), ald(5, 0x2fc), i2f(4, 4), i2f(5, 5), fadd(4, 4, 5), fadd(0, 0, 4),
+    mov32i(6, 0x7f800000), rrr('fmnmx', 2, 2, 6, PT << 39), mov32i(8, 0x7fc00000), fmax(2, 2, 8), mov32i(3, f32(1.0)),
+    ast(0x70, 0, 4)])
+
 def main(out):
     out = Path(out); out.mkdir(parents=True, exist_ok=True)
     corpus = []

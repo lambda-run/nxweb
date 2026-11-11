@@ -120,22 +120,24 @@ naga's SPIR-V reader and WGSL writer refuse the translator's output as it comes.
 | 7 | Bindings | Set 0 with running numbers | From the names: `<p>_c<3+r>` → `@group(0) @binding(st*16 + r)`; `support_buffer` → `st*16 + 14`; `c1` → `@group(3) @binding(st*16)`, `c0` / `c2` → `+1` / `+2`; textures as in 5. A bindless texture (`<p>_t…_cb<bank>_<handle>`, bank 3..16) takes a free texture slot and a `handle` in the record. Separate, image, storage, array-of-sampler variables are errors ("not placed yet"). |
 | 8 | Origin and depth | run-time state in NVN | Vertex: `@group(2) @binding(0)` one `vec4f`; before every return of the entry point `pos.y *= fix.y; pos.z = pos.z*fix.z + pos.w*fix.w` (`src/gfx/README.md` item 4). |
 | 9 | `'textureSample' must only be called from uniform control flow` (Chromium, not naga) | WGSL's derivative uniformity analysis; Maxwell samples under predicates | `diagnostic(off, derivative_uniformity);` at the top of every fragment module. Derivatives there are then undefined, as on the hardware. |
+| 10 | `ConstExpression ... Literal(Infinity)` / `Literal(NaN)` (232 of the 702 stages of one game) | the translator writes Maxwell's immediates as float constants, `+inf` / NaN among them (FMNMX, FSETP bounds); naga refuses them as constant expressions, and Tint refuses any constant expression it folds to one | `nonFiniteConstants`: each becomes a private `u32` variable holding the bits, loaded and bitcast at the top of each function that reads it (a composite holding one is built there), so the value only exists at run time. |
+| 11 | `Unsupported builtin value: BaseInstance` (309 of 702) | the translator turns NVN's c0 reads at 0x640 / 0x644 / 0x648 into BaseVertex / BaseInstance / DrawIndex (`DrawParametersReplace.cs`; Maxwell's instance ID is `InstanceIndex - BaseInstance`); WGSL's `vertex_index` / `instance_index` include the bases, but WGSL has no builtin for them | `drawParameters`: the loads read `@group(2) @binding(2)` `{ i32 base vertex, base instance, draw index }`, which the host writes per draw at a dynamic offset (reflection `drawParams`; `src/gfx/README.md`). |
 
 Every rewritten module passes `spirv-val` (38 modules in the test).
 
-### The corpus (`test/shaders/corpus`, 43 GLSL shaders → glslang → pass → naga → Chromium)
+### The corpus (`test/shaders/corpus`, 45 GLSL shaders → glslang → pass → naga → Chromium)
 
-Written after reading Ryujinx's `CodeGen/Spirv` for what it emits. **27 convert; 25 of those compile in Chromium.**
+Written after reading Ryujinx's `CodeGen/Spirv` for what it emits. **29 convert; 27 of those compile in Chromium.**
 
 Converts and compiles: uniform arrays with constant and computed indices; `texture`, `textureLod`, `textureGrad`, bias,
 constant and **run-time** offsets (gather), `texelFetch`, `textureSize`, `textureQueryLevels`, `textureGather`,
 projective; shadow samplers incl. gather and explicit LOD; 3D, cube, 2D array, cube array, cube shadow, array shadow;
 integer textures with `texelFetch`; bit-field extract / insert / reverse, bit count, find MSB / LSB, shifts, bit casts;
 extended multiply (through the pass); `fma`, min / max / clamp, round-even, trunc, `exp2`, `log2`, `pow`, `inversesqrt`,
-`isnan` / `isinf` (through the pass), half-float pack / unpack; loops, `continue`, `break`, `switch` without
+`isnan` / `isinf` and infinite / NaN constants (through the pass), half-float pack / unpack; loops, `continue`, `break`, `switch` without
 fall-through, `discard` in a branch, samples in non-uniform branches and loops; `gl_FragCoord`, `gl_FrontFacing`,
 derivatives, `gl_FragDepth`; integer and multiple colour outputs; early fragment tests; `gl_VertexIndex`,
-`gl_InstanceIndex`, integer attributes, flat / noperspective outputs; a private array indexed at run time (local memory).
+`gl_InstanceIndex`, `gl_BaseVertex` / `gl_BaseInstance` / `gl_DrawID` (through the pass and the host), integer attributes, flat / noperspective outputs; a private array indexed at run time (local memory).
 
 Fails, **and Ryujinx emits it** (so real shaders will hit it):
 
