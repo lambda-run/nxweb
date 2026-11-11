@@ -1367,14 +1367,12 @@ src/glue/rt_audio.ts	B	1	return kind & 1 ? d.getBigUint64(block, true) : undefin
 src/glue/rt_gfx.ts	B	1	const SYNC_FOREVER = 1n << 62n;
 src/glue/rt_gfx.ts	B	1	const abi = this.abi[id] ?? 0, floats = abi & 15, retF = (abi & 16) !== 0;
 src/glue/rt_gfx.ts	B	1	const done = this.host.fence(x.gfx_finish_fence() >>> 0);
-src/glue/rt_gfx.ts	B	1	const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= rt.u8().length;
+src/glue/rt_gfx.ts	B	1	const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= mem.length;
 src/glue/rt_gfx.ts	B	1	const interval = Math.max(1, this.x.gfx_present_interval(Number(cpu.x(0))) | 0);
 src/glue/rt_gfx.ts	B	1	const n = cpu.w(1) | 0, sd = Number(cpu.x(2));
-src/glue/rt_gfx.ts	V	1	const own = dv.getUint32(c + 0x20, true), nctl = own >= 0x760 && own < 0x880 ? own : 0x880, ncode = dv.getUint32(c + 0x704, true);
 src/glue/rt_gfx.ts	B	1	const res = this.call(id, k.args), fence = x.gfx_wait_fence() >>> 0;
 src/glue/rt_gfx.ts	B	1	const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
 src/glue/rt_gfx.ts	B	1	for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
-src/glue/rt_gfx.ts	V	1	if (dv.getUint32(c, true) === 0x98761234 && dv.getUint32(c + 4, true) === 0xc9) return null;
 src/glue/rt_gfx.ts	B	1	if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
 src/glue/rt_gfx.ts	B	1	private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
 src/glue/rt_gfx.ts	B	1	this.shownAt[n & 255] = BigInt(Math.round(performance.now() * 1e6));
@@ -1427,12 +1425,6 @@ src/glue/rt_runtime.ts	B	1	this.faultNow(FAULT.load, (e instanceof Error ? e.mes
 src/glue/rt_runtime.ts	V	1	this.sleeper ??= new Int32Array(new SharedArrayBuffer(4));
 src/glue/rt_runtime.ts	B	1	unimpl: (pc: bigint, insn: number) => this.fault(FAULT.unimplemented, ` $ $ `, BigInt(insn >>> 0), true),
 src/glue/rt_runtime.ts	B	1	w: (i: number) => Number((c[" " + i].value as bigint) & M32),
-src/glue/rt_shader_worker.ts	V	1	const c1o = cdv.getUint32(0x700, true), c1t = cdv.getUint32(0x704, true), c1 = c1t > c1o && c1t <= code.length ? code.subarray(c1o, c1t) : new Uint8Array(0);
-src/glue/rt_shader_worker.ts	V	1	const magic = dv.getUint32(0, true);
-src/glue/rt_shader_worker.ts	V	1	const type = (dv.getUint32(0x30, true) >>> 10) & 15;
-src/glue/rt_shader_worker.ts	V	1	if (cdv.getUint32(4, true) === 0xc9) throw new Error(" ");
-src/glue/rt_shader_worker.ts	V	1	if (control.length < 0x708 || cdv.getUint32(0, true) !== 0x98761234) throw new Error(" ");
-src/glue/rt_shader_worker.ts	V	1	if (stage === " " && control.length > 0x71c && (cdv.getUint32(0x718, true) & 1)) job.early_fragment_tests = true;
 src/glue/rt_shader_worker.ts	B	1	let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null;
 src/hle/account.ts	D	1	store<i32>(n, 0)
 src/hle/account.ts	D	1	store<i32>(n, 1)
