@@ -376,6 +376,28 @@ export function downsample(c: usize, s: usize, sv: usize, d: usize, dv: usize): 
   if (d) { store<i32>(r, load<i32>(d, O.TEX_d + O.TD_width), O.P_COPY_T2T_dr + 12); store<i32>(r, load<i32>(d, O.TEX_d + O.TD_height), O.P_COPY_T2T_dr + 16); store<i32>(r, 1, O.P_COPY_T2T_dr + 20); }
   store<i32>(r, O.COPY_RESOLVE, O.P_COPY_T2T_flags);
 }
+// ClearTexture(i/ui): the texture (snapshot), its view, the region, the component mask; is_uint: the colour is 32-bit integer words (i and ui), else floats
+export function clearTexture(c: usize, t: usize, v: usize, region: usize, rgba: usize, mask: i32, isUint: bool): void {
+  const r = rec(c, O.OP_CLEAR_TEX, snapOff(O.P_CLEAR_TEX_SIZE) + O.TEX_SIZE);
+  if (!r) return;
+  store<u64>(r, texSnap(r, snapOff(O.P_CLEAR_TEX_SIZE), 0, t), O.P_CLEAR_TEX_tex);
+  copyView(r + O.P_CLEAR_TEX_view, r + O.P_CLEAR_TEX_has_view, v);
+  store<u8>(r, isUint ? 1 : 0, O.P_CLEAR_TEX_is_uint);
+  if (region) memory.copy(r + O.P_CLEAR_TEX_r, region, 24);
+  store<i32>(r, mask, O.P_CLEAR_TEX_mask);
+  if (rgba) memory.copy(r + O.P_CLEAR_TEX_c, rgba, 16);
+}
+// NVN2 Push{Graphics,Compute}Constants (command buffer, a word seen 0, offset, size, data): bytes of the graphics stages' or compute's constant block, which
+// their shaders read as c[24] (nxnative push_const, DMSH_PUSH_BANK). The block is PUSH_SIZE bytes; what falls outside it is dropped
+export const PUSH_SIZE: u64 = 0x100;
+export function pushConstants(c: usize, compute: bool, w: u64, off: u64, n: u64, data: usize): void {
+  if (w) { L.red("push constants with the word before the offset "); L.hex(w); L.str(": its meaning is not known"); L.end(); }
+  if (off + n > PUSH_SIZE || off > PUSH_SIZE || !data) { L.red("push constants at "); L.hex(off); L.str(" + "); L.hex(n); L.str(": beyond the 0x100-byte block, dropped"); L.end(); return; }
+  const r = rec(c, O.OP_PUSH_CONST, O.P_PUSH_CONST_SIZE + <usize>n);
+  if (!r) return;
+  store<u16>(r, compute ? 1 : 0, O.P_PUSH_CONST_compute); store<u16>(r, <u16>off, O.P_PUSH_CONST_offset); store<u32>(r, <u32>n, O.P_PUSH_CONST_size);
+  memory.copy(r + O.P_PUSH_CONST_data, data, <usize>n);
+}
 // Counter reports and render enable (nxnative hle_nvn.c; replayed by report.ts). ReportCounter: { u64 type, u64 address };
 // ResetCounter: { u64 type }; OP_RENDER_COND: { i32 mode, i32 pad, u64 address }, mode 0 / 1 SetRenderEnableConditional
 // (render if equal / not equal), 2 / 3 SetRenderEnable(true / false)

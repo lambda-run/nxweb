@@ -49,6 +49,7 @@ export const H_MESH_BEGIN: u32 = 35;       // +8 u32 flags (1 indirect, 2 with a
 export const H_MESH_TASK: u32 = 36;        // +8 u32 compute pipeline of the task shader
 export const H_MESH_RUN: u32 = 37;         // +8 u32 compute pipeline of the mesh shader
 export const H_MESH_DRAW: u32 = 38;        // +8 u32 render pipeline (the pass is open): the slots of the last RUN are drawn
+export const H_CLEAR_TEX: u32 = 39;        // +8 u64 serial, +16 u32 level, +20 u32 layer, +24 i32 region[6], +48 u32 mask, +52 u32 1: integer words, +56 the colour (f32 or 32-bit words) x4
 const CAP: usize = 1 << 20;
 let BUF: usize = 0;
 export function hostInit(): void { BUF = arenaAlloc(CAP); }

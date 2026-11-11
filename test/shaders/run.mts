@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parse, serialize, fixForWgsl } from "../../src/shaders/spv.ts";
-import { ShaderLibrary, writeLibrary, type Reflection } from "../../src/shaders/library.ts";
+import { ShaderLibrary, writeLibrary, unsupportedExtra, type Reflection } from "../../src/shaders/library.ts";
 import { build, glslToSpv } from "../../tools/shaders/build_lib.mts";
 import { load } from "../../tools/shaders/naga_node.mts";
 import { jobFor, keyControl, ctlLens } from "../../src/shaders/job.ts";
@@ -242,6 +242,27 @@ void main() { wb.w[gl_GlobalInvocationID.x] = rb.r[gl_GlobalInvocationID.x] + 1u
   throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 0xff, cb_offset: 0 }] }), /traced to no storage buffer/, "global memory with no buffer");
   throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 4, cb_offset: 0xe }] }), /address is in uniform slot 1 \+ 0x38: not placed yet/, "an address in a game uniform slot");
   throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 0, cb_offset: 0x110 / 4 }] }), /c0 \+ 0x110, which is no compute stage storage buffer slot/, "the vertex table in a compute shader");
+});
+
+await test("SPIR-V pass: banks the host supplies (c1, the driver segments c0 and c2, the NVN2 push constants c[24]) go to group 0 binding 208 + stage * 4 + k; another bank is refused", () => {
+  const d = mkdtempSync(join(tmpdir(), "nxbank-"));
+  const src = (banks: number[]) => `#version 450
+layout(local_size_x = 64) in;
+layout(std430, binding = 5) buffer W { uint w[]; } wb;
+${banks.map((b, i) => `layout(std140, binding = ${20 + i}) uniform B${b} { uvec4 data[16]; } cp_c${b};`).join("\n")}
+void main() { wb.w[gl_GlobalInvocationID.x] = ${banks.map(b => `cp_c${b}.data[${b % 4}].y`).join(" + ")}; }
+`;
+  const spvOf = (banks: number[]) => { const f = join(d, `b${banks.join("_")}.comp`); writeFileSync(f, src(banks)); return glslToSpv(f); };
+  try {
+    const sbufs = [{ binding: 5, cb_slot: 0, cb_offset: 0x310 / 4, flags: 1 }];
+    const got = convertStage(naga, spvOf([0, 1, 2, 24]), { bindings: "nxweb", sbufs, c1: "0102030405060708" });
+    eq(got.reflection.extra.map(x => [x.kind, x.group, x.binding, x.bank ?? null, x.data ?? null]),
+      [["drvcb", 0, 217, 0, null], ["c1", 0, 216, null, "0102030405060708"], ["drvcb", 0, 218, 2, null], ["push", 0, 219, 24, null]], "compute (stage 2): 208 + 8 + k");
+    eq(unsupportedExtra(got.reflection), [], "every one is a block src/gfx supplies");
+    for (const b of [216, 217, 218, 219]) if (!new RegExp(`@group\\(0\\) @binding\\(${b}\\)\\s*var<uniform>`).test(got.wgsl)) throw new Error(`binding ${b} is not a uniform in the WGSL:\n${got.wgsl}`);
+    throws(() => fixForWgsl(spvOf([20]), { sbufs }), /uniform bank 20 \(cp_c20\): not placed/, "bank 20");
+    eq(unsupportedExtra({ extra: [{ kind: "support", group: 0, binding: 14 }, { kind: "other", group: 3, binding: 0 }] }), ["other"], "an unknown kind is still refused");
+  } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
 // ---- the browser half ----

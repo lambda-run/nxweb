@@ -705,6 +705,11 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferDispatchCompute: C.dispatch(P(a, 0), I(a, 1), I(a, 2), I(a, 3), 0); return 0;
     case F.nvnCommandBufferDispatchComputeIndirect: C.dispatch(P(a, 0), 0, 0, 0, X(a, 1)); return 0;
     case F.nvnCommandBufferSetDepthClamp: C.depthClamp(P(a, 0), B(a, 1)); return 0;
+    case F.nvnCommandBufferClearTexture: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), false); return 0;
+    case F.nvnCommandBufferClearTexturei: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), true); return 0;
+    case F.nvnCommandBufferClearTextureui: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), true); return 0;
+    case F.nvnCommandBufferPushGraphicsConstants: C.pushConstants(P(a, 0), false, X(a, 1), X(a, 2), X(a, 3), P(a, 4)); return 0;
+    case F.nvnCommandBufferPushComputeConstants: C.pushConstants(P(a, 0), true, X(a, 1), X(a, 2), X(a, 3), P(a, 4)); return 0;
     case F.nvnCommandBufferDownsample: C.downsample(P(a, 0), P(a, 1), 0, P(a, 2), 0); return 0;
     case F.nvnCommandBufferDownsampleTextureView: C.downsample(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4)); return 0;
     // Counter reports, and render enable with the game profile's render_cond (report.ts). Without the key everything

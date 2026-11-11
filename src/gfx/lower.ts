@@ -415,6 +415,10 @@ function emitUbos(st: u32, id: i32, from: u32 = 0xff): void {
   if (from == 0xff) from = st;
   const rf = libRefl(id);
   let m = load<u32>(rf, RF_ubo) & 0x7fff;
+  const ex = load<u32>(rf, RF_ubo) >> 16;
+  if (ex & 2) emitDriver(st, from, 0);
+  if (ex & 4) emitDriver(st, from, 2);
+  if (ex & 8) emitPush(st, from);
   for (let i: u32 = 0; m; i++, m >>= 1) {
     if (!(m & 1)) continue;
     if (i == 14) { emitSupport(st); continue; }
@@ -433,6 +437,48 @@ function emitSupport(st: u32): void {
   store<f32>(p, w > 0 ? 2 / w : 0, 144); store<f32>(p, h > 0 ? 2 / h : 0, 148); store<f32>(p, 1, 152); store<f32>(p, 0, 156);
   store<f32>(p, w, 160); store<f32>(p, h, 164); store<f32>(p, 1, 168); store<f32>(p, 1, 172);
   for (let i: usize = 0; i < 73; i++) store<f32>(p + 192 + (i << 4), 1);
+}
+// The blocks a shader reads beyond the game's uniform slots (RF_ubo bits 16 + k, the replayer's group 0 binding 208 + stage * 4 + k, src/gfx/README.md):
+// k = 0 its c1 (constant, the replayer has it), 1 and 2 the NVN driver segments c0 and c2, 3 the NVN2 push constants (c[24]), each sent as a block the recorder makes
+const PUSH: usize = memory.data(512);       // [graphics, compute] the PUSH_SIZE bytes PushGraphicsConstants / PushComputeConstants wrote
+const DIM: usize = memory.data(16);         // the dispatch's work group counts, for c0
+let drawBaseInst: u32 = 0;
+const DRV_SIZE: usize = 0xa00;
+function emitPush(st: u32, from: u32): void {
+  const r = H.hostRec(H.H_UBO_DATA, 24 + 256);
+  store<u32>(r, st, 8); store<u32>(r, 19, 12); store<u32>(r, 256, 16);
+  memory.copy(r + 24, PUSH + (from == 2 ? 256 : 0), 256);
+}
+// The driver's constant segments as nxnative fills them (nvn_mtl.m, dmsh_abi.h DMSH_C0_* / DMSH_C2_*). c0: the stage's storage buffer table (address 64 bits,
+// size 32 bits a row); graphics: the largest point size at 0x610 and the draw's base instance at 0x644; compute: the work group counts at 0x200 (and at 4, NVN2's
+// place) and the uniform slot table at 0x210. c2: the bound texture handles at 0x20 + 8 r and image handles at 0x120 + 8 r
+function emitDriver(st: u32, from: u32, bank: u32): void {
+  const r = H.hostRec(H.H_UBO_DATA, 24 + DRV_SIZE), d = r + 24;
+  store<u32>(r, st, 8); store<u32>(r, bank ? 18 : 17, 12); store<u32>(r, <u32>DRV_SIZE, 16);
+  if (bank == 0) {
+    const base: usize = from == 0 ? 0x110 : from == 1 ? 0x510 : from == 2 ? 0x310 : from == 3 ? 0x670 : 0x770;
+    for (let i: usize = 0; i < 16; i++) { const b = SSBO + ((<usize>from * 16 + i) << 4); store<u64>(d + base + (i << 4), load<u64>(b)); store<u32>(d + base + (i << 4), <u32>load<u64>(b, 8), 8); }
+    if (from == 2) {
+      memory.copy(d + 0x200, DIM, 12); memory.copy(d + 4, DIM, 12);
+      for (let i: usize = 0; i < 16; i++) { const b = UBO + ((32 + i) << 4); store<u64>(d + 0x210 + (i << 4), load<u64>(b)); store<u32>(d + 0x210 + (i << 4), <u32>load<u64>(b, 8), 8); }
+    } else { store<f32>(d, 2047, 0x610); store<u32>(d, drawBaseInst, 0x644); }
+  } else {
+    for (let i: usize = 0; i < 32; i++) store<u32>(d + 0x20 + (i << 3), <u32>load<u64>(TEXH + ((<usize>from * 32 + i) << 3)));
+    for (let i: usize = 0; i < 8; i++) store<u32>(d + 0x120 + (i << 3), <u32>load<u64>(IMGH + ((<usize>from * 8 + i) << 3)));
+  }
+}
+function readsDriver0(id: i32): bool { return id >= 0 && ((load<u32>(libRefl(id), RF_ubo) >> 17) & 1) != 0; }
+// ClearTexture(i/ui): outside a render pass, on the texture's level and layers of the view, the region's rectangle
+function clearTex(r: usize): void {
+  const t = liveTex(<usize>load<u64>(r, O.P_CLEAR_TEX_tex));
+  if (!t) { if (once(41)) L.redLine("ClearTexture: the texture is not live at submit; the clear is dropped"); return; }
+  passBreak();
+  const serial = load<u64>(t, O.TEX_serial), has = load<u8>(r, O.P_CLEAR_TEX_has_view) != 0;
+  contentNeed(serial); contentGpuWrite(serial);
+  const o = H.hostRec(H.H_CLEAR_TEX, 72);
+  store<u64>(o, serial, 8); store<u32>(o, viewLevel(r + O.P_CLEAR_TEX_view, has), 16); store<u32>(o, viewLayer(r + O.P_CLEAR_TEX_view, has), 20);
+  memory.copy(o + 24, r + O.P_CLEAR_TEX_r, 24); store<u32>(o, load<u32>(r, O.P_CLEAR_TEX_mask), 48); store<u32>(o, load<u8>(r, O.P_CLEAR_TEX_is_uint), 52);
+  memory.copy(o + 56, r + O.P_CLEAR_TEX_c, 16);
 }
 function emitTexs(st: u32, id: i32, from: u32 = 0xff): void {
   if (from == 0xff) from = st;
@@ -496,6 +542,7 @@ function dispatch(r: usize): void {
   }
   if (curCsPipe < 0) { curCs = -1; nSkipped++; return; }
   passEvent(GfxPassE.Dispatch);
+  store<u32>(DIM, x); store<u32>(DIM, y, 4); store<u32>(DIM, z, 8);
   emitUbos(2, cs); emitTexs(2, cs); emitStorage(2, cs);
   const o = H.hostRec(H.H_DISPATCH, 24);
   store<u32>(o, curCsPipe, 8); store<u32>(o, x, 12); store<u32>(o, y, 16); store<u32>(o, z, 20);
@@ -547,6 +594,7 @@ function draw(r: usize, size: u32, indexed: bool): void {
     if (id != curPipe) { curPipe = id; dirty |= D_BIND | D_VBUF; }
     dirty &= ~D_PIPE;
   }
+  if (baseInstance != drawBaseInst) { drawBaseInst = baseInstance; if (readsDriver0(vs) || readsDriver0(fs)) dirty |= D_UBO; }
   if (feedback()) dirty |= D_TEX;
   passEvent(GfxPassE.Draw);
   emitState();
@@ -768,6 +816,12 @@ function exec(p: usize, depth: i32): void {
       case O.OP_SET_SAMP_POOL: { const b = dpoolBase(load<u64>(a), false); if (b != sampBase) { sampBase = b; dirty |= D_TEX; } break; }
       case O.OP_COPY_B2T: copyB2T(a, size); break;
       case O.OP_COPY_T2T: copyT2T(a); break;
+      case O.OP_CLEAR_TEX: clearTex(a); break;
+      case O.OP_PUSH_CONST: {
+        const off = <usize>load<u16>(a, O.P_PUSH_CONST_offset), n = <usize>load<u32>(a, O.P_PUSH_CONST_size);
+        if (off + n <= 256) { memory.copy(PUSH + (load<u16>(a, O.P_PUSH_CONST_compute) ? 256 : 0) + off, a + O.P_PUSH_CONST_data, n); dirty |= D_UBO; }
+        break;
+      }
       case O.OP_COPY_T2B: copyT2B(a, size); break;
       case O.OP_COPY_B2B: memWrite(<usize>load<u64>(a, 8), <usize>load<u64>(a), <usize>load<u64>(a, 16)); break;
       case O.OP_UPDATE_UB: memWrite(<usize>load<u64>(a), a + 16, <usize>load<u64>(a, 8)); break;

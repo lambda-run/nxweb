@@ -144,6 +144,10 @@
   "file": "tex_query_lod.frag"
  },
  {
+  "name": "tex_query_lod_cube",
+  "file": "tex_query_lod_cube.frag"
+ },
+ {
   "name": "tex_shadow",
   "file": "tex_shadow.frag"
  },
