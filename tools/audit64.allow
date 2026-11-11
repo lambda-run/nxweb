@@ -1396,6 +1396,7 @@ src/glue/rt_audio.ts	B	1	handleDup: h => rt.k.kernel_event_dup_readable(h) >>> 0
 src/glue/rt_audio.ts	B	1	if (kind & 1) cpu.setX(0, dv.getBigUint64(this.req + 8, true));
 src/glue/rt_audio.ts	V	1	if (kind === RET.V0) { cpu.setD(0, BigInt(d.getUint32(block + 64, true))); return; }
 src/glue/rt_audio.ts	B	1	return kind & 1 ? d.getBigUint64(block, true) : undefined;
+src/glue/rt_fs.ts	B	1	if (this.openFile < 0 && /^nn::fs::OpenFile$/.test(shortName(n.name))) this.openFile = n.id;
 src/glue/rt_gfx.ts	B	1	const SYNC_FOREVER = 1n << 62n;
 src/glue/rt_gfx.ts	B	1	const abi = this.abi[id] ?? 0, floats = abi & 15, retF = (abi & 16) !== 0;
 src/glue/rt_gfx.ts	B	1	const done = this.host.fence(x.gfx_finish_fence() >>> 0);

@@ -780,11 +780,20 @@ export class Runtime {
     for (const n of this.hotPcs.values()) total += n;
     if (!total) return [];
     const { mods, sym, stub } = this.codePlaces();
+    // the entry of the translated function a pc is in, for code with no symbol
+    const ent: number[] = [];
+    for (const u of this.a64.units) for (const f of u.pcs) if (f !== 0xFFFFFFFF) ent.push(f);
+    ent.sort((x, y) => x - y);
+    const entryOf = (at: number) => {
+      let lo = 0, hi = ent.length;
+      while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if (ent[mid] <= at) lo = mid + 1; else hi = mid; }
+      return lo ? ent[lo - 1] : -1;
+    };
     const by = new Map<string, { n: number; top: number; topN: number; from: Map<string, number> }>();
     for (const [at, n] of this.hotPcs) {
       const st = stub(at), m = st === undefined ? mods.find(m => at >= m.lo && at < m.hi) : undefined, s = m ? sym(m.handle, at) : undefined;
       const off = m ? at - m.base : 0;
-      const key = st !== undefined ? `the host stub of ${st}` : !m ? "not in the text of a loaded module" : s ? `${m.name} ${s.name}` : `${m.name}+${hex(off - off % 4096)} page (no symbol)`;
+      const key = st !== undefined ? `the host stub of ${st}` : !m ? "not in the text of a loaded module" : s ? `${m.name} ${s.name}` : (e => e >= m.lo && e <= at ? `${m.name} function at ${m.name}+${hex(e - m.base)} (no symbol)` : `${m.name}+${hex(off - off % 4096)} page (no symbol)`)(entryOf(at));
       let e = by.get(key);
       if (!e) by.set(key, e = { n, top: at, topN: n, from: new Map() });
       else { e.n += n; if (n > e.topN) { e.top = at; e.topN = n; } }
