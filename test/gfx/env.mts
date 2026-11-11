@@ -33,6 +33,13 @@ struct NxFix { fix: vec4f } @group(2) @binding(0) var<uniform> nx: NxFix;
   p.y *= nx.fix.y; p.z = p.z * nx.fix.z + p.w * nx.fix.w;
   return VO(p, vec4f(uv, 0.0, 1.0));
 }` },
+  // as the shader chain emits the draw parameters (src/shaders/spv.ts drawParameters): base vertex, base instance, draw index from @group(2) @binding(2).
+  // Instance k of draw d (of a multi-draw) is moved right by (k + d) * 0.5; red where the base instance is 2, green where the base vertex is 6, blue where it is 1
+  vs_draw_params: { stage: "vertex", attributes: [0, 1], drawParams: true, wgsl: `${VO} struct D { bv: i32, bi: i32, di: i32 } @group(2) @binding(2) var<uniform> nx_draw: D;
+@vertex fn main(@builtin(instance_index) ii: u32, @location(0) pos: vec2f, @location(1) col: vec3f) -> VO {
+  let k = f32(i32(ii) - nx_draw.bi + nx_draw.di);
+  return VO(vec4f(pos.x + k * 0.5, pos.y, 0.0, 1.0), vec4f(f32(nx_draw.bi == 2), f32(nx_draw.bv == 6), f32(nx_draw.bi == 1), 1.0));
+}` },
   // does not match a float vertex layout: its pipeline cannot be built
   vs_bad: { stage: "vertex", attributes: [0, 1], wgsl: `${VO} @vertex fn main(@location(0) pos: vec2i, @location(1) uv: vec2f) -> VO { return VO(vec4f(vec2f(pos), 0.0, 1.0), vec4f(uv, 0.0, 1.0)); }` },
   // ---- the shader chain's reflection record, consumed in full ----

@@ -127,6 +127,26 @@ await test("SPIR-V pass: losses are notes, not silence", () => {
   if (!byName(corpus, "clip_distance").notes!.some(n => /gl_ClipDistance/.test(n))) throw new Error("no note for a clip distance");
   eq(byName(corpus, "ubo_const_index").notes, [], "gl_PointSize = 1.0 is no loss");
 });
+await test("SPIR-V pass: infinite and NaN float constants become run-time values (private bits, bitcast in each function), scalar and in vectors", () => {
+  const s = byName(corpus, "nonfinite").entry!, m = parse(fixForWgsl(glslToSpv(join(CORPUS, "nonfinite.frag"))).spv);
+  const floats = new Set(m.insts.filter(i => i.op === 22).map(i => i.w[0]));
+  const nonFinite = m.insts.filter(i => i.op === 43 && floats.has(i.w[0]) && (i.w[2] & 0x7f800000) === 0x7f800000);
+  if (nonFinite.length) throw new Error(`${nonFinite.length} infinite or NaN float constants left`);
+  const bits = [...s.wgsl.matchAll(/var<private> nx_nonfinite\w*: u32 = (\d+)u;/g)].map(x => Number(x[1])).sort((a, b) => a - b);
+  if (!bits.includes(0x7f800000) || !bits.includes(0xff800000) || !bits.some(b => (b & 0x7fffffff) > 0x7f800000)) throw new Error(`+inf, -inf and a NaN are not all there: ${bits.map(b => b.toString(16))}`);
+  if (/\binf\b|\bnan\b|1e\+?39|f32\(inf/i.test(s.wgsl)) throw new Error(s.wgsl);
+  if ((s.wgsl.match(/bitcast<f32>\(_e\d+\)/g) ?? []).length < 2) throw new Error("expected the values bitcast where they are read:\n" + s.wgsl);
+});
+await test("SPIR-V pass: BaseVertex / BaseInstance / DrawIndex are read from the draw-parameter uniform at group 2 binding 2", () => {
+  const v = byName(corpus, "draw_params").entry!;
+  eq([v.reflection.drawParams, v.reflection.fixup, v.reflection.extra], [true, true, []], "reflection");
+  if (!/@group\(2\) @binding\(2\)\s+var<uniform> nx_draw: (\w+);/.test(v.wgsl)) throw new Error("no draw-parameter uniform:\n" + v.wgsl);
+  if (/base_instance|base_vertex|draw_index|BaseInstance/.test(v.wgsl)) throw new Error(v.wgsl);
+  for (const m of ["member", "member_1", "member_2"]) if (!new RegExp(`nx_draw\\.${m}\\b`).test(v.wgsl)) throw new Error(`nx_draw.${m} not read:\n` + v.wgsl);
+  const m = parse(fixForWgsl(glslToSpv(join(CORPUS, "draw_params.vert"))).spv);
+  if (m.insts.some(i => (i.op === 71 && i.w[1] === 11 && i.w[2] >= 4424 && i.w[2] <= 4426) || (i.op === 17 && i.w[0] === 4427))) throw new Error("a draw-parameter builtin or the capability is left");
+  eq(byName(corpus, "clip_distance").entry!.reflection.drawParams, undefined, "a shader without them has no flag");
+});
 await test("extended multiply: the 16-bit-half formula the pass emits gives the high word (100,000 random pairs and the edges)", () => {
   const hiU = (a: number, b: number) => { const a0 = a & 0xffff, a1 = a >>> 16, b0 = b & 0xffff, b1 = b >>> 16; const m1 = (Math.imul(a1, b0) + (Math.imul(a0, b0) >>> 16)) >>> 0, m2 = (Math.imul(a0, b1) + (m1 & 0xffff)) >>> 0; return (Math.imul(a1, b1) + (m1 >>> 16) + (m2 >>> 16)) >>> 0; };
   const hiS = (a: number, b: number) => (hiU(a >>> 0, b >>> 0) - (((a >> 31) >>> 0) & (b >>> 0)) - (((b >> 31) >>> 0) & (a >>> 0))) | 0;
@@ -217,6 +237,10 @@ await test("Maxwell -> SPIR-V -> WGSL: the library of the translated programs, w
   eq([f.reflection.ubos, f.reflection.uboSize, f.reflection.textures, f.reflection.outputs, f.reflection.extra], [[0], { "0": 32 }, [{ slot: 0, dim: "2d", depth: false }], [0], []], "pixel");
   if (!/@group\(0\) @binding\(16\)/.test(f.wgsl) || !/@group\(1\) @binding\(64\)/.test(f.wgsl) || !/@group\(1\) @binding\(65\)/.test(f.wgsl) || !/discard;/.test(f.wgsl)) throw new Error(f.wgsl);
   eq([o.reflection.textures, o.reflection.extra.map(e => `${e.kind}@${e.group}.${e.binding}`)], [[{ slot: 1, dim: "2d", depth: false }], ["support@0.30"]], "ps_ops: texture slot 1 and the support buffer");
+  // the draw parameters (the instance ID is InstanceIndex - BaseInstance) and the +inf / NaN immediates of FMNMX: the uniform at group 2 binding 2, private bits
+  const d = byName(maxwell, "vs_draw_params").entry!;
+  eq([d.reflection.drawParams, d.reflection.extra], [true, []], "vs_draw_params");
+  if (!/var<uniform> nx_draw/.test(d.wgsl) || (d.wgsl.match(/var<private> nx_nonfinite/g) ?? []).length !== 2) throw new Error(d.wgsl);
   // bindless: the handle is traced by the translator to the game's uniform slot 2 (c[5]) byte 0x28; the pass gives the texture the first free slot and reports where
   // the host reads the handle. The library hands GfxHost.registerShader that record
   const b = byName(maxwell, "ps_bindless").entry!;

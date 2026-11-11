@@ -57,7 +57,7 @@ function strWords(s: string): number[] {
 // ---- what the pass reports ----
 // kind: the names of nxnative's dmsh_abi.h where they mean the same thing
 export interface Binding {
-  kind: "cbuf" | "support" | "c1" | "drvcb" | "push" | "tex" | "samp_tex" | "fixup" | "storage";
+  kind: "cbuf" | "support" | "c1" | "drvcb" | "push" | "tex" | "samp_tex" | "fixup" | "storage" | "draw";
   group: number; binding: number;
   reg?: number;        // cbuf: uniform slot; tex / samp_tex: texture slot
   bank?: number;       // drvcb: 0 or 2; push: 24
@@ -166,7 +166,6 @@ function dropUnused(c: Ctx) {
   if (f64) throw new Error("64-bit floats: WGSL has none (nxnative retranslates with softfloat64; do the same before this pass)");
   if (bufferImage) throw new Error("a buffer texture: WGSL has none (nxnative's host binds them as 2D rows; needs the same decision here)");
   if (interlock) c.notes.push("pixel interlock dropped: WebGPU has no fragment shader interlock, so read-modify-write of images or storage in this pixel shader is not ordered");
-  if (drawParams) c.notes.push("reads the draw's base vertex / base instance / draw index: left to naga");
   const gone = new Set([CAP.Float64, CAP.SampledBuffer, CAP.ImageBuffer, CAP.FragmentShaderPixelInterlockEXT, ...(drawParams ? [] : [CAP.DrawParameters])]);
   c.m.insts = c.m.insts.filter(i => !(i.op === Op.Capability && gone.has(i.w[0])) && !(i.op === Op.Extension && str(i.w, 0) === "SPV_EXT_fragment_shader_interlock") &&
     i.op !== Op.BeginInvocationInterlockEXT && i.op !== Op.EndInvocationInterlockEXT && !(i.op === Op.ExecutionMode && i.w[1] >= 5366 && i.w[1] <= 5371));
@@ -228,6 +227,134 @@ function mulExtended(c: Ctx) {
     else { if (i.op !== Op.Name && i.op !== Op.Decorate && i.w.some((w, k) => k > 0 && pair.has(w)) && i.op >= Op.Load) throw new Error("the result of an extended multiply used whole"); out.push(i); }
   }
   c.m.insts = out;
+}
+
+// The word positions of an instruction in a function body that hold ids other than its result: everything after the type and result, but for the literals the
+// translator writes there (indices, swizzles, the extended instruction number, memory and image operand masks, switch cases, branch weights)
+function idOperands(i: Inst): number[] {
+  const all = (from: number, to = i.w.length) => Array.from({ length: Math.max(0, to - from) }, (_, k) => from + k);
+  switch (i.op) {
+    case 81: return [2];                                   // OpCompositeExtract: composite, then literal indices
+    case 82: return [2, 3];                                // OpCompositeInsert: object, composite, then literal indices
+    case 79: return [2, 3];                                // OpVectorShuffle: two vectors, then literal components
+    case 12: return [2, ...all(4)];                        // OpExtInst: set, literal instruction, operands
+    case Op.Load: return [2];                              // pointer, then a memory operand mask
+    case Op.Store: return [0, 1];                          // pointer, object, then a memory operand mask
+    case 250: return [0, 1, 2];                            // OpBranchConditional: condition, two labels, then weights
+    case 251: return [0, 1, ...all(2).filter(k => k % 2 === 1)];   // OpSwitch: selector, default, then (literal, label) pairs
+    case 246: return [0, 1];                               // OpLoopMerge: two labels, then a mask
+    case 247: return [0];                                  // OpSelectionMerge: label, mask
+    case 87: case 88: case 91: case 92: case 95: case 98: return [2, 3, ...all(5)];          // image instructions: image, coordinate, mask, operands
+    case 89: case 90: case 93: case 94: case 96: case 97: return [2, 3, 4, ...all(6)];       // with a depth reference or a component first
+    case 99: return [0, 1, 2, ...all(4)];                  // OpImageWrite: image, coordinate, texel, mask, operands
+    case Op.Variable: return i.w.length > 3 ? [3] : [];    // storage class, then the initializer
+    case 248: case 249: case 252: case 253: case 255: return all(0);    // label, branch, kill, return, unreachable: ids only (or none)
+    case 254: return [0];                                  // OpReturnValue
+    case 224: case 225: return all(0);                     // OpControlBarrier / OpMemoryBarrier: scope and semantics ids
+    case 54: return [3];                                   // OpFunction: control mask, then the function type
+    default: return all(2);
+  }
+}
+
+// 1d. Float constants that are infinite or NaN (the translator writes them for Maxwell's immediates, as FMNMX / FSETP bounds): naga refuses them as constant expressions,
+// and Tint would refuse what it can fold to one. Each becomes a private u32 variable initialised with the bits and bitcast in each function that reads it, so the value
+// only exists at run time. A composite constant holding one is built in the function (OpCompositeConstruct)
+function nonFiniteConstants(c: Ctx) {
+  const isFloat = (t: number) => c.def.get(t)?.op === Op.TypeFloat;
+  const bad = new Set<number>();
+  for (const i of c.m.insts) {
+    if (i.op === Op.Function) break;
+    if (i.op === Op.Constant && isFloat(i.w[0])) {
+      const width = c.def.get(i.w[0])!.w[1];
+      if ((width === 32 && (i.w[2] & 0x7f800000) === 0x7f800000) || (width === 16 && (i.w[2] & 0x7c00) === 0x7c00)) bad.add(i.w[1]);
+    } else if (i.op === Op.ConstantComposite && i.w.slice(2).some(x => bad.has(x))) bad.add(i.w[1]);
+  }
+  if (!bad.size) return;
+  const f = c.firstFunction();
+  for (let k = 0; k < f; k++) {
+    const i = c.m.insts[k];
+    if (!bad.has(resultId(i)) && (i.op === Op.Variable || (i.op === Op.ConstantComposite && !bad.has(i.w[1]))) && i.w.slice(2).some(x => bad.has(x)))
+      throw new Error("an infinite or NaN float in a module-level initializer: WGSL cannot hold it as a constant");
+  }
+  let at = f, r;
+  const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
+  const scalars = [...bad].map(id => c.def.get(id)!).filter(i => i.op === Op.Constant);
+  const vars = new Map<number, { v: number; pt: number; it: number }>();          // float constant -> its private variable and the pointer and integer types
+  for (const s of scalars) {
+    const width = c.def.get(s.w[0])!.w[1], it = add(Op.TypeInt, [width, 0], false), pt = add(Op.TypePointer, [SC.Private, it], false), init = add(Op.Constant, [it, s.w[2]], true);
+    const v = c.id(); c.m.insts.splice(at++, 0, { op: Op.Variable, w: [pt, v, SC.Private, init] });
+    vars.set(s.w[1], { v, pt, it });
+  }
+  const ep = c.m.insts.find(i => i.op === Op.EntryPoint)!;
+  if (c.m.version >= 0x10400) ep.w.push(...[...vars.values()].map(x => x.v));     // from SPIR-V 1.4 the interface lists every global variable
+  c.m.insts.splice(c.m.insts.findIndex(i => i.op === Op.Name || i.op === Op.Decorate), 0, ...[...vars.values()].map(x => ({ op: Op.Name, w: [x.v, ...strWords("nx_nonfinite")] })));
+  const out: Inst[] = [];
+  let body: Inst[] | null = null, prologue = -1, local = new Map<number, number>();
+  // A function's own id for constant `k`, its loads placed after the function's variables, where they dominate every use
+  const value = (k: number): number => {
+    let id = local.get(k);
+    if (id !== undefined) return id;
+    const d = c.def.get(k)!, pro: Inst[] = [];
+    if (d.op === Op.Constant) {
+      const x = vars.get(k)!, bits = c.id(); id = c.id();
+      pro.push({ op: Op.Load, w: [x.it, bits, x.v] }, { op: 124 /* Bitcast */, w: [d.w[0], id, bits] });
+    } else {
+      const parts = d.w.slice(2).map(p => bad.has(p) ? value(p) : p); id = c.id();
+      pro.push({ op: Op.CompositeConstruct, w: [d.w[0], id, ...parts] });
+    }
+    body!.splice(prologue, 0, ...pro); prologue += pro.length; local.set(k, id);
+    return id;
+  };
+  for (const i of c.m.insts) {
+    if (i.op === Op.Function) { body = []; prologue = -1; local = new Map(); }
+    if (!body) { out.push(i); continue; }
+    if (prologue === -1 && i.op !== Op.Function && i.op !== 55 /* FunctionParameter */ && i.op !== Op.Label && i.op !== Op.Variable) prologue = body.length;
+    if (prologue !== -1) for (const k of idOperands(i)) if (bad.has(i.w[k])) i.w[k] = value(i.w[k]);
+    body.push(i);
+    if (i.op === Op.FunctionEnd) { out.push(...body); body = null; }
+  }
+  c.m.insts = out.filter(i => !(bad.has(resultId(i)) && (i.op === Op.Constant || i.op === Op.ConstantComposite)) && !((i.op === Op.Name || i.op === Op.Decorate) && bad.has(i.w[0])));
+}
+
+
+// 1e. The draw parameters (SPIR-V BaseVertex, BaseInstance, DrawIndex): the translator reads them where NVN's shaders read c0 bytes 0x640 / 0x644 / 0x648
+// (Translation/Transforms/DrawParametersReplace.cs; Maxwell's instance ID is InstanceIndex - BaseInstance). WGSL's vertex_index and instance_index already
+// include the bases but has no builtin for them, so the host supplies them per draw in a small uniform, group 2 binding 2 (src/glue/gfx_host.ts setDrawParams):
+// i32 base vertex (firstVertex for a non-indexed draw), base instance, draw index (the record number of a multi-draw, else 0). nxnative writes the base instance to c0 + 0x644
+function drawParameters(c: Ctx): Binding | undefined {
+  const which = new Map<number, number>();                    // input variable -> member: 0 base vertex, 1 base instance, 2 draw index
+  for (const i of c.m.insts) if (i.op === Op.Decorate && i.w[1] === Dec.BuiltIn && i.w[2] >= 4424 && i.w[2] <= 4426) which.set(i.w[0], i.w[2] - 4424);
+  if (!which.size) return undefined;
+  let at = c.firstFunction(), r;
+  const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
+  const i32 = add(Op.TypeInt, [32, 1], false), k = [0, 1, 2].map(n => add(Op.Constant, [i32, n], true));
+  const st = c.id(); c.m.insts.splice(at++, 0, { op: Op.TypeStruct, w: [st, i32, i32, i32] });
+  const pst = add(Op.TypePointer, [SC.Uniform, st], false), pi = add(Op.TypePointer, [SC.Uniform, i32], false);
+  const uv = c.id(); c.m.insts.splice(at++, 0, { op: Op.Variable, w: [pst, uv, SC.Uniform] });
+  c.addDecoration(st, Dec.Block);
+  c.m.insts.splice(c.firstType(), 0, ...[0, 1, 2].map(n => ({ op: Op.MemberDecorate, w: [st, n, Dec.Offset, 4 * n] })));
+  c.addDecoration(uv, Dec.DescriptorSet, 2); c.addDecoration(uv, Dec.Binding, 2);
+  c.m.insts.splice(c.m.insts.findIndex(i => i.op === Op.Name || i.op === Op.Decorate), 0, { op: Op.Name, w: [uv, ...strWords("nx_draw")] });
+  const ep = c.m.insts.find(i => i.op === Op.EntryPoint)!, nameEnd = ep.w.findIndex((w, n) => n >= 2 && ((w >>> 24) === 0)) + 1;
+  ep.w = [...ep.w.slice(0, nameEnd), ...ep.w.slice(nameEnd).filter(v => !which.has(v))];
+  if (c.m.version >= 0x10400) ep.w.push(uv);
+  const out: Inst[] = [];
+  let inBody = false;
+  for (const i of c.m.insts) {
+    if (i.op === Op.Function) inBody = true;
+    if (i.op === Op.Load && which.has(i.w[2])) {
+      const p = c.id(), m = which.get(i.w[2])!;
+      out.push({ op: Op.AccessChain, w: [pi, p, uv, k[m]] });
+      if (i.w[0] === i32) out.push({ op: Op.Load, w: [i32, i.w[1], p] });
+      else { const v = c.id(); out.push({ op: Op.Load, w: [i32, v, p] }, { op: 124 /* Bitcast */, w: [i.w[0], i.w[1], v] }); }
+      continue;
+    }
+    if (inBody && idOperands(i).some(n => which.has(i.w[n]))) throw new Error("a draw parameter (BaseVertex, BaseInstance, DrawIndex) used other than by a load");
+    out.push(i);
+  }
+  c.m.insts = out.filter(i => !((i.op === Op.Variable && which.has(i.w[1])) || ((i.op === Op.Name || i.op === Op.Decorate) && which.has(i.w[0])) ||
+    (i.op === Op.Capability && i.w[0] === CAP.DrawParameters) || (i.op === Op.Extension && str(i.w, 0) === "SPV_KHR_shader_draw_parameters")));
+  return { kind: "draw", group: 2, binding: 2, size: 12, name: "nx_draw" };
 }
 
 // 2. gl_PerVertex: only the position survives. A write of a point size other than the constant 1, or of any clip or cull distance, is a loss
@@ -617,6 +744,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   const sg = subgroups(c, stage, opts.subgroups ?? "single"); c.index();
   dropUnused(c); c.index();
   nanTests(c); c.index();
+  nonFiniteConstants(c); c.index();
   mulExtended(c); c.index();
   dropUnreferenced(c); c.index();
   privatizeBoundSizes(c); c.index();
@@ -629,6 +757,8 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
     if (!posVar) throw new Error("a vertex shader that never writes gl_Position");
     bindings.push(fixup(c, posVar)); c.index();
   }
+  const draw = drawParameters(c); c.index();
+  if (draw) bindings.push(draw);
   for (const i of c.m.insts) delete (i as any).image, delete (i as any).sampler;
   return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, ...(sg ? { subgroups: sg } : {}) };
 }

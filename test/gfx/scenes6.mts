@@ -3,6 +3,7 @@
 // computes from a control section and SPH made here), wrapped as the shader chain wraps them, drawn direct and indirect. Checked on pixels.
 import { Env } from "./env.mts";
 import { type Scene, T, ubo } from "./scenes.mts";
+import { FMT, PRIM } from "./nvn.mts";
 import { meshStage, wrapStage, type MeshStage } from "../../src/shaders/meshstage.ts";
 import type { ShaderInfo } from "../../src/glue/gfx_host.ts";
 
@@ -91,5 +92,26 @@ export const scenes6: Scene[] = [
     t.ok(/mesh draw 3: \{count 2, first 0\}, tasks launched up to 2 mesh workgroups each, 4 output slots drawn/.test(logs), "the task draw's launches");
     t.ok(/\[RED\] a resource is bound to the geometry stage/.test(logs), "the geometry-stage binding is reported");
     t.ok(!/uniform buffer bound to a geometry or tessellation stage/.test(logs), "the old line is gone");
+  } },
+  { name: "draw parameters: a vertex shader reads the draw's base vertex, base instance and draw index (instanced arrays and elements, a multi-draw, one pipeline, values changing per draw)", async run(e, t) {
+    const G = e.G, cmd = G.cmd, prog = await e.program("vs_draw_params", "fs_color"), i = G.acquire(e.win);
+    const sq = (y0: number, y1: number) => [[-1, y0], [-0.5, y0], [-1, y1], [-1, y1], [-0.5, y0], [-0.5, y1]].map(([x, y]) => [x, y, 0, 0, 0]);
+    const verts = [...sq(1, 0), ...sq(0, -1)].flat(), vb = G.put(new Float32Array(verts)), idx = G.put(new Uint16Array([0, 1, 2, 3, 4, 5]));
+    G.begin(); G.targets(cmd, [e.wtex[i]]); G.defaultStates(cmd); G.clear(cmd, [0, 0, 0, 1]);
+    G.vertexLayout(cmd, [{ format: FMT.RG32F, offset: 0 }, { format: FMT.RGB32F, offset: 8 }], [{ stride: 20 }]);
+    G.c("CommandBufferBindVertexBuffer", [cmd, 0, vb, verts.length * 4]); G.c("CommandBufferBindProgram", [cmd, prog, 3]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]);
+    G.c("CommandBufferDrawArraysInstanced", [cmd, PRIM.TRIANGLES, 0, 6, 2, 2]);                     // top row: base instance 2, 2 instances, first vertex 0
+    G.c("CommandBufferDrawElementsInstanced", [cmd, PRIM.TRIANGLES, 1 /* u16 */, 6, idx, 6, 1, 3]);  // bottom row: base vertex 6, base instance 1, 3 instances
+    e.finish(i);
+    const img = await e.read();
+    t.rect(img, 0, 0, 32, 32, RED, "arrays: two instances, base instance 2"); t.rect(img, 32, 0, 64, 32, BLACK, "arrays: no third instance");
+    t.rect(img, 0, 32, 48, 64, [0, 255, 255, 255], "elements: three instances, base vertex 6, base instance 1"); t.rect(img, 48, 32, 64, 64, BLACK, "elements: no fourth instance");
+    t.eq(e.stat(1), 2, "2 draws");
+    // a multi-draw of two records { count 6, instances 1, first 0, base instance 2 }: the second is draw index 1, a square to the right
+    const ind = G.put(new Uint32Array([6, 1, 0, 2, 6, 1, 0, 2])), cnt = G.put(new Uint32Array([2])), j = G.acquire(e.win);
+    G.begin(); G.targets(cmd, [e.wtex[j]]); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferMultiDrawArraysIndirectCount", [cmd, PRIM.TRIANGLES, ind, cnt, 2, 16]); e.finish(j);
+    const img2 = await e.read();
+    t.rect(img2, 0, 0, 16, 32, RED, "multi-draw record 0: draw index 0"); t.rect(img2, 16, 0, 32, 32, RED, "multi-draw record 1: draw index 1, one square right"); t.rect(img2, 32, 0, 64, 64, BLACK, "nothing else");
+    t.eq(e.stat(1), 4, "4 draws"); t.noRed(e);
   } },
 ];
