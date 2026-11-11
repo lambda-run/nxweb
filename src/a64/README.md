@@ -338,6 +338,9 @@ npm run a64:bench            # real-world-shaped C (test/a64/bench: zstd 1.5.6 w
                              #         loader's string table on ARM optimized-routines' memcmp/strlen/strcmp ...) natively,
                              #         as wasm (clang --target=wasm32) and translated in the three modes, with and without the
                              #         C library intrinsics, interleaved, output checked [-- --runs N --mode M --libc on|off|both]
+                             #         [--base DIR: another checkout's translator build, interleaved, rows ending @base]
+                             #         [--profile: one more run per mode with the translator's event counters: calls,
+                             #         exits, back edges, registers written back/reloaded, guest insns by class]
 npm run a64:libc             # the C library intrinsics (libc.ts) against the native libc: every length 0..80 at every
                              #         alignment pair, in the three modes, translated and as intrinsics
 python3 test/a64/coverage.py # corpus instruction words the translator rejects, by mnemonic
@@ -502,6 +505,14 @@ Behavioural differences:
 
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
+- Intrinsic call sites (`a64:bench --libc on --base <main checkout>`, 15 interleaved runs, medians, output checked, Node
+  24): a BL/B to a named C library function calls the helper in place instead of writing back every dirty register and
+  reloading after the call. `--profile` before: registers written back per 1000 guest insns 26.4 (zstd) / 263.3
+  (str_bench), reloaded 21.6 / 263.7; after 4.6 / 67.5 and 4.1 / 43.2. str_bench memory32 70.7 -> 58.4 ms (-17%),
+  memory64 71.0 -> 61.7 (-13%), memory64-high 71.0 -> 62.2 (-12%); zstd_bench 85.3 -> 76.3 (-11%) / 88.4 -> 85.9 (-3%) /
+  90.7 -> 88.0 (-3%). Dispatch through the table is not the cost (zstd: 0.1 transfers per 1000 insns); back edges are 28
+  per 1000, and dropping their budget check altogether was worth at most ~5% on zstd. `a64:libc` 6 of 6 ok (with tail
+  calls `b strlen` / `b memcmp`).
 - Gate 1 (FP16 with FPCR #24 merged; the 110 `fpcr_` classes include 34 FP16/FHM ones that vary RMode, FZ16, FZ
   and DN and add half and single denormals): 329 classes x 2000 cases = 658000 cases, 0 failures; memory64 and above
   4 GB 30268 cases each, 0 failures.

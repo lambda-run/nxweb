@@ -11,6 +11,7 @@ import {
   fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, balloc, ballocEnd, mk, beginFunction, FB_CAP, optChunk, fnLimit,
   M64, optMaxPages,
 } from "./emit";
+import { prof, profBase, intrinsicAt } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
 
@@ -185,6 +186,7 @@ function translateInsn(pc: u64, insn: u32): void {
     i64c(<i64>pc); gset(G_PC);
     if (optPrecise >= 2) writeback();
   }
+  prof(10, 1); prof((op0 & 5) == 4 ? 11 : (op0 & 14) == 8 ? 12 : (op0 & 14) == 10 ? 13 : (op0 & 7) == 5 ? 14 : 15, 1);
   ok = decode(pc, insn);
   if (!ok) { rollback(p, e, i); emitTrap(F_UNIMPL, pc, insn); }
 }
@@ -261,6 +263,7 @@ function analyse(): void {
 }
 
 function emitMasked(mi: u64, mv: u32, isWb: bool): void {
+  prof(isWb ? 8 : 9, <i64>(popcnt(mi) + <u64>popcnt(mv)));
   for (let r = 0; r < NREG; r++) {
     let on = r < 36 ? ((mi >> r) & 1) != 0 : ((mv >> (r - 36)) & 1) != 0;
     if (!on) continue;
@@ -283,25 +286,6 @@ function emitLocals(first: u32): void {
   }
 }
 
-// Library functions the host named (setIntrinsic: a module's definition of memcpy, strlen, ...): a function at one of
-// these pcs is translated as one call of the helpers' libc(op, x0, x1, x2) into x0 and a return to x30 (libc.ts)
-const INTR_CAP = 64;
-const intrPc = mk<u64>(INTR_CAP);
-const intrOp = mk<i32>(INTR_CAP);
-let nIntr: i32 = 0;
-// op 0 forgets the pc; returns the number of named pcs, -1 when the table is full
-export function setIntrinsic(pc: u64, op: i32): i32 {
-  for (let i = 0; i < nIntr; i++) {
-    if (intrPc[i] != pc) continue;
-    if (op) intrOp[i] = op; else { nIntr--; intrPc[i] = intrPc[nIntr]; intrOp[i] = intrOp[nIntr]; }
-    return nIntr;
-  }
-  if (!op) return nIntr;
-  if (nIntr == INTR_CAP) return -1;
-  intrPc[nIntr] = pc; intrOp[nIntr] = op; nIntr++;
-  return nIntr;
-}
-function intrinsicAt(pc: u64): i32 { for (let i = 0; i < nIntr; i++) if (intrPc[i] == pc) return intrOp[i]; return 0; }
 function intrinsicFunction(op: i32): void {
   let start = csP; setP(csP + 5);
   b(0);
@@ -360,6 +344,7 @@ function translateFunction(entry: u64): bool {
   lget(L_BUD); i32c(0); b(0x48);
   if (optDepth > 0) { gget(G_DEPTH); ltee(L_DEPTH); i32c(optDepth); b(0x4A); b(0x72); }
   b(0x04); b(0x40); i64c(<i64>entry); gset(G_PC); b(0x0F); b(0x0B);
+  prof(0, 1);
   emitMasked(nI[entryBlk], nV[entryBlk], false);
   if (entryBlk) { i32c(entryBlk); lset(L_STATE); }
   b(0x03); b(0x40);
@@ -396,6 +381,7 @@ function translateFunction(entry: u64): bool {
 }
 
 // translate a unit: entry pcs are in entryBuf (u64 each). Returns module byte length (0 on failure).
+export function profAddr(): usize { return profBase; }
 export function translate(nEntries: i32): u32 {
   if (nEntries > ENTRY_CAP) nEntries = ENTRY_CAP;
   resetFns();

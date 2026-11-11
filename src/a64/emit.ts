@@ -48,6 +48,8 @@ export let optDepth: i32 = 160;     // nested guest calls before a call unwinds 
 export let optShared: bool = false; // modules import a shared memory; exclusives and LDAR/STLR are atomic
 export let optCntYield: bool = false; // `mrs cntpct_el0` is a yield point (write back, pc = the instruction, pc check after the import)
 export let optGuard: usize = 0;     // guest data accesses below this address trap (0 = off): the host area of the shared memory
+export let optProf: bool = false;   // dynamic event counters (profile option): an i64 increment at every counted site
+export let profBase: usize = 0;
 export let optPrecise: i32 = 0;     // 1: pc is written before every memory instruction; 2: dirty registers too
 
 export function setOpt(id: i32, v: u32): void {
@@ -70,6 +72,7 @@ export function setOpt(id: i32, v: u32): void {
     case 15: optGuard = v; break;
     case 17: optMaxPages = v; break;
     case 18: pairLock = v; break;
+    case 19: optProf = v != 0; break;
   }
 }
 // the address-valued options as 64-bit values (the wasm64 build's; the wasm32 build takes them through setOpt)
@@ -224,6 +227,13 @@ export function aw(): void {
   b(0xA7); if (optGuard) { i32c(<i32>optGuard); b(0x6B); }
 }
 export function moff(o: u32): void { if (M64) leb64(<u64>o + optGuard); else leb(o + <u32>optGuard); }
+// profile counter k += n (counters: profBase, u64 each; see PROF_* in a64_host.ts)
+export function prof(k: i32, n: i64): void {
+  if (!optProf || n == 0) return;
+  let a = profBase + (<usize>k << 3);
+  if (M64) { i64c(<i64>a); i64c(<i64>a); } else { i32c(<i32>a); i32c(<i32>a); }
+  b(0x29); b(3); b(0); i64c(n); b(0x7C); b(0x37); b(3); b(0);
+}
 export function fc(op: u32): void { b(0xFC); leb(op); }
 // @ts-ignore
 @inline export function op(x: u32): void { b(x); }
@@ -564,29 +574,59 @@ function pcCheck(ret: u64): void {
 }
 function budgetCheck(target: u64): void {
   gget(G_BUDGET); i32c(1); b(0x6B); ltee(L_BUD); gset(G_BUDGET);
+  prof(1, 1);
   lget(L_BUD); i32c(0); b(0x48);
   ifVoid(); i64c(<i64>target); gset(G_PC); writeback(); b(0x0F); end();
 }
 // leave the function towards a constant pc (tail transfer through the table)
 export function exitConst(target: u64): void {
-  i64c(<i64>target); gset(G_PC); writeback(); idxConst(target); tailIndirect();
+  prof(5, 1); i64c(<i64>target); gset(G_PC); writeback(); idxConst(target); tailIndirect();
   term = true;
 }
 // stack: i64 target ->
 export function exitDyn(): void {
   let t = t64(11);
-  ltee(t); gset(G_PC); writeback(); lget(t); idxDyn(); tailIndirect();
+  prof(6, 1); ltee(t); gset(G_PC); writeback(); lget(t); idxDyn(); tailIndirect();
   term = true;
 }
 // stack: i64 target -> ; RET
-export function exitRet(): void { gset(G_PC); writeback(); b(0x0F); term = true; }
+export function exitRet(): void { prof(7, 1); gset(G_PC); writeback(); b(0x0F); term = true; }
 // plain exit with pc already set by the caller of this helper
 export function exitNow(): void { writeback(); b(0x0F); term = true; }
 
+// Library functions the host named (setIntrinsic: a module's definition of memcpy, strlen, ...): a function at one of
+// these pcs is translated as one call of the helpers' libc(op, x0, x1, x2) into x0 and a return to x30 (libc.ts), and a
+// BL or B to one is that call in place: no write-back, reload or pc check (it changes only x0; not with precise faults)
+const INTR_CAP = 64;
+const intrPc = mk<u64>(INTR_CAP);
+const intrOp = mk<i32>(INTR_CAP);
+let nIntr: i32 = 0;
+// op 0 forgets the pc; returns the number of named pcs, -1 when the table is full
+export function setIntrinsic(pc: u64, op: i32): i32 {
+  for (let i = 0; i < nIntr; i++) {
+    if (intrPc[i] != pc) continue;
+    if (op) intrOp[i] = op; else { nIntr--; intrPc[i] = intrPc[nIntr]; intrOp[i] = intrOp[nIntr]; }
+    return nIntr;
+  }
+  if (!op) return nIntr;
+  if (nIntr == INTR_CAP) return -1;
+  intrPc[nIntr] = pc; intrOp[nIntr] = op; nIntr++;
+  return nIntr;
+}
+export function intrinsicAt(pc: u64): i32 { for (let i = 0; i < nIntr; i++) if (intrPc[i] == pc) return intrOp[i]; return 0; }
+// stack: -> ; x0 = libc(op, x0, x1, x2)
+function callIntrinsic(op: i32): void {
+  prof(16, 1);
+  i32c(op); rget(0); rget(1); rget(2); b(0x10); leb(F_LIBC); rset(0);
+}
 // unconditional transfer to a constant pc; ends the block
 export function gotoPc(target: u64, isLast: bool): void {
   let j = blockOf(target);
-  if (j < 0) { exitConst(target); return; }
+  if (j < 0) {
+    let op = optPrecise ? 0 : intrinsicAt(target);
+    if (op) { callIntrinsic(op); rget(30); exitRet(); } else exitConst(target);
+    return;
+  }
   addSucc(j);
   if (j > curBlk) {
     if (!(isLast && j == curBlk + 1 && ifDepth == 0)) { b(0x0C); leb(j - curBlk - 1 + ifDepth); }
@@ -606,8 +646,11 @@ export function branchIf(target: u64): void {
 // BL to constant target
 export function callConst(target: u64, ret: u64): void {
   i64c(<i64>ret); rset(30);
+  let op = optPrecise ? 0 : intrinsicAt(target);
+  if (op) { callIntrinsic(op); return; }
   let f = addFn(target, false);
   depthForCall();
+  prof(f >= 0 ? 2 : 3, 1);
   if (f >= 0) { writeback(); b(0x10); leb(NIMPF + f); }
   else { i64c(<i64>target); gset(G_PC); writeback(); idxConst(target); b(0x11); b(0); b(0); }
   pcCheck(ret);
@@ -617,7 +660,7 @@ export function callDyn(ret: u64): void {
   let t = t64(11);
   ltee(t); gset(G_PC);
   i64c(<i64>ret); rset(30);
-  depthForCall();
+  depthForCall(); prof(4, 1);
   writeback(); lget(t); idxDyn(); b(0x11); b(0); b(0);
   pcCheck(ret);
 }
@@ -649,6 +692,7 @@ export function resetLocals(): void { nLoc = 0; }
 export function initEmit(): void {
   fbBase = balloc(FB_CAP);
   markBase = balloc(<usize>(2 * WINDOW / 4) * 2);
+  profBase = balloc(256); memory.fill(profBase, 0, 256);
   memory.fill(markBase, 0, <usize>(2 * WINDOW / 4) * 2);
 }
 export function beginFunction(): void {
