@@ -95,6 +95,17 @@ and (2) which locals must be (re)loaded at function entry and after each call. T
 reload sequences are spliced into the body at assembly time, so a call only pays for registers
 that are actually dirty / needed afterwards.
 
+**Call summaries** (not with `preciseFaults`). A unit's functions are translated callees first (a post-order of the
+BLs found by discovery; `calleesFirst` in `unit.ts`), and each translated function gets a summary: R, the registers
+it or a function it calls may read from the globals (its entry and post-call reloads), and W, the ones it may write
+there (its write-backs). A function with a transfer the unit cannot follow (BLR, BR, B out of the function, a call
+through the table, SVC, cntpct yield, a trap) or a call without a summary (recursion) has R = W = everything. A BL to
+a function with a summary writes back only the dirty registers in R | W and reloads only the needed ones in W; the
+others stay in locals (and dirty) across the call. If `pc` is not the return address after the call, the dirty
+registers outside W are written back before returning. A memory fault inside the callee then sees, for the caller's
+registers outside R | W, their values from the caller's previous write-back (as with any fault without
+`preciseFaults: 2`).
+
 **Calls and unwinding.** After any `call`/`call_indirect`/`svc` the caller compares `pc` with the
 return address and returns at once on mismatch (longjmp, exit, preemption). RET (and `br x30`) set
 `pc` and return; other BRs and out-of-function B are wasm tail calls (`tailCalls: false` uses

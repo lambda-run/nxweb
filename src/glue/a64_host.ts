@@ -88,12 +88,14 @@ const OPT = { pcmapBase: 0, entryBase: 1, regionLo: 2, maxInsns: 3, maxFuncs: 4,
               regionSize: 11, shared: 12, cntYield: 13, precise: 14, guard: 15, pcSpan: 16, maxPages: 17, pairLock: 18, prof: 19 };
 // dynamic counters of the profile option (A64Host.profile), in the translator's order (src/a64 prof(k, n))
 export const PROF_NAMES = ["function entries", "back edges", "direct calls", "calls through the table", "BLR", "jumps through the table",
-  "BR/tail through the table", "returns", "registers written back", "registers reloaded", "guest insns", "loads/stores", "dp imm", "branch/sys", "dp reg", "fp/simd", "libc calls in place"];
+  "BR/tail through the table", "returns", "registers written back", "registers reloaded", "guest insns", "loads/stores", "dp imm", "branch/sys", "dp reg", "fp/simd", "libc calls in place",
+  "written back at BL", "at BLR", "at RET", "at B out", "at BR", "at budget exit", "at svc/cntpct", "elsewhere",
+  "reloaded at entry", "after a call/svc", "reloaded elsewhere"];
 const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
 const num = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;   // a wasm64 export's usize result
-export const A64_CACHE_VERSION = 12;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+export const A64_CACHE_VERSION = 13;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
 // the C library functions src/a64/libc.ts implements, by op number (index 0 unused)
 export const LIBC_OPS = ["", "memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp"];
 const PAIR_LOCK_BYTES = 16;           // the end of the helpers' range: the lock word of 16-byte CASPs on a shared memory (src/a64/int.ts casp)
@@ -384,8 +386,11 @@ export class A64Host {
     const meta = num(tr.metaBuf()), m64 = this.mem64;
     const dv = new DataView(this.memory.buffer);
     const n = dv.getUint32(meta, true), insns = dv.getUint32(meta + 4, true), nSide = dv.getUint32(meta + 8, true), hlen = dv.getUint32(meta + 12, true);
-    for (let i = 0; i < entries.length; i++) {
-      if (dv.getUint8(meta + 16 + 4096 * 8 + i)) throw new Error("a64: no translatable code at pc 0x" + entries[i].toString(16));
+    // functions are numbered callees first (src/a64/unit.ts calleesFirst): an entry is found by its pc
+    for (let i = 0; i < n; i++) {
+      if (!dv.getUint8(meta + 16 + 4096 * 8 + i)) continue;
+      const pc = m64 ? dv.getBigUint64(meta + 16 + i * 8, true) : BigInt(dv.getUint32(meta + 16 + i * 8, true));
+      for (const e of entries) if (BigInt(e) === pc) throw new Error("a64: no translatable code at pc 0x" + pc.toString(16));
     }
     const pcs = m64 ? new Float64Array(n) : new Uint32Array(n);
     for (let i = 0; i < n; i++) pcs[i] = dv.getUint8(meta + 16 + 4096 * 8 + i) ? 0xFFFFFFFF : m64 ? Number(dv.getBigUint64(meta + 16 + i * 8, true)) : dv.getUint32(meta + 16 + i * 8, true);
@@ -398,7 +403,7 @@ export class A64Host {
     this.translatedFuncs += n;
     this.translatedInsns += insns;
     this.translateNs += (performance.now() - t0) * 1e6;
-    return entries.map((_, i) => u.tableBase + i);
+    return entries.map(e => u.tableBase + pcs.indexOf(Number(e)));
   }
 
   private install(bytes: Uint8Array, pcs: Uint32Array | Float64Array, side: Uint32Array, insns: number, cached: boolean): A64Unit {

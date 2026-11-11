@@ -11,7 +11,7 @@ import {
   fnPc, nFn, resetFns, setFnLimit, addFn, initEmit, balloc, ballocEnd, mk, beginFunction, FB_CAP, optChunk, fnLimit,
   M64, optMaxPages,
 } from "./emit";
-import { prof, profBase, intrinsicAt } from "./emit";
+import { prof, profBase, intrinsicAt, insSite, RL_ENTRY, insMode, insG, INS_CALL, INS_BACK, INS_AFTER, sRI, sRV, sWI, sWV, sOk, accRI, accRV, accWI, accWV, accAll, resetAcc } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
 
@@ -232,8 +232,15 @@ function analyse(): void {
       for (let e = evStart[k], ee = evStart[k + 1]; e < ee; e++) {
         let x = evBuf[e], kind = x & 0xFF, r = x >> 8;
         if (kind == EV_W) { if (r < 36) di |= <u64>1 << r; else dv |= <u32>1 << (r - 36); }
-        else if (kind == EV_WB) { insMI[r] = di; insMV[r] = dv; }
-        else if (kind == EV_RELOAD) { di = 0; dv = 0; }
+        else if (kind == EV_WB) {
+          let m = insMode[r], g = <i32>insG[r];
+          insMI[r] = m == INS_CALL ? di & (sRI[g] | sWI[g]) : m == INS_BACK ? di & ~sWI[g] : di;
+          insMV[r] = m == INS_CALL ? dv & (sRV[g] | sWV[g]) : m == INS_BACK ? dv & ~sWV[g] : dv;
+        }
+        else if (kind == EV_RELOAD) {
+          if (insMode[r] == INS_AFTER) { let g = <i32>insG[r]; di &= ~(sRI[g] | sWI[g]); dv &= ~(sRV[g] | sWV[g]); }
+          else { di = 0; dv = 0; }
+        }
       }
       for (let s = 0; s < 2; s++) {
         let j = s == 0 ? succ0[k] : succ1[k];
@@ -255,6 +262,7 @@ function analyse(): void {
         if (kind == EV_R) { if (r < 36) ni |= <u64>1 << r; else nv |= <u32>1 << (r - 36); }
         else if (kind == EV_W) { if (r < 36) ni &= ~(<u64>1 << r); else nv &= ~(<u32>1 << (r - 36)); }
         else if (kind == EV_WB) { ni |= insMI[r]; nv |= insMV[r]; }
+        else if (insMode[r] == INS_AFTER) { let g = <i32>insG[r]; insMI[r] = ni & sWI[g]; insMV[r] = nv & sWV[g]; ni &= ~sWI[g]; nv &= ~sWV[g]; }
         else { insMI[r] = ni; insMV[r] = nv; ni = 0; nv = 0; }
       }
       if (ni != nI[k] || nv != nV[k]) { nI[k] |= ni; nV[k] |= nv; changed = true; }
@@ -262,8 +270,8 @@ function analyse(): void {
   }
 }
 
-function emitMasked(mi: u64, mv: u32, isWb: bool): void {
-  prof(isWb ? 8 : 9, <i64>(popcnt(mi) + <u64>popcnt(mv)));
+function emitMasked(mi: u64, mv: u32, isWb: bool, site: u8): void {
+  prof(isWb ? 8 : 9, <i64>(popcnt(mi) + <u64>popcnt(mv))); prof(17 + site, <i64>(popcnt(mi) + <u64>popcnt(mv)));
   for (let r = 0; r < NREG; r++) {
     let on = r < 36 ? ((mi >> r) & 1) != 0 : ((mv >> (r - 36)) & 1) != 0;
     if (!on) continue;
@@ -306,9 +314,10 @@ function stubFunction(entry: u64): void {
   csP = P;
 }
 
-function translateFunction(entry: u64): bool {
+function translateFunction(entry: u64, f: i32): bool {
   if (!findRange(entry)) return false;
   if (csP + 2 * FB_CAP > csBase + CS_CAP) return false;
+  resetAcc();
   let n = discover(entry);
   nRec = 0;
   beginFunction();
@@ -337,6 +346,16 @@ function translateFunction(entry: u64): bool {
   if (bad || nSide + nRec > SIDE_CAP) { clearMarks(); return false; }
   analyse();
   clearMarks();
+  // the summary (see sRI in emit.ts): what this function reads at its reloads and writes at its write-backs, with
+  // that of the functions it calls
+  if (accAll) { sRI[f] = ~(<u64>0); sRV[f] = ~(<u32>0); sWI[f] = ~(<u64>0); sWV[f] = ~(<u32>0); }
+  else {
+    let ri = accRI | nI[entryBlk], rv = accRV | nV[entryBlk], wi = accWI, wv = accWV;
+    for (let i = 0; i < nIns; i++) {
+      if (insKind[i] == EV_WB) { wi |= insMI[i]; wv |= insMV[i]; } else { ri |= insMI[i]; rv |= insMV[i]; }
+    }
+    sRI[f] = ri; sRV[f] = rv; sWI[f] = wi; sWV[f] = wv;
+  }
   // assemble
   let start = csP; setP(csP + 5);
   emitLocals(0);
@@ -345,7 +364,7 @@ function translateFunction(entry: u64): bool {
   if (optDepth > 0) { gget(G_DEPTH); ltee(L_DEPTH); i32c(optDepth); b(0x4A); b(0x72); }
   b(0x04); b(0x40); i64c(<i64>entry); gset(G_PC); b(0x0F); b(0x0B);
   prof(0, 1);
-  emitMasked(nI[entryBlk], nV[entryBlk], false);
+  emitMasked(nI[entryBlk], nV[entryBlk], false, RL_ENTRY);
   if (entryBlk) { i32c(entryBlk); lset(L_STATE); }
   b(0x03); b(0x40);
   for (let k = 0; k < n; k++) { b(0x02); b(0x40); }
@@ -365,7 +384,7 @@ function translateFunction(entry: u64): bool {
       nSide++; ri++;
     }
     memory.copy(P, src, len); setP(P + len); src = at;
-    emitMasked(insMI[i], insMV[i], insKind[i] == EV_WB);
+    emitMasked(insMI[i], insMV[i], insKind[i] == EV_WB, insSite[i]);
   }
   while (ri < nRec) {
     store<u32>(sidePtr + (<usize>nSide << 3), <u32>(P - cs0) + (load<u32>(recPtr + (<usize>ri << 3)) - <u32>(src - fbBase)));
@@ -377,11 +396,59 @@ function translateFunction(entry: u64): bool {
   b(0x0B);
   patch5(start, <u32>(P - start - 5));
   csP = P;
+  sOk[f] = 1;
   return true;
 }
 
 // translate a unit: entry pcs are in entryBuf (u64 each). Returns module byte length (0 on failure).
 export function profAddr(): usize { return profBase; }
+// Number the unit's functions callees first (a post-order of the BLs between them, found by discovery), so that a
+// call finds the summary of the function it calls (sRI in emit.ts); a cycle's back edge gets none.
+const E_CAP = 16384;
+const eTo = mk<u16>(E_CAP);
+const eStart = mk<i32>(4097);
+const dfsFn = mk<u16>(4096);
+const dfsIt = mk<i32>(4096);
+const dfsSt = mk<u8>(4096);
+const pcOld = mk<u64>(4096);
+const pcOrder = mk<u16>(4096);
+function calleesFirst(): void {
+  let nE = 0;
+  for (let f = 0; f < nFn; f++) {
+    eStart[f] = nE;
+    let pc = fnPc[f];
+    if (intrinsicAt(pc) || !findRange(pc)) continue;
+    discover(pc);
+    for (let i = 0; i < nTouched; i++) {
+      let a = touched[i];
+      if ((load<u16>(markAt(a)) & M_VIS) == 0) continue;
+      let insn = insnAt(a);
+      if ((insn & 0xFC000000) != 0x94000000) continue;
+      let t = a + <u64>(sx(insn & 0x3FFFFFF, 26) << 2);
+      if (intrinsicAt(t)) continue;
+      let g = addFn(t, false);
+      if (g >= 0 && nE < E_CAP) eTo[nE++] = <u16>g;
+    }
+    clearMarks();
+  }
+  let n = nFn;
+  eStart[n] = nE;
+  for (let f = 0; f < n; f++) { dfsSt[f] = 0; pcOld[f] = fnPc[f]; }
+  let nO = 0;
+  for (let root = 0; root < n; root++) {
+    if (dfsSt[root]) continue;
+    let sp = 0; dfsFn[0] = <u16>root; dfsIt[0] = eStart[root]; dfsSt[root] = 1;
+    while (sp >= 0) {
+      let f = <i32>dfsFn[sp];
+      if (dfsIt[sp] < eStart[f + 1]) {
+        let g = <i32>eTo[dfsIt[sp]++];
+        if (dfsSt[g] == 0) { sp++; dfsFn[sp] = <u16>g; dfsIt[sp] = eStart[g]; dfsSt[g] = 1; }
+      } else { dfsSt[f] = 2; sp--; pcOrder[nO++] = <u16>f; }
+    }
+  }
+  resetFns();
+  for (let k = 0; k < nO; k++) addFn(pcOld[pcOrder[k]], true);
+}
 export function translate(nEntries: i32): u32 {
   if (nEntries > ENTRY_CAP) nEntries = ENTRY_CAP;
   resetFns();
@@ -414,11 +481,13 @@ export function translate(nEntries: i32): u32 {
       }
     }
   }
+  for (let f = 0; f < sOk.length; f++) sOk[f] = 0;
+  if (optPrecise == 0 && optMaxInsns != 1) calleesFirst();
   csP = csBase + HDR_MAX; unitInsns = 0; nSide = 0;
   for (let f = 0; f < nFn; f++) {
     let op = intrinsicAt(fnPc[f]);
     if (op) { intrinsicFunction(op); store<u8>(metaPtr + 16 + 4096 * 8 + f, 0); unitInsns++; continue; }
-    let ok = translateFunction(fnPc[f]);
+    let ok = translateFunction(fnPc[f], f);
     store<u8>(metaPtr + 16 + 4096 * 8 + f, ok ? 0 : 1);
     if (!ok) stubFunction(fnPc[f]);
   }
