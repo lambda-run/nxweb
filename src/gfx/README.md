@@ -527,7 +527,7 @@ draw or dispatch, `C` clear rectangle, `B` copy / resolve / snapshot / read-back
 `M` memory changed, `S` present), bindings and state indented under their pass, shaders by key; and a PNG of every
 render target of every pass, read back when the pass ends (colour formats of 8 bits, half and float, RGB10A2; depth16
 and depth32float as grey). Returns `{ text, images: [{ name, pass, target, serial, width, height, format, png }], … }`.
-A captured frame is slow (each pass is submitted and read) and otherwise unchanged. `npm run gfx:test` leaves an
+A captured frame is slow (each pass is submitted and read) and otherwise unchanged. A game that is still loading may not present for minutes, so a capture stops after `maxRecords` host records (200,000 by default; its text ends with the reason) and dumps the targets of its first 64 passes; `host.capturing` tells whether one is running (the page answers a second F9 with that instead of an error). `npm run gfx:test` leaves an
 example in `build/gfx/capture/`. Not mirrored from nxnative: the binary capture for replay (`nvn_capture.inc`); the
 text names guest addresses, so a capture is for reading, not for replaying.
 

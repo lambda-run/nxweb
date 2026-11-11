@@ -127,6 +127,8 @@ struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
   return V(vec4f(p * 2.0 - 1.0, 0.0, 1.0), vec2f(p.x, 1.0 - p.y));
 }`;
 
+const CAPTURE_RECORDS = 200_000, CAPTURE_IMAGES = 64;
+
 export class GfxHost {
   device: GPU;
   memory: WebAssembly.Memory;
@@ -1454,11 +1456,14 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   // one line a pass, pipeline request, binding, draw, copy; and with png (the default) each render target of each
   // pass as a PNG, read back when the pass ends. Reading back submits what was encoded so far, which changes nothing
   // the game sees but costs time: a capture frame is slow. Resolves when the frame has been presented and read.
-  private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; records: number; dispatches: number; done: (c: Capture) => void } | null = null;
-  captureFrame(opts: { png?: boolean } = {}): Promise<Capture> {
+  // A game still loading may not present for minutes: the capture stops after `maxRecords` host records (its text
+  // says so) and dumps the targets of the first CAPTURE_IMAGES passes, so its text and read-backs stay bounded.
+  private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; records: number; maxRecords: number; dispatches: number; done: (c: Capture) => void } | null = null;
+  get capturing(): boolean { return !!this.cap; }
+  captureFrame(opts: { png?: boolean; maxRecords?: number } = {}): Promise<Capture> {
     if (this.cap) return Promise.reject(new Error("a capture is already running"));
     return new Promise<Capture>(done => {
-      this.cap = { lines: [`nxweb frame capture: canvas ${this.canvasFormat}, uniform arena ${this.uniformArena ? "on" : "off"}, host caps ${this.caps}, ${this.textures.size} live textures, ${this.pipes.size} pipelines`],
+      this.cap = { maxRecords: opts.maxRecords ?? CAPTURE_RECORDS, lines: [`nxweb frame capture: canvas ${this.canvasFormat}, uniform arena ${this.uniformArena ? "on" : "off"}, host caps ${this.caps}, ${this.textures.size} live textures, ${this.pipes.size} pipelines`],
         images: [], state: { pass: 0, draws: 0, inPass: 0 }, png: opts.png ?? true, records: 0, dispatches: 0, done };
     });
   }
@@ -1470,11 +1475,13 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     const c = this.cap!;
     c.records++; if (op === H.DISPATCH) c.dispatches++;
     c.lines.push(describeRecord(op, dv, p, this.capCtx, c.state));
+    if (c.records >= c.maxRecords) { c.lines.push(`(the capture stops here: no present in ${c.records} host records)`); this.captureEnd(); }
   }
   private captureTargets(targets: { name: string; serial: number; level: number; layer: number }[]) {
     const c = this.cap!;
     if (!c.png) return;
     const pass = c.state.pass;
+    if (c.images.length >= CAPTURE_IMAGES) { if (c.images.length === CAPTURE_IMAGES) { c.lines.push(`    (targets of later passes are not dumped: ${CAPTURE_IMAGES} images is the limit)`); c.images.push(Promise.resolve(null)); } return; }
     for (const tg of targets) {
       const t = this.textures.get(tg.serial);
       if (!t?.gpu || t.gpu.sampleCount > 1 || t.fmt.tex === "depth24plus" || t.fmt.tex === "depth24plus-stencil8" || t.fmt.tex === "depth32float-stencil8") { c.lines.push(`    (${tg.name} tex#${tg.serial}: not dumped, WebGPU cannot copy it out)`); continue; }
