@@ -105,6 +105,20 @@ and (2) which locals must be (re)loaded at function entry and after each call. T
 reload sequences are spliced into the body at assembly time, so a call only pays for registers
 that are actually dirty / needed afterwards.
 
+**Budget exits** (the budget check at a back edge) resume at that back edge's target, a block of the same function,
+so they write back only the dirty registers that block needs (`nI`, `INS_LIVE` in `emit.ts`): a register or flag the
+loop body writes before reading it, on every path to a read or a write-back, is not stored at every iteration (and
+the engine no longer keeps its value, often dead NZCV, alive for that exit). With `preciseFaults: 2` the dump stays
+exact: a later write-back before a memory instruction needs every dirty register, so those are in `nI`.
+
+**Immediate offsets in the memory operand.** A load or store with a non-negative constant offset and no base
+writeback (LDR / STR / LDUR / LDP / STP / SIMD forms) puts the offset in the wasm `memarg` (`setMemOff`, consumed
+by `mem`, `vmem`, `moff`) instead of an `i64.add`; LDP / STP's second word is the offset + its size. The engine's
+effective address does not wrap, so an access whose address would wrap past 4 GB (memory32) or 2^64 traps where it
+used to wrap around to low memory. With the guard the check is on the base, not base + offset: a base below
+`guardBase` traps even when base + offset is above it (the runtime's guard sits below HLE static data, which no
+guest pointer is formed against).
+
 **Call summaries** (not with `preciseFaults`). A unit's functions are translated callees first (a post-order of the
 BLs found by discovery; `calleesFirst` in `unit.ts`), and each translated function gets a summary: R, the registers
 it or a function it calls may read from the globals (its entry and post-call reloads), and W, the ones it may write
