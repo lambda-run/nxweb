@@ -222,7 +222,10 @@ export class GfxHost {
     }
     device.onuncapturederror = (e: any) => { this.stats.errors++; this.log(`[RED] WebGPU: ${String(e.error?.message ?? e).split("\n")[0]}`); };
     // weakly: a device outlives the replayers made on it (one per process), and its lost promise would keep each one and its memory
-    const gen = this.gen, self = new WeakRef(this);
+    GfxHost.watchLost(device, new WeakRef(this), this.gen);
+  }
+  // Outside adopt(): a closure made there would share its context with the onuncapturederror handler, which holds `this`
+  private static watchLost(device: GPU, self: WeakRef<GfxHost>, gen: number) {
     device.lost?.then?.((info: any) => { const h = self.deref(); if (h && gen === h.gen) void h.deviceLost(info); });
   }
   // Every texture and buffer the replayer makes, until it destroys it: what dispose() releases
