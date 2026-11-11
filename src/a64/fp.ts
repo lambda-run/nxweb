@@ -102,6 +102,14 @@ export const FPCR_FZ = 0x1000000;
 export function fpcrTest(): void { gget(G_FPCR); i32c(FPCR_SLOW); b(0x71); }
 // push i32: op | FPCR's RMode/FZ/DN bits
 export function fpcrOp(op: i32): void { gget(G_FPCR); i32c(FPCR_SLOW); b(0x71); i32c(op); b(0x72); }
+// `if (bt) (FPCR & FPCR_SLOW)`, keeping the masked bits for fpcrOpK inside the slow arm
+export function fpcrIf(bt: u8): void { fpcrTest(); ltee(t32(6)); b(0x04); b(bt); }
+export function fpcrOpK(op: i32): void { lget(t32(6)); i32c(op); b(0x72); }
+// stack: f32/f64 -> ; setF for the slow arms (a splatted zero is shorter than v128.const 0)
+export function setFz(r: i32, d: bool): void {
+  let t = d ? tf64(7) : tf32(7);
+  lset(t); i64c(0); simd(0x12); lget(t); simd(d ? 0x22 : 0x20); b(0); vset(r);
+}
 // stack: op a b c -> r
 export function sfCall(d: bool): void { b(0x10); leb(d ? F_SFD : F_SFS); }
 // stack: x -> x, flushed to zero when FPCR.FZ (for operations whose only FPCR dependence is the input flush)
@@ -115,10 +123,27 @@ export function fzFlush(d: bool): void {
   if (d) b(0xBF); else { b(0xA7); b(0xBE); }
   b(0x05); lget(T); b(0x0B);
 }
-// stack: i64 x -> i64 ; FCVT from format src to dst (0 h 1 s 2 d) under FPCR
+function flushLocal(T: u32, d: bool): void {
+  i32c(13 | (d ? 2 : 1) << 12); lget(T);
+  if (d) b(0xBD); else { b(0xBC); b(0xAD); }
+  b(0x10); leb(F_RND);
+  if (d) b(0xBF); else { b(0xA7); b(0xBE); }
+  lset(T);
+}
+// stack: a b -> a b, both flushed to zero when FPCR.FZ (one test for a compare's two operands)
+export function fzFlush2(d: bool): void {
+  if (!optRmArith) return;
+  let A = d ? tf64(6) : tf32(6), B = d ? tf64(7) : tf32(7);
+  lset(B); lset(A);
+  gget(G_FPCR); i32c(FPCR_FZ); b(0x71); b(0x04); b(0x40);
+  flushLocal(A, d); flushLocal(B, d);
+  b(0x0B);
+  lget(A); lget(B);
+}
+// stack: i64 x -> i64 ; FCVT from format src to dst (0 h 1 s 2 d) under FPCR (inside an fpcrIf slow arm)
 export function cvtCall(src: i32, dst: i32): void {
   let t = t64(6);
-  lset(t); fpcrOp(12 | src << 12 | dst << 14); lget(t); b(0x10); leb(F_RND);
+  lset(t); fpcrOpK(12 | src << 12 | dst << 14); lget(t); b(0x10); leb(F_RND);
 }
 // stack: i64 x -> i64 ; rnd(op, x)
 export function rndConst(op: i32): void { let t = t64(6); lset(t); i32c(op); lget(t); b(0x10); leb(F_RND); }
@@ -126,7 +151,7 @@ export function rndConst(op: i32): void { let t = t64(6); lset(t); i32c(op); lge
 function halfCvt(src: i32, dst: i32, op: i32): void {
   if (!optRmArith) { rndConst(op); return; }
   let t = t64(7);
-  lset(t); fpcrTest(); b(0x04); b(T_I64); lget(t); cvtCall(src, dst); b(0x05); lget(t); rndConst(op); b(0x0B);
+  lset(t); fpcrIf(T_I64); lget(t); cvtCall(src, dst); b(0x05); lget(t); rndConst(op); b(0x0B);
 }
 // stack: x -> x rounded by FPCR.RMode (FRINTI / FRINTX)
 function frintCurrent(d: bool): void {
@@ -142,8 +167,8 @@ function frintCurrent(d: bool): void {
 // stack: -> r ; FRINT* of S/D register rn. mode 0 N 1 P 2 M 3 Z 4 A 5 FPCR
 function frintOp(rn: i32, d: bool, mode: u32): void {
   if (optRmArith) {
-    fpcrTest(); b(0x04); b(d ? 0x7C : 0x7D);
-    fpcrOp(14 | mode << 8); getF(rn, d); getF(rn, d); getF(rn, d); sfCall(d);
+    fpcrIf(d ? 0x7C : 0x7D);
+    fpcrOpK(14 | mode << 8); getF(rn, d); getF(rn, d); getF(rn, d); sfCall(d);
     b(0x05);
   }
   getF(rn, d);
@@ -216,11 +241,11 @@ export function trFp(pc: u64, insn: u32): bool {
     if (ty > 1) return false;
     let o1 = (insn >> 21) & 1, o0 = (insn >> 15) & 1, ra = <i32>((insn >> 10) & 31);
     if (optRmArith) {
-      fpcrTest(); b(0x04); b(0x40);
-      fpcrOp(9);
+      fpcrIf(0x40);
+      fpcrOpK(9);
       getF(ra, d); if (o1) fa(d, 0x8C);
       getF(rn, d); if (o1 ^ o0) fa(d, 0x8C);
-      getF(rm, d); sfCall(d); setF(rd, d);
+      getF(rm, d); sfCall(d); setFz(rd, d);
       b(0x05);
     }
     fmaddFast(d, o1, o0, rd, rn, rm, ra);
@@ -238,7 +263,7 @@ export function trFp(pc: u64, insn: u32): bool {
       return true;
     }
     if (rmode == 3 && opcode < 2) {
-      getF(rn, d); fzFlush(d);
+      getF(rn, d);
       if (d) f64c(<u64>(1023 + fbits) << 52); else f32c(<u32>(127 + fbits) << 23);
       fa(d, 0x94); fc((sf ? 4 : 0) + (d ? 2 : 0) + opcode);
       setX(rd, sf);
@@ -281,7 +306,7 @@ export function trFp(pc: u64, insn: u32): bool {
     }
     let mode: u32 = opcode >= 4 ? 4 : rmode;
     if (opcode >= 4 && rmode != 0) return false;
-    getF(rn, d); fzFlush(d);
+    getF(rn, d); if (mode == 1 || mode == 2) fzFlush(d);   // FZ only changes an integer rounded up/down from a denormal
     if (mode != 3) roundMode(d, mode);
     fc((sf ? 4 : 0) + (d ? 2 : 0) + (opcode & 1));
     setX(rd, sf);
@@ -305,7 +330,7 @@ export function trFp(pc: u64, insn: u32): bool {
     case 1: { // FCCMP / FCCMPE
       let c = t32(0), cond = (insn >> 12) & 15, nzcv = insn & 15;
       emitCond(cond); lset(c);
-      getF(rn, d); fzFlush(d); getF(rm, d); fzFlush(d); fpFlags(d);
+      getF(rn, d); getF(rm, d); fzFlush2(d); fpFlags(d);
       rget(R_N); i32c((nzcv >> 3) & 1); lget(c); b(0x1B); rset(R_N);
       rget(R_Z); i32c((nzcv >> 2) & 1); lget(c); b(0x1B); rset(R_Z);
       rget(R_C); i32c((nzcv >> 1) & 1); lget(c); b(0x1B); rset(R_C);
@@ -319,8 +344,8 @@ export function trFp(pc: u64, insn: u32): bool {
       let dir = optRmArith;
       getF(rn, d); lset(A); getF(rm, d); lset(B);
       if (dir) {
-        fpcrTest(); b(0x04); b(d ? 0x7C : 0x7D);
-        fpcrOp(<i32>SF2[opcode]); lget(A); lget(B); lget(B); sfCall(d);
+        fpcrIf(d ? 0x7C : 0x7D);
+        fpcrOpK(<i32>SF2[opcode]); lget(A); lget(B); lget(B); sfCall(d);
         b(0x05);
       }
       lget(A); lget(B);
@@ -356,8 +381,7 @@ export function trFp(pc: u64, insn: u32): bool {
   }
   if ((insn & 0x3C00) == 0x2000) { // FCMP / FCMPE
     if ((insn & 0xC000) != 0 || (insn & 7) != 0) return false;
-    getF(rn, d); fzFlush(d);
-    if (insn & 8) fconst(d, 0.0); else { getF(rm, d); fzFlush(d); }
+    if (insn & 8) { getF(rn, d); fzFlush(d); fconst(d, 0.0); } else { getF(rn, d); getF(rm, d); fzFlush2(d); }
     fpFlags(d);
     return true;
   }
@@ -371,8 +395,8 @@ export function trFp(pc: u64, insn: u32): bool {
         let A = d ? tf64(3) : tf32(3);
         getF(rn, d); lset(A);
         if (optRmArith) {
-          fpcrTest(); b(0x04); b(d ? 0x7C : 0x7D);
-          fpcrOp(4); lget(A); lget(A); lget(A); sfCall(d);
+          fpcrIf(d ? 0x7C : 0x7D);
+          fpcrOpK(4); lget(A); lget(A); lget(A); sfCall(d);
           b(0x05);
         }
         lget(A); fa(d, 0x91); nanFixS(d, 1);
@@ -383,8 +407,7 @@ export function trFp(pc: u64, insn: u32): bool {
         if (!d) return false;
         let X = tf64(0);
         getF(rn, true); lset(X);
-        if (optRmArith) fpcrTest(); else rmodeTest();
-        b(0x04); b(0x7D);
+        if (optRmArith) fpcrIf(0x7D); else { rmodeTest(); b(0x04); b(0x7D); }
         lget(X); b(0xBD);
         if (optRmArith) cvtCall(2, 1); else rndCall(2);
         b(0xA7); b(0xBE);
@@ -396,7 +419,7 @@ export function trFp(pc: u64, insn: u32): bool {
         getF(rn, false);
         if (optRmArith) {
           let X = tf32(0);
-          lset(X); fpcrTest(); b(0x04); b(0x7C);
+          lset(X); fpcrIf(0x7C);
           lget(X); b(0xBC); b(0xAD); cvtCall(1, 2); b(0xBF);
           b(0x05); lget(X); b(0xBB); b(0x0B);
         } else b(0xBB);

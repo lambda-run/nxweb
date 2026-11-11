@@ -6,7 +6,7 @@ import {
 } from "./emit";
 import {
   vget, vset, setF, setVint, roundMode, vfpExpand32, vfpExpand64, minMaxNum, rmodeTest, nanFixS,
-  fpcrTest, fpcrOp, sfCall, FPCR_FZ,
+  fpcrIf, fpcrOp, fpcrOpK, sfCall, FPCR_FZ,
 } from "./fp";
 
 const SH = mk<u8>(16);
@@ -133,6 +133,7 @@ function satNarrowTo(sz: u32, Q: bool, rd: i32, srcS: bool, dstS: bool, fm: i32 
 function vopBegin(op: i32): void { i32c(op); }
 function vopEnd(): void { b(0x10); leb(F_VOP); }
 function vzero(): void { v128c(0, 0); }
+function vz(): void { i64c(0); simd(0x12); }   // a zero for slow-path operands: i64x2.splat is shorter than v128.const
 const NA = 8, NB = 9, NR = 10;   // tv slots: NaN fix-up operands / result
 // stack: r -> r' ; vector NaN fix-up, operands in tv(NA) / tv(NB); n = 1, 2 or 3 (3: addend tv(NA), n tv(NB), m tv(11))
 function nanFixV(d: bool, n: i32): void {
@@ -170,14 +171,22 @@ function rmodeBegin(op: i32): void {
 function rmodeEnd(): void { b(0x0B); }
 
 // FPCR.RMode/FZ/DN (fp.ts fpcrTest): `if (slow) { vop(31 | sop)(a, b, c) ...` ; the caller pushes a b c, then vopEnd()
-function sfvBegin(d: bool, sop: i32, frm: u32): void { fpcrTest(); b(0x04); b(0x40); fpcrOp(31 | ((d ? 3 : 2) << 8) | (sop << 12) | (<i32>frm << 26)); }
+function sfvBegin(d: bool, sop: i32, frm: u32): void { fpcrIf(0x40); fpcrOpK(31 | ((d ? 3 : 2) << 8) | (sop << 12) | (<i32>frm << 26)); }
 // stack: v -> v with the lanes flushed to zero when FPCR.FZ
 function vfz(d: bool): void {
   if (!optRmArith) return;
   let T = tv(15);
   lset(T); gget(G_FPCR); i32c(FPCR_FZ); b(0x71); b(0x04); b(0x7B);
-  i32c(32 | ((d ? 3 : 2) << 8)); lget(T); vzero(); vzero(); vopEnd();
+  i32c(32 | ((d ? 3 : 2) << 8)); lget(T); vz(); vz(); vopEnd();
   b(0x05); lget(T); b(0x0B);
+}
+// locals A, B flushed to zero when FPCR.FZ (one test for a compare's two operands)
+function vfz2(d: bool, A: u32, B: u32): void {
+  if (!optRmArith) return;
+  gget(G_FPCR); i32c(FPCR_FZ); b(0x71); b(0x04); b(0x40);
+  i32c(32 | ((d ? 3 : 2) << 8)); lget(A); vz(); vz(); vopEnd(); lset(A);
+  i32c(32 | ((d ? 3 : 2) << 8)); lget(B); vz(); vz(); vopEnd(); lset(B);
+  b(0x0B);
 }
 // a helper vop whose lanes honour FPCR's bits 22..25 when set (estimates, half conversions)
 function vopFpcr(op: i32): void { if (optRmArith) fpcrOp(op); else vopBegin(op); }
@@ -185,8 +194,8 @@ function vopFpcr(op: i32): void { if (optRmArith) fpcrOp(op); else vopBegin(op);
 function vcvtLN(d: bool): void {
   if (!optRmArith) { simd(d ? 0x5E : 0x5F); return; }
   let T = tv(15);
-  lset(T); fpcrTest(); b(0x04); b(0x7B);
-  fpcrOp(33 | ((d ? 3 : 2) << 8)); lget(T); vzero(); vzero(); vopEnd();
+  lset(T); fpcrIf(0x7B);
+  fpcrOpK(33 | ((d ? 3 : 2) << 8)); lget(T); vz(); vz(); vopEnd();
   b(0x05); lget(T); simd(d ? 0x5E : 0x5F); b(0x0B);
 }
 // three-same FP key -> soft-FP op (-1: none)
@@ -261,10 +270,10 @@ function threeSameFp(insn: u32, scalar: bool): bool {
     pairSh(e, Q, 1); vget(rn); vget(rm); shuffle(); lset(B);
   } else { vget(rn); lset(A); vget(rm); lset(B); }
   let sop = sfKey(key), slow = optRmArith && sop >= 0;
-  if (key == 0x1C || key == 0x5C || key == 0x7C || key == 0x5D || key == 0x7D) { lget(A); vfz(d); lset(A); lget(B); vfz(d); lset(B); }
+  if (key == 0x1C || key == 0x5C || key == 0x7C || key == 0x5D || key == 0x7D) vfz2(d, A, B);
   if (slow) {
     sfvBegin(d, sop, 0);
-    if (sop == 9) { vget(rd); lget(A); if (key == 0x39) vfo(d, 1); lget(B); } else { lget(A); lget(B); vzero(); }
+    if (sop == 9) { vget(rd); lget(A); if (key == 0x39) vfo(d, 1); lget(B); } else { lget(A); lget(B); vz(); }
     vopEnd(); finish(rd, fm);
     b(0x05);
   }
@@ -639,7 +648,7 @@ function twoReg(insn: u32, scalar: bool): bool {
     if (opcode == 0x18 && hi && U) return false;
     slow = true;
     sfvBegin(d, opcode == 0x1F ? 4 : 14, opcode == 0x18 ? (hi ? 1 : U ? 4 : 0) : opcode == 0x19 ? (U ? 5 : hi ? 3 : 2) : 0);
-    vget(rn); vzero(); vzero(); vopEnd(); finish(rd, ffm);
+    vget(rn); vz(); vz(); vopEnd(); finish(rd, ffm);
     b(0x05);
   }
   switch (opcode) {
@@ -661,7 +670,7 @@ function twoReg(insn: u32, scalar: bool): bool {
         break;
       }
       let mode: u32 = opcode == 0x1C ? 4 : opcode == 0x1A ? (hi ? 1 : 0) : (hi ? 3 : 2);
-      vget(rn); vfz(d);
+      vget(rn); if (mode == 1 || mode == 2) vfz(d);   // FZ only changes an integer rounded up/down from a denormal
       if (d || mode == 4) lanewise(0, d, U, mode, 0);
       else { if (mode != 3) vround(false, mode); simd(U ? 0xF9 : 0xF8); }
       break;
@@ -713,10 +722,10 @@ function across(insn: u32): bool {
     let isMin = (sz & 2) != 0;
     if (optRmArith) {
       let sop = opcode == 0x0F ? (isMin ? 6 : 5) : (isMin ? 8 : 7);
-      fpcrTest(); b(0x04); b(0x7D);
-      fpcrOp(sop);
+      fpcrIf(0x7D);
+      fpcrOpK(sop);
       for (let h = 0; h < 2; h++) {
-        fpcrOp(sop); vget(rn); simd(0x1F); b(2 * h); vget(rn); simd(0x1F); b(2 * h + 1); f32c(0); sfCall(false);
+        fpcrOpK(sop); vget(rn); simd(0x1F); b(2 * h); vget(rn); simd(0x1F); b(2 * h + 1); f32c(0); sfCall(false);
       }
       f32c(0); sfCall(false);
       b(0x05);
@@ -784,8 +793,8 @@ function scalarPairwise(insn: u32): bool {
   let sop = opcode == 0x0D ? (hi ? -1 : 0) : opcode == 0x0F ? (hi ? 6 : 5) : opcode == 0x0C ? (hi ? 8 : 7) : -1;
   if (sop < 0) return false;
   if (optRmArith) {
-    fpcrTest(); b(0x04); b(d ? 0x7C : 0x7D);
-    fpcrOp(sop); vget(rn); simd(ex); b(0); vget(rn); simd(ex); b(1); vget(rn); simd(ex); b(1); sfCall(d);
+    fpcrIf(d ? 0x7C : 0x7D);
+    fpcrOpK(sop); vget(rn); simd(ex); b(0); vget(rn); simd(ex); b(1); vget(rn); simd(ex); b(1); sfCall(d);
     b(0x05);
   }
   vget(rn); simd(ex); b(0); ltee(d ? tf64(3) : tf32(3)); vget(rn); simd(ex); b(1); ltee(d ? tf64(4) : tf32(4));
@@ -945,7 +954,7 @@ function shiftImm(insn: u32, scalar: bool): bool {
     case 0x1F: { // FCVTZS / FCVTZU fixed-point
       if (sz < 2) return false;
       if (!scalar && sz == 3 && !Q) return false;
-      vget(rn); vfz(sz == 3);
+      vget(rn);
       if (sz == 3) lanewise(3, true, U, 3, rsh);
       else { let k: u32 = <u32>(127 + rsh) << 23; v128c(<u64>k | (<u64>k << 32), <u64>k | (<u64>k << 32)); simd(0xE6); simd(U ? 0xF9 : 0xF8); }
       break;
@@ -1052,7 +1061,7 @@ function indexed(insn: u32, scalar: bool): bool {
     let fm = scalar ? (d ? 1 : 2) : (Q ? 0 : 1);
     if (optRmArith) {
       sfvBegin(d, opcode == 9 ? 2 : 9, 0);
-      if (opcode == 9) { vget(rn); lget(E); vzero(); } else { vget(rd); vget(rn); if (opcode == 5) vfo(d, 1); lget(E); }
+      if (opcode == 9) { vget(rn); lget(E); vz(); } else { vget(rd); vget(rn); if (opcode == 5) vfo(d, 1); lget(E); }
       vopEnd(); finish(rd, fm);
       b(0x05);
     }
