@@ -11,7 +11,7 @@
 // machine gfx_shader: a key that is on its way or failed is not reported missing by the recorder).
 import type { RtGfx } from "./rt_gfx.ts";
 import { ndveRole } from "./ndve.ts";
-import { ShaderLibrary, type Reflection } from "../shaders/library.ts";
+import { ShaderLibrary, unsupportedExtra, type Reflection } from "../shaders/library.ts";
 
 export interface ShaderBlob { key: string; control: Uint8Array; code: Uint8Array }
 export interface Translated { wgsl: string; reflection: Reflection }
@@ -92,7 +92,8 @@ export class RtShaders {
   }
   private register(key: string, t: Translated, from: string): boolean {
     const r = t.reflection;
-    if (r.extra?.length) return this.fail(key, `${from} has it with bindings src/gfx does not provide: ${r.extra.map(x => x.kind).join(", ")}`);
+    const unknown = unsupportedExtra(r);
+    if (unknown.length) return this.fail(key, `${from} has it with bindings src/gfx does not provide: ${unknown.join(", ")}`);
     if (this.gfx.host.registerShader(key, { ...r, entry: r.entry ?? "main", wgsl: t.wgsl } as any) < 0) return this.fail(key, "registerShader refused the record");
     this.state.set(key, "ready"); this.stats.registered++;
     return true;
@@ -111,7 +112,7 @@ export class RtShaders {
 // Stages wait in one queue here, in the order they were asked for, until a Worker is free; a free Worker takes up to
 // `batch` of them for one run of the translator. `prioritize` moves a key a draw waits on to the front. Each Worker
 // has its own .NET runtime (started when there is work for it), so `workers` of them translate at once.
-export const SHADER_CHAIN = "nxweb-shaders-1/page";
+export const SHADER_CHAIN = "nxweb-shaders-2/page";
 export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; workers?: number; batch?: number }
 export const defaultShaderWorkers = (): number => Math.max(1, Math.min(4, Math.floor(((globalThis as any).navigator?.hardwareConcurrency ?? 2) / 2)));
 export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator & { prioritize(key: string): void; stats: ShaderWorkerStats } {

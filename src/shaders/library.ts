@@ -33,7 +33,7 @@ export interface Reflection {
   uboSize: Record<string, number>;                                       // slot -> bytes the WGSL type covers: the host binds at least this, zero-filled past what the game bound
   attributeTypes?: Record<string, "float" | "sint" | "uint">;            // vertex: the class each input is declared with
   outputTypes?: Record<string, "float" | "sint" | "uint">;
-  extra: { kind: string; group: number; binding: number; size?: number; bank?: number }[];   // bindings that are not a game uniform slot, a texture slot or the fix-up
+  extra: { kind: string; group: number; binding: number; size?: number; bank?: number; data?: string }[];   // bindings that are not a game uniform slot, a texture slot or the fix-up (HOST_EXTRA: the host supplies them; c1: data, its bytes in hex)
   notes: string[];                                                       // what the translation lost or assumed
 }
 export interface Entry { key: string; stage: number; wgsl: string; reflection: Reflection }
@@ -112,9 +112,14 @@ export class ShaderLibrary {
     for (const e of this.entries()) {
       const r = e.reflection;
       if (r.stage === "compute") { skipped.push({ key: e.key, why: "compute stage" }); continue; }
-      if (r.extra.length) { skipped.push({ key: e.key, why: `bindings src/gfx does not provide: ${r.extra.map(x => x.kind).join(", ")}` }); continue; }
+      const unknown = unsupportedExtra(r);
+      if (unknown.length) { skipped.push({ key: e.key, why: `bindings src/gfx does not provide: ${unknown.join(", ")}` }); continue; }
       if (host.registerShader(e.key, { ...r, wgsl: e.wgsl }) < 0) skipped.push({ key: e.key, why: "registerShader refused it" }); else registered++;
     }
     return { registered, skipped };
   }
 }
+
+// The extra bindings src/gfx supplies (gfx_host.ts): the support buffer, the shader's c1, the driver segments c0 and c2, the NVN2 push constants
+export const HOST_EXTRA = ["support", "c1", "drvcb", "push"];
+export function unsupportedExtra(r: Pick<Reflection, "extra">): string[] { return (r.extra ?? []).filter(x => !HOST_EXTRA.includes(x.kind)).map(x => x.kind); }

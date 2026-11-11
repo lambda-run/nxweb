@@ -30,13 +30,13 @@ type Req = { id: number; key: string; control: Uint8Array; code: Uint8Array };
 async function translateBatch(reqs: Req[], post: (m: unknown) => void) {
   const t0 = performance.now();
   const { dotnet, naga, lines } = await ready!;
-  const t1 = performance.now(), FS = dotnet.Module.FS, n = ++serial, out = `/w/out${n}`, jobs: unknown[] = [], mesh: Record<string, unknown> = {}, ok: Req[] = [];
+  const t1 = performance.now(), FS = dotnet.Module.FS, n = ++serial, out = `/w/out${n}`, jobs: unknown[] = [], mesh: Record<string, unknown> = {}, c1: Record<string, unknown> = {}, ok: Req[] = [];
   for (const r of reqs) {
     try {
       const { job, body } = jobFor(r.key, r.control, r.code, `/w/${r.key}.bin`);
       FS.writeFile(`/w/${r.key}.bin`, body);
       const { mesh: m, ...xjob } = job;
-      jobs.push(xjob); mesh[r.key] = m; ok.push(r);
+      jobs.push(xjob); mesh[r.key] = m; c1[r.key] = job.c1; ok.push(r);
     } catch (e) { post({ id: r.id, error: e instanceof Error ? e.message : String(e) }); }
   }
   if (!ok.length) return;
@@ -54,7 +54,7 @@ async function translateBatch(reqs: Req[], post: (m: unknown) => void) {
       }
       let res: { sbufs?: FixOptions["sbufs"] } = {};
       try { res = JSON.parse(FS.readFile(`${out}/${key}.res.json`, { encoding: "utf8" })); } catch { /* not written: no storage buffers to place */ }
-      const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh: mesh[key] as any });
+      const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh: mesh[key] as any, c1: c1[key] as any });
       post({ id: r.id, wgsl: c.wgsl, reflection: c.reflection, timing: { startMs: t1 - t0, xlateMs: share, convertMs: performance.now() - t3, batch: ok.length } });
     } catch (e) { post({ id: r.id, error: e instanceof Error ? e.message : String(e) }); }
     for (const f of [`/w/${key}.bin`, `${out}/${key}.spv`, `${out}/${key}.res.json`]) { try { FS.unlink(f); } catch { /* not written */ } }

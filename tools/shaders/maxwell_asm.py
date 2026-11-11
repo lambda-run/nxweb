@@ -20,7 +20,7 @@ OP = dict(ald=TOP('1110111111011'), ast=TOP('1110111111110'), ldc=TOP('111011111
           ffma=TOP('010110011'), mov32i=TOP('000000010000'), ipa=TOP('11100000'), tex=TOP('11000'), kil=TOP('111000110011'), exit=TOP('111000110000'),
           fsetp=TOP('010110111011'), mufu=TOP('0101000010000'), lop=TOP('0101110001000'), shl=TOP('0101110001001'), shr=TOP('0101110000101'),
           popc=TOP('0101110000001'), f2i=TOP('0101110010110'), i2f=TOP('0101110010111'), iadd=TOP('0101110000010'), fmnmx=TOP('0101110001100'),
-          tld=TOP('11011100'), texb=TOP('1101111010'), txq=TOP('1101111101001'), lop32i=TOP('000001'))
+          tld=TOP('11011100'), tmml=TOP('1101111101011'), texb=TOP('1101111010'), txq=TOP('1101111101001'), lop32i=TOP('000001'))
 
 def f32(x): return struct.unpack('<I', struct.pack('<f', x))[0]
 def g(pred=PT): return pred << 16
@@ -38,6 +38,7 @@ def mufu(rd, ra, fn): return OP['mufu'] | fn << 20 | g() | ra << 8 | rd         
 def tex(rd, ra, handle, dim=2, mask=15): return OP['tex'] | handle << 36 | mask << 31 | dim << 28 | RZ << 20 | g() | ra << 8 | rd   # TEX Rd.., coordinates in Ra.., c[2] word `handle`
 def texb(rd, ra, rh, dim=2, mask=15): return OP['texb'] | mask << 31 | dim << 28 | rh << 20 | g() | ra << 8 | rd                             # TEXB: bindless, the handle is in register Rh
 def tld(rd, ra, handle, dim=2, mask=15): return OP['tld'] | handle << 36 | mask << 31 | dim << 28 | RZ << 20 | g() | ra << 8 | rd   # TLD: texel fetch, level 0
+def tmml(rd, ra, handle, dim=2, mask=3): return OP['tmml'] | handle << 36 | mask << 31 | dim << 28 | RZ << 20 | g() | ra << 8 | rd   # TMML: level of detail (clamped, unclamped) at Ra..
 def txq(rd, ra, handle, mask=3): return OP['txq'] | handle << 36 | mask << 31 | 1 << 22 | g() | ra << 8 | rd                  # TXQ dimensions, level in Ra
 def fsetp(pd, ra, rb, cmp): return OP['fsetp'] | cmp << 48 | PT << 39 | rb << 20 | g() | ra << 8 | pd << 3 | PT               # P<pd> = Ra <cmp> Rb (1 lt, 4 gt, 2 eq)
 def kil(pred): return OP['kil'] | g(pred) | 15                                                                                # discard when P<pred>
@@ -70,11 +71,11 @@ def code_area(stage, insts, imap=(), omap=0xf, kills=False):
     head = struct.pack('<I', 0x12345678) + bytes(0x2c)
     return head + struct.pack('<20I', *sph) + struct.pack('<%dQ' % len(words), *words)
 
-def control(code, tag):
+def control(code, tag, c1=0):
     c = bytearray(0x880)
     struct.pack_into('<I', c, 0, 0x98761234)
     struct.pack_into('<I', c, 0x20, 0x880)                                    # its own length
-    struct.pack_into('<2I', c, 0x700, len(code), len(code))                   # c1 offset, code length: no c1 segment
+    struct.pack_into('<2I', c, 0x700, len(code) - c1, len(code))              # c1 offset, code length: the c1 segment is the last `c1` bytes
     c[0x780:0x780 + len(tag)] = tag                                           # GLSLC's compile information lives here; ours names the program
     return bytes(c)
 
@@ -114,13 +115,21 @@ PROGRAMS['ps_bindless'] = dict(stage='ps', imap=[0x0a], facts=dict(fout={'0': 'f
     ipa(4, 0x7c), mufu(4, 4, 4), ipa(0, 0x80, 4), ipa(1, 0x84, 4),
     ldc(10, 5, 0x28),
     texb(0, 0, 10)])
+# Pixel: the level of detail texture slot 0 would be sampled at, at generic input 0 (TMML: SPIR-V OpImageQueryLod, which WGSL lacks)
+PROGRAMS['ps_query_lod'] = dict(stage='ps', imap=[0x0a], facts=dict(tex={'0': '2d'}, fout={'0': 'float'}), insts=[
+    ipa(4, 0x7c), mufu(4, 4, 4), ipa(0, 0x80, 4), ipa(1, 0x84, 4),
+    tmml(0, 0, HANDLE(0)), mov32i(2, 0), mov32i(3, f32(1.0))])
+# Pixel: the banks the driver fills, not the game: the push constants (c[24], nvnCommandBufferPushGraphicsConstants), the shader's own constants
+# (c[1], the code area's c1 segment), and words of the driver's c[0] (largest point size, 0x610) and c[2] that are not texture handles
+PROGRAMS['ps_banks'] = dict(stage='ps', c1=struct.pack('<4f', 0.25, 0.5, 0.75, 1.0), facts=dict(fout={'0': 'float'}), insts=[
+    ldc(0, 24, 0x04), ldc(1, 1, 0x08), ldc(2, 0, 0x610), ldc(3, 2, 0x04)])
 
 def main(out):
     out = Path(out); out.mkdir(parents=True, exist_ok=True)
     corpus = []
     for name, p in PROGRAMS.items():
-        code = code_area(p['stage'], p['insts'], p.get('imap', ()), p.get('omap', 0xf), p.get('kills', False))
-        ctl = control(code, name.encode())
+        code = code_area(p['stage'], p['insts'], p.get('imap', ()), p.get('omap', 0xf), p.get('kills', False)) + p.get('c1', b'')
+        ctl = control(code, name.encode(), len(p.get('c1', b'')))
         (out / f'{name}.code').write_bytes(code); (out / f'{name}.ctl').write_bytes(ctl)
         corpus.append(dict(name=name, stage=p['stage'], key=key(ctl, code), code=f'{name}.code', control=f'{name}.ctl', facts=p['facts']))
     (out / 'corpus.json').write_text(json.dumps(corpus, indent=1))

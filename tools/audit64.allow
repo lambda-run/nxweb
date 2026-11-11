@@ -464,7 +464,7 @@ src/gfx/cmd.ts	C	1	<u32>i < 16 && n <= 0xffffffff
 src/gfx/cmd.ts	C	1	<u32>i >= 16
 src/gfx/cmd.ts	C	1	<u32>load<u64>(rg, 8)
 src/gfx/cmd.ts	H	1	<u32>m
-src/gfx/cmd.ts	C	2	<u32>n
+src/gfx/cmd.ts	C	3	<u32>n
 src/gfx/cmd.ts	C	1	<u32>payload + 15
 src/gfx/cmd.ts	C	1	<u32>st < 6 && <u32>i < 16 && n <= 0xffffffff
 src/gfx/cmd.ts	C	2	<u32>type
@@ -515,6 +515,7 @@ src/gfx/cmd.ts	D	1	store<i32>(r, load<i32>(d, O.TEX_d + O.TD_width), O.P_COPY_T2
 src/gfx/cmd.ts	D	1	store<i32>(r, load<i32>(s, O.TEX_d + O.TD_height), O.P_COPY_T2T_sr + 16)
 src/gfx/cmd.ts	D	1	store<i32>(r, load<i32>(s, O.TEX_d + O.TD_width), O.P_COPY_T2T_sr + 12)
 src/gfx/cmd.ts	D	1	store<i32>(r, mask, O.P_CLEAR_COLOR_mask)
+src/gfx/cmd.ts	D	1	store<i32>(r, mask, O.P_CLEAR_TEX_mask)
 src/gfx/cmd.ts	D	1	store<i32>(r, mode)
 src/gfx/cmd.ts	D	2	store<i32>(r, mode, 8)
 src/gfx/cmd.ts	C	4	store<i32>(r, n, 4)
@@ -544,6 +545,7 @@ src/gfx/cmd.ts	D	1	store<u32>(p, op)
 src/gfx/cmd.ts	D	1	store<u32>(p, size, 4)
 src/gfx/cmd.ts	C	1	store<u32>(r, <u32>load<u64>(rg, 8), 4)
 src/gfx/cmd.ts	C	1	store<u32>(r, <u32>n, 4)
+src/gfx/cmd.ts	D	1	store<u32>(r, <u32>n, O.P_PUSH_CONST_size)
 src/gfx/cmd.ts	D	1	store<u32>(r, first)
 src/gfx/cmd.ts	D	2	store<u32>(r, v, 12)
 src/gfx/cmd.ts	D	1	store<u32>(s, 0, 8)
@@ -745,6 +747,7 @@ src/gfx/lower.ts	C	1	<u32>(h >> 20)
 src/gfx/lower.ts	C	1	<u32>(sv & ~O.BIND_TEX1_NOBASE)
 src/gfx/lower.ts	C	1	<u32>(x1 - x0)
 src/gfx/lower.ts	C	1	<u32>(y1 - y0)
+src/gfx/lower.ts	C	1	<u32>DRV_SIZE
 src/gfx/lower.ts	C	1	<u32>SUPPORT_BYTES
 src/gfx/lower.ts	C	1	<u32>h >> 20
 src/gfx/lower.ts	C	1	<u32>load<i32>(q, 16)
@@ -754,16 +757,19 @@ src/gfx/lower.ts	C	3	<u32>load<i64>(r, O.COPY_STRIDES_OFF + 8)
 src/gfx/lower.ts	C	3	<u32>load<i64>(r, O.COPY_STRIDES_OFF)
 src/gfx/lower.ts	C	1	<u32>load<u16>(view, O.VIEW_format)
 src/gfx/lower.ts	C	1	<u32>load<u16>(view, O.VIEW_min_layer)
+src/gfx/lower.ts	C	1	<u32>load<u64>(IMGH + ((<usize>from * 8 + i) << 3))
+src/gfx/lower.ts	C	1	<u32>load<u64>(TEXH + ((<usize>from * 32 + i) << 3))
 src/gfx/lower.ts	A	1	<u32>load<u64>(VBUF + (<usize>s << 4), 8)	the size of a buffer range (the address beside it is 8 bytes in the record): host records carry sizes as u32, and a WebGPU buffer binding is far below 4 GB
 src/gfx/lower.ts	A	1	<u32>load<u64>(WR + (<usize>i << 4), 8)	the size of a buffer range (the address beside it is 8 bytes in the record): host records carry sizes as u32, and a WebGPU buffer binding is far below 4 GB
 src/gfx/lower.ts	C	1	<u32>load<u64>(a)
-src/gfx/lower.ts	A	1	<u32>load<u64>(b, 8)	the size of a buffer range (the address beside it is 8 bytes in the record): host records carry sizes as u32, and a WebGPU buffer binding is far below 4 GB
+src/gfx/lower.ts	A	3	<u32>load<u64>(b, 8)	the size of a buffer range (the address beside it is 8 bytes in the record): host records carry sizes as u32, and a WebGPU buffer binding is far below 4 GB
 src/gfx/lower.ts	C	1	<u32>orig
 src/gfx/lower.ts	C	1	<u32>size
 src/gfx/lower.ts	C	1	<u32>x0
 src/gfx/lower.ts	C	1	<u32>y0
 src/gfx/lower.ts	C	1	<usize>load<i32>(a)
 src/gfx/lower.ts	C	1	<usize>load<i32>(a, 4)
+src/gfx/lower.ts	D	1	<usize>load<u32>(a, O.P_PUSH_CONST_size)
 src/gfx/lower.ts	D	9	load<i32>(a)
 src/gfx/lower.ts	D	1	load<i32>(a, 12)
 src/gfx/lower.ts	D	2	load<i32>(a, 16)
@@ -808,6 +814,7 @@ src/gfx/lower.ts	D	2	load<u32>(ind, 4)
 src/gfx/lower.ts	D	3	load<u32>(ind, 8)
 src/gfx/lower.ts	D	1	load<u32>(libRefl(curVs), RF_io)
 src/gfx/lower.ts	D	1	load<u32>(libRefl(id), RF_bl)
+src/gfx/lower.ts	D	1	load<u32>(libRefl(id), RF_ubo)
 src/gfx/lower.ts	D	1	load<u32>(libRefl(ms), RF_flags)
 src/gfx/lower.ts	D	1	load<u32>(p)
 src/gfx/lower.ts	D	1	load<u32>(p, 4)
@@ -817,6 +824,7 @@ src/gfx/lower.ts	D	1	load<u32>(r)
 src/gfx/lower.ts	D	1	load<u32>(r, 16)
 src/gfx/lower.ts	D	1	load<u32>(r, 4)
 src/gfx/lower.ts	D	2	load<u32>(r, 8)
+src/gfx/lower.ts	D	1	load<u32>(r, O.P_CLEAR_TEX_mask)
 src/gfx/lower.ts	D	1	load<u32>(r, O.P_COPY_T2T_flags)
 src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_IDX_instances)
 src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_count)
@@ -829,7 +837,7 @@ src/gfx/lower.ts	D	1	load<u32>(rf, RF_img)
 src/gfx/lower.ts	D	1	load<u32>(rf, RF_ssbo)
 src/gfx/lower.ts	D	1	load<u32>(rf, RF_ssbo_w)
 src/gfx/lower.ts	D	2	load<u32>(rf, RF_tex)
-src/gfx/lower.ts	D	1	load<u32>(rf, RF_ubo)
+src/gfx/lower.ts	D	2	load<u32>(rf, RF_ubo)
 src/gfx/lower.ts	D	1	load<u32>(src + (<usize>i << 3))
 src/gfx/lower.ts	D	1	load<u32>(t)
 src/gfx/lower.ts	D	1	load<u32>(t, O.TEX_d + O.TD_format)
@@ -844,6 +852,9 @@ src/gfx/lower.ts	D	2	load<u32>(t, RT_w)
 src/gfx/lower.ts	D	1	load<u32>(w)
 src/gfx/lower.ts	D	1	store<i32>(b, ts, 36)
 src/gfx/lower.ts	D	1	store<i32>(o, baseVertex, 24)
+src/gfx/lower.ts	D	1	store<u32>(DIM, x)
+src/gfx/lower.ts	D	1	store<u32>(DIM, y, 4)
+src/gfx/lower.ts	D	1	store<u32>(DIM, z, 8)
 src/gfx/lower.ts	D	1	store<u32>(H.hostRec(H.H_MESH_DRAW, 16), curPipe, 8)
 src/gfx/lower.ts	D	1	store<u32>(H.hostRec(H.H_MESH_RUN, 16), mp, 8)
 src/gfx/lower.ts	D	1	store<u32>(H.hostRec(H.H_MESH_TASK, 16), tp, 8)
@@ -852,6 +863,11 @@ src/gfx/lower.ts	C	1	store<u32>(b, (ind ? 1 : 0) | (withTask ? 2 : 0), 8)
 src/gfx/lower.ts	D	1	store<u32>(b, count, 16)
 src/gfx/lower.ts	D	1	store<u32>(b, first, 12)
 src/gfx/lower.ts	D	1	store<u32>(b, ms, 32)
+src/gfx/lower.ts	D	1	store<u32>(d + 0x120 + (i << 3), <u32>load<u64>(IMGH + ((<usize>from * 8 + i) << 3)))
+src/gfx/lower.ts	D	1	store<u32>(d + 0x20 + (i << 3), <u32>load<u64>(TEXH + ((<usize>from * 32 + i) << 3)))
+src/gfx/lower.ts	A	1	store<u32>(d + 0x210 + (i << 4), <u32>load<u64>(b, 8), 8)	the size of a buffer range into the 32-bit size word of a driver c0 table row (nxnative dmsh_abi.h DMSH_C0_SSBO_* / DMSH_C0_CS_UBO): a WebGPU buffer binding is far below 4 GB
+src/gfx/lower.ts	A	1	store<u32>(d + base + (i << 4), <u32>load<u64>(b, 8), 8)	the size of a buffer range into the 32-bit size word of a driver c0 table row (nxnative dmsh_abi.h DMSH_C0_SSBO_* / DMSH_C0_CS_UBO): a WebGPU buffer binding is far below 4 GB
+src/gfx/lower.ts	D	1	store<u32>(d, drawBaseInst, 0x644)
 src/gfx/lower.ts	D	1	store<u32>(e, bits & 2 ? <u32>load<u16>(view, O.VIEW_min_layer) : 0, RT_layer)
 src/gfx/lower.ts	D	1	store<u32>(e, fmt, RT_fmt)
 src/gfx/lower.ts	D	1	store<u32>(e, level, RT_level)
@@ -876,15 +892,19 @@ src/gfx/lower.ts	D	2	store<u32>(o, instances, 16)
 src/gfx/lower.ts	D	1	store<u32>(o, itype, 8)
 src/gfx/lower.ts	D	1	store<u32>(o, layer, 28)
 src/gfx/lower.ts	D	1	store<u32>(o, level, 24)
+src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(r, O.P_CLEAR_TEX_mask), 48)
 src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(r, O.P_COPY_T2T_flags), 88)
 src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(t, RT_fmt), 16)
 src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(t, RT_layer), 12)
 src/gfx/lower.ts	D	1	store<u32>(o, load<u32>(t, RT_level), 8)
+src/gfx/lower.ts	D	1	store<u32>(o, load<u8>(r, O.P_CLEAR_TEX_is_uint), 52)
 src/gfx/lower.ts	D	1	store<u32>(o, originLowerLeft ? 1 : 0, 44)
 src/gfx/lower.ts	D	1	store<u32>(o, row, 56)
+src/gfx/lower.ts	D	1	store<u32>(o, viewLayer(r + O.P_CLEAR_TEX_view, has), 20)
 src/gfx/lower.ts	D	1	store<u32>(o, viewLayer(r + O.P_COPY_B2T_view, has), 28)
 src/gfx/lower.ts	D	1	store<u32>(o, viewLayer(r + O.P_COPY_T2T_dv, hd), 36)
 src/gfx/lower.ts	D	1	store<u32>(o, viewLayer(r + O.P_COPY_T2T_sv, hs), 28)
+src/gfx/lower.ts	D	1	store<u32>(o, viewLevel(r + O.P_CLEAR_TEX_view, has), 16)
 src/gfx/lower.ts	D	1	store<u32>(o, viewLevel(r + O.P_COPY_B2T_view, has), 24)
 src/gfx/lower.ts	D	1	store<u32>(o, viewLevel(r + O.P_COPY_T2T_dv, hd), 32)
 src/gfx/lower.ts	D	1	store<u32>(o, viewLevel(r + O.P_COPY_T2T_sv, hs), 24)
@@ -894,12 +914,16 @@ src/gfx/lower.ts	D	1	store<u32>(o, z, 20)
 src/gfx/lower.ts	C	1	store<u32>(r, (hasDepth ? 1 : 0) | (pendDepth ? 2 : 0) | (pendStencil ? 4 : 0), 12)
 src/gfx/lower.ts	D	1	store<u32>(r, (st < 2 && snapped(serial) ? 1 : 0) | (hasView ? 2 : 0), 24)
 src/gfx/lower.ts	D	1	store<u32>(r, 14, 12)
+src/gfx/lower.ts	D	1	store<u32>(r, 19, 12)
+src/gfx/lower.ts	D	1	store<u32>(r, 256, 16)
 src/gfx/lower.ts	C	1	store<u32>(r, <u32>(h >> 20) & 0xfff, 28)
+src/gfx/lower.ts	D	1	store<u32>(r, <u32>DRV_SIZE, 16)
 src/gfx/lower.ts	C	1	store<u32>(r, <u32>SUPPORT_BYTES, 16)
 src/gfx/lower.ts	A	1	store<u32>(r, <u32>load<u64>(VBUF + (<usize>s << 4), 8), 12)	the size of a buffer range (the address beside it is 8 bytes in the record): host records carry sizes as u32, and a WebGPU buffer binding is far below 4 GB
 src/gfx/lower.ts	A	1	store<u32>(r, <u32>load<u64>(WR + (<usize>i << 4), 8), 16)	the size of a buffer range (the address beside it is 8 bytes in the record): host records carry sizes as u32, and a WebGPU buffer binding is far below 4 GB
 src/gfx/lower.ts	A	1	store<u32>(r, <u32>load<u64>(b, 8), 24)	the size of a buffer range (the address beside it is 8 bytes in the record): host records carry sizes as u32, and a WebGPU buffer binding is far below 4 GB
 src/gfx/lower.ts	C	1	store<u32>(r, <u32>size, 24)
+src/gfx/lower.ts	D	1	store<u32>(r, bank ? 18 : 17, 12)
 src/gfx/lower.ts	D	1	store<u32>(r, curPipe, 8)
 src/gfx/lower.ts	C	3	store<u32>(r, i, 12)
 src/gfx/lower.ts	D	1	store<u32>(r, index, 12)
@@ -923,7 +947,7 @@ src/gfx/lower.ts	D	1	store<u32>(r, rtN, 8)
 src/gfx/lower.ts	D	1	store<u32>(r, rtW, 24)
 src/gfx/lower.ts	C	1	store<u32>(r, s, 8)
 src/gfx/lower.ts	D	1	store<u32>(r, slot, 12)
-src/gfx/lower.ts	D	5	store<u32>(r, st, 8)
+src/gfx/lower.ts	D	7	store<u32>(r, st, 8)
 src/gfx/lower.ts	D	1	store<u32>(r, stencil, 24)
 src/gfx/lower.ts	D	1	store<u32>(r, w | (hasView ? 2 : 0), 24)
 src/gfx/lower.ts	D	1	store<u32>(r, w, 28)
@@ -1214,6 +1238,7 @@ src/glue/gfx_capture.ts	V	1	if (flags & 1) parts.push(` $ $ $ $ `clear ${+dv.get
 src/glue/gfx_formats.ts	B	1	export function hostFormat(format: number, caps: number): (NvnFormat & { conv?: boolean }) | undefined {
 src/glue/gfx_formats.ts	B	1	if (n) return caps & 2 ? F(n[0], n[2]) : { ...F(n[1], n[2]), conv: true };
 src/glue/gfx_formats.ts	B	1	return caps & 1 ? F(` $ $ $ `, 16, undefined, " ", bw, bh) : { ...F(srgb ? " " : " ", 4), conv: true };
+src/glue/gfx_host.ts	B	1	...(f.stencil ? { stencilLoadOp: " ", stencilStoreOp: " ", stencilClearValue: (f.kind === " " ? v[1] : v[0]) >>> 0 & 255 } : {}) } }
 src/glue/gfx_host.ts	V	1	baseVertex = dv.getInt32(p + 24, true);
 src/glue/gfx_host.ts	B	1	bindless |= 1 << t.slot;
 src/glue/gfx_host.ts	V	1	buffers[stream] ??= { arrayStride: dv.getUint32(k + PK.stream + stream * 8, true), stepMode: divisor ? " " : " ", attributes: [] };
@@ -1230,7 +1255,7 @@ src/glue/gfx_host.ts	V	1	case H.SCISSOR: this.pass.setScissorRect(dv.getUint32(p
 src/glue/gfx_host.ts	V	1	case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (
 src/glue/gfx_host.ts	V	1	case H.STENCIL_REF: this.pass.setStencilReference(dv.getUint32(p + 8, true)); break;
 src/glue/gfx_host.ts	V	1	case H.UBO: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), need: dv.g
-src/glue/gfx_host.ts	V	1	case H.UBO_DATA: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: 0, size: 0, need: 0, data: this.u8.slice(p + 24, p + 24 + dv.
+src/glue/gfx_host.ts	V	1	case H.UBO_DATA: this.ubo.set(uboKey(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true)), { addr: 0, size: 0, need: 0, data: this.u8.slice(p + 24, p + 24 + d
 src/glue/gfx_host.ts	V	1	case H.VBUF: { const b = this.upload(this.u64(dv, p + 16), dv.getUint32(p + 12, true), 0); if (b) this.pass.setVertexBuffer(dv.getUint32(p + 8, true), b, this.u
 src/glue/gfx_host.ts	V	1	case H_REPORT: this.reportsSeen = true; this.reportsOpen.push({ id: dv.getUint32(p + 8, true), seg: this.segOf() }); break;
 src/glue/gfx_host.ts	B	1	classes[loc] = CLASSES[Number((dv.getBigUint64(k + PK.vin, true) >> BigInt(loc * 2)) & 3n)] ?? " ";
@@ -1263,10 +1288,14 @@ src/glue/gfx_host.ts	B	1	const gone = this.x.gfx_device_restored() >>> 0;
 src/glue/gfx_host.ts	S	1	const have = u ? (u.data ? u.data.length : u.size) : 0, size = Math.min(max, Math.max(16, ((u?.need || have) + 15) & ~15));
 src/glue/gfx_host.ts	V	1	const itype = dv.getUint32(p + 8, true), addr = this.u64(dv, p + 32), isz = itype === 2 ? 4 : itype === 1 ? 2 : 1;
 src/glue/gfx_host.ts	V	1	const itype = dv.getUint32(p + 8, true), count = dv.getUint32(p + 12, true), isz = itype === 2 ? 4 : itype === 1 ? 2 : 1;
+src/glue/gfx_host.ts	B	1	const key = uboKey(b.st, b.i), want = Math.max(16, ((b.size ?? 0) + 15) & ~15);
+src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 16, true), layer = dv.getUint32(p + 20, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 24 + i * 4, true));
 src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 16, true), z = dv.getUint32(p + 20, true), y = dv.getUint32(p + 24, true), slices = dv.getUint32(p + 36, true), ptr = this.u64(dv
 src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 24, true), layer = dv.getUint32(p + 28, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 32 + i * 4, true)), f = t.fmt;
 src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 24, true), layer = dv.getUint32(p + 28, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 32 + i * 4, true));
 src/glue/gfx_host.ts	B	2	const lo = (b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, hi = (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0;
+src/glue/gfx_host.ts	B	1	const lw = Math.max(1, t.width >> level), lh = Math.max(1, t.height >> level), is3d = t.gpu.dimension === " ";
+src/glue/gfx_host.ts	V	1	const mask = dv.getUint32(p + 48, true) & 15, src = dv.getUint32(p + 52, true), f = t.fmt;
 src/glue/gfx_host.ts	V	1	const msId = dv.getUint32(p + 32, true), tsId = dv.getInt32(p + 36, true), task = (flags & 2) !== 0, indirect = (flags & 1) !== 0;
 src/glue/gfx_host.ts	B	1	const n = down4(size + 3), buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
 src/glue/gfx_host.ts	V	1	const n = dv.getUint32(p + 8, true), flags = dv.getUint32(p + 12, true);
@@ -1283,6 +1312,7 @@ src/glue/gfx_host.ts	B	1	const src = this.newTexture({ size: { width: w, height:
 src/glue/gfx_host.ts	S	1	const src = this.u8.subarray(addr, addr + size), wide = new Uint16Array((size + 1) & ~1);
 src/glue/gfx_host.ts	B	1	const sw = Math.max(1, s.width >> sl), sh = Math.max(1, s.height >> sl);
 src/glue/gfx_host.ts	B	1	const ub = this.newBuffer({ size: 16, usage: 0x40 | 0x08 });
+src/glue/gfx_host.ts	V	1	const v = [0, 1, 2, 3].map(i => src === 1 ? dv.getUint32(p + 56 + i * 4, true) : src === 2 ? dv.getInt32(p + 56 + i * 4, true) : dv.getFloat32(p + 56 + i * 4, t
 src/glue/gfx_host.ts	V	1	const vf = hostFormat(dv.getUint32(o + 16, true), this.caps)?.tex, af = vf && vf === SRGB_TWIN[t.fmt.tex!] ? vf : t.fmt.tex!;
 src/glue/gfx_host.ts	V	1	const w = Math.min(dv.getUint32(p + 28, true), lw - x), h = Math.min(dv.getUint32(p + 32, true), lh - y), rows = h / f.bh;
 src/glue/gfx_host.ts	V	1	const w = dv.getUint32(p + 44, true), h = dv.getUint32(p + 48, true);
@@ -1296,12 +1326,13 @@ src/glue/gfx_host.ts	V	1	dv.setUint32(r + 12, bit(st === 0 ? info.attributes : i
 src/glue/gfx_host.ts	V	1	dv.setUint32(r + 140, bindless >>> 0, true);
 src/glue/gfx_host.ts	V	1	dv.setUint32(r + 20, bit((info.storage ?? []).map(b => b.slot)), true); dv.setUint32(r + 24, bit((info.storage ?? []).filter(b => b.write).map(b => b.slot)), tr
 src/glue/gfx_host.ts	V	1	dv.setUint32(r + 28, (bit((info.images ?? []).map(b => b.slot)) | bit((info.images ?? []).filter(b => (b.access ?? " ") !== " ").map(b => b.slot)) << 8) >>> 0, 
-src/glue/gfx_host.ts	V	1	dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0)) >>> 0, true); dv.setUint32(r + 8, bit((info.textures ?? []).map(t => t
+src/glue/gfx_host.ts	V	1	dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0) | (bit(hostBlocks.map(b => b.k)) << 16)) >>> 0, true); dv.setUint32(r +
 src/glue/gfx_host.ts	V	1	for (const [slot, size] of Object.entries(info.uboSize ?? {})) if (+slot < 14) dv.setUint32(r + 64 + +slot * 4, size, true);
 src/glue/gfx_host.ts	B	1	for (const l of info.attributes ?? []) vin |= BigInt(Math.max(0, CLASSES.indexOf(info.attributeTypes[l] ?? " "))) << BigInt(l * 2);
 src/glue/gfx_host.ts	B	1	for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? " "))); if (t.depth) depth |= 1 << t.slot; }
 src/glue/gfx_host.ts	V	1	for (let loc = 0, m = dv.getUint32(k + PK.attrMask, true); m; loc++, m >>>= 1) {
 src/glue/gfx_host.ts	B	1	if (!(m & 1)) continue;
+src/glue/gfx_host.ts	B	1	if (!(t.gpu.usage & 0x10) || f.conv || (ds && !whole)) {
 src/glue/gfx_host.ts	B	1	if (!fb) { fb = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(fb, 0, new Float32Array(this.fix)); this.fixBufs.set(key, fb); }
 src/glue/gfx_host.ts	B	1	if (!g) { const b = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(b, 0, new Float32Array(this.fix)); g = this.device.createBin
 src/glue/gfx_host.ts	V	1	if (!this.usePipeline(dv.getUint32(p + 8, true))) return;
@@ -1360,6 +1391,7 @@ src/glue/gfx_host.ts	V	1	targets.push({ name: ` $ `, serial: t.serial, level: dv
 src/glue/gfx_host.ts	V	1	this.blit(sv, [sr[0] / sw, sr[1] / sh, sr[3] / sw, sr[4] / sh], this.attachView(d, dl, dy + dr[2]), d.fmt.tex!, [dr[0], dr[1], dr[3], dr[4]], (dv.getUint32(p + 
 src/glue/gfx_host.ts	B	1	this.caps = (has(" ") && !this.opts.forceAstcDecode ? 1 : 0) | (has(" ") ? 2 : 0);
 src/glue/gfx_host.ts	V	1	this.device.queue.writeBuffer(buf, 0, new Uint32Array(out));
+src/glue/gfx_host.ts	V	1	this.device.queue.writeBuffer(ub, 0, kind === " " ? new Uint32Array(num) : kind === " " ? new Int32Array(num) : new Float32Array(num));
 src/glue/gfx_host.ts	B	1	this.dummy ??= this.newTexture({ size: { width: 1, height: 1, depthOrArrayLayers: 6 }, format: " ", usage: 0x04 | 0x02 });
 src/glue/gfx_host.ts	B	1	this.encoder().copyTextureToTexture({ texture: g, mipLevel: l }, { texture: t.snap, mipLevel: l }, { width: Math.max(1, g.width >> l), height: Math.max(1, g.hei
 src/glue/gfx_host.ts	V	1	this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
