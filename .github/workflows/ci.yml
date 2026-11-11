@@ -19,8 +19,8 @@ env:
 
 jobs:
   # fast and browser run once per memory mode, side by side: every runner that goes through tools/modes.mjs runs only
-  # NX_MEM's mode, so a run takes about as long as one mode instead of three. The rest run in every entry: rt:browser's page test
-  # loads what a64:browser builds, and its prepare hand-off what prepare:browser writes
+  # NX_MEM's mode, so a run takes about as long as one mode instead of three. In browser, NX_MEM is set only for the runners
+  # that take it: a64:browser and prepare:browser run in every entry (rt:browser loads what they write), fs:browser once
   fast:
     name: fast (kit, loader, kernel, a64 guests, runtime under Node, fs, hle) (NX_MEM=${{ matrix.mem }})
     runs-on: ubuntu-24.04
@@ -81,8 +81,6 @@ jobs:
       fail-fast: false
       matrix:
         mem: ["32", "64", "64hi"]
-    env:
-      NX_MEM: ${{ matrix.mem }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -107,5 +105,10 @@ jobs:
       - run: npm run a64:browser
       - run: npm run prepare:browser
       - run: npm run rt:browser
-      - run: npm run fs:browser
+        env:
+          NX_MEM: ${{ matrix.mem }}
+      - if: matrix.mem == '32'
+        run: npm run fs:browser
       - run: npm run gfx:test
+        env:
+          NX_MEM: ${{ matrix.mem }}
