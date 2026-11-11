@@ -12,7 +12,8 @@ import { convertStage } from "../shaders/convert.ts";
 import { jobFor } from "../shaders/job.ts";
 import type { FixOptions } from "../shaders/spv.ts";
 
-let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null, subgroups: "native" | "single" = "single";
+let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null;
+let subgroups: "native" | "single" = "single";   // FixOptions.subgroups for every stage (init)
 async function start(init: { framework: string; naga: string; subgroups?: boolean }) {
   subgroups = init.subgroups ? "native" : "single";
   const { dotnet } = await import(/* @vite-ignore */ init.framework + "/dotnet.js");
