@@ -17,7 +17,6 @@
 // the host reports GC pauses (Node) the pauses inside compile and inside execution, and both phases without them.
 import { Runtime, type RuntimeModules } from "../../src/glue/rt_runtime.ts";
 import { layoutFor } from "../../src/glue/rt_process.ts";
-import { bootGfx } from "./gfx_cases.ts";
 import { bootDoom, fnv } from "../doom/boot.ts";
 import type { Env } from "./cases.ts";
 
