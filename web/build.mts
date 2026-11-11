@@ -3,7 +3,9 @@
 // with the ratio "guest instructions per budget unit" measured for it here, for the page's instructions readout; and
 // the Doom demo when its engine is on this machine (see buildDoomDemo).
 import { buildSync } from "esbuild";
-import { copyFileSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { ROOT, OUT, GUESTS, SHADER_OUT, build, buildModules, loadEnv, haveNvn, shaderArtifacts } from "../test/runtime/harness.mts";
 import { bootGfx } from "../test/runtime/gfx_cases.ts";
@@ -40,7 +42,8 @@ async function buildDoomDemo(): Promise<void> {
   }
   writeFileSync(join(demo, "doom.json"), JSON.stringify(info));
 }
-export async function buildWeb(): Promise<void> {
+export async function buildWeb(): Promise<void> { await buildWebFiles(); writeStamp(); }
+async function buildWebFiles(): Promise<void> {
   build(); buildModules();
   mkdirSync(join(WEB, "wasm"), { recursive: true }); mkdirSync(join(WEB, "demo"), { recursive: true });
   for (const entry of ["main", "worker"]) buildSync({ entryPoints: [`web/${entry}.ts`], bundle: true, format: "iife", outfile: `build/web/${entry}.js`, logLevel: "warning", absWorkingDir: ROOT });
@@ -71,3 +74,17 @@ export async function buildWeb(): Promise<void> {
 if (process.argv[1] && import.meta.filename === process.argv[1]) {
   try { await buildWeb(); } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }
 }
+
+// build/web/build.json: which build a page or report is (shown at the top of the page and in the report): the
+// commit, whether the tree had changes, the build time, and an md5 of every built file
+function writeStamp(): void {
+  const git = (a: string) => { try { return execSync("git " + a, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
+  const md5 = createHash("md5");
+  const files = (readdirSync(WEB, { recursive: true, withFileTypes: true }) as import("node:fs").Dirent[])
+    .filter(d => d.isFile()).map(d => join(d.parentPath, d.name)).filter(f => f !== join(WEB, "build.json")).sort();
+  for (const f of files) { md5.update(f.slice(WEB.length)); md5.update(readFileSync(f)); }
+  const stamp = { commit: git("rev-parse --short HEAD") || "unknown", branch: git("rev-parse --abbrev-ref HEAD"), dirty: git("status --porcelain --untracked-files=no") !== "", date: new Date().toISOString(), md5: md5.digest("hex"), files: files.length };
+  writeFileSync(join(WEB, "build.json"), JSON.stringify(stamp));
+  console.error(`web:build: ${buildLine(stamp)}`);
+}
+export function buildLine(b: { commit: string; dirty: boolean; date: string; md5: string }): string { return `${b.commit}${b.dirty ? "+changes" : ""} · ${b.date.slice(0, 16).replace("T", " ")} UTC · md5 ${b.md5.slice(0, 8)}`; }

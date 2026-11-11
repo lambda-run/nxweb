@@ -265,11 +265,16 @@ function status() {
 setInterval(status, 250);
 // The bug report: one block of text. Machine states, the modules, counters, the adapter, the options key, the last
 // 200 log lines. Nothing of it is read from guest memory: the guest's own output lines are left out.
+// which build this is (build.json beside the worker script), for the report
+let buildStamp = "unknown";
+fetch("build.json", { cache: "no-store" }).then(r => r.json()).then((b: { commit: string; branch: string; dirty: boolean; date: string; md5: string }) => {
+  buildStamp = `${b.commit}${b.dirty ? "+changes" : ""} (${b.branch}), built ${b.date}, md5 ${b.md5}`;
+}, () => {});
 function report(userAgent: string): string {
   const lines = history.filter(l => l.kind !== "out").map(l => l.text);
   const fault = rt && rt.r.rt_stop_kind() === 3 ? rt.stopInfo?.fault?.lines ?? [] : [];
   const live = liveStates();
-  return reportText({ title: title || "nxweb report (no program loaded)", when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
+  return reportText({ title: title || "nxweb report (no program loaded)", build: buildStamp, when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
     state: rt ? STATES[rt.r.rt_state()] : "Empty", stop: live.process?.match(/\((.*)\)$/)?.[1] ?? "", fault, modules: modRows, takeovers: tk,
     machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), log: lines.slice(-200), redTotal, scan: scanReport });
 }
