@@ -199,8 +199,17 @@ function tick(): void {
 }
 setInterval(tick, 250);
 
-async function start(tree: PrepTree, o: { redo?: StageName; version?: number } = {}): Promise<PrepResult | null> {
-  if (prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state)) return null;
+// A start or an open between its check and its run (the module and the scanner are awaited first): a second click
+// then would make a second Prepare beside the first, or find the first running and show an internal error; a folder
+// picked or dropped meanwhile is ignored before it replaces the "Continue with" target
+let busy = false;
+const idle = () => !busy && !(prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state));
+async function start(tree: PrepTree, o: { redo?: StageName; version?: number } = {}, inner = false): Promise<PrepResult | null> {
+  if (!inner && !idle()) return null;
+  busy = true;
+  try { return await startIn(tree, o); } finally { if (!inner) busy = false; }
+}
+async function startIn(tree: PrepTree, o: { redo?: StageName; version?: number }): Promise<PrepResult | null> {
   $("handoff").textContent = "";
   hideExplain();
   storeDir = "nxweb-prepare-" + tree.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
@@ -216,7 +225,7 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
     lastRun = res; runEnded = Date.now();
     // a folder that holds one .nup and no game files: the container is what was meant
     const inside = res.state === "Failed" && res.reason === "layout" ? (tree as { filesMatching?: (re: RegExp) => { path: string; file: File }[] }).filesMatching?.(/^[^/]+\.nup$/i) ?? [] : [];
-    if (inside.length === 1) { log(`the folder holds ${inside[0].path}: opening that`); prep = null; return await openFile(inside[0].file); }
+    if (inside.length === 1) { log(`the folder holds ${inside[0].path}: opening that`); prep = null; return await openFile(inside[0].file, undefined, true); }
     (window as any).nxwebLastRun = res;
     draw(prep.snapshot());
     return res;
@@ -224,8 +233,12 @@ async function start(tree: PrepTree, o: { redo?: StageName; version?: number } =
 }
 
 // ---- a file: a NUP container is opened; anything else is explained ----
-async function openFile(file: File, handle?: unknown): Promise<PrepResult | null> {
-  if (prep && !["Idle", "Ready", "Failed", "Cancelled"].includes(prep.w.state)) return null;
+async function openFile(file: File, handle?: unknown, inner = false): Promise<PrepResult | null> {
+  if (!inner && !idle()) return null;
+  busy = true;
+  try { return await openIn(file, handle); } finally { if (!inner) busy = false; }
+}
+async function openIn(file: File, handle?: unknown): Promise<PrepResult | null> {
   hideExplain();
   let head: Uint8Array;
   try { head = new Uint8Array(await file.slice(0, 0x200).arrayBuffer()); }
@@ -247,7 +260,7 @@ async function openFile(file: File, handle?: unknown): Promise<PrepResult | null
   for (const n of tree.notes) log(`${file.name}: ${n}`);
   await remember(handle ?? null);
   showResume(handle ? file.name : "");
-  return start(tree);
+  return start(tree, {}, true);
 }
 const showResume = (name: string) => { const b = $("resume"); b.hidden = !name; b.textContent = name ? `Continue with ${name}` : "Continue"; };
 
@@ -268,7 +281,7 @@ $("pick").addEventListener("click", async () => {
     let h: any;
     try { h = await picker.call(window, { id: "nxweb-game", mode: "read" }); }
     catch (e) { if (!refused(e)) return; log(`the folder picker is not available here (${(e as Error).name}): using the file input`); }
-    if (h) { await remember(h); showResume(h.name); await start(new HandleTree(h)); return; }
+    if (h) { if (!idle()) return; await remember(h); showResume(h.name); await start(new HandleTree(h)); return; }
   }
   ($("dirinput") as HTMLInputElement).click();
 });
@@ -289,7 +302,7 @@ $("fileinput").addEventListener("change", async ev => {
 });
 $("dirinput").addEventListener("change", async ev => {
   const files = (ev.target as HTMLInputElement).files;
-  if (files && files.length) { await remember(null); showResume(""); await start(new FileListTree(files)); }
+  if (files && files.length && idle()) { await remember(null); showResume(""); await start(new FileListTree(files)); }
 });
 
 // ---- a drop: on the drop area, or anywhere on the main page (web/main.ts passes the event's DataTransfer on) ----
@@ -309,9 +322,9 @@ function takeDrop(dt: DataTransfer | null | undefined): void {
       showExplain("Several files were dropped", "Drop one .nup file, or the game's folder itself (not the files inside it).", "", all.map(name).join(", ")); (window as any).nxwebExplained = "several"; return;
     }
     // File System Access where the browser has it (the handle survives a reload), else the entry API every browser has
-    if (one.h?.kind === "directory") { await remember(one.h); showResume(one.h.name); await start(new HandleTree(one.h)); return; }
+    if (one.h?.kind === "directory") { if (!idle()) return; await remember(one.h); showResume(one.h.name); await start(new HandleTree(one.h)); return; }
     if (one.h?.kind === "file") { await openFile(await one.h.getFile(), one.h); return; }
-    if (one.entry?.isDirectory) { await remember(null); showResume(""); await start(new EntryTree(one.entry)); return; }
+    if (one.entry?.isDirectory) { if (!idle()) return; await remember(null); showResume(""); await start(new EntryTree(one.entry)); return; }
     if (one.file) await openFile(one.file);
   })();
 }

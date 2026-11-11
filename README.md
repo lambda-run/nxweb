@@ -13,7 +13,7 @@ through NVN in the browser, and so does one real third-party program built the s
 
 | Area | State (from the tests' own summary lines) |
 |---|---|
-| State machine kit (`src/kit`) | Working: 45 machines, `kit:test` 107 tests, 445 of 445 transitions exercised |
+| State machine kit (`src/kit`) | Working: 45 machines, `kit:test` 107 tests, 445 of 445 transitions exercised; the glue's own states in [docs/machines/IMPLICIT.md](docs/machines/IMPLICIT.md) |
 | ARM64 test programs and reference runner (`test/guests`, `tools`) | Working, 21 programs (61 images) |
 | ARM64 to WebAssembly translator (`src/a64`) | Working: instruction fuzz clean (338,000 cases), 75 test images pass in four configurations in Node and in Chromium; translation cache; an option that makes guest accesses to host memory trap |
 | Module loader (`src/loader`) | Working, 84 tests: NSO segments stored, LZ4 or ZBIC compressed (system 22.0.0 on; the decoder is checked against the reference codec), NRO. No real game file was loaded yet: the first one tried stopped at its ZBIC segments, which are decoded since |
