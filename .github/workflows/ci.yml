@@ -1,7 +1,14 @@
 name: ci
 on:
   push:
+    branches: [main]
   pull_request:
+
+# A push to a PR branch used to start two runs (push and pull_request) on the same commit; branches other than main
+# now run once, through their PR, and a newer push cancels the run it supersedes
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # nxnative (the reference this is a port of) is not part of this repository. Tests that compare against it or build
 # guests from its headers (nvn.h for the graphics guests, home_quit.h, the layout references, the take-over inventory)
