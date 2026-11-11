@@ -68,6 +68,9 @@ export interface FsHostOptions {
   // A pending call finished: wake the guest thread parked under `token` with x0 = result. After every call of this,
   // make again the calls that returned FS_RETRY.
   completed?: (token: number, result: bigint) => void;
+  // More arena for the module (its tables outgrew the range fs_init was given): the base of `bytes` zeroed bytes of
+  // this memory, kept for the process's life, below 4 GB; 0 = none. Omitted: none
+  arenaMore?: (bytes: number) => number;
 }
 
 export class FsHost {
@@ -135,6 +138,7 @@ export class FsHost {
         return DEV.PENDING;
       },
       save_failed: (err: number) => { opts.saveFailed?.(err); },
+      arena_more: (n: number): number => opts.arenaMore?.(Number(n)) ?? 0,
     };
     this.x = instantiate<FsExports>(module, { env, fs }, { name: "fs.wasm" });
     this.memory = opts.memory ?? this.x.memory;

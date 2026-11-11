@@ -154,6 +154,19 @@ export class Env {
     const key = Array.from(digest.subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
     return { control: this.g.bytes(control), code: this.G.put(code), key };
   }
+  // The same as a Switch 2 game ships it: an NVN2 control section (0xd8 bytes, version 0xc9, its own length at +0x30, which the
+  // key hashes as zero; the code length at +0x44). The key is computed here as nxnative's keys_hash (src/shaders/job.ts)
+  async blobs2(name: string): Promise<Shader> {
+    const control = new Uint8Array(0xd8), code = new Uint8Array(0x100 + name.length), dv = new DataView(control.buffer);
+    for (let i = 0; i < control.length; i++) control[i] = (i * 13 + name.charCodeAt(i % name.length)) & 0xff;
+    for (let i = 0; i < code.length; i++) code[i] = (i * 5 + name.charCodeAt(i % name.length)) & 0xff;
+    dv.setUint32(0, 0x98761234, true); dv.setUint32(4, 0xc9, true); dv.setUint32(0x30, control.length, true); dv.setUint32(0x44, code.length, true);
+    const keyed = control.slice(0, 0x48); keyed.fill(0, 0x30, 0x34);
+    const both = new Uint8Array(keyed.length + code.length); both.set(keyed); both.set(code, keyed.length);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", both));
+    const key = Array.from(digest.subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
+    return { control: this.g.bytes(control), code: this.G.put(code), key };
+  }
   async shader(name: string, as = name): Promise<Shader> {
     let s = this.made.get(as);
     if (!s) { s = await this.blobs(as); if (this.host.registerShader(s.key, { entry: "main", ...SHADERS[name] }) < 0) throw new Error(`registerShader ${name}`); this.made.set(as, s); }

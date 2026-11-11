@@ -7,6 +7,7 @@
 import { ShaderLibrary } from "../../src/shaders/library.ts";
 import { convertStage } from "../../src/shaders/convert.ts";
 import { instantiate } from "../../tools/shaders/naga.mts";
+import { jobFor } from "../../src/shaders/job.ts";
 
 const g: any = globalThis;
 let device: any;
@@ -116,5 +117,26 @@ g.translateInPage = async (frameworkUrl: string, nagaUrl: string, base: string, 
     const c = convertStage(naga, spv, { bindings: "nxweb" }); out[r.key] = { wgsl: c.wgsl, reflection: c.reflection };
   }
   return { rc, startMs: t1 - t0, firstMs: t3 - t2, warmMs: t4 - again, convertMs: performance.now() - t4, out };
+};
+// translateJobsInPage(framework, naga, base, corpus): as translateInPage, the jobs made by src/shaders/job.ts jobFor (as the page's shader worker,
+// src/glue/rt_shader_worker.ts) from each row's control section and code area
+g.translateJobsInPage = async (frameworkUrl: string, nagaUrl: string, base: string, corpus: any[]) => {
+  const { dotnet } = await import(/* @vite-ignore */ frameworkUrl + "/dotnet.js");
+  const lines: string[] = [];
+  const rt = await dotnet.withConsoleForwarding?.(false).withModuleConfig({ print: (l: string) => lines.push(l), printErr: (l: string) => lines.push(l) }).create(), FS = rt.Module.FS;
+  try { FS.mkdir("/w"); } catch { /* the runtime of translateInPage: the same module */ }
+  const jobs = [];
+  for (const r of corpus) {
+    const { job, body } = jobFor(r.key, await fetchBytes(`${base}/${r.control}`), await fetchBytes(`${base}/${r.code}`), `/w/${r.key}.bin`);
+    FS.writeFile(`/w/${r.key}.bin`, body); jobs.push(job);
+  }
+  FS.writeFile("/w/jobs.json", JSON.stringify(jobs));
+  const rc = await rt.runMain("xlate_wasm", ["/w/jobs.json", "/w/out"]);
+  const naga = await instantiate(await fetchBytes(nagaUrl)), out: any = {};
+  for (const r of corpus) {
+    let spv; try { spv = FS.readFile(`/w/out/${r.key}.spv`); } catch { throw new Error(`the translator wrote no ${r.key}.spv (exit ${rc}): ${lines.join(" | ")}`); }
+    const c = convertStage(naga, spv, { bindings: "nxweb" }); out[r.key] = { wgsl: c.wgsl, reflection: c.reflection };
+  }
+  return { rc, jobs, out };
 };
 g.__ready = true;
