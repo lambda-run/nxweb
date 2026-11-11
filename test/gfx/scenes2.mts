@@ -495,6 +495,13 @@ export const scenes2: Scene[] = [
     await e.settle(); i = G.acquire(e.win);
     const s0 = e.host.stats.submits; frame(); G.present(e.win, i);
     t.eq((await e.read()).px(32, 16), [255, 128, 0, 255], "the frame after the capture"); t.ok(e.host.stats.submits - s0 <= 2, "and is submitted as usual");
+    // a capture that sees no present stops after its record limit, says so, and leaves the next capture free
+    const short = e.host.captureFrame({ maxRecords: 3 });
+    t.ok(e.host.capturing, "capturing while it waits for a present");
+    await e.settle(); i = G.acquire(e.win); frame();
+    const sc = await short;
+    t.eq([sc.records, e.host.capturing], [3, false], "the record limit ends the capture"); t.ok(/^\(the capture stops here: no present in 3 host records\)$/m.test(sc.text), `the text says why:\n${sc.text}`);
+    G.present(e.win, i); await e.read();
     console.log(`capture: ${cap.records} records, ${cap.text.split("\n").length} lines of text, ${cap.images.length} PNGs (${cap.images.map(m => m.png.length).join(" and ")} bytes); saved under build/gfx/capture/`);
     t.noRed(e);
   } },

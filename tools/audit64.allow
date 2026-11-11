@@ -1341,7 +1341,7 @@ src/glue/gfx_host.ts	B	1	onFence: ((fence: number) => void) | null = null;
 src/glue/gfx_host.ts	B	1	onImage: ((window: number, index: number, what: number) => void) | null = null;
 src/glue/gfx_host.ts	B	1	onShaderVariant: ((keyHex: string, classes: Record<number, VinClass>) => string | undefined) | null = null;
 src/glue/gfx_host.ts	B	1	private alloc(cap: number): GPU { return this.pool.get(cap)?.pop() ?? this.newBuffer({ size: cap, usage: 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80 }); }
-src/glue/gfx_host.ts	B	1	private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; records: number; d
+src/glue/gfx_host.ts	B	1	private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; records: number; m
 src/glue/gfx_host.ts	B	1	private img = new Map<number, { serial: number; view: Uint8Array | null }>();
 src/glue/gfx_host.ts	B	1	private meshCur: { ctl: GPU; args: GPU; off: number; task: boolean } | null = null;
 src/glue/gfx_host.ts	B	1	private meshHelp: { prep: GPU; fin: GPU; layout: GPU } | null = null;

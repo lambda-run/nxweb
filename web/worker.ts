@@ -376,6 +376,7 @@ async function handle(ev: MessageEvent): Promise<void> {
     else if (m.type === "report") post({ type: "report", text: report(m.userAgent ?? "") });
     else if (m.type === "capture") {
       // the next frame as the pass text and its target images (src/gfx/README.md, "Frame capture")
+      if (gfx?.live && gfx.host.capturing) { post({ type: "capture", text: `a capture is already waiting for the next present (${gfx.stats.frames} frames presented so far; a game still loading may present none for minutes)`, images: [] }); return; }
       const c = gfx && rt && !rt.disposed ? gfx.captureFrame({ png: true }) : null;
       if (!c) post({ type: "capture", text: "no frame can be captured: " + (gfx?.live ? "no process is running" : "there is no WebGPU device (the null replayer draws nothing)"), images: [] });
       else { rt!.requestWake(); const r = await c; post({ type: "capture", text: r.text, images: r.images.map(i => ({ name: i.name, width: i.width, height: i.height, format: i.format, png: i.png })) }); }
