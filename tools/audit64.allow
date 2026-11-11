@@ -1166,6 +1166,12 @@ src/glue/audio_worklet.ts	V	1	if (p.sab) { this.h = new Int32Array(p.sab, p.hdr,
 src/glue/audio_worklet.ts	B	1	if (this.feed && (++this.quanta & 1) === 0) this.feed.postMessage({ rd: h[1], cb: h[4], under: h[3] });
 src/glue/audio_worklet.ts	B	1	let avail = (wr - rd) >>> 0;
 src/glue/audio_worklet.ts	B	1	this.h[0] = (wr + n) | 0; this.h[5] = m.live;
+src/glue/fault_lines.ts	V	1	const seq = dv.getUint32(r, true), n = dv.getUint16(r + 4, true), flags = dv.getUint16(r + 6, true), pc = dv.getBigUint64(r + 8, true);
+src/glue/fault_lines.ts	B	1	else if (flags & RF_WAITING) out = " ";
+src/glue/fault_lines.ts	B	1	export function placeOf(addr: number, mods: CodeRange[], symbolAt: (h: number, a: number) => { name: string; value: number } | undefined,
+src/glue/fault_lines.ts	B	1	if (flags & RF_ENDED) out = " ";
+src/glue/fault_lines.ts	B	1	if (flags & RF_WAITED) out += " ";
+src/glue/fault_lines.ts	B	1	stub: (a: number) => string | undefined): string {
 src/glue/fs_host.ts	B	1	export const fsIsPending = (r: bigint) => (r >> 32n) === -1n;
 src/glue/fs_host.ts	B	1	export const fsToken = (r: bigint) => Number(r & 0xFFFFFFFFn);
 src/glue/fs_host.ts	B	1	len >>>= 0;
@@ -2056,6 +2062,13 @@ src/kernel/mem.ts	C	1	<i32>((end - have + 0xFFFF) >> 16)
 src/kernel/mem.ts	C	2	<u32>((arenaHi - arenaLo) / LEAF_BYTES)
 src/kernel/mem.ts	C	1	<u32>((d << LEAF_SHIFT) + k)
 src/kernel/mem.ts	C	1	<u32>(POOL_LEAVES - poolUsed)
+src/kernel/ring.ts	D	3	load<u32>(block(i))
+src/kernel/ring.ts	D	3	load<u32>(block(t.index))
+src/kernel/ring.ts	D	1	store<u32>(block(t.index), total)
+src/kernel/ring.ts	D	1	store<u32>(r, mem.qAttr, 100)
+src/kernel/ring.ts	D	1	store<u32>(r, mem.qPerm, 104)
+src/kernel/ring.ts	D	1	store<u32>(r, mem.qState, 96)
+src/kernel/ring.ts	D	1	store<u32>(r, total)
 src/kernel/sched.ts	D	1	load<i32>(CUR + (<usize>c << 2))
 src/kernel/sched.ts	D	1	store<i32>(CUR + (<usize>c << 2), i)
 src/kernel/svc.ts	C	1	<i32>ctz<u64>(s.mask)
@@ -2107,8 +2120,10 @@ src/kernel/thread.ts	C	1	<u32>this.index
 src/kernel/thread.ts	C	1	<u32>this.m.data
 src/kernel/thread.ts	D	1	load<u32>(changetype<usize>(this) + WOBJ_OFF + (<usize>i << 2))
 src/kernel/thread.ts	C	1	store<u32>(changetype<usize>(this) + WOBJ_OFF + (<usize>i << 2), v)
+src/loader/host/loader.mts	V	1	const dv = this.dv, ptr = Number(dv.getBigUint64(out + 16, true)), len = dv.getUint32(out + 24, true);
 src/loader/host/loader.mts	V	1	const ids = Array.from({ length: Math.min(n, cap) }, (_, i) => this.dv.getUint32(this.scratch + 4 * i, true));
 src/loader/host/loader.mts	A	1	return Float64Array.from(new Uint32Array(this.x.memory.buffer, out, Math.min(n, cap)), off => base + off);	the image offsets ld_code_entries writes (u32 by design: an image is below 4 GB whatever its address); the module's base is added as a number
+src/loader/host/loader.mts	B	1	symbolAt(h: number, addr: number | bigint): { name: string; value: number; size: number } | undefined {
 src/loader/index.ts	C	1	<i32>zbicDecompress(src, srcLen, dst, dstCap < 0x7FFFFFFF ? dstCap : <u32>0x7FFFFFFF)
 src/loader/index.ts	C	1	<u32>0x7FFFFFFF
 src/loader/index.ts	C	1	<u32>zbicProduced()
@@ -2117,6 +2132,7 @@ src/loader/lz4.ts	C	1	<u32>load<u8>(s++)
 src/loader/module.ts	C	1	<i32>(v - 1)
 src/loader/module.ts	C	2	<i32>count
 src/loader/module.ts	C	1	<i32>h
+src/loader/module.ts	C	1	<i32>i
 src/loader/module.ts	C	1	<i32>id
 src/loader/module.ts	C	1	<i32>id : -1
 src/loader/module.ts	C	1	<i32>k.index
@@ -2139,13 +2155,14 @@ src/loader/module.ts	C	1	<u32>(relasz / RELA)
 src/loader/module.ts	C	1	<u32>(relrsz / 8)
 src/loader/module.ts	C	1	<u32>(strtab + strsz)
 src/loader/module.ts	O	1	<u32>(v - base)
+src/loader/module.ts	C	2	<u32>best
 src/loader/module.ts	C	1	<u32>dyn
 src/loader/module.ts	C	1	<u32>fini
 src/loader/module.ts	C	1	<u32>finiArray
 src/loader/module.ts	C	1	<u32>gnuHash
 src/loader/module.ts	C	5	<u32>h
 src/loader/module.ts	C	1	<u32>h < nMods ? <i32>modAt(<u32>h)
-src/loader/module.ts	C	2	<u32>h >= nMods
+src/loader/module.ts	C	3	<u32>h >= nMods
 src/loader/module.ts	C	1	<u32>h >= nMods || !inMemory(name, len)
 src/loader/module.ts	C	1	<u32>hash
 src/loader/module.ts	C	4	<u32>i
@@ -2187,6 +2204,7 @@ src/loader/module.ts	D	1	store<u32>(LOADED + (<usize>nLoaded << 2), m.index)
 src/loader/module.ts	D	1	store<u32>(hostIdx + (<usize>j << 2), id + 1)
 src/loader/module.ts	O	1	store<u32>(out + (<usize>count << 2), <u32>(v - base))
 src/loader/module.ts	D	1	store<u32>(out + (<usize>count << 2), <u32>id)
+src/loader/module.ts	D	1	store<u32>(out, nmLen, 24)
 src/loader/module.ts	D	1	store<u32>(r, 0, 12)
 src/loader/module.ts	D	1	store<u32>(r, 0, 24)
 src/loader/module.ts	O	1	store<u32>(r, <u32>(copy - arena))
@@ -2383,7 +2401,6 @@ web/prepare_build.mts	B	1	export function servePrepare(port: number, extra?: (ur
 web/serve.mts	B	1	const path = normalize(decodeURIComponent((req.url ?? " ").split(" ")[0])).replace(/^(\.\.[/\\])+/, "");
 web/shots.mts	B	1	const chunk = (t: string, d: Buffer) => { const b = Buffer.alloc(12 + d.length); b.writeUInt32BE(d.length, 0); b.write(t, 4, " "); d.copy(b, 8); b.writeUInt32BE
 web/worker.ts	B	1	const c: Record<string, string | number> = { slices: rt.stats.slices, SVCs: rt.stats.svcs, " ": rt.stats.hostCalls, " ": rt.units, " ": rt.disposed ? 0 : rt.a64
-web/worker.ts	B	1	const fault = rt && rt.r.rt_stop_kind() === 3 ? rt.red.filter(l => /^\[RED\] (fault: | x0=)/.test(l)).slice(-2) : [];
 web/worker.ts	B	1	function counters(): Record<string, string | number> {
 web/worker.ts	B	1	let ctrlAnswer: ((ok: boolean) => void) | null = null;
 web/worker.ts	B	1	let doomState: { rt: Runtime; gametic: number; gamestate: number; menu: boolean; demo: boolean; usergame: boolean; map: number; health: number; bullets: number;

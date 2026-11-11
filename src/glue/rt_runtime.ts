@@ -4,6 +4,7 @@
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
 import { A64Host, makeMemory64, MEM64_MAX_PAGES, type A64CacheStore, type Memory64 } from "./a64_host.ts";
 import { instantiate, addrBits } from "./wasm_abi.ts";
+import { svcLine, placeOf, frameLines, SVC_REC, type CodeRange } from "./fault_lines.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
 import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, STAGING, range } from "./rt_layout.ts";
 import { SPACE, writeKernelCfg, layoutFor, getDefaultSpace, type ProcessLayout } from "./rt_process.ts";
@@ -54,7 +55,8 @@ export const FAULT_NAMES = ["", "unimplemented", "brk", "trap", "jump", "stack",
 export interface StopInfo {
   kind: "exit" | "break" | "fault" | "killed";
   code: number;                       // exit code (exit, break)
-  fault?: { kind: typeof FAULT_NAMES[number]; thread: number; threadIndex: number; pc: bigint; aux: bigint; detail: string };
+  fault?: { kind: typeof FAULT_NAMES[number]; thread: number; threadIndex: number; pc: bigint; aux: bigint; detail: string;
+    lines: string[] };                // the fault's red lines as logged: what and where, every register, pc and x30 placed, the last SVCs
 }
 export interface RunResult {
   state: State; stop?: StopInfo;
@@ -239,7 +241,7 @@ export class Runtime {
   private stop: StopInfo | undefined;
   private flat = false;
   private flatTick = 0n;
-  private initQueue: number[] = [];
+  private initQueue: { pc: number; x: bigint[] }[] = [];
   private entry = 0;
   private mainStackTop = 0;
   private nextFile = range("file staging").lo;
@@ -362,6 +364,8 @@ export class Runtime {
   private str(ptr: number, len: number): string { return dec.decode(this.u8().slice(ptr, ptr + len)); }
   log(line: string): void { this.logs.push(line); this.opts.log?.(line); }
   get red(): string[] { return this.logs.filter(l => l.startsWith("[RED] ")); }
+  // what the process stopped with (as run() returns it), undefined until it stops
+  get stopInfo(): StopInfo | undefined { return this.stop; }
   // the linear memory reaches `end`
   ensure(end: number): void {
     const have = this.memory.buffer.byteLength;
@@ -442,14 +446,16 @@ export class Runtime {
       // The start set stays for good: pinned now, so the loader lets go of the files before any guest code runs
       for (const m of set.modules) this.ld.pin(m.handle);
       this.unstage();
-      // start contract: dependencies' init functions first (load order), the main module's last, then the entry
-      for (const m of [...set.modules.slice(1), set.modules[0]]) { if (m.init) this.initQueue.push(m.init); this.initQueue.push(...m.initArray); }
-      this.entry = set.entry;
       const stack = this.stackRegion, size = pageUp(this.opts.mainStackSize);
       if (!this.k.kernel_map_stack(BigInt(stack), BigInt(size))) throw new Error("the kernel refused the main thread's stack");
       this.mainStackTop = stack + size;
       this.mainThread = this.k.kernel_create_main_thread(BigInt(this.ld.stubAddr(startId)), BigInt(this.mainStackTop));
       if (!this.mainThread) throw new Error("the kernel could not create the main thread");
+      if (!this.sdkStart(set.modules)) {
+        // start contract (test modules): dependencies' init functions first (load order), the main module's last, then the entry
+        for (const m of [...set.modules.slice(1), set.modules[0]]) { if (m.init) this.initQueue.push({ pc: m.init, x: [] }); this.initQueue.push(...m.initArray.map(pc => ({ pc, x: [] }))); }
+        this.entry = set.entry;
+      }
     } catch (e) {
       this.unstage();
       this.faultNow(FAULT.load, (e instanceof Error ? e.message : String(e)).replace(/^\[RED\] /, ""));
@@ -640,11 +646,32 @@ export class Runtime {
     return bytes;
   }
 
+  // A program with the SDK in it (nnosInitialize and nnMain defined) starts as on hardware, where rtld enters the SDK's
+  // nn::init::Start: _init_libc0, nnosInitialize(main thread handle, 0), _init_libc1, nninitInitializeSdkModule,
+  // nninitStartup, _init_libc2, then rtld's InitModules (each module's DT_INIT, which runs its init_array, in load
+  // order), then nnMain. The SDK's constructors need nn::os up (the TLS slots of SdkAllocateTlsSlot); the module's
+  // own crt0 is not run. The same order as nxnative dm/host/main.c.
+  private sdkStart(modules: readonly ModuleInfo[]): boolean {
+    const find = (name: string) => { for (const m of modules) { const a = this.ld.lookupIn(m.handle, name); if (a !== undefined && this.ld.stubId(a) < 0) return a; } return undefined; };
+    const os = find("nnosInitialize"), main = find("nnMain");
+    if (os === undefined || main === undefined) return false;
+    const call = (name: string, x: bigint[] = []) => { const pc = name === "nnosInitialize" ? os : find(name); if (pc !== undefined) this.initQueue.push({ pc, x }); };
+    call("_init_libc0"); call("nnosInitialize", [BigInt(this.mainThread), 0n]); call("_init_libc1");
+    call("nninitInitializeSdkModule"); call("nninitStartup"); call("_init_libc2");
+    for (const m of modules) {
+      if (m.init) this.initQueue.push({ pc: m.init, x: [] });
+      else this.initQueue.push(...m.initArray.map(pc => ({ pc, x: [] })));
+    }
+    this.entry = main;
+    this.log(`runtime: SDK start: nn::init's order (${this.initQueue.length} calls: nnosInitialize, nninitStartup, ${modules.length} modules' DT_INIT), then nnMain at ${hex(main)}`);
+    return true;
+  }
+
   // The host function the main thread starts in: runs the init functions as guest calls, then enters the main module
   private startStep(cpu: HostCpu): HostResult {
     const start = cpu.rt.core.pc.value as bigint;
     const next = this.initQueue.shift();
-    if (next !== undefined) { cpu.setX(30, start); return cpu.jump(next); }
+    if (next !== undefined) { next.x.forEach((v, i) => cpu.setX(i, v)); cpu.setX(30, start); return cpu.jump(next.pc); }
     for (let i = 0; i < 30; i++) cpu.setX(i, 0);
     cpu.setX(1, this.mainThread); cpu.setX(30, PC_EXIT);
     this.core.sp.value = BigInt(this.mainStackTop);
@@ -727,9 +754,40 @@ export class Runtime {
     this.u8().set(bytes, this.r.rt_scratch_ptr());
     const index = ctx ? this.k.kernel_thread_of_ctx(ctx) : -1;
     const handle = index >= 0 ? this.dv().getUint32((this.threadInfo(index)) + 28, true) : 0;
+    const from = this.logs.length;
     this.r.rt_fault(kind, handle, index, index >= 0 ? ctx : 0, exact ? 1 : 0, aux, bytes.length);
     const f = this.r.rt_fault_ptr(), dv = this.dv();
-    this.stop = { kind: "fault", code: 0, fault: { kind: FAULT_NAMES[kind], thread: handle, threadIndex: index, pc: dv.getBigUint64(f + 8, true), aux, detail } };
+    if (index >= 0) this.faultLines(kind, index, handle, ctx);
+    const lines = this.logs.slice(from).filter(l => l.startsWith("[RED] "));
+    this.stop = { kind: "fault", code: 0, fault: { kind: FAULT_NAMES[kind], thread: handle, threadIndex: index, pc: dv.getBigUint64(f + 8, true), aux, detail, lines } };
+  }
+  // After the register dump: where pc and x30 are (module, symbol) and the thread's last SVCs
+  private faultLines(kind: number, index: number, handle: number, ctx: number): void {
+    const dv = this.dv(), pc = Number(dv.getBigUint64(ctx + 0x100, true)), x30 = Number(dv.getBigUint64(ctx + 30 * 8, true));
+    if (kind === FAULT.trap && this.opts.preciseFaults !== 2)
+      this.log("[RED]   the registers are as last written back (the function's entry or its last call), pc excepted; preciseFaults: 2 (the page: ?precise=2) makes them exact");
+    const mods: CodeRange[] = [];
+    for (const t of this.text) {
+      if (t.handle >= 0) { const m = this.ld.info(t.handle); mods.push({ name: m.name, handle: t.handle, base: m.base, lo: t.lo, hi: t.hi }); }
+      else mods.push({ name: t.handle === -1 ? "image" : "jit", handle: -1, base: t.lo, lo: t.lo, hi: t.hi });
+    }
+    const sym = (h: number, a: number) => h >= 0 ? this.ld.symbolAt(h, a) : undefined;
+    const stub = (a: number) => { const id = a >= STUBS.base && a < STUBS.base + 4 * STUBS.cap ? this.ld.stubId(a) : -1; return id >= 0 && id < this.ld.x.ld_host_count() ? this.ld.hostFunction(id).name : undefined; };
+    this.log(`[RED]   pc=${hex(pc)} is ${placeOf(pc, mods, sym, stub)}; x30=${hex(x30)} is ${placeOf(x30, mods, sym, stub)}`);
+    const fp = Number(dv.getBigUint64(ctx + 29 * 8, true));
+    const frames = frameLines(dv, fp, GUARD_BASE, dv.byteLength, 16, a => placeOf(a, mods, sym, stub));
+    this.log(frames.length ? `[RED]   the frames from x29=${hex(fp)}, innermost first:` : `[RED]   no frame record at x29=${hex(fp)}`);
+    for (const f of frames) this.log("[RED]     " + f);
+    const total = this.k.kernel_svc_total(index), out = this.r.rt_scratch_ptr(), cap = Math.floor(this.r.rt_scratch_cap() / SVC_REC);
+    const n = this.k.kernel_svc_ring(index, out, cap);
+    this.log(n ? `[RED]   the last ${n} of the ${total} SVCs of thread ${hex(handle)}, oldest first:` : `[RED]   thread ${hex(handle)} made no SVC`);
+    for (let i = 0; i < n; i++) this.log("[RED]     " + svcLine(this.dv(), out + i * SVC_REC));
+    const hc = this.hostRing;
+    this.log(hc.length ? `[RED]   the last ${hc.length} of the ${this.stats.hostCalls} host calls (take-overs, NVN), oldest first:` : "[RED]   no host call yet");
+    for (const h of hc) {
+      const name = h.id < this.ld.x.ld_host_count() ? this.ld.hostFunction(h.id).name : `stub #${h.id}`;
+      this.log(`[RED]     ${name}(x0=${hex(h.x[0])} x1=${hex(h.x[1])} x2=${hex(h.x[2])} x3=${hex(h.x[3])}) -> x0=${hex(h.out)}, returns to ${placeOf(Number(h.lr), mods, sym, stub)}${h.thread !== index ? ` [thread #${h.thread}]` : ""}`);
+    }
   }
   private threadInfo(index: number): number {
     const p = this.r.rt_scratch_ptr() + 2048;
@@ -808,6 +866,9 @@ export class Runtime {
     };
   }
   // The thunk: pc is a stub address, registers are written back, x30 is where the guest wants to continue
+  // The last host calls (all threads), for the fault report: which take-over answered what just before a fault
+  private static readonly HOST_RING = 24;
+  private hostRing: { id: number; thread: number; x: bigint[]; lr: bigint; out: bigint }[] = [];
   private hostCall(): void {
     const c = this.core, pc = Number(c.pc.value as bigint), id = (pc - STUBS.base) >>> 2;   // a stub's pc: in the host area
     this.stats.hostCalls++;
@@ -816,7 +877,10 @@ export class Runtime {
     let res: HostResult;
     this.hostDepth++;
     try { res = this.hostCallBody(cpu, id, pc); } finally { this.hostDepth--; }
+    const rec = { id, thread: this.curIndex, x: [0, 1, 2, 3].map(i => cpu.x(i)), lr: cpu.lr, out: 0n };
     if (res !== SKIP) this.finishHostCall(res as HostResult, cpu, pc);
+    rec.out = BigInt.asUintN(64, c.x0.value as bigint);
+    if (this.hostRing.push(rec) > Runtime.HOST_RING) this.hostRing.shift();
     this.times.hostMs += performance.now() - t0;
   }
   private hostCallBody(cpu: HostCpu, id: number, pc: number): HostResult | typeof SKIP {

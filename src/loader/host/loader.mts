@@ -20,6 +20,7 @@ export interface LoaderExports extends KitExports {
   ld_lookup(name: number, len: number): bigint; ld_lookup_in(h: number, name: number, len: number): bigint; ld_lookup_module(): number;
   ld_unresolved(h: number, out: number, cap: number): number;
   ld_code_entries(h: number, out: number, cap: number): number;
+  ld_symbol_at(h: number, addr: bigint, out: number): number;
   ld_error_ptr(): number; ld_error_len(): number; ld_error_clear(): void;
   ld_faults(): number; ld_arena_used(): number; ld_heap_base(): number;
   ld_sha256(ptr: number, len: number, out: number): void;
@@ -165,6 +166,15 @@ export class Loader {
     const n = this.check(this.x.ld_unresolved(h, this.scratch, cap));
     const ids = Array.from({ length: Math.min(n, cap) }, (_, i) => this.dv.getUint32(this.scratch + 4 * i, true));
     return ids.map(id => this.hostFunction(id));
+  }
+
+  // The function symbol of relocated module h that holds guest address addr (the nearest function symbol at or below
+  // it in the text, within its size when it has one), or undefined
+  symbolAt(h: number, addr: number | bigint): { name: string; value: number; size: number } | undefined {
+    const out = this.scratch;
+    if (this.x.ld_symbol_at(h, BigInt(addr), out) < 0) return undefined;
+    const dv = this.dv, ptr = Number(dv.getBigUint64(out + 16, true)), len = dv.getUint32(out + 24, true);
+    return { name: this.str(ptr, len), value: Number(dv.getBigUint64(out, true)), size: Number(dv.getBigUint64(out + 8, true)) };
   }
 
   // The function entries the loader knows of a relocated module (function symbols, init / fini functions, relative

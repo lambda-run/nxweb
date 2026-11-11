@@ -1028,7 +1028,54 @@ function ext(insn: u32): bool {
   return true;
 }
 
+// SHA-512, SHA-3, SM3, SM4 (ARMv8.2): the 0xCE encodings
+function crypto2(insn: u32): bool {
+  let rd = <i32>(insn & 31), rn = <i32>((insn >> 5) & 31), rm = <i32>((insn >> 16) & 31), ra = <i32>((insn >> 10) & 31);
+  if ((insn & 0xFFE0B000) == 0xCE608000) { // three-register SHA-512 (bit 14 clear) / SM3PARTW, SM4EKEY (bit 14 set)
+    let k = (insn >> 10) & 3;
+    if (insn & 0x4000) {
+      if (k == 3) return false;
+      if (k == 2) { vopBegin(49); vget(rn); vget(rm); vzero(); }
+      else { vopBegin(44 + k); vget(rd); vget(rn); vget(rm); }
+      vopEnd(); vset(rd);
+      return true;
+    }
+    if (k == 3) { // RAX1: n ^ rol(m, 1)
+      let t = tv(0);
+      vget(rn); vget(rm); ltee(t); i32c(1); simd(0xCB); lget(t); i32c(63); simd(0xCD); simd(0x50); simd(0x51); vset(rd);
+      return true;
+    }
+    vopBegin(k == 0 ? 40 : k == 1 ? 41 : 43); vget(rd); vget(rn); vget(rm); vopEnd(); vset(rd);
+    return true;
+  }
+  if ((insn & 0xFFFFF800) == 0xCEC08000) { // SHA512SU0 / SM4E
+    vopBegin(insn & 0x400 ? 48 : 42); vget(rd); vget(rn); vzero(); vopEnd(); vset(rd);
+    return true;
+  }
+  if ((insn & 0xFF808000) == 0xCE000000) { // four-register: EOR3, BCAX, SM3SS1
+    let k = (insn >> 21) & 3;
+    if (k == 3) return false;
+    if (k == 2) { vopBegin(46); vget(rn); vget(rm); vget(ra); vopEnd(); vset(rd); return true; }
+    vget(rn); vget(rm);
+    if (k == 0) { simd(0x51); vget(ra); simd(0x51); } else { vget(ra); simd(0x4F); simd(0x51); }
+    vset(rd);
+    return true;
+  }
+  if ((insn & 0xFFE00000) == 0xCE800000) { // XAR: ror(n ^ m, imm6)
+    let t = tv(0), sh = (insn >> 10) & 63;
+    vget(rn); vget(rm); simd(0x51);
+    if (sh != 0) { ltee(t); i32c(sh); simd(0xCD); lget(t); i32c(64 - sh); simd(0xCB); simd(0x50); }
+    vset(rd);
+    return true;
+  }
+  if ((insn & 0xFFE0C000) == 0xCE408000) { // SM3TT1A, SM3TT1B, SM3TT2A, SM3TT2B
+    vopBegin(47 | (<i32>((insn >> 12) & 3) << 12) | (<i32>((insn >> 10) & 3) << 14)); vget(rd); vget(rn); vget(rm); vopEnd(); vset(rd);
+    return true;
+  }
+  return false;
+}
 export function trSimd(pc: u64, insn: u32): bool {
+  if ((insn >>> 24) == 0xCE) return crypto2(insn);
   let scalar = ((insn >> 28) & 1) != 0;
   if (scalar) { if ((insn >>> 30) != 1) return false; }
   else if (insn >>> 31) return false;
