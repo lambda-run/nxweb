@@ -511,6 +511,14 @@ function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
       if (k == nwr) { if (nwr < 32) { store<u64>(WR + (<usize>k << 4), addr); store<u64>(WR + (<usize>k << 4), size, 8); nwr++; } else if (once(34)) L.redLine("a compute pass writes more than 32 storage ranges: the others are not read back into guest memory"); }
     }
   }
+  // Slots 16 + r: a compute stage that takes uniform slot r's address and reads it through global memory (src/shaders/spv.ts storageSlot; nxnative's
+  // ubo_ptr): the range bound at the stage's uniform slot r is sent as storage slot 16 + r
+  let um = load<u32>(rf, RF_ssbo) >>> 16;
+  for (let r: u32 = 0; um; r++, um >>= 1) {
+    if (!(um & 1)) continue;
+    const b = UBO + (<usize>(from * 16 + r) << 4), addr = load<u64>(b), size = load<u64>(b, 8), rec = H.hostRec(H.H_SSBO, 32);
+    store<u32>(rec, st, 8); store<u32>(rec, 16 + r, 12); store<u64>(rec, addr, 16); store<u32>(rec, <u32>size, 24); store<u32>(rec, (wm >> (16 + r)) & 1, 28);
+  }
   const im = load<u32>(rf, RF_img);
   for (let i: u32 = 0; i < 8; i++) {
     if (!((im >> i) & 1)) continue;

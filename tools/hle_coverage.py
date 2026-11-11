@@ -17,7 +17,8 @@ nxweb's side, what registers a name with the runtime (rt.register):
   hle    src/hle: every entry of the files tools/hle_names.py puts in scope (src/hle/gen/table.ts)
   fs     src/fs/names.ts (src/glue/rt_fs.ts registers every name)
   audio  src/audio/names.ts (src/glue/rt_audio.ts registers every name)
-  glue   a literal `name: "<take-over name>"` in src/glue/*.ts (rt_gfx.ts's nvnBootstrapLoader, ...)
+  glue   a literal `name: "<take-over name>"` or a call `reg("<take-over name>", ...)` of a local helper in
+         src/glue/*.ts (rt_gfx.ts's nvnBootstrapLoader and its nvnNativeImageBuilder functions, ...)
 
 src/hle/gen/coverage.ts lists the names no one in nxweb answers: the Prepare page's Code stage and
 `npm run prepare:scan` look them up in each module's dynamic symbol table (src/glue/hle_scan.ts).
@@ -76,7 +77,7 @@ def nxweb_answers(names):
             ans.setdefault(n, area + " (src/%s)" % area)
     for f in sorted(os.listdir(GLUE)):
         if f.endswith(".ts"):
-            for m in re.finditer(r'\bname:\s*"([^"]+)"', open(os.path.join(GLUE, f)).read()):
+            for m in re.finditer(r'\b(?:name:\s*|reg\(\s*)"([^"]+)"', open(os.path.join(GLUE, f)).read()):
                 if m.group(1) in names:
                     ans.setdefault(m.group(1), "glue (src/glue/%s)" % f)
     return ans

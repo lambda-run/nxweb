@@ -3,24 +3,8 @@
 // forced 1: HLE_FORCE (taken over where a module defines it too); 0: HLE / the GL and Vulkan tables (taken over where imported and defined nowhere).
 export const NXNATIVE_REF = "dbf8499856405fc62d17dea70b5920880f3ae4d4";
 export const NXNATIVE_NAMES = 1625;   // names nxnative takes over
-export const COVERAGE_KEY = "ea38f3cf84a62138";   // changes with the list
+export const COVERAGE_KEY = "4886ea9dc85630be";   // changes with the list
 export const NOT_ANSWERED: readonly (readonly [string, string, string, number])[] = [
-  ["_Z22nvnNativeImageFinalizeP14NVNnativeImage", "nvnNativeImageFinalize(NVNnativeImage*)", "gfx/nvn/hle_nvn.c", 1],
-  ["_Z24nvnNativeImageInitializeP14NVNnativeImagePK21NVNnativeImageBuilder", "nvnNativeImageInitialize(NVNnativeImage*, NVNnativeImageBuilder const*)", "gfx/nvn/hle_nvn.c", 1],
-  ["_Z30nvnNativeImageBuilderSetDeviceP21NVNnativeImageBuilderP9NVNdevice", "nvnNativeImageBuilderSetDevice(NVNnativeImageBuilder*, NVNdevice*)", "gfx/nvn/hle_nvn.c", 1],
-  ["_Z30nvnNativeImageBuilderSetFormatP21NVNnativeImageBuilder9NVNformat", "nvnNativeImageBuilderSetFormat(NVNnativeImageBuilder*, NVNformat)", "gfx/nvn/hle_nvn.c", 1],
-  ["_Z32nvnNativeImageBuilderSetDefaultsP21NVNnativeImageBuilder", "nvnNativeImageBuilderSetDefaults(NVNnativeImageBuilder*)", "gfx/nvn/hle_nvn.c", 1],
-  ["_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage", "nvnTextureInitializeFromNativeImage(NVNtexture*, NVNnativeImage*)", "gfx/nvn/hle_nvn.c", 1],
-  ["_Z40nvnNativeImageBuilderSetMemoryPermissionP21NVNnativeImageBuilder30NVNnativeImageMemoryPermission", "nvnNativeImageBuilderSetMemoryPermission(NVNnativeImageBuilder*, NVNnativeImageMemoryPermission)", "gfx/nvn/hle_nvn.c", 1],
-  ["_Z41nvnNativeImageBuilderSetNativeImageHandleP21NVNnativeImageBuilderN2nn2gs17NativeImageHandleE", "nvnNativeImageBuilderSetNativeImageHandle(NVNnativeImageBuilder*, nn::gs::NativeImageHandle)", "gfx/nvn/hle_nvn.c", 1],
-  ["_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm", "nn::gs::sdk::CheckGraphicsSystemInitialized(char const*, unsigned long)", "gfx/hle_nv.c", 1],
-  ["_ZN2nv16FinalizeGraphicsEv", "nv::FinalizeGraphics()", "gfx/hle_nv.c", 1],
-  ["_ZN2nv18InitializeGraphicsEPvm", "nv::InitializeGraphics(void*, unsigned long)", "gfx/hle_nv.c", 1],
-  ["_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", "nv::SetGraphicsAllocator(void* (*)(unsigned long, unsigned long, void*), void (*)(void*, void*), void* (*)(void*, unsigned long, void*), void*)", "gfx/hle_nv.c", 1],
-  ["_ZN2nv21GetGraphicsMemoryInfoEPNS_10MemoryInfoE", "nv::GetGraphicsMemoryInfo(nv::MemoryInfo*)", "gfx/hle_nv.c", 1],
-  ["_ZN2nv22DumpGraphicsMemoryInfoEv", "nv::DumpGraphicsMemoryInfo()", "gfx/hle_nv.c", 1],
-  ["_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", "nv::SetGraphicsDevtoolsAllocator(void* (*)(unsigned long, unsigned long, void*), void (*)(void*, void*), void* (*)(void*, unsigned long, void*), void*)", "gfx/hle_nv.c", 1],
-  ["_ZN2nv9InitCheckEv", "nv::InitCheck()", "gfx/hle_nv.c", 1],
   ["eglBindAPI", "eglBindAPI", "gfx/gl/hle_gl.m", 0],
   ["eglChooseConfig", "eglChooseConfig", "gfx/gl/hle_gl.m", 0],
   ["eglCreateContext", "eglCreateContext", "gfx/gl/hle_gl.m", 0],

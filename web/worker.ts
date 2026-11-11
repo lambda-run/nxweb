@@ -60,6 +60,18 @@ const forceMem64 = new URLSearchParams(self.location?.search ?? "").get("mem64")
 const precise = ({ "1": 1, "2": 2 } as const)[new URLSearchParams(self.location?.search ?? "").get("precise") ?? ""];
 // ?ndve=bypass: a bilinear stand-in for nn::ndve's movie network when its dispatches cannot run (diagnostic, src/glue/ndve.ts)
 const ndve = new URLSearchParams(self.location?.search ?? "").get("ndve") === "bypass" ? "bypass" as const : undefined;
+// ?pace=timer: display frames come from a 16 ms timer in this Worker, not from requestAnimationFrame, which the browser stops for a hidden or covered page
+// (runs that nobody watches: the development loop). Off by default: a watched picture should follow the display
+const timerPace = new URLSearchParams(self.location?.search ?? "").get("pace") === "timer";
+// (a browser also slows a hidden page's timers: the 16 ms are counted by messages to this Worker itself, which it does not slow)
+const spinChannel = new MessageChannel();
+function spinFor(ms: number): Promise<void> {
+  const until = performance.now() + ms;
+  return new Promise(res => { const tick = () => { if (performance.now() >= until) { spinChannel.port1.onmessage = null; res(); } else spinChannel.port2.postMessage(0); }; spinChannel.port1.onmessage = tick; tick(); });
+}
+// ?canvas=off: nothing is presented to the page's canvas (a hidden page's canvas holds every present back); the frames are still drawn, and a frame
+// capture shows them. For runs nobody watches
+const noCanvas = new URLSearchParams(self.location?.search ?? "").get("canvas") === "off";
 // ?shaderdump=<url>: every stage the in-page translator fails on is POSTed there as <url>/sh-<key>.bin (u32 control length, control, code), so the
 // chain can be run on it outside the page (debugging; off by default, and the bytes go only where the URL says)
 const shaderDump = new URLSearchParams(self.location?.search ?? "").get("shaderdump");
@@ -141,7 +153,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   faultSeen = false;
   title = `nxweb report: ${o.name ?? files.map(f => f.name).join(" + ")}`;
   // a lost device: the replayer asks here for a new one (the page's test button destroys the device on purpose)
-  gfx = new RtGfx(me, set.gfx!, { device: device ?? undefined, canvas: device ? canvas : undefined, nextFrame: () => new Promise(res => (self as any).requestAnimationFrame(res)),
+  gfx = new RtGfx(me, set.gfx!, { device: device ?? undefined, canvas: device && !noCanvas ? canvas : undefined, nextFrame: timerPace ? () => spinFor(16) : () => new Promise(res => (self as any).requestAnimationFrame(res)),
     requestDevice: async () => { device = await requestDevice(); return device; }, profile: game?.gfx, ndve });
   // shaders: a library the user gave first, then translation in the page (stored by key and chain version)
   try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined, onFailed: dumpFailed }); }

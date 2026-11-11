@@ -6,14 +6,14 @@ NvOsDrvIoctl3	NvOsDrvIoctl3	host/hle_nvdrv.c	forced	hle (src/hle/nvdrv.ts)
 NvOsDrvMapSharedMem	NvOsDrvMapSharedMem	host/hle_nvdrv.c	forced	hle (src/hle/nvdrv.ts)
 NvOsDrvOpen	NvOsDrvOpen	host/hle_nvdrv.c	forced	hle (src/hle/nvdrv.ts)
 _Z17NvOsDrvQueryEventijPN2nn2os15SystemEventTypeE	NvOsDrvQueryEvent(int, unsigned int, nn::os::SystemEventType*)	host/hle_nvdrv.c	forced	hle (src/hle/nvdrv.ts)
-_Z22nvnNativeImageFinalizeP14NVNnativeImage	nvnNativeImageFinalize(NVNnativeImage*)	gfx/nvn/hle_nvn.c	forced	-
-_Z24nvnNativeImageInitializeP14NVNnativeImagePK21NVNnativeImageBuilder	nvnNativeImageInitialize(NVNnativeImage*, NVNnativeImageBuilder const*)	gfx/nvn/hle_nvn.c	forced	-
-_Z30nvnNativeImageBuilderSetDeviceP21NVNnativeImageBuilderP9NVNdevice	nvnNativeImageBuilderSetDevice(NVNnativeImageBuilder*, NVNdevice*)	gfx/nvn/hle_nvn.c	forced	-
-_Z30nvnNativeImageBuilderSetFormatP21NVNnativeImageBuilder9NVNformat	nvnNativeImageBuilderSetFormat(NVNnativeImageBuilder*, NVNformat)	gfx/nvn/hle_nvn.c	forced	-
-_Z32nvnNativeImageBuilderSetDefaultsP21NVNnativeImageBuilder	nvnNativeImageBuilderSetDefaults(NVNnativeImageBuilder*)	gfx/nvn/hle_nvn.c	forced	-
-_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage	nvnTextureInitializeFromNativeImage(NVNtexture*, NVNnativeImage*)	gfx/nvn/hle_nvn.c	forced	-
-_Z40nvnNativeImageBuilderSetMemoryPermissionP21NVNnativeImageBuilder30NVNnativeImageMemoryPermission	nvnNativeImageBuilderSetMemoryPermission(NVNnativeImageBuilder*, NVNnativeImageMemoryPermission)	gfx/nvn/hle_nvn.c	forced	-
-_Z41nvnNativeImageBuilderSetNativeImageHandleP21NVNnativeImageBuilderN2nn2gs17NativeImageHandleE	nvnNativeImageBuilderSetNativeImageHandle(NVNnativeImageBuilder*, nn::gs::NativeImageHandle)	gfx/nvn/hle_nvn.c	forced	-
+_Z22nvnNativeImageFinalizeP14NVNnativeImage	nvnNativeImageFinalize(NVNnativeImage*)	gfx/nvn/hle_nvn.c	forced	glue (src/glue/rt_gfx.ts)
+_Z24nvnNativeImageInitializeP14NVNnativeImagePK21NVNnativeImageBuilder	nvnNativeImageInitialize(NVNnativeImage*, NVNnativeImageBuilder const*)	gfx/nvn/hle_nvn.c	forced	glue (src/glue/rt_gfx.ts)
+_Z30nvnNativeImageBuilderSetDeviceP21NVNnativeImageBuilderP9NVNdevice	nvnNativeImageBuilderSetDevice(NVNnativeImageBuilder*, NVNdevice*)	gfx/nvn/hle_nvn.c	forced	glue (src/glue/rt_gfx.ts)
+_Z30nvnNativeImageBuilderSetFormatP21NVNnativeImageBuilder9NVNformat	nvnNativeImageBuilderSetFormat(NVNnativeImageBuilder*, NVNformat)	gfx/nvn/hle_nvn.c	forced	glue (src/glue/rt_gfx.ts)
+_Z32nvnNativeImageBuilderSetDefaultsP21NVNnativeImageBuilder	nvnNativeImageBuilderSetDefaults(NVNnativeImageBuilder*)	gfx/nvn/hle_nvn.c	forced	glue (src/glue/rt_gfx.ts)
+_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage	nvnTextureInitializeFromNativeImage(NVNtexture*, NVNnativeImage*)	gfx/nvn/hle_nvn.c	forced	glue (src/glue/rt_gfx.ts)
+_Z40nvnNativeImageBuilderSetMemoryPermissionP21NVNnativeImageBuilder30NVNnativeImageMemoryPermission	nvnNativeImageBuilderSetMemoryPermission(NVNnativeImageBuilder*, NVNnativeImageMemoryPermission)	gfx/nvn/hle_nvn.c	forced	glue (src/glue/rt_gfx.ts)
+_Z41nvnNativeImageBuilderSetNativeImageHandleP21NVNnativeImageBuilderN2nn2gs17NativeImageHandleE	nvnNativeImageBuilderSetNativeImageHandle(NVNnativeImageBuilder*, nn::gs::NativeImageHandle)	gfx/nvn/hle_nvn.c	forced	glue (src/glue/rt_gfx.ts)
 _ZN2nn10streamplay10InitializeENS0_14StreamPlayTypeENS0_13StreamingModeEPvm	nn::streamplay::Initialize(nn::streamplay::StreamPlayType, nn::streamplay::StreamingMode, void*, unsigned long)	host/hle_misc.c	forced	hle (src/hle/misc.ts)
 _ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadFullKeyStateEEEiRKNS0_10GuestPadIdE	nn::streamplay::GetGuestPadStates(nn::streamplay::GuestPadState<nn::hid::NpadFullKeyState>*, int, nn::streamplay::GuestPadId const&)	host/hle_misc.c	forced	hle (src/hle/misc.ts)
 _ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadJoyDualStateEEEiRKNS0_10GuestPadIdE	nn::streamplay::GetGuestPadStates(nn::streamplay::GuestPadState<nn::hid::NpadJoyDualState>*, int, nn::streamplay::GuestPadId const&)	host/hle_misc.c	forced	hle (src/hle/misc.ts)
@@ -167,7 +167,7 @@ _ZN2nn2fs9IsMountedEPKc	nn::fs::IsMounted(char const*)	host/hle_fs.c	forced	fs (
 _ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE	nn::fs::WriteFile(nn::fs::FileHandle, long, void const*, unsigned long, nn::fs::WriteOption const&)	host/hle_fs.c	forced	fs (src/fs)
 _ZN2nn2gs17TryWaitNativeSyncERKNS0_16NativeSyncHandleE	nn::gs::TryWaitNativeSync(nn::gs::NativeSyncHandle const&)	host/hle_codec_video.c	forced	hle (src/hle/codec_video.ts)
 _ZN2nn2gs3sdk26SetGraphicsFrameLengthModeENS1_23GraphicsFrameLengthModeE	nn::gs::sdk::SetGraphicsFrameLengthMode(nn::gs::sdk::GraphicsFrameLengthMode)	host/hle_oe.c	forced	hle (src/hle/oe.ts)
-_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm	nn::gs::sdk::CheckGraphicsSystemInitialized(char const*, unsigned long)	gfx/hle_nv.c	forced	-
+_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm	nn::gs::sdk::CheckGraphicsSystemInitialized(char const*, unsigned long)	gfx/hle_nv.c	forced	glue (src/glue/rt_gfx.ts)
 _ZN2nn2oe10InitializeEv	nn::oe::Initialize()	host/hle_sdkinit.c	forced	hle (src/hle/sdkinit.ts)
 _ZN2nn2oe13GetRegionCodeEv	nn::oe::GetRegionCode()	host/hle_oe.c	forced	hle (src/hle/oe.ts)
 _ZN2nn2oe13MuteRecordingEv	nn::oe::MuteRecording()	host/hle_oe.c	forced	hle (src/hle/oe.ts)
@@ -1157,13 +1157,13 @@ _ZN2nn9bluetooth24GetBleConnectionInfoListEPNS0_17BleConnectionInfoEi	nn::blueto
 _ZN2nn9bluetooth28AcquireBleGattOperationEventEPNS_2os15SystemEventTypeE	nn::bluetooth::AcquireBleGattOperationEvent(nn::os::SystemEventType*)	host/hle_offline.c	forced	hle (src/hle/offline.ts)
 _ZN2nn9bluetooth31AcquireBleServiceDiscoveryEventEPNS_2os15SystemEventTypeE	nn::bluetooth::AcquireBleServiceDiscoveryEvent(nn::os::SystemEventType*)	host/hle_offline.c	forced	hle (src/hle/offline.ts)
 _ZN2nn9bluetooth37AcquireBleConnectionStateChangedEventEPNS_2os15SystemEventTypeE	nn::bluetooth::AcquireBleConnectionStateChangedEvent(nn::os::SystemEventType*)	host/hle_offline.c	forced	hle (src/hle/offline.ts)
-_ZN2nv16FinalizeGraphicsEv	nv::FinalizeGraphics()	gfx/hle_nv.c	forced	-
-_ZN2nv18InitializeGraphicsEPvm	nv::InitializeGraphics(void*, unsigned long)	gfx/hle_nv.c	forced	-
-_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_	nv::SetGraphicsAllocator(void* (*)(unsigned long, unsigned long, void*), void (*)(void*, void*), void* (*)(void*, unsigned long, void*), void*)	gfx/hle_nv.c	forced	-
-_ZN2nv21GetGraphicsMemoryInfoEPNS_10MemoryInfoE	nv::GetGraphicsMemoryInfo(nv::MemoryInfo*)	gfx/hle_nv.c	forced	-
-_ZN2nv22DumpGraphicsMemoryInfoEv	nv::DumpGraphicsMemoryInfo()	gfx/hle_nv.c	forced	-
-_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_	nv::SetGraphicsDevtoolsAllocator(void* (*)(unsigned long, unsigned long, void*), void (*)(void*, void*), void* (*)(void*, unsigned long, void*), void*)	gfx/hle_nv.c	forced	-
-_ZN2nv9InitCheckEv	nv::InitCheck()	gfx/hle_nv.c	forced	-
+_ZN2nv16FinalizeGraphicsEv	nv::FinalizeGraphics()	gfx/hle_nv.c	forced	glue (src/glue/rt_gfx.ts)
+_ZN2nv18InitializeGraphicsEPvm	nv::InitializeGraphics(void*, unsigned long)	gfx/hle_nv.c	forced	glue (src/glue/rt_gfx.ts)
+_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_	nv::SetGraphicsAllocator(void* (*)(unsigned long, unsigned long, void*), void (*)(void*, void*), void* (*)(void*, unsigned long, void*), void*)	gfx/hle_nv.c	forced	glue (src/glue/rt_gfx.ts)
+_ZN2nv21GetGraphicsMemoryInfoEPNS_10MemoryInfoE	nv::GetGraphicsMemoryInfo(nv::MemoryInfo*)	gfx/hle_nv.c	forced	glue (src/glue/rt_gfx.ts)
+_ZN2nv22DumpGraphicsMemoryInfoEv	nv::DumpGraphicsMemoryInfo()	gfx/hle_nv.c	forced	glue (src/glue/rt_gfx.ts)
+_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_	nv::SetGraphicsDevtoolsAllocator(void* (*)(unsigned long, unsigned long, void*), void (*)(void*, void*), void* (*)(void*, unsigned long, void*), void*)	gfx/hle_nv.c	forced	glue (src/glue/rt_gfx.ts)
+_ZN2nv9InitCheckEv	nv::InitCheck()	gfx/hle_nv.c	forced	glue (src/glue/rt_gfx.ts)
 _ZN5movie7Decoder12GetLastErrorEv	movie::Decoder::GetLastError()	host/hle_movie.c	forced	hle (src/hle/movie.ts)
 _ZN5movie7Decoder14GetInputBufferEiPNS_6BufferE	movie::Decoder::GetInputBuffer(int, movie::Buffer*)	host/hle_movie.c	forced	hle (src/hle/movie.ts)
 _ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferE	movie::Decoder::GetOutputBuffer(int, movie::Buffer*)	host/hle_movie.c	forced	hle (src/hle/movie.ts)

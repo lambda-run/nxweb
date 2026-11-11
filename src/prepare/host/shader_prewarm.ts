@@ -47,7 +47,6 @@ export const reasonOf = (msg: string) => msg.replace(/\b[0-9a-f]{16}\b/g, "<key>
 // What the runtime's RtShaders.register refuses, said the same way
 function refused(t: Translated): string | null {
   const r = t.reflection as any;
-  if (r?.stage === "compute") return "a compute stage, which src/gfx does not run";
   if (r?.extra?.length) return `bindings src/gfx does not provide: ${r.extra.map((x: any) => x.kind).join(", ")}`;
   return null;
 }

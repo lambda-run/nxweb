@@ -375,7 +375,8 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     const wanted = new Set<string>();
     const standIn: ShaderTranslator = { chain: "stand-in-1", prioritize: k => { wanted.add(k); }, translate: async b => { asked++; await gate; const e = lib.get(b.key); if (!e) throw new Error("the stand-in translator has no such stage"); return { wgsl: e.wgsl, reflection: e.reflection }; } };
     let opened = false;
-    const b = await mx("mx", { translator: standIn, store }, p => {
+    // (wait: false: this is the mode where a program is usable at once and its draws are skipped; by default the game waits for the stages)
+    const b = await mx("mx", { translator: standIn, store, wait: false }, p => {
       const d = draws(p);
       if (!opened && d.skipped >= 3) { opened = true; eq(d.issued, 0, "draws issued before the stages arrived"); open(); }
       return opened && p.shaders!.stats.translated === 2 && d.issued >= 3;

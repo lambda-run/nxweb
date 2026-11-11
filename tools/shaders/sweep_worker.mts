@@ -31,7 +31,6 @@ const naga = await load(process.env.SWEEP_NAGA!);
 let serial = 0;
 
 function refused(r: any): string | null {
-  if (r?.stage === "compute") return "a compute stage, which src/gfx does not run";
   if (r?.extra?.length) return `bindings src/gfx does not provide: ${r.extra.map((x: any) => x.kind).join(", ")}`;
   return null;
 }

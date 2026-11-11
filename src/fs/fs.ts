@@ -599,7 +599,7 @@ function opOpenFile(out: u64, path: u64, mode: u32): i64 {
   if (mKind(mi) == M_IMAGE) {
     const m = img(target);
     if (!imWalk(m, PB0, rN) || !gIsFile) return RES_PATH_NOT_FOUND;
-    if (wr) { lb("fs write to a read-only mount: "); lbytes(<usize>path, <u32>gstrlen(path, 4096)); le(); return RES_FAIL; }
+    if (wr) return roLog(path);
     const i = slotNew(MAX_FH, FHS, 32);
     if (i < 0) return RES_FAIL;
     const p = fp(<u32>i);
@@ -612,7 +612,7 @@ function opOpenFile(out: u64, path: u64, mode: u32): i64 {
   if (wr && svBusy(s)) return FS_RETRY;
   const n = svWalk(s, PB0, rN);
   if (n < 0) return RES_PATH_NOT_FOUND;
-  if (wr && !svWritable(s)) { lb("fs write to a read-only mount: "); lbytes(<usize>path, <u32>gstrlen(path, 4096)); le(); return RES_FAIL; }
+  if (wr && !svWritable(s)) return roLog(path);
   if (!s.nodes || nType(s, n) != N_FILE) return wr ? RES_FAIL : RES_PATH_NOT_FOUND;   // open(2) of a directory: EISDIR for writing
   const i = slotNew(MAX_FH, FHS, 32);
   if (i < 0) return RES_FAIL;
@@ -719,7 +719,33 @@ function opOpenMode(h: u64): i64 {
 
 // ---------- path operations ----------
 const P_CREATE_FILE: u32 = 0, P_CREATE_DIR: u32 = 1, P_DELETE_FILE: u32 = 2, P_DELETE_DIR: u32 = 3, P_DELETE_REC: u32 = 4, P_CLEAN: u32 = 5;
-function roLog(path: u64): i64 { lb("fs write to a read-only mount: "); lbytes(<usize>path, <u32>gstrlen(path, 4096)); le(); return RES_FAIL; }
+// A refused write is logged once per path (the path starts with its mount name), then as a count at 10, 100, 1000, ...
+// repeats: a game that retries a save it cannot write forever (seen: 3.4 million lines) costs one line per power of ten.
+// The module has no clock, so the limit is by count. 64 paths are remembered by hash; when the table is full the
+// oldest entry is replaced, and its path starts again with a full line.
+const RO_SEEN: usize = memory.data(512);   // 64 * (u32 hash, u32 repeats)
+let roSeen: u32 = 0, roNext: u32 = 0;
+function roLog(path: u64): i64 {
+  const n = <u32>gstrlen(path, 4096);
+  let h: u32 = 0x811C9DC5;
+  for (let i: u32 = 0; i < n; i++) h = (h ^ <u32>load<u8>(<usize>path + i)) * 0x01000193;
+  for (let i: u32 = 0; i < roSeen; i++) {
+    const e = RO_SEEN + (<usize>i << 3);
+    if (load<u32>(e) != h) continue;
+    const c = load<u32>(e, 4) + 1;
+    if (!c) return RES_FAIL;   // 4 billion repeats: the count stays where it is
+    store<u32>(e, c, 4);
+    let p: u32 = 10;
+    while (p < c && p <= 100000000) p *= 10;
+    if (p == c) { lb("fs write to a read-only mount: "); lbytes(<usize>path, n); ls(" ("); lu(c); ls(" more times)"); le(); }
+    return RES_FAIL;
+  }
+  let k = roSeen;
+  if (k < 64) roSeen++; else { k = roNext; roNext = (roNext + 1) & 63; }
+  store<u32>(RO_SEEN + (<usize>k << 3), h); store<u32>(RO_SEEN + (<usize>k << 3), 0, 4);
+  lb("fs write to a read-only mount: "); lbytes(<usize>path, n); le();
+  return RES_FAIL;
+}
 function opCreate(path: u64, size: i64, type: u8): i64 {
   const r = resolve(path, PB0);
   if (r) return r;

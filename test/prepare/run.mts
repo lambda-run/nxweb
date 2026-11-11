@@ -863,9 +863,9 @@ test("the Shaders stage's translation ahead (shader_prewarm.ts): each key once t
   const pw: ShaderPrewarm = { key: "t", source: threadSource(w, read), translators: () => [fakeTranslator(bad, { seen }), fakeTranslator(bad, { seen })], store };
   const out = await prewarm(pw, list, { cancelled: () => false, progress: p => progress.push(p.filesDone) });
   assert.deepEqual(seen.sort(), [chainKey(vs), chainKey(ps), chainKey(ps2), chainKey(cs)].sort());
-  assert.deepEqual([out.found, out.translated, out.cached, out.failed, out.untranslated, out.files], [4, 3, 0, 2, 0, 4]);
+  assert.deepEqual([out.found, out.translated, out.cached, out.failed, out.untranslated, out.files], [4, 3, 0, 1, 0, 4]);
   assert.deepEqual(out.byStage, { vs: 1, ps: 2, cs: 1 });
-  assert.deepEqual(out.failures.map(f => [f.reason, f.count]).sort(), [["a compute stage, which src/gfx does not run", 1], ["xlate_wasm: unsupported instruction TXQ.B in <key>", 1]]);
+  assert.deepEqual(out.failures.map(f => [f.reason, f.count]).sort(), [["xlate_wasm: unsupported instruction TXQ.B in <key>", 1]]);   // (a compute stage is not refused: src/gfx dispatches it)
   assert.deepEqual(out.notRead, [{ reason: "BAHS (agl / gsys shader archives)", count: 1, examples: ["romfs/d.bars"] }]);
   assert.deepEqual([...store.m.keys()].sort(), [chainKey(vs), chainKey(ps), chainKey(cs)].map(k => `${k}/${SHADER_CHAIN}`).sort());
   assert.equal(SHADER_CHAIN, RT_SHADER_CHAIN);
@@ -873,7 +873,7 @@ test("the Shaders stage's translation ahead (shader_prewarm.ts): each key once t
   // again: what is stored is not translated twice
   seen.length = 0;
   const again = await prewarm(pw, list, { cancelled: () => false, progress: () => {} });
-  assert.deepEqual([again.translated, again.cached, again.failed, seen], [0, 3, 2, [chainKey(ps2)]]);
+  assert.deepEqual([again.translated, again.cached, again.failed, seen], [0, 3, 1, [chainKey(ps2)]]);   // (the compute stage is a store hit, not a refusal)
   // no translator in this build: found and counted, nothing stored
   const scanOnly = await prewarm({ ...pw, translators: null, store: memStore() }, list, { cancelled: () => false, progress: () => {} });
   assert.deepEqual([scanOnly.chain, scanOnly.found, scanOnly.untranslated, scanOnly.translated], [null, 4, 4, 0]);
@@ -1243,8 +1243,9 @@ test("the instruction scan of the Code stage: every test source compiled with un
 test("the take-over scan of the Code stage: a synthetic game's dynamic symbols against the list of what nxnative takes over and nxweb does not answer: an HLE_FORCE name is a gap where a module defines or imports it, an HLE name where it is imported and defined nowhere, an answered name never; recorded in the Code stage's output and logged, not red; npm run prepare:scan prints the same and exits 1", async () => {
   const info: string[] = [];
   const forced = NOT_ANSWERED.filter(e => e[3] === 1), weak = NOT_ANSWERED.filter(e => e[3] === 0);
-  assert.ok(forced.length >= 2 && weak.length >= 2, "the list has forced and weak names");
-  const [f1, f2] = forced, [w1, w2] = weak, answered = "_ZN2nn2fs8MountRomEPKcPvm";
+  assert.ok(forced.length >= 1 && weak.length >= 2, "the list has forced and weak names");
+  // (one forced name is enough: the second module then defines the name the first imports, which is a gap in both)
+  const f1 = forced[0], f2 = forced[1] ?? forced[0], [w1, w2] = weak, answered = "_ZN2nn2fs8MountRomEPKcPvm";
   assert.ok(!NOT_ANSWERED.some(e => e[0] === answered), "nn::fs::MountRom is answered (src/fs)");
   // the parser alone: withImport's one imported symbol, then a table of our own
   assert.deepEqual(dynSymbols(withImport(matchImage({ 0x100: [A64.RET] }), "glClear")), [{ name: "glClear", defined: false }]);
@@ -1260,7 +1261,8 @@ test("the take-over scan of the Code stage: a synthetic game's dynamic symbols a
   ].sort((a, b) => a.module.localeCompare(b.module) || a.file.localeCompare(b.file) || a.demangled.localeCompare(b.demangled));
   const direct = hleGaps([{ module: "main", symbols: dynSymbols(main) }, { module: "sdk", symbols: dynSymbols(sdk) }]);
   assert.deepEqual(direct, expect, "w2 is defined by sdk: the game's own; the answered name is no gap");
-  assert.equal(hleHeadline(direct), "3 SDK functions nxnative replaces are not answered here yet");
+  const gapNames = new Set(expect.map(e => e.name)).size;   // the headline counts names (with one forced name in the list, main imports what sdk defines)
+  assert.equal(hleHeadline(direct), `${gapNames} SDK functions nxnative replaces are not answered here yet`);
   assert.equal(hleHeadline(direct.slice(0, 1)), "1 SDK function nxnative replaces is not answered here yet");
   assert.equal(hleHeadline([]), ""); assert.deepEqual(hleLines([]), []);
   // the same through the Code stage of a synthetic game
@@ -1271,7 +1273,7 @@ test("the take-over scan of the Code stage: a synthetic game's dynamic symbols a
   const c = r.prep.out<CodeOut>("code");
   assert.deepEqual(c.modules.map(m => m.name).sort(), ["main", "sdk"]);
   assert.deepEqual(c.hle, expect);
-  assert.ok(r.lines.includes("prepare: hle: 3 SDK functions nxnative replaces are not answered here yet:"), r.lines.join("\n"));
+  assert.ok(r.lines.includes(`prepare: hle: ${gapNames} SDK functions nxnative replaces are not answered here yet:`), r.lines.join("\n"));
   assert.ok(r.lines.some(l => l.startsWith("prepare: hle: main ") && l.includes(f1[1]) && l.includes("dm/" + f1[2].split(",")[0])));
   assert.ok(!r.lines.some(l => l.startsWith("[RED]")), "the scan predicts, it does not fail the prepare");
   const again = prepare(dirOf("hle-scan")); assert.deepEqual((await again.prep.run()).skipped, [...STAGES]); again.tree.close();
@@ -1281,7 +1283,7 @@ test("the take-over scan of the Code stage: a synthetic game's dynamic symbols a
   // the CLI: the game folder (the version the prepare picks), the exefs folder, one module
   const cli = (args: string[]) => { try { return { code: 0, out: execFileSync(process.execPath, [join(ROOT, "src", "prepare", "host", "scan.mts"), ...args], { cwd: ROOT, encoding: "utf8" }) }; } catch (e) { const x = e as { status: number; stdout: string; stderr: string }; return { code: x.status, out: x.stdout + x.stderr }; } };
   const a = cli([dirOf("hle-scan")]);
-  assert.equal(a.code, 1, a.out); assert.ok(a.out.includes("3 SDK functions nxnative replaces are not answered here yet:"), a.out);
+  assert.equal(a.code, 1, a.out); assert.ok(a.out.includes(`${gapNames} SDK functions nxnative replaces are not answered here yet:`), a.out);
   for (const g of expect) assert.ok(a.out.split("\n").some(l => l.includes(g.demangled) && l.trimStart().startsWith(g.module)), `${g.module} ${g.demangled}: ${a.out}`);
   assert.equal(cli([join(dirOf("hle-scan"), "base", "exefs")]).out.split("\n").filter(l => l.includes("not answered here yet")).length, 1);
   const one = cli([join(dirOf("hle-scan"), "base", "exefs", "main")]);

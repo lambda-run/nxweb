@@ -401,6 +401,21 @@ both("save: a container that cannot be opened or read mounts read-only: every wr
   }
 });
 
+test("save: a write a read-only mount refuses is logged once per path, then as a count at each power of ten", async () => {
+  const st = new TestStorage(); st.set(KIND.SAVE, 0, DEV.IO);
+  const fs = await mounted(st);
+  assert.equal(fs.saveState(), "ReadOnly");
+  const lines = () => fs.logs.filter(l => l.startsWith("fs write to a read-only mount: "));
+  for (let i = 0; i < 1001; i++) assert.equal(await fs.path("CreateFile", "save:/account.sav", 0), R.FAIL, "the result does not change");
+  assert.deepEqual(lines(), ["fs write to a read-only mount: save:/account.sav", "fs write to a read-only mount: save:/account.sav (10 more times)",
+    "fs write to a read-only mount: save:/account.sav (100 more times)", "fs write to a read-only mount: save:/account.sav (1000 more times)"]);
+  // another path, and the same path through another name of the mount, start with their own line
+  assert.equal(await fs.path("CreateDirectory", "save:/d"), R.FAIL);
+  assert.equal(await fs.mount("MountSave", "second", 0), R.OK);
+  for (let i = 0; i < 3; i++) assert.equal(await fs.path("CreateFile", "second:/account.sav", 0), R.FAIL);
+  assert.deepEqual(lines().slice(4), ["fs write to a read-only mount: save:/d", "fs write to a read-only mount: second:/account.sav"]);
+});
+
 both("save: temporary storage is not transactional; cache storages are separate saves, committed, deleted", async (async) => {
   const st = new TestStorage();
   const fs = new Fs(st, { async });

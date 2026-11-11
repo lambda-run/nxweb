@@ -299,6 +299,17 @@ void main() { wb.w[gl_GlobalInvocationID.x] = rb.r[gl_GlobalInvocationID.x] + 1u
   throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 0xff, cb_offset: 0 }] }), /traced to no storage buffer/, "global memory with no buffer");
   throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 4, cb_offset: 0xe }] }), /address is in uniform slot 1 \+ 0x38: not placed yet/, "an address in a game uniform slot");
   throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 0, cb_offset: 0x110 / 4 }] }), /c0 \+ 0x110, which is no compute stage storage buffer slot/, "the vertex table in a compute shader");
+  // a compute uniform slot read through its address (nxnative ubo_ptr, c0 0x210 + 0x10 r): storage slot 16 + r, binding 128 + 32 + 16 + r
+  const ptr = convertStage(naga, spv, { bindings: "nxweb", sbufs: [sbufs[0], { binding: 6, cb_slot: 0, cb_offset: 0x2c0 / 4, flags: 0 }] });
+  eq(ptr.reflection.storage, [{ slot: 2, write: true }, { slot: 27, write: false, ubo: 11 }], "uniform slot 11's address at c0 0x2c0");
+  if (!/@group\(0\) @binding\(187\)\s*var<storage(, read)?>/.test(ptr.wgsl)) throw new Error(ptr.wgsl);
+  throws(() => fixForWgsl(spv, { sbufs: [{ ...sbufs[0], cb_offset: 0x2c0 / 4 }, { ...sbufs[1], cb_offset: 0x2c0 / 4 }] }), /a second buffer of the shader traced to uniform slot 11's address/, "two buffers of one address");
+  // a task or mesh shader (compute to the translator) reads its own stage's table (DMSH_C0_SSBO_TS 0x670, DMSH_C0_SSBO_MS 0x770), bound in the compute stage's bindings
+  const slots = (r: ReturnType<typeof fixForWgsl>) => r.bindings.filter(b => b.kind === "storage").map(b => [b.reg, b.binding]);
+  eq(slots(fixForWgsl(spv, { mesh: { kind: "ms" }, sbufs: [{ ...sbufs[0], cb_offset: 0x790 / 4 }, { ...sbufs[1], cb_offset: 0x770 / 4 }] })), [[2, 162], [0, 160]], "the mesh table");
+  eq(slots(fixForWgsl(spv, { mesh: { kind: "ts" }, sbufs: [{ ...sbufs[0], cb_offset: 0x680 / 4 }, { ...sbufs[1], cb_offset: 0x670 / 4 }] })), [[1, 161], [0, 160]], "the task table");
+  throws(() => fixForWgsl(spv, { mesh: { kind: "ms" }, sbufs: [sbufs[0], sbufs[1]] }), /c0 \+ 0x330, which is no mesh stage storage buffer slot/, "the compute table in a mesh shader");
+  throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 0, cb_offset: 0x770 / 4 }] }), /c0 \+ 0x770, which is no compute stage storage buffer slot/, "the mesh table in a compute shader");
 });
 
 await test("SPIR-V pass: banks the host supplies (c1, the driver segments c0 and c2, the NVN2 push constants c[24]) go to group 0 binding 208 + stage * 4 + k; another bank is refused", () => {

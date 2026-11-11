@@ -8,6 +8,16 @@ export interface CaptureImage { name: string; pass: number; target: string; seri
 export interface Capture { text: string; images: CaptureImage[]; passes: number; draws: number; dispatches: number; records: number }
 export interface CaptureCtx { shaderKey(id: number): string; texture(serial: number): string }
 
+// The first floats of a buffer range as guest memory has them when the capture is described (the stream lies in the same linear memory): what a
+// vertex stage reads from a storage buffer is often a transform, and two draws that land on each other show the same numbers here
+function floatsAt(dv: DataView, addr: number, size: number): string {
+  try {
+    if (!addr || addr + 4 > dv.buffer.byteLength) return "";
+    const m = new DataView(dv.buffer, addr, Math.min(size, 80, dv.buffer.byteLength - addr)), out: string[] = [];
+    for (let o = 0; o + 4 <= m.byteLength; o += 4) { const f = m.getFloat32(o, true); out.push(Number.isFinite(f) && (f === 0 || Math.abs(f) > 1e-6 && Math.abs(f) < 1e7) ? String(+f.toFixed(3)) : "0x" + m.getUint32(o, true).toString(16)); }
+    return ` = [${out.join(" ")}]`;
+  } catch { return ""; }
+}
 const OPS: Record<number, string> = { 1: "TEX_CREATE", 2: "TEX_DESTROY", 3: "BEGIN_PASS", 4: "END_PASS", 5: "VIEWPORT", 6: "SCISSOR", 7: "PIPELINE_CREATE", 8: "PIPELINE", 9: "VBUF", 10: "UBO", 11: "TEX",
   12: "BLEND_COLOR", 13: "STENCIL_REF", 14: "DRAW", 15: "DRAW_IDX", 16: "CLEAR_RECT", 17: "COPY_B2T", 18: "COPY_T2T", 19: "SNAPSHOT", 20: "PRESENT", 21: "FENCE", 22: "FLUSH", 23: "MEM_DIRTY", 24: "TEX_DATA",
   25: "COPY_T2B", 26: "FIXUP", 27: "UBO_DATA", 28: "SSBO", 29: "IMG", 30: "BEGIN_COMPUTE", 31: "DISPATCH", 32: "BUF_READBACK",
@@ -100,7 +110,7 @@ export function describeRecord(op: number, dv: DataView, p: number, ctx: Capture
     case 25: return `B copy ${tex(16)} level ${dv.getUint32(p + 24, true)} layer ${dv.getUint32(p + 28, true)} region ${i32s(dv, p + 32, 6)} -> buffer ${hex(u64(dv, p + 8))} (read back)`;
     case 26: return `    fix-up (1, ysign, zscale, zoffset) = ${f32s(dv, p + 8, 4)}`;
     case 27: return `    ubo ${STAGE[dv.getUint32(p + 8, true)]}[${dv.getUint32(p + 12, true)}] ${dv.getUint32(p + 16, true)} bytes from the recorder${dv.getUint32(p + 12, true) === 14 ? " (support buffer)" : ""}`;
-    case 28: return `    storage ${STAGE[dv.getUint32(p + 8, true)]}[${dv.getUint32(p + 12, true)}] ${hex(u64(dv, p + 16))}+${dv.getUint32(p + 24, true)}${dv.getUint32(p + 28, true) & 1 ? " written" : ""}`;
+    case 28: return `    storage ${STAGE[dv.getUint32(p + 8, true)]}[${dv.getUint32(p + 12, true)}] ${hex(u64(dv, p + 16))}+${dv.getUint32(p + 24, true)}${dv.getUint32(p + 28, true) & 1 ? " written" : ""}${floatsAt(dv, u64(dv, p + 16), dv.getUint32(p + 24, true))}`;
     case 29: { const f = dv.getUint32(p + 24, true); return `    image ${STAGE[dv.getUint32(p + 8, true)]}[${dv.getUint32(p + 12, true)}] ${u64(dv, p + 16) ? tex(16) : "none"}${f & 1 ? " written" : ""}${f & 2 ? view(dv, p + 32) : ""}`; }
     case 30: state.inPass = 0; return `P ${++state.pass} begin compute`;
     case 31: state.inPass++; return `  D dispatch pipeline ${dv.getUint32(p + 8, true)} groups ${i32s(dv, p + 12, 3)}`;

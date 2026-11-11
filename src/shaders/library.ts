@@ -29,7 +29,7 @@ export interface Reflection {
   outputs?: number[];                                                    // fragment: colour targets written
   fixup: boolean;                                                        // vertex: reads the position fix-up at @group(2) @binding(0)
   drawParams?: boolean;                                                  // vertex: reads the draw's base vertex, base instance, draw index at @group(2) @binding(2)
-  storage?: { slot: number; write?: boolean }[];                         // storage buffer slots, at @group(0) @binding(128 + stage * 16 + slot)
+  storage?: { slot: number; write?: boolean; ubo?: number }[];           // storage buffer slots, at @group(0) @binding(128 + stage * 16 + slot); `ubo` (compute, slot 16 + ubo): the range bound to that uniform slot instead
   // more than src/gfx reads today (tools/shaders/README.md, "What src/gfx must change"):
   uboSize: Record<string, number>;                                       // slot -> bytes the WGSL type covers: the host binds at least this, zero-filled past what the game bound
   attributeTypes?: Record<string, "float" | "sint" | "uint">;            // vertex: the class each input is declared with

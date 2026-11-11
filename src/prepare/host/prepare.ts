@@ -14,10 +14,11 @@ import { DirRomDevice, PrepStorage, treeSource, blobSource, type RomIndex } from
 import { packSource, type NupPack, type NupOptions } from "./nup.ts";
 import type { FsDevice, FsStorage } from "../../glue/fs_host.ts";
 import { prewarm, PrewarmCancelled, type ShaderPrewarm, type PrewarmOut, type ScanFile } from "./shader_prewarm.ts";
+import { SCAN_FORMAT as SHADER_SCAN_FORMAT } from "./shader_scan.ts";
 import { isJunk } from "./tree.ts";
 
 export const PREPARE_FORMAT = 3;                        // in every input hash: a change of this file's outputs bumps it
-export const SHADER_CHAIN = "nxweb-shaders-5/page";     // src/glue/rt_shaders.ts SHADER_CHAIN (checked by the tests)
+export const SHADER_CHAIN = "nxweb-shaders-6/page";     // src/glue/rt_shaders.ts SHADER_CHAIN (checked by the tests)
 export const SHADER_STORE = "nxweb-shaders";            // webShaderStore()'s default name
 export const DEFAULT_APP_POOL = "0xCD500000";           // a 4 GB Switch's application pool (nxnative profile_guess.py APP_POOL)
 export const STAGES = ["detect", "index", "profile", "code", "shaders"] as const;
@@ -87,7 +88,8 @@ export interface CodeOut {
 }
 // mode: the runtime still translates on demand what is not in the store; prewarm: what the stage's scan found and
 // translated ahead (null when the embedder gave no prewarm)
-export interface ShadersOut { mode: "on-demand"; chain: string; store: string; prewarm: PrewarmOut | null }
+// filesKey: what the scan read (the files and the scan's format, not the chain): a scan that found no stage in them is not made again for a new chain
+export interface ShadersOut { mode: "on-demand"; chain: string; store: string; prewarm: PrewarmOut | null; filesKey?: string }
 
 export interface AppliedCut extends Cut { module: string; buildId: string }
 // A translator hook at a pc (the other way to express a patch: return a constant, skip a call, call a host
@@ -281,11 +283,18 @@ export class Prepare {
       const shMain = pw ? l.files.filter(f => f.path === det.exefs + "main") : [], roots = [det.romfs, ...det.dlc.map(d => d.root)];
       const shRom = pw ? l.files.filter(f => roots.some(r => f.path.startsWith(r)) && !isJunk(f.path)) : [];
       const scanFiles: ScanFile[] = [...shMain.map(f => ({ path: f.path, size: f.size, module: true })), ...shRom.map(f => ({ path: f.path, size: f.size, module: false }))];
+      // the record of an earlier run, before the stage clears it: its scan stands when it read the same files and found nothing to translate
+      const prevSh = this.manifest.stages.shaders.output as ShadersOut | null;
+      const filesKey = pw ? this.hash(["shader-scan", SHADER_SCAN_FORMAT, det.titleId, [...shMain, ...shRom].map(fileKey)]) : "";
       await stage<ShadersOut>("shaders", this.hash(pw ? ["shaders", SHADER_CHAIN, SHADER_STORE, det.titleId, pw.key, [...shMain, ...shRom].map(fileKey)] : ["shaders", SHADER_CHAIN, SHADER_STORE, det.titleId]), async () => {
         await this.point("shaders:work");
         // without a prewarm: translate on demand, cached; the runtime's RtShaders gets this chain and store
         if (!pw) return { mode: "on-demand", chain: SHADER_CHAIN, store: SHADER_STORE, prewarm: null };
-        return { mode: "on-demand", chain: SHADER_CHAIN, store: SHADER_STORE, prewarm: await this.prewarmShaders(pw, scanFiles) };
+        if (prevSh?.prewarm && prevSh.filesKey === filesKey && prevSh.prewarm.found === 0) {
+          this.w.log("prepare: shaders: the scan of these files found no stage last time (it reads every file): not made again for the new chain; stages are translated when the game names them");
+          return { mode: "on-demand", chain: SHADER_CHAIN, store: SHADER_STORE, prewarm: { ...prevSh.prewarm, chain: null }, filesKey };
+        }
+        return { mode: "on-demand", chain: SHADER_CHAIN, store: SHADER_STORE, prewarm: await this.prewarmShaders(pw, scanFiles), filesKey };
       }, o => { const p = o.prewarm; this.w.setCount("shFound", p?.found ?? 0); this.w.setCount("shTranslated", p ? p.translated + p.cached : 0); this.w.setCount("shFailed", p?.failed ?? 0); });
       await this.save(); this.changed();
       return { state: "Ready", skipped, ran };

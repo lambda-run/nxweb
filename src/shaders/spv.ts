@@ -62,6 +62,7 @@ export interface Binding {
   reg?: number;        // cbuf: uniform slot; tex / samp_tex: texture slot
   bank?: number;       // drvcb: 0 or 2; push: 24
   write?: boolean;     // storage: the shader may write it
+  ubo?: number;        // storage, compute: not a storage buffer slot's range but the range bound to this uniform slot of the stage (reg is then UBO_PTR_SLOT0 + ubo)
   size?: number;       // buffers: bytes the WGSL type covers = the least the host may bind
   dim?: "2d" | "2d-array" | "cube" | "cube-array" | "3d";
   sampleType?: "float" | "depth" | "sint" | "uint";
@@ -87,11 +88,14 @@ export interface FixOptions {
   shrinkUniforms?: boolean;   // default true
   // the translator's storage buffers (its <key>.res.json "sbufs"): SPIR-V binding -> where the shader reads the buffer's address
   sbufs?: { binding: number; cb_slot: number; cb_offset: number; flags?: number }[];
+  // a task or mesh shader the translator read as compute (job.ts): its storage buffer table in c0 is its own stage's
+  mesh?: { kind: "ts" | "ms" };
   // warp operations (spv_subgroups.ts): "native" when the device has WebGPU's subgroups feature, else "single" (the default: one-invocation subgroups)
   subgroups?: SubgroupPath;
 }
 
 // The nxweb binding convention (src/gfx/README.md), with the three things a translated shader has and a hand-written one has not:
+//   group 0, binding 128 + 2 * 16 + 16 + r: compute uniform slot r read through its address (a storage buffer; reflection storage { slot: 16 + r, ubo: r })
 //   group 0, binding stage * 16 + 14: the translator's support buffer (only when the shader reads it)
 //   group 0, binding 208 + stage * 4 + 0: the shader's own constants c1;  + 1: driver segment c0;  + 2: driver segment c2;  + 3: NVN2 push constants (c[24])
 //   group 2, binding 0: the position fix-up (one vec4f), vertex shaders
@@ -552,6 +556,8 @@ function privatizeBoundSizes(c: Ctx) {
   for (const v of c.m.insts.filter(i => i.op === Op.Variable && i.w[2] === SC.Uniform)) {
     if (!new RegExp(`^[a-z]+_c${CBSIZE_BANK}$`).test(c.names.get(v.w[1]) ?? "")) continue;
     const st = c.def.get(c.def.get(v.w[0])!.w[2])!, arr = c.def.get(st.w[1])!, vec = c.def.get(arr.w[1])!, uint = vec.w[1];
+    // the variable goes to the end of the globals: a constant or type that exists already may be declared after the place it had
+    c.m.insts.splice(c.m.insts.indexOf(v), 1); c.m.insts.splice(c.firstFunction(), 0, v);
     let at = c.m.insts.indexOf(v), r;
     const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
     const ones = add(Op.Constant, [uint, 0xffffffff], true);
@@ -567,6 +573,35 @@ function privatizeBoundSizes(c: Ctx) {
     const gone = new Set([v.w[1], st.w[0]]);
     c.m.insts = c.m.insts.filter(i => !((i.op === Op.Decorate && gone.has(i.w[0]) && (i.w[1] === Dec.Block || i.w[1] === Dec.Binding || i.w[1] === Dec.DescriptorSet)) || (i.op === Op.MemberDecorate && i.w[0] === st.w[0])));
   }
+}
+// 4c. gl_HelperInvocation (SPIR-V BuiltIn HelperInvocation, 23): WGSL has no such builtin and naga refuses the module ("unsupported builtin"). The variable becomes a
+// private bool that is false. A helper invocation (one run only for its neighbours' derivatives) then takes the path of an ordinary pixel: nothing it writes is kept,
+// and a derivative taken across a value the shader chose by the flag may differ at a primitive's edge
+function helperInvocation(c: Ctx) {
+  const which = new Set(c.m.insts.filter(i => i.op === Op.Decorate && i.w[1] === Dec.BuiltIn && i.w[2] === 23).map(i => i.w[0]));
+  if (!which.size) return;
+  for (const id of which) {
+    const v = c.def.get(id)!, bool = c.def.get(c.def.get(v.w[0])!.w[2])!;
+    if (v.op !== Op.Variable || bool.op !== Op.TypeBool) throw new Error("gl_HelperInvocation is not a bool variable");
+    c.m.insts.splice(c.m.insts.indexOf(v), 1); c.m.insts.splice(c.firstFunction(), 0, v);   // after every type and constant there is
+    let at = c.m.insts.indexOf(v), r;
+    const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
+    const pp = add(Op.TypePointer, [SC.Private, bool.w[0]], false), no = add(42 /* OpConstantFalse */, [bool.w[0]], true);
+    v.w = [pp, id, SC.Private, no];
+  }
+  c.m.insts = c.m.insts.filter(i => !(i.op === Op.Decorate && which.has(i.w[0]) && i.w[1] === Dec.BuiltIn));
+  if (c.m.version < 0x10400) {
+    const ep = c.m.insts.find(i => i.op === Op.EntryPoint)!, nameEnd = ep.w.findIndex((w, n) => n >= 2 && ((w >>> 24) === 0)) + 1;
+    ep.w = [...ep.w.slice(0, nameEnd), ...ep.w.slice(nameEnd).filter(x => !which.has(x))];
+  }
+  c.notes.push("gl_HelperInvocation reads as false: WGSL has no helper-invocation builtin");
+}
+// 4d. A texel fetch, image read or image write on an arrayed image: naga's SPIR-V reader splits the layer off the coordinate and builds the rest as a vector of the
+// coordinate's integer type, a type it expects the module to hold already (front/spv/image.rs extract_image_coordinates; parse_type_image adds the float one only),
+// and it aborts ("unreachable") when the shader never declared an ivec2 / uvec2. The two-component vector of each 32-bit integer type is declared here
+function arrayedFetchTypes(c: Ctx) {
+  if (!c.m.insts.some(i => i.op === Op.TypeImage && i.w[4] === 1) || !c.m.insts.some(i => i.op === 95 || i.op === 98 || i.op === 99)) return;   // OpImageFetch, OpImageRead, OpImageWrite
+  for (const t of c.m.insts.filter(i => i.op === Op.TypeInt && i.w[1] === 32)) c.intern(Op.TypeVector, [t.w[0], 2], c.firstFunction(), false);
 }
 // Uniform variables no instruction of a function names (the translator declares the support buffer in every shader)
 function dropUnreferenced(c: Ctx) {
@@ -603,17 +638,24 @@ function bindlessHandle(name: string, slots: number, h: number): NonNullable<Bin
   if (type === 1 && sb === 2) throw new Error(`texture ${name}: a bindless texture whose sampler is a separate sampler of the driver table (c2 + 0x${o1.toString(16)}): not placed yet (src/gfx has no separate samplers)`);
   throw new Error(`texture ${name}: a bindless handle of type ${type} (sampler bank ${sb}): not placed`);
 }
-// A storage buffer's NVN slot (nxnative dmsh_reflect.py): the translator traced the buffer's address to driver segment c0, whose table for
-// the stage holds slot r at base + 0x10 r (dmsh_abi.h DMSH_C0_SSBO_*). Nothing else the translator can trace to has a binding in src/gfx
-const C0_SSBO = { vertex: 0x110, fragment: 0x510, compute: 0x310 } as const, C0_ROW = 0x10, C0_SSBO_SLOTS = 16, GMEM_MAP_CB_SLOT = 0xff;
-function storageSlot(binding: number | undefined, name: string, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>): number {
+// A storage buffer's NVN slot (nxnative dmsh_build.py reflect, "Storage buffers"): the translator traced the buffer's address to driver segment c0, whose table for
+// the stage holds slot r at base + 0x10 r (dmsh_abi.h DMSH_C0_SSBO_*; a task or mesh shader, which the translator reads as compute, has its own stage's table).
+// A compute shader may also take the address of one of its uniform slots from c0's compute uniform table (DMSH_C0_CS_UBO, 0x210 + 0x10 r) and read the buffer
+// through global memory (nxnative's ubo_ptr bindings; NVN2's per-shader c0 layout is mapped onto these tables by the translator, InstEmitAmpere.cs AMapC0):
+// that buffer is storage "slot" UBO_PTR_SLOT0 + r, the 16 bindings after the compute stage's own. Nothing else the translator can trace to has a binding in src/gfx
+const C0_SSBO = { vertex: 0x110, fragment: 0x510, compute: 0x310, ts: 0x670, ms: 0x770 } as const, C0_ROW = 0x10, C0_SSBO_SLOTS = 16, GMEM_MAP_CB_SLOT = 0xff;
+const C0_CS_UBO = 0x210, C0_CS_UBO_SLOTS = 16;
+export const UBO_PTR_SLOT0 = 16;
+function storageSlot(binding: number | undefined, name: string, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>, mesh?: "ts" | "ms"): number {
   const b = sbufs.find(s => s.binding === binding);
   if (!b) throw new Error(`storage buffer ${name}: the translator listed no storage buffer at binding ${binding}`);
   if (b.cb_slot === GMEM_MAP_CB_SLOT) throw new Error(`storage buffer ${name}: global memory traced to no storage buffer (nxnative binds its pool table or write log): not placed yet`);
   const off = b.cb_offset * 4;
   if (b.cb_slot !== 0) throw new Error(`storage buffer ${name}: its address is in ${b.cb_slot >= 3 ? `uniform slot ${b.cb_slot - 3}` : `driver segment c${b.cb_slot}`} + 0x${off.toString(16)}: not placed yet`);
-  const r = (off - C0_SSBO[stage]) / C0_ROW;
-  if (!Number.isInteger(r) || r < 0 || r >= C0_SSBO_SLOTS) throw new Error(`storage buffer ${name}: its address is at c0 + 0x${off.toString(16)}, which is no ${stage} stage storage buffer slot: not placed yet`);
+  const u = (off - C0_CS_UBO) / C0_ROW;
+  if (stage === "compute" && !mesh && Number.isInteger(u) && u >= 0 && u < C0_CS_UBO_SLOTS) return UBO_PTR_SLOT0 + u;
+  const r = (off - C0_SSBO[mesh ?? stage]) / C0_ROW;
+  if (!Number.isInteger(r) || r < 0 || r >= C0_SSBO_SLOTS) throw new Error(`storage buffer ${name}: its address is at c0 + 0x${off.toString(16)}, which is no ${mesh === "ts" ? "task" : mesh === "ms" ? "mesh" : stage} stage storage buffer slot: not placed yet`);
   return r;
 }
 
@@ -639,7 +681,7 @@ function storageWritten(c: Ctx, variable: number): boolean {
   }
   return false;
 }
-function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep", sbufs: NonNullable<FixOptions["sbufs"]> = []): Binding[] {
+function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep", sbufs: NonNullable<FixOptions["sbufs"]> = [], mesh?: "ts" | "ms"): Binding[] {
   const st = STAGE_INDEX[stage], out: Binding[] = [];
   const set = (id: number, group: number, binding: number) => { if (mode === "nxweb") { c.setDecoration(id, Dec.DescriptorSet, group); c.setDecoration(id, Dec.Binding, binding); } };
   const where = (id: number, group: number, binding: number) => mode === "nxweb" ? { group, binding } : { group: c.decoration(id, Dec.DescriptorSet) ?? 0, binding: c.decoration(id, Dec.Binding) ?? 0 };
@@ -653,8 +695,10 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
   for (const v of c.m.insts.filter(i => i.op === Op.Variable)) {
     const id = v.w[1], sc = v.w[2], name = c.names.get(id) ?? "";
     if (sc === SC.StorageBuffer || (sc === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))) {
-      const slot = mode === "keep" ? (c.decoration(id, Dec.Binding) ?? 0) - 128 - st * 16 : storageSlot(c.decoration(id, Dec.Binding), name, stage, sbufs);
-      if (!(slot >= 0 && slot < C0_SSBO_SLOTS) || (mode === "keep" && (c.decoration(id, Dec.DescriptorSet) ?? 0) !== 0))
+      const slot = mode === "keep" ? (c.decoration(id, Dec.Binding) ?? 0) - 128 - st * 16 : storageSlot(c.decoration(id, Dec.Binding), name, stage, sbufs, mesh);
+      const ubo = mode === "nxweb" && slot >= UBO_PTR_SLOT0 ? slot - UBO_PTR_SLOT0 : undefined;
+      if (out.some(b => b.kind === "storage" && b.reg === slot)) throw new Error(`storage buffer ${name}: a second buffer of the shader traced to ${ubo === undefined ? `storage slot ${slot}` : `uniform slot ${ubo}'s address`}: not placed yet`);
+      if (!(slot >= 0 && slot < C0_SSBO_SLOTS + (ubo === undefined ? 0 : C0_CS_UBO_SLOTS)) || (mode === "keep" && (c.decoration(id, Dec.DescriptorSet) ?? 0) !== 0))
         throw new Error(`storage buffer ${name}: at set ${c.decoration(id, Dec.DescriptorSet) ?? 0} binding ${c.decoration(id, Dec.Binding)}, not one of the ${stage} stage's storage buffer bindings (group 0, 128 + ${st * 16} + slot)`);
       const struct = c.def.get(c.def.get(v.w[0])!.w[2])!.w[0];
       let write = !c.has(id, Dec.NonWritable) && !(c.mdeco.get(struct) ?? []).some(i => i.w[2] === Dec.NonWritable);
@@ -664,8 +708,11 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
         if (storageWritten(c, id)) throw new Error(`storage buffer ${name}: written by a vertex stage, which WebGPU does not allow`);
         c.addDecoration(id, Dec.NonWritable); write = false;
       }
+      // a uniform slot read through its address is bound as a uniform buffer too when the shader also reads the slot's bank: read-only unless the shader writes it
+      if (write && ubo !== undefined && !storageWritten(c, id)) { c.addDecoration(id, Dec.NonWritable); write = false; }
       set(id, 0, 128 + st * 16 + slot);
-      out.push({ kind: "storage", reg: slot, write, ...where(id, 0, 128 + st * 16 + slot), name });
+      out.push({ kind: "storage", reg: slot, write, ...(ubo === undefined ? {} : { ubo }), ...where(id, 0, 128 + st * 16 + slot), name });
+      if (ubo !== undefined) c.notes.push(`storage buffer ${name} is the compute stage's uniform slot ${ubo}, read through its address (c0 + 0x${(C0_CS_UBO + C0_ROW * ubo).toString(16)}): storage slot ${slot}, binding ${128 + st * 16 + slot}`);
       continue;
     }
     if (sc === SC.Uniform) {
@@ -767,11 +814,13 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   mulExtended(c); c.index();
   dropUnreferenced(c); c.index();
   privatizeBoundSizes(c); c.index();
+  helperInvocation(c); c.index();
+  arrayedFetchTypes(c); c.index();
   const posVar = perVertex(c); c.index();
   const samplerOf = splitSamplers(c); c.index();
   queryLod(c, stage); c.index();
   const sizes = opts.shrinkUniforms === false ? new Map<number, number>(c.m.insts.filter(i => i.op === Op.Variable && i.w[2] === SC.Uniform).map(v => [v.w[1], structSize(c, c.def.get(c.def.get(v.w[0])!.w[2])!)])) : shrinkUniforms(c);
-  const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs); c.index();
+  const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs, opts.mesh?.kind); c.index();
   if (stage === "vertex" && opts.fixup !== false) {
     if (!posVar) throw new Error("a vertex shader that never writes gl_Position");
     bindings.push(fixup(c, posVar)); c.index();

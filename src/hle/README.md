@@ -269,19 +269,19 @@ are the kernel's. `hle_glslc.c` (not assigned) registers a name that belongs to 
 `tools/hle_coverage.py` (run by `npm run hle:names`, checked by `npm run hle:check`) lists every name nxnative takes
 over: the HLE / HLE_FORCE / HLE_FORCE_BIG entries of `dm/host/*.c` and of every source under `dm/gfx` (hle_vi.c,
 hle_nv.c, nvn/hle_nvn.c), the libc pass-through list and the GL / Vulkan import tables, and what in nxweb answers each:
-this directory's table, `src/fs/names.ts`, `src/audio/names.ts`, or a literal `name: "..."` in `src/glue/*.ts` (the
-runtime registrations such as `nvnBootstrapLoader`). `test/hle/coverage.tsv` has every name;
+this directory's table, `src/fs/names.ts`, `src/audio/names.ts`, or a literal `name: "..."` or `reg("...", ...)` in
+`src/glue/*.ts` (the runtime registrations such as `nvnBootstrapLoader`). `test/hle/coverage.tsv` has every name;
 `src/hle/gen/coverage.ts` the ones not answered, which the Prepare page's Code stage looks up in each module's dynamic
 symbol table (`src/glue/hle_scan.ts`, `npm run prepare:scan -- <game folder>`). A port that registers a name
-another way than a literal `name:` is not seen: add the name literally.
+another way than a literal `name:` or a `reg("...")` call is not seen: add the name literally.
 
 <!-- coverage:begin -->
 | nxnative file | names | answered in nxweb | not answered |
 |---|---|---|---|
 | `dm/gfx/gl/hle_gl.m` | 171 | 0 | 171 |
-| `dm/gfx/hle_nv.c` | 8 | 0 | 8 |
+| `dm/gfx/hle_nv.c` | 8 | 8 | 0 |
 | `dm/gfx/hle_vi.c` | 31 | 31 | 0 |
-| `dm/gfx/nvn/hle_nvn.c` | 9 | 1 | 8 |
+| `dm/gfx/nvn/hle_nvn.c` | 9 | 9 | 0 |
 | `dm/gfx/vk/hle_vk.m` | 134 | 0 | 134 |
 | `dm/host/hle_account.c` | 41 | 41 | 0 |
 | `dm/host/hle_audio.c` | 64 | 64 | 0 |
@@ -309,7 +309,7 @@ another way than a literal `name:` is not seen: add the name literally.
 | `dm/host/hle_table.c` | 63 | 63 | 0 |
 | `dm/host/hle_time.c` | 29 | 29 | 0 |
 | `dm/host/hle_web.c` | 13 | 13 | 0 |
-| **all (distinct names)** | **1625** | **1303** | **322** |
+| **all (distinct names)** | **1625** | **1319** | **306** |
 <!-- coverage:end -->
 
 ## Controllers (`hid.ts`)

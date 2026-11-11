@@ -23,6 +23,7 @@ export interface ShaderOptions {
   library?: Uint8Array | ShaderLibrary;   // consulted first
   translator?: ShaderTranslator;          // on a miss
   store?: ShaderStore;                    // translations of earlier runs, by key + the translator's chain version
+  wait?: boolean;                         // false: the game does not wait for a program's stages; its draws are skipped until they are there (pending)
   onFailed?: (blob: ShaderBlob, error: string) => void;   // a stage the translator failed on, with its bytes (the page's ?shaderdump=, for debugging the chain)
 }
 
@@ -85,6 +86,7 @@ export class RtShaders {
     return e?.p ?? (this.o.store ? this.o.store.get(id) : Promise.resolve(null));
   }
   pending(keys: string[]): Promise<unknown> | null {
+    if (this.o.wait === false) return null;
     const ps = keys.map(k => this.jobs.get(k)).filter((p): p is Promise<void> => !!p);
     if (!ps.length) return null;
     const t0 = performance.now(); this.stats.waits++;
@@ -182,7 +184,7 @@ export class RtShaders {
 // Stages wait in one queue here, in the order they were asked for, until a Worker is free; a free Worker takes up to
 // `batch` of them for one run of the translator. `prioritize` moves a key a draw waits on to the front. Each Worker
 // has its own .NET runtime (started when there is work for it), so `workers` of them translate at once.
-export const SHADER_CHAIN = "nxweb-shaders-5/page";
+export const SHADER_CHAIN = "nxweb-shaders-6/page";
 // subgroups: the device has WebGPU's subgroups feature (GfxHost.hasSubgroups): warp operations become WGSL subgroup builtins, else one-invocation subgroups
 // (src/shaders/spv_subgroups.ts). The output differs, so the chain (and with it every store id) says which.
 export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean; workers?: number; batch?: number }

@@ -66,8 +66,7 @@
   #explain h2 { color: color-mix(in srgb, var(--warn) 78%, var(--fg)); }
 
   /* the verdict: the stripe and the headline carry the level */
-  #verdict { display: grid; gap: 12px; border-left: 4px solid var(--line2); }
-  #verdict[data-level=ok] { border-left-color: var(--ok); } #verdict[data-level=maybe] { border-left-color: var(--warn); } #verdict[data-level=no] { border-left-color: var(--bad); }
+  #verdict { display: grid; gap: 12px; }   /* the level is said by the colour of the verdict's first words (#verdicthead), not by a border */
   .vhead { display: flex; gap: 12px; align-items: center; min-width: 0; }
   #gameicon { width: 64px; height: 64px; border-radius: var(--r-md); object-fit: cover; background: var(--muted); flex: none; }
   #gamename { font-size: var(--t-lg); font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
