@@ -41,7 +41,7 @@ export async function build(opts: { spv?: string; glsl?: string; chain?: string;
     const file = join(opts.glsl, r.file), key = r.key ?? createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16);
     one(r.name, key, file.endsWith(".vert") ? "vs" : "ps", () => glslToSpv(file), "keep");
   }
-  const library = writeLibrary(entries, { chain: opts.chain ?? "nxweb-shaders-3 (dmsh_xlate -> src/shaders/spv.ts -> naga 30.0.1)", subgroups: opts.subgroups ?? "single", built: entries.length, failed: report.filter(r => !r.ok).length });
+  const library = writeLibrary(entries, { chain: opts.chain ?? "nxweb-shaders-4 (dmsh_xlate -> src/shaders/spv.ts -> naga 30.0.1)", subgroups: opts.subgroups ?? "single", built: entries.length, failed: report.filter(r => !r.ok).length });
   return { library, report, entries };
 }
 

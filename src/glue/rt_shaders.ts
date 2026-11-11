@@ -98,7 +98,7 @@ export class RtShaders {
 }
 
 // ---- the in-page translator: a Worker of its own (rt_shader_worker.ts, bundled as a module) ----
-export const SHADER_CHAIN = "nxweb-shaders-3/page";
+export const SHADER_CHAIN = "nxweb-shaders-4/page";
 // subgroups: the device has WebGPU's subgroups feature (GfxHost.hasSubgroups): warp operations become WGSL subgroup builtins, else one-invocation subgroups
 // (src/shaders/spv_subgroups.ts). The output differs, so the chain (and with it every store id) says which.
 export function workerTranslator(o: { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean }): ShaderTranslator {
