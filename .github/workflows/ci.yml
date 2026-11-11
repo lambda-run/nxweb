@@ -19,7 +19,8 @@ env:
 
 jobs:
   # fast and browser run once per memory mode, side by side: every runner that goes through tools/modes.mjs runs only
-  # NX_MEM's mode, so a run takes about as long as one mode instead of three (the others run in every entry)
+  # NX_MEM's mode, so a run takes about as long as one mode instead of three. The rest run in every entry: rt:browser's page test
+  # loads what a64:browser builds, and its prepare hand-off what prepare:browser writes
   fast:
     name: fast (kit, loader, kernel, a64 guests, runtime under Node, fs, hle) (NX_MEM=${{ matrix.mem }})
     runs-on: ubuntu-24.04
@@ -103,11 +104,8 @@ jobs:
         run: (git init -q "$NXNATIVE" && git -C "$NXNATIVE" fetch -q --depth 1 https://github.com/seedds/nxnative "$(cat NXNATIVE_REF)" && git -C "$NXNATIVE" checkout -q FETCH_HEAD) || echo "::warning::nxnative could not be fetched at the pinned commit; the tests that need it are skipped"
       - name: the guest corpus (test/guests/out is not in the repository)
         run: npm run guests:build
-      - if: matrix.mem == '32'
-        run: npm run a64:browser
-      - if: matrix.mem == '32'
-        run: npm run prepare:browser
+      - run: npm run a64:browser
+      - run: npm run prepare:browser
       - run: npm run rt:browser
-      - if: matrix.mem == '32'
-        run: npm run fs:browser
+      - run: npm run fs:browser
       - run: npm run gfx:test
