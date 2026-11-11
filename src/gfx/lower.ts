@@ -568,13 +568,14 @@ function draw(r: usize, size: u32, indexed: bool): void {
   }
   // The draw's numbers: from the record, or for an indirect draw from guest memory now (the counts are CPU-visible
   // at submit; a count written by the GPU in the same submission is not supported)
-  let count = load<u32>(r, 8), instances: u32, baseInstance = load<u32>(r, 16), first: u32 = 0, baseVertex: i32 = 0, ibuf: u64 = 0;
+  let count = load<u32>(r, 8), instances: u32, baseInstance = load<u32>(r, 16), first: u32 = 0, baseVertex: i32 = 0, ibuf: u64 = 0, drawIndex: u32 = 0;
   const itype = indexed ? load<i32>(r, O.P_DRAW_IDX_itype) : -1;
   if (indexed) { baseVertex = load<i32>(r, O.P_DRAW_IDX_base_vertex); instances = load<u32>(r, O.P_DRAW_IDX_instances); ibuf = load<u64>(r, O.P_DRAW_IDX_ibuf); }
   else { first = load<u32>(r, O.P_DRAW_first); instances = load<u32>(r, O.P_DRAW_instances); }
   if (<usize>size - 8 >= (indexed ? O.P_DRAW_IDX_SIZE : O.P_DRAW_SIZE)) {
     const q = r + (indexed ? O.P_DRAW_IDX_ind : O.P_DRAW_ind), ind = <usize>load<u64>(q), cnt = <usize>load<u64>(q, 8);
     if (cnt && <u32>load<i32>(q, 16) >= load<u32>(cnt)) return;       // draw i of a multi-draw whose count is lower
+    drawIndex = <u32>load<i32>(q, 16);                                // a multi-draw's record number: the shader's draw index
     if (ind) {
       count = load<u32>(ind); instances = load<u32>(ind, 4);
       if (indexed) { ibuf += <u64>load<u32>(ind, 8) << (itype == 2 ? 2 : itype == 1 ? 1 : 0); baseVertex = load<i32>(ind, 12); baseInstance = load<u32>(ind, 16); }
@@ -599,11 +600,11 @@ function draw(r: usize, size: u32, indexed: bool): void {
   passEvent(GfxPassE.Draw);
   emitState();
   if (indexed) {
-    const o = H.hostRec(H.H_DRAW_IDX, 40);
-    store<u32>(o, itype, 8); store<u32>(o, count, 12); store<u32>(o, instances, 16); store<u32>(o, baseInstance, 20); store<i32>(o, baseVertex, 24); store<u32>(o, conv, 28); store<u64>(o, ibuf, 32);
+    const o = H.hostRec(H.H_DRAW_IDX, 48);
+    store<u32>(o, itype, 8); store<u32>(o, count, 12); store<u32>(o, instances, 16); store<u32>(o, baseInstance, 20); store<i32>(o, baseVertex, 24); store<u32>(o, conv, 28); store<u64>(o, ibuf, 32); store<u32>(o, drawIndex, 40);
   } else {
     const o = H.hostRec(H.H_DRAW, 32);
-    store<u32>(o, first, 8); store<u32>(o, count, 12); store<u32>(o, instances, 16); store<u32>(o, baseInstance, 20); store<u32>(o, conv, 24);
+    store<u32>(o, first, 8); store<u32>(o, count, 12); store<u32>(o, instances, 16); store<u32>(o, baseInstance, 20); store<u32>(o, conv, 24); store<u32>(o, drawIndex, 28);
   }
   nDraws++; R.segDraw();
 }
