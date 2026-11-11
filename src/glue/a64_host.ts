@@ -55,7 +55,7 @@ export interface A64Options {
   shared?: boolean;             // memory is shared: modules import it as shared, exclusives and LDAR/STLR are atomic
   cntYield?: boolean;           // `mrs cntpct_el0` is a yield point (see README)
   profile?: boolean;            // translated code counts events (calls, exits, write-backs, instructions by class): profileCounters()
-  preciseFaults?: 0 | 1 | 2;    // 1: pc written before every memory instruction; 2: registers too (default 0: side table)
+  preciseFaults?: 0 | 1 | 2;    // 1: pc written before every memory instruction; 2: the registers instead, pc from the side table (default 0: side table)
   guardBase?: number;           // guest data accesses below this address trap (default 0 = off): the embedder's host area
   // called by the index-0 trampoline when a pc has no translation yet; returns a table index.
   // Default: translate (or take from the cache) a unit for pc. Return A64Host.STOP to stop instead.
@@ -96,7 +96,7 @@ const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
 const num = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;   // a wasm64 export's usize result
-export const A64_CACHE_VERSION = 14;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+export const A64_CACHE_VERSION = 15;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
 // the C library functions src/a64/libc.ts implements, by op number (index 0 unused)
 export const LIBC_OPS = ["", "memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp"];
 const PAIR_LOCK_BYTES = 16;           // the end of the helpers' range: the lock word of 16-byte CASPs on a shared memory (src/a64/int.ts casp)
@@ -446,7 +446,8 @@ export class A64Host {
   faultFromError(e: unknown): A64Fault | undefined {
     const stack = (e as { stack?: string } | null)?.stack;
     if (typeof stack !== "string") return undefined;
-    const line = stack.split("\n").find(l => l.includes("wasm-function["));   // innermost wasm frame
+    // the innermost translated frame (a trap in a helper the instruction called is that instruction's)
+    const line = stack.split("\n").find(l => /f_[0-9a-f]+\b.*wasm-function\[/.test(l));
     const m = line ? /f_([0-9a-f]+)\b.*wasm-function\[\d+\]:0x([0-9a-f]+)/.exec(line) : null;
     if (!m) return undefined;
     const funcPc = parseInt(m[1], 16), offset = parseInt(m[2], 16);

@@ -50,7 +50,7 @@ export let optCntYield: bool = false; // `mrs cntpct_el0` is a yield point (writ
 export let optGuard: usize = 0;     // guest data accesses below this address trap (0 = off): the host area of the shared memory
 export let optProf: bool = false;   // dynamic event counters (profile option): an i64 increment at every counted site
 export let profBase: usize = 0;
-export let optPrecise: i32 = 0;     // 1: pc is written before every memory instruction; 2: dirty registers too
+export let optPrecise: i32 = 0;     // 1: pc is written before every memory instruction; 2: the dirty registers instead (pc: side table)
 
 export function setOpt(id: i32, v: u32): void {
   switch (id) {
