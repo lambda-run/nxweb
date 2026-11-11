@@ -24,24 +24,29 @@ export const NDVE_PICTURE_SLOT = 1, NDVE_ADDED_SLOT = 4, NDVE_OUTPUT_IMAGE = 1, 
 export class NdveBypass {
   readonly keys: readonly string[];
   pic = 0;          // serial of this frame's picture (the network's input), 0 none seen yet
+  rgb = 0;                // serial of the one colour texture the colour conversion reads when the host's decoder hands it an RGB picture, 0 none
+  luma = 0; chroma = 0;   // serials of the decoder's NV12 planes the colour conversion (dispatch 1) reads, 0 not seen: the host sets them
   broken = 0;       // dispatches of this frame's network before the resampler that could not run
   frames = 0;       // frames the stand-in wrote
+  converted = false; // this frame's colour conversion ran: the picture holds the movie frame (else the stand-in converts the planes itself)
   constructor(keys: readonly string[] = NDVE_KEYS) { this.keys = keys; }
   // the dispatch's place in the model (by key: the colour conversion, the first and last convolutions and the resampler are keys of their own), -1 not the model's
   pos(key: string): number { return this.keys.indexOf(key); }
+  // there is something to resample: the picture, or (when the colour conversion did not run) the decoder's two planes
+  source(): boolean { return this.pic > 0 || this.rgb > 0 || this.luma > 0 && this.chroma > 0; }
   // the resampler (pos) is about to run: true when this frame's network did not run, so the stand-in writes its output instead
   replaces(pos: number): boolean {
-    if (pos !== this.keys.length - 1 || !this.broken || !this.pic) return false;
+    if (pos !== this.keys.length - 1 || !this.broken || !this.source()) return false;
     this.broken = 0; return true;
   }
   // a dispatch of the model went by (ran: it ran; tex: the serial bound at a texture slot). True when the stand-in writes the output now (the resampler could not run)
   saw(pos: number, ran: boolean, tex: (slot: number) => number): boolean {
     const last = this.keys.length - 1;
-    if (pos === 0) { this.pic = 0; this.broken = 0; return false; }
+    if (pos === 0) { this.pic = 0; this.broken = ran ? 0 : 1; this.converted = ran; return false; }
     if (pos === 1) this.pic = tex(NDVE_PICTURE_SLOT) || this.pic;
     else if (pos === last - 1 && !this.pic) this.pic = tex(NDVE_ADDED_SLOT);
     if (pos < last) { if (!ran) this.broken++; return false; }
-    const take = !ran && this.pic > 0;
+    const take = !ran && this.source();
     this.broken = 0; return take;
   }
 }

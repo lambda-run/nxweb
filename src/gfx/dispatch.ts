@@ -127,7 +127,12 @@ function textureInitialize(t: usize, b: usize): u64 {
   store<u64>(t, mem ? mem + off : 0, O.TEX_mem);
   const serial = T.texNew();
   store<u64>(t, serial, O.TEX_serial);
-  if (serial) { const r = hostRec(H_TEX_CREATE, 56); store<u64>(r, serial, 8); memory.copy(r + 16, t + O.TEX_d, O.TD_SIZE); contentInit(serial, t); }
+  if (serial) {
+    const r = hostRec(H_TEX_CREATE, 64); store<u64>(r, serial, 8); memory.copy(r + 16, t + O.TEX_d, O.TD_SIZE);
+    // +56: the builder's channel swizzle (3 bits a channel: 0 zero, 1 one, 2..5 R G B A), the identity when none was set
+    store<u16>(r, load<u8>(t, O.TEX_bits) & 1 ? load<u16>(t, O.TEX_swz) : <u16>(2 | 3 << 3 | 4 << 6 | 5 << 9), 56);
+    contentInit(serial, t);
+  }
   return 1;
 }
 function viewOffset(d: usize, layerSize: u64, v: usize): u64 {

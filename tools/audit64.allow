@@ -816,7 +816,7 @@ src/gfx/lower.ts	D	1	load<u32>(libRefl(curVs), RF_io)
 src/gfx/lower.ts	D	1	load<u32>(libRefl(id), RF_bl)
 src/gfx/lower.ts	D	1	load<u32>(libRefl(id), RF_ubo)
 src/gfx/lower.ts	D	1	load<u32>(libRefl(ms), RF_flags)
-src/gfx/lower.ts	D	1	load<u32>(p)
+src/gfx/lower.ts	D	2	load<u32>(p)
 src/gfx/lower.ts	D	1	load<u32>(p, 4)
 src/gfx/lower.ts	D	1	load<u32>(prog)
 src/gfx/lower.ts	D	1	load<u32>(progC)
@@ -944,6 +944,7 @@ src/gfx/lower.ts	D	1	store<u32>(r, rX, 36)
 src/gfx/lower.ts	D	1	store<u32>(r, rX, 8)
 src/gfx/lower.ts	D	1	store<u32>(r, rY, 12)
 src/gfx/lower.ts	D	1	store<u32>(r, rY, 40)
+src/gfx/lower.ts	D	1	store<u32>(r, reason, 8)
 src/gfx/lower.ts	D	1	store<u32>(r, rtH, 28)
 src/gfx/lower.ts	D	1	store<u32>(r, rtN, 8)
 src/gfx/lower.ts	D	1	store<u32>(r, rtW, 24)
@@ -1033,9 +1034,9 @@ src/gfx/shader.ts	C	1	<i32>(libCount - 1)
 src/gfx/shader.ts	C	1	<i32>Inst.at(p)
 src/gfx/shader.ts	C	2	<i32>i
 src/gfx/shader.ts	C	1	<i32>load<i16>(slot)
-src/gfx/shader.ts	C	2	<u32>(load<u32>(prog, PROG_nstage), 6)
+src/gfx/shader.ts	C	3	<u32>(load<u32>(prog, PROG_nstage), 6)
 src/gfx/shader.ts	C	1	<u32>(nMissing, 64)
-src/gfx/shader.ts	C	2	<u32>load<u8>(e, PE_ok)
+src/gfx/shader.ts	C	3	<u32>load<u8>(e, PE_ok)
 src/gfx/shader.ts	D	1	load<u32>(c)
 src/gfx/shader.ts	D	1	load<u32>(c, 0x20)
 src/gfx/shader.ts	D	1	load<u32>(c, 0x44)
@@ -1043,7 +1044,7 @@ src/gfx/shader.ts	D	1	load<u32>(c, 0x704)
 src/gfx/shader.ts	D	1	load<u32>(c, 4)
 src/gfx/shader.ts	D	1	load<u32>(e, PE_shader + 12)
 src/gfx/shader.ts	D	1	load<u32>(libRefl(id), RF_stage)
-src/gfx/shader.ts	D	2	load<u32>(prog, PROG_nstage)
+src/gfx/shader.ts	D	3	load<u32>(prog, PROG_nstage)
 src/gfx/shader.ts	D	1	store<u32>(CTL, 0, 0x30)
 src/gfx/shader.ts	D	1	store<u32>(e, libVersion, PE_shader + 12)
 src/gfx/sync.ts	D	2	load<u32>(s)
@@ -1397,6 +1398,7 @@ src/glue/gfx_host.ts	V	1	private u64(dv: DataView, p: number) { return dv.getUin
 src/glue/gfx_host.ts	B	1	private zeroBuffer(): GPU { return (this.zero ??= this.newBuffer({ size: 65536, usage: 0x40 | 0x08 })); }
 src/glue/gfx_host.ts	S	1	return buf ? { buf, off: this.upOff, size: Math.min(buf.size - this.upOff, (u!.size + 15) & ~15) } : { buf: this.zeroBuffer(), off: 0, size: 65536 };
 src/glue/gfx_host.ts	B	1	return this.newBuffer({ size: Math.max(size, Math.min(budget, (cur?.size ?? 32768) * 2)), usage: 0x80 | 0x08 | 0x04 });
+src/glue/gfx_host.ts	B	1	shaderStateOf: ((keyHex: string) => string | undefined) | null = null;
 src/glue/gfx_host.ts	A	1	src = itype === 2 ? new Uint32Array(this.memory.buffer, addr, count) : itype === 1 ? new Uint16Array(this.memory.buffer, addr, count) : new Uint8Array(this.memo	an index buffer in guest memory viewed in place: the typed array's byte offset is a number (exact above 4 GB), its elements are the indices
 src/glue/gfx_host.ts	B	1	t.snap ??= this.newTexture({ size: { width: g.width, height: g.height, depthOrArrayLayers: g.depthOrArrayLayers }, format: g.format, dimension: g.dimension, mip
 src/glue/gfx_host.ts	V	1	targets.push({ name: " ", serial: t.serial, level: dv.getUint32(p + 360, true), layer: dv.getUint32(p + 364, true) });
@@ -1417,6 +1419,16 @@ src/glue/gfx_host.ts	V	1	this.textures.set(serial, { serial, target: dv.getInt32
 src/glue/gfx_host.ts	B	1	this.tsResolve ??= this.newBuffer({ size: TS_QUERIES * 8, usage: 0x200 | 0x04 });
 src/glue/gfx_host.ts	B	1	variant?: (classes: Record<number, VinClass>) => string | undefined;
 src/glue/gfx_host.ts	V	1	} else { const first = dv.getUint32(p + 8, true); src = Array.from({ length: count }, (_, i) => first + i); key = `$ $ $ `; }
+src/glue/gfx_ledger.ts	V	1	case R_IMG: { const s = u64(dv, p + 16); if (s && dv.getUint32(p + 24, true) & 1) this.imgW.add(s); else if (s && this.sampled.size < SOURCES) this.sampled.add(
+src/glue/gfx_ledger.ts	V	1	const f = this.f, reason = dv.getUint32(p + 8, true), kind = dv.getUint8(p + 12);
+src/glue/gfx_ledger.ts	V	1	const n = Math.min(dv.getUint32(p + 8, true), 8);
+src/glue/gfx_ledger.ts	V	1	const u64 = (dv: DataView, p: number) => dv.getUint32(p, true) + dv.getUint32(p + 4, true) * 4294967296;
+src/glue/gfx_ledger.ts	V	1	for (let i = 0; i < 3; i++) { const lo = dv.getUint32(p + 16 + i * 8, true), hi = dv.getUint32(p + 20 + i * 8, true); if (lo || hi) keys.push({ key: hex8(dv, p 
+src/glue/gfx_ledger.ts	V	1	for (let p = ptr, end = ptr + len; p < end;) { const size = dv.getUint32(p + 4, true); this.record(dv.getUint32(p, true), dv, p); if (!size) break; p += size; }
+src/glue/gfx_ledger.ts	B	1	from: Map<number, Set<number>>;
+src/glue/gfx_ledger.ts	B	1	keyLines(why: (key: string) => string | undefined = () => undefined, current: (key: string) => string | undefined = () => undefined): string[] {
+src/glue/gfx_ledger.ts	B	1	let first: (Writer & { tex: number }) | null = null;
+src/glue/gfx_ledger.ts	B	1	private fold: { line: string; from: number; to: number; t0: number; t1: number } | null = null;
 src/glue/hle_host.ts	B	1	LSL: 1n << 24n, LSR: 1n << 25n, RSL: 1n << 26n, RSR: 1n << 27n, SHAKE: 1n << 63n } as const;
 src/glue/hle_host.ts	B	1	Plus: 1n << 10n, Minus: 1n << 11n, Left: 1n << 12n, Up: 1n << 13n, Right: 1n << 14n, Down: 1n << 15n,
 src/glue/hle_host.ts	V	1	[snap.lx, snap.ly, snap.rx, snap.ry].forEach((v, i) => dv.setInt32(0x10 + 4 * i, Math.max(-STICK_MAX, Math.min(STICK_MAX, Math.round(v ?? 0))), true));
@@ -1499,6 +1511,7 @@ src/glue/rt_gfx.ts	B	1	const ok = nvn(" ", t, tb) & 0xffn;
 src/glue/rt_gfx.ts	B	1	const res = this.call(id, k.args), fence = x.gfx_wait_fence() >>> 0;
 src/glue/rt_gfx.ts	V	1	const u32 = (cpu: HostCpu, a: bigint) => new DataView(cpu.read(a, 4).buffer).getUint32(0, true);
 src/glue/rt_gfx.ts	B	1	const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
+src/glue/rt_gfx.ts	B	1	else { this.host.account(p, n >>> 0); if (!this.opts.holdFences?.()) this.releaseFences(); }
 src/glue/rt_gfx.ts	B	1	for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
 src/glue/rt_gfx.ts	B	1	if (!(nvn(" ", i + 0x20n, pb) & 0xffn)) { cpu.log(" "); return 0n; }
 src/glue/rt_gfx.ts	V	1	if (b && b + 24 <= dv.byteLength) this.needStages(Number(dv.getBigUint64(b + 8, true)), dv.getInt32(b + 16, true), 16);

@@ -11,6 +11,10 @@ crate-type = ["cdylib"]
 [dependencies]
 naga = { version = "=30.0.1", default-features = false, features = ["spv-in", "wgsl-out"] }
 
+# naga with this repository's patches (patches/): tools/shaders/build_naga.sh unpacks and patches it there
+[patch.crates-io]
+naga = { path = "../../../build/shaders/naga_src" }
+
 [profile.release]
 opt-level = "s"
 lto = true

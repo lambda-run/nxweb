@@ -27,6 +27,9 @@ export interface GfxOptions {
   holdFences?: () => boolean;
   // "bypass": the diagnostic stand-in for nn::ndve's movie network (GfxHost.ndveBypass, src/glue/ndve.ts; the page's ?ndve=bypass). Omitted: off
   ndve?: "bypass";
+  // false: a program whose stage is still being fetched or translated is usable at once and its draws are skipped until the stage is there. Default: the
+  // call that gives a program its stages waits for them (RtShaders.pending)
+  shaderWait?: boolean;
   // The game profile's graphics switches (rt_process.ts gfxSettingsFor: the bits of src/gfx/profile.ts). Omitted: none
   profile?: { bits: number };
   sdkMajor?: number;                  // the game's SDK major version (nv::GetGraphicsMemoryInfo's record is 0x20 bytes up to SDK 10). Omitted: newer
@@ -39,7 +42,7 @@ export class RtGfx implements HleGfx {
   readonly x: any;                    // the recorder's exports (nvn_*, gfx_*)
   readonly host: GfxHost;             // the replayer (with the null replayer: its fences, hooks and shader library are used)
   readonly live: boolean;             // a real device is attached
-  stats = { nvnCalls: 0, frames: 0, shown: 0, syncWaits: 0, syncParked: 0, syncTimeouts: 0, finishes: 0, finishParked: 0, acquires: 0, acquireParked: 0, acquireLate: 0, floatArgCalls: 0, floatResults: 0,
+  stats: Record<string, number> = { shaderWaits: 0, nvnCalls: 0, frames: 0, shown: 0, syncWaits: 0, syncParked: 0, syncTimeouts: 0, finishes: 0, finishParked: 0, acquires: 0, acquireParked: 0, acquireLate: 0, floatArgCalls: 0, floatResults: 0,
     deviceLosses: 0, deviceRestores: 0 };
   times = { execMs: 0 };              // time inside the replayer (WebGPU calls), part of the runtime's host-call time
   shaders: RtShaders | null = null;   // where missing shader keys are looked up (rt_shaders.ts attaches itself)
@@ -69,7 +72,7 @@ export class RtGfx implements HleGfx {
       abort: () => { throw new Error("abort in the gfx module"); },
       gfx_exec: (p: number, n: number) => {
         if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
-        else if (!this.opts.holdFences?.()) this.releaseFences();   // null replayer: the "GPU" is done at once
+        else { this.host.account(p, n >>> 0); if (!this.opts.holdFences?.()) this.releaseFences(); }   // null replayer: the "GPU" is done at once
       },
       // the command memory callback: guest code run to completion on the calling thread
       gfx_guest_call: (fn: bigint, a0: bigint, a1: bigint, a2: bigint, a3: bigint) => rt.guestCall(BigInt.asUintN(64, fn), [a0, a1, a2, a3]),
@@ -239,9 +242,18 @@ export class RtGfx implements HleGfx {
     const key = Array.from(rt.sha256Of([keyControl(mem.subarray(c, c + nctl)), hasCode ? mem.subarray(data, data + ncode) : new Uint8Array(0)]).subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
     return { key, blob: () => ({ key, control: control(), code: code() }) };
   }
-  private needStages(sd: number, n: number, stride: number): void {
-    if (!this.shaders || !sd || n <= 0 || n > 6) return;
-    for (let i = 0; i < n; i++) { const st = this.stageOf(sd + stride * i); if (st) this.shaders.need(st.key, st.blob); }
+  private needStages(sd: number, n: number, stride: number): string[] {
+    const keys: string[] = [];
+    if (!this.shaders || !sd || n <= 0 || n > 6) return keys;
+    for (let i = 0; i < n; i++) { const st = this.stageOf(sd + stride * i); if (st) { this.shaders.need(st.key, st.blob); keys.push(st.key); } }
+    return keys;
+  }
+  // The call that gave a program its stages returns when they are ready or have failed (RtShaders.pending says why the game waits)
+  private afterStages(cpu: any, keys: string[], r: any): any {
+    const p = this.opts.shaderWait === false ? null : this.shaders?.pending(keys) ?? null;
+    if (!p) return r;
+    this.stats.shaderWaits++;
+    return cpu.waitFor(p, undefined, () => r);
   }
   private workDone(): Promise<unknown> | null {
     if (!this.live) return null;
@@ -273,10 +285,10 @@ export class RtGfx implements HleGfx {
       case "nvnDeviceGetCurrentTimestampInNanoseconds": return cpu => { x.gfx_set_now(this.guestNow()); return this.call(id, cpu.argsX()); };
       // nvnProgramSetShaders(program, count, NVNshaderData[]): every stage's key is looked up (library, in-page
       // translation) before the recorder notes the keys
-      case "nvnProgramSetShaders": return cpu => { this.needStages(Number(cpu.x(2)), cpu.w(1) | 0, 16); return this.call(id, cpu.argsX()); };
+      case "nvnProgramSetShaders": return cpu => { const keys = this.needStages(Number(cpu.x(2)), cpu.w(1) | 0, 16); return this.afterStages(cpu, keys, this.call(id, cpu.argsX())); };
       // the same for the two ways in that reach the recorder's SetShaders inside src/gfx (not through this stub):
       // NVN 55's stages of 0x18 bytes, and NVN2's builder { device, shader data, count } (nn::ndve's movie network)
-      case "nvnProgramSetShadersExt": return cpu => { this.needStages(Number(cpu.x(2)), cpu.w(1) | 0, 24); return this.call(id, cpu.argsX()); };
+      case "nvnProgramSetShadersExt": return cpu => { const keys = this.needStages(Number(cpu.x(2)), cpu.w(1) | 0, 24); return this.afterStages(cpu, keys, this.call(id, cpu.argsX())); };
       case "nvnProgramInitializeFromBuilder": return cpu => {
         const b = Number(cpu.x(1)), dv = this.rt.dv();
         if (b && b + 24 <= dv.byteLength) this.needStages(Number(dv.getBigUint64(b + 8, true)), dv.getInt32(b + 16, true), 16);

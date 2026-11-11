@@ -626,6 +626,19 @@ function placeHostBank(bank: number, st: number, name: string): Omit<Binding, "g
   const binding = HOST_BANK_BINDING + st * 4 + k;
   return k === 0 ? { kind: "c1", group: 0, binding, name } : k === 3 ? { kind: "push", bank, group: 0, binding, name } : { kind: "drvcb", bank, group: 0, binding, name };
 }
+// Whether any instruction writes through a pointer made from this variable: a store, an atomic operation other than a load, a memory copy into
+// it, or a call that is handed the pointer (what the callee does with it is not followed)
+function storageWritten(c: Ctx, variable: number): boolean {
+  const ptr = new Set<number>([variable]);
+  for (const i of c.m.insts) {
+    if ((i.op === Op.AccessChain || i.op === Op.InBoundsAccessChain || i.op === 83 /* OpCopyObject */) && ptr.has(i.w[2])) { ptr.add(i.w[1]); continue; }
+    if (i.op === Op.Store && ptr.has(i.w[0])) return true;
+    if ((i.op === 63 || i.op === 64 || i.op === 228) && ptr.has(i.w[0])) return true;       // OpCopyMemory, OpCopyMemorySized, OpAtomicStore: the target first
+    if (i.op >= 229 && i.op <= 242 && ptr.has(i.w[2])) return true;                            // OpAtomicExchange .. OpAtomicXor: type, result, pointer
+    if (i.op === 57 && i.w.slice(3).some(a => ptr.has(a))) return true;                        // OpFunctionCall: type, result, function, arguments
+  }
+  return false;
+}
 function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep", sbufs: NonNullable<FixOptions["sbufs"]> = []): Binding[] {
   const st = STAGE_INDEX[stage], out: Binding[] = [];
   const set = (id: number, group: number, binding: number) => { if (mode === "nxweb") { c.setDecoration(id, Dec.DescriptorSet, group); c.setDecoration(id, Dec.Binding, binding); } };
@@ -644,7 +657,13 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
       if (!(slot >= 0 && slot < C0_SSBO_SLOTS) || (mode === "keep" && (c.decoration(id, Dec.DescriptorSet) ?? 0) !== 0))
         throw new Error(`storage buffer ${name}: at set ${c.decoration(id, Dec.DescriptorSet) ?? 0} binding ${c.decoration(id, Dec.Binding)}, not one of the ${stage} stage's storage buffer bindings (group 0, 128 + ${st * 16} + slot)`);
       const struct = c.def.get(c.def.get(v.w[0])!.w[2])!.w[0];
-      const write = !c.has(id, Dec.NonWritable) && !(c.mdeco.get(struct) ?? []).some(i => i.w[2] === Dec.NonWritable);
+      let write = !c.has(id, Dec.NonWritable) && !(c.mdeco.get(struct) ?? []).some(i => i.w[2] === Dec.NonWritable);
+      // WebGPU has no writable storage buffer in the vertex stage, and the translator leaves NonWritable off a buffer the shader only reads: one
+      // that no instruction writes through is declared read-only (naga then writes `var<storage, read>` and the layout is read-only-storage)
+      if (write && mode === "nxweb" && stage === "vertex") {
+        if (storageWritten(c, id)) throw new Error(`storage buffer ${name}: written by a vertex stage, which WebGPU does not allow`);
+        c.addDecoration(id, Dec.NonWritable); write = false;
+      }
       set(id, 0, 128 + st * 16 + slot);
       out.push({ kind: "storage", reg: slot, write, ...where(id, 0, 128 + st * 16 + slot), name });
       continue;

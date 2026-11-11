@@ -97,7 +97,10 @@ export interface ReportInput {
   fs?: string[];                           // RtFs.lines: the most called nn::fs functions, the last files opened
   idle?: string[];                         // RtRuntime.idleWaitLines: what the threads wait on while none can run
   hot?: string[];                          // RtRuntime.hotCode: where the guest's time goes, by function
-  scan?: string[];                         // the prepare step's instruction scan (a64_scan.ts scanLines): opcode classes, counts, module offsets
+  scan?: string[];
+  frames?: string[];                       // FrameLedger.frames (gfx_ledger.ts): the last frames' draws and dispatches, issued and skipped, and who wrote the presented image
+  firstDrawn?: string;                     // FrameLedger.firstDrawn
+  shaderKeys?: string[];                   // RtShaders.reportLines: every key that is not ready, by first use                         // the prepare step's instruction scan (a64_scan.ts scanLines): opcode classes, counts, module offsets
 }
 export function reportText(r: ReportInput): string {
   const out: string[] = [];
@@ -117,6 +120,10 @@ export function reportText(r: ReportInput): string {
   out.push("counters:", ...Object.entries(r.counters).map(([k, v]) => `  ${k}: ${v}`), "");
   if (r.fs?.length) out.push("nn::fs: the most called functions:", ...r.fs.map(l => "  " + l), "");
   if (r.idle?.length) out.push("what the guest waits for when no thread can run:", ...r.idle.map(l => "  " + l), "");
+  if (r.frames) out.push(`graphics, per frame (the last ${r.frames.length} lines, identical frames folded; t: seconds since the first frame):`,
+    `  first frame with a draw in the presented image: ${r.firstDrawn || "none"}`, ...r.frames.map(l => "  " + l), "");
+  if (r.shaderKeys) out.push("shader keys that are not ready (by state; each key with the frame, time and draw or dispatch that first needed it, and what it skipped):",
+    ...(r.shaderKeys.length ? r.shaderKeys.map(l => "  " + l) : ["  (none)"]), "");
   if (r.hot?.length) out.push("where the guest's time goes (the pc each time slice ended at, by function):", ...r.hot.map(l => "  " + l), "");
   if (r.scan) out.push("instructions the translator does not have (static scan of the code modules with its own decoder; opcode classes and offsets, no game data):",
     ...(r.scan.length ? r.scan.map(l => "  " + l) : ["  (no scan: the game was not opened through the prepare step, or its translator binary has no scanner)"]), "");

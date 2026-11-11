@@ -60,6 +60,14 @@ const forceMem64 = new URLSearchParams(self.location?.search ?? "").get("mem64")
 const precise = ({ "1": 1, "2": 2 } as const)[new URLSearchParams(self.location?.search ?? "").get("precise") ?? ""];
 // ?ndve=bypass: a bilinear stand-in for nn::ndve's movie network when its dispatches cannot run (diagnostic, src/glue/ndve.ts)
 const ndve = new URLSearchParams(self.location?.search ?? "").get("ndve") === "bypass" ? "bypass" as const : undefined;
+// ?shaderdump=<url>: every stage the in-page translator fails on is POSTed there as <url>/sh-<key>.bin (u32 control length, control, code), so the
+// chain can be run on it outside the page (debugging; off by default, and the bytes go only where the URL says)
+const shaderDump = new URLSearchParams(self.location?.search ?? "").get("shaderdump");
+const dumpFailed = shaderDump ? (b: { key: string; control: Uint8Array; code: Uint8Array }) => {
+  const body = new Uint8Array(4 + b.control.length + b.code.length);
+  new DataView(body.buffer).setUint32(0, b.control.length, true); body.set(b.control, 4); body.set(b.code, 4 + b.control.length);
+  void fetch(`${shaderDump}/sh-${b.key}.bin`, { method: "POST", body }).catch(() => {});
+} : undefined;
 function modules64(): Promise<RuntimeModules> {
   return mods64 ??= (async () => {
     const mod = async (n: string) => WebAssembly.compileStreaming(fetch(`wasm/${n}64.wasm`));
@@ -136,7 +144,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   gfx = new RtGfx(me, set.gfx!, { device: device ?? undefined, canvas: device ? canvas : undefined, nextFrame: () => new Promise(res => (self as any).requestAnimationFrame(res)),
     requestDevice: async () => { device = await requestDevice(); return device; }, profile: game?.gfx, ndve });
   // shaders: a library the user gave first, then translation in the page (stored by key and chain version)
-  try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined }); }
+  try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined, onFailed: dumpFailed }); }
   catch (e: any) { log("[RED] page: the shader library was refused: " + (e?.message ?? e)); shaderLookup = new RtShaders(gfx, { translator: shaderTranslator }); }
   // the SDK take-overs, with nn::vi's present side from the graphics glue (vsync events tick at every present). The
   // controller applet's prompt is a dialog of the page, vibration goes to the player's controller; the input box, the
@@ -287,7 +295,9 @@ function report(userAgent: string): string {
   const live = liveStates();
   return reportText({ title: title || "nxweb report (no program loaded)", build: buildStamp, when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
     state: rt ? STATES[rt.r.rt_state()] : "Empty", stop: live.process?.match(/\((.*)\)$/)?.[1] ?? "", fault, modules: modRows, takeovers: tk,
-    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, idle: rt && !rt.disposed ? rt.idleWaitLines() : undefined, fs: fsys ? fsys.lines() : undefined, log: lines.slice(-200), redTotal, scan: scanReport });
+    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, idle: rt && !rt.disposed ? rt.idleWaitLines() : undefined, fs: fsys ? fsys.lines() : undefined,
+    frames: gfx && rt && !rt.disposed ? gfx.host.ledger.frames : undefined, firstDrawn: gfx && rt && !rt.disposed ? gfx.host.ledger.firstDrawn : undefined,
+    shaderKeys: shaderLookup && rt && !rt.disposed ? shaderLookup.reportLines() : undefined, log: lines.slice(-200), redTotal, scan: scanReport });
 }
 let lastMachines: ReturnType<typeof machineRows> = [], lastOptionsKey = "";
 let scanReport: string[] | undefined;   // the instruction scan of the program that is loaded, when the prepare step handed it off (its Code stage)

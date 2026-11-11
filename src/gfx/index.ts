@@ -19,7 +19,7 @@ import { syncFenceOf, syncWaitFence } from "./sync";
 import { hostFlush, hostExecs, hostInit } from "./hostops";
 import { hostSegsLent, cmdInit } from "./cmd";
 import { texLayout, texLevelOffset } from "./texlayout";
-import { texContentInit, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull } from "./texcontent";
+import { texContentInit, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull, setGobSwitch2 } from "./texcontent";
 import { watchInit } from "./texwatch";
 export * from "../kit/exports";
 
@@ -51,7 +51,7 @@ export function nvn_count(): i32 { return NVN_NFUNC; }
 // 0 unimplemented (logs `[RED] nvnXxx unimplemented` once, returns 0), 1 implemented, 2 empty by design
 export function nvn_status(fnId: i32): i32 { return status(fnId); }
 export function gfx_set_api(major: i32, minor: i32): void { setApi(major, minor); }
-export function gfx_set_nvn2(on: i32): void { setNvn2(on != 0); }
+export function gfx_set_nvn2(on: i32): void { setNvn2(on != 0); setGobSwitch2(on != 0); }
 export function gfx_set_devinfo2(item: u32, v: i32): void { setDevinfo2(item, v); }
 
 // The shader library: key = the 8 key bytes as two little-endian words, refl = reflection record (shader.ts)

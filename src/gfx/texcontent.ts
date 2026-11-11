@@ -61,8 +61,15 @@ function flushedOver(lo: u64, hi: u64): bool {
 }
 export function submitDone(): void { submitNo++; scrubLeft = SCRUB_BUDGET; nFlushed = 0; flushedAll = false; W.watchSubmitDone(); }
 
-const KOX: usize = memory.data<u16>([0, 32, 256, 288]);
-const KOY: usize = memory.data<u16>([0, 16, 64, 80, 128, 144, 192, 208]);
+// The place of a 16-byte piece inside a GOB, by x piece (x%64/16) and row (y%8). The Tegra X1's order is
+// (x%64/32)*256 + (y%8/2)*64 + (x%32/16)*32 + (y%2)*16; the Switch 2 (NVN2) orders the pieces otherwise:
+// (x%64/32)*256 + (y%8/4)*128 + (x%32/16)*64 + (y%4/2)*32 + (y%2)*16 (nxnative dm/gfx/tex/nvn_deswizzle.c, nvn_gob_switch2)
+const KOX1: usize = memory.data<u16>([0, 32, 256, 288]);
+const KOY1: usize = memory.data<u16>([0, 16, 64, 80, 128, 144, 192, 208]);
+const KOX2: usize = memory.data<u16>([0, 64, 256, 320]);
+const KOY2: usize = memory.data<u16>([0, 16, 32, 48, 128, 144, 160, 176]);
+let KOX: usize = KOX1, KOY: usize = KOY1;
+export function setGobSwitch2(on: bool): void { KOX = on ? KOX2 : KOX1; KOY = on ? KOY2 : KOY1; }
 // Rows y0..y1 (block rows) of every slice of one level and layer between block-linear storage `bl` (the texture's
 // storage start) and linear rows at `lin` (slice z, row y at ((z * (y1 - y0)) + y - y0) * pitch). texGeom was called
 function blMove(bl: usize, lin: usize, pitch: usize, toLinear: bool, y0: u32, y1: u32): void {

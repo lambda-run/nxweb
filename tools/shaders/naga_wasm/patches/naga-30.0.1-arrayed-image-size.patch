@@ -1,0 +1,81 @@
+--- a/src/front/spv/image.rs
++++ b/src/front/spv/image.rs
+@@ -854,9 +854,11 @@
+         // allowed as images and they are always in the root scope
+         //TODO: handle arrays and cubes
+         let image_lexp = self.lookup_expression.lookup(image_id)?;
++        let image_handle = image_lexp.handle;
++        let image_type_id = image_lexp.type_id;
+ 
+         let expr = crate::Expression::ImageQuery {
+-            image: image_lexp.handle,
++            image: image_handle,
+             query: crate::ImageQuery::Size { level },
+         };
+ 
+@@ -873,6 +875,65 @@
+             expr
+         };
+ 
++        // nxweb: SPIR-V's size of an arrayed image has the layer count as its last
++        // component. naga's `Size` query has the dimensions only, so the result is
++        // composed of them and a `NumLayers` query.
++        let dimensions = match ctx.module.types[self.lookup_type.lookup(image_type_id)?.handle].inner {
++            crate::TypeInner::Image {
++                dim, arrayed: true, ..
++            } => Some(match dim {
++                crate::ImageDimension::D1 => 1u32,
++                crate::ImageDimension::D2 | crate::ImageDimension::Cube => 2,
++                crate::ImageDimension::D3 => 3,
++            }),
++            _ => None,
++        };
++        let result_components = match ctx.module.types[result_type_handle].inner {
++            crate::TypeInner::Vector { size, .. } => size as u32,
++            _ => 1,
++        };
++        let expr = match dimensions {
++            Some(n) if result_components == n + 1 => {
++                let span = self.span_from_with_op(start);
++                let size = ctx.expressions.append(expr, span);
++                let mut components = Vec::with_capacity(n as usize + 1);
++                if n == 1 {
++                    components.push(size);
++                } else {
++                    for index in 0..n {
++                        components.push(ctx.expressions.append(
++                            crate::Expression::AccessIndex { base: size, index },
++                            span,
++                        ));
++                    }
++                }
++                let layers = ctx.expressions.append(
++                    crate::Expression::ImageQuery {
++                        image: image_handle,
++                        query: crate::ImageQuery::NumLayers,
++                    },
++                    span,
++                );
++                components.push(if maybe_scalar_kind == Some(crate::ScalarKind::Sint) {
++                    ctx.expressions.append(
++                        crate::Expression::As {
++                            expr: layers,
++                            kind: crate::ScalarKind::Sint,
++                            convert: Some(4),
++                        },
++                        span,
++                    )
++                } else {
++                    layers
++                });
++                crate::Expression::Compose {
++                    ty: result_type_handle,
++                    components,
++                }
++            }
++            _ => expr,
++        };
++
+         self.lookup_expression.insert(
+             result_id,
+             LookupExpression {

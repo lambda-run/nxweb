@@ -6,6 +6,7 @@
 import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
+import { FrameLedger } from "./gfx_ledger.ts";
 import { NdveBypass, NDVE_KEYS, NDVE_OUTPUT_IMAGE, NDVE_FLIP_ON, NDVE_FLIP_BASE } from "./ndve.ts";
 export type { Capture, CaptureImage } from "./gfx_capture.ts";
 
@@ -98,13 +99,13 @@ export interface GfxHostOptions {
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
   BLEND_COLOR: 12, STENCIL_REF: 13, DRAW: 14, DRAW_IDX: 15, CLEAR_RECT: 16, COPY_B2T: 17, COPY_T2T: 18, SNAPSHOT: 19, PRESENT: 20, FENCE: 21, FLUSH: 22, MEM_DIRTY: 23, TEX_DATA: 24, COPY_T2B: 25, FIXUP: 26,
   UBO_DATA: 27, SSBO: 28, IMG: 29, BEGIN_COMPUTE: 30, DISPATCH: 31, BUF_READBACK: 32,
-  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38, CLEAR_TEX: 39, DISPATCH_SKIPPED: 40 };
+  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38, CLEAR_TEX: 39, DISPATCH_SKIPPED: 40, SKIP: 41 };
 // Pipeline key offsets (src/gfx/pipeline.ts)
 const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8, samples: 9, ncolor: 10, depthFmt: 11, colorFmt: 12, a2c: 20, flags: 21, blendEn: 22, stencilV: 23, stencilW: 24,
   itype: 25, chmask: 28, ds: 32, blend: 40, offset: 104, attrMask: 116, attr: 120, stream: 248, vin: 376 };
 const DIMS = ["2d", "2d-array", "cube", "3d", "cube-array"], CLASSES: VinClass[] = ["float", "sint", "uint"];
 
-interface Tex { serial: number; target: number; format: number; flags: number; samples: number; width: number; height: number; depth: number; levels: number;
+interface Tex { serial: number; target: number; format: number; flags: number; samples: number; width: number; height: number; depth: number; levels: number; swz: number;
   gpu?: GPU; snap?: GPU; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
 interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo" | "host"; dyn: boolean; write: boolean; size?: number; info?: ShaderInfo }
 interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
@@ -119,7 +120,7 @@ const SRGB_TWIN: Record<string, string> = {};
 for (const b of ["rgba8unorm", "bgra8unorm", "bc1-rgba-unorm", "bc2-rgba-unorm", "bc3-rgba-unorm", "bc7-rgba-unorm", ...[[4, 4], [5, 4], [5, 5], [6, 5], [6, 6], [8, 5], [8, 6], [8, 8], [10, 5], [10, 6], [10, 8], [10, 10], [12, 10], [12, 12]].map(([w, h]) => `astc-${w}x${h}-unorm`)]) { SRGB_TWIN[b] = b + "-srgb"; SRGB_TWIN[b + "-srgb"] = b; }
 // Features asked of the adapter when it has them, and the limits raised to what it offers (GfxHost.deviceDescriptor)
 const FEATURES = ["texture-compression-bc", "texture-compression-astc", "rg11b10ufloat-renderable", "depth32float-stencil8", "depth-clip-control", "texture-formats-tier1", "bgra8unorm-storage",
-  "dual-source-blending", "float32-filterable", "clip-distances", "subgroups"];
+  "dual-source-blending", "float32-filterable", "clip-distances", "subgroups", "texture-component-swizzle"];
 const LIMITS = ["maxUniformBuffersPerShaderStage", "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage", "maxStorageTexturesPerShaderStage",
   "maxDynamicUniformBuffersPerPipelineLayout", "maxVertexAttributes", "maxVertexBuffers", "maxColorAttachmentBytesPerSample", "maxBindingsPerBindGroup", "maxInterStageShaderVariables", "maxBufferSize",
   "maxStorageBufferBindingSize", "maxUniformBufferBindingSize", "maxTextureDimension2D", "maxTextureArrayLayers", "maxBindGroups", "maxBindGroupsPlusVertexBuffers"];
@@ -147,6 +148,7 @@ export class GfxHost {
   context: GPU = null;
   canvasFormat = "bgra8unorm";
   lastPresented = 0;
+  ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0,
     meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0 };
@@ -161,12 +163,13 @@ export class GfxHost {
   onDeviceRestored: ((texturesGone: number) => void) | null = null;
   // Called when a vertex shader is bound with attribute formats of another class than it declares and has no variant:
   // the shader chain's hook to translate one (return its WGSL, or undefined: the pipeline fails with a red line)
+  shaderStateOf: ((keyHex: string) => string | undefined) | null = null;   // the embedder's state of a key (rt_shaders.ts), for the capture's key lines
   onShaderVariant: ((keyHex: string, classes: Record<number, VinClass>) => string | undefined) | null = null;
 
   private opts: GfxHostOptions;
   private gen = 1;            // the device's generation: completions of an earlier device are dropped
   private lost = false;
-  private shaders: { info: ShaderInfo; key: string; module?: GPU; variants?: Map<string, GPU | null> }[] = [];
+  private shaders: { info: ShaderInfo; key: string; module?: GPU; variants?: Map<string, GPU | null>; interp?: Map<string, GPU | null> }[] = [];
   private textures = new Map<number, Tex>();
   private pipes = new Map<number, Pipe>();
   private layouts = new Map<string, GPU>();
@@ -251,7 +254,7 @@ export class GfxHost {
     this.live.clear();
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.views.clear(); }
     this.textures.clear(); this.shaders = [];
-    this.pipes.clear(); this.ndvePipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
+    this.pipes.clear(); this.ndvePipes.clear(); this.ndveScratch.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
     this.converted.clear(); this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
     this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.readbacks = [];
@@ -281,6 +284,8 @@ export class GfxHost {
   }
   private ndve: NdveBypass | null = null;
   private ndvePipes = new Map<string, { pipe: GPU; layout: GPU }>();
+  private upR8 = 0; private upRg8 = 0;
+  private ndveScratch = new Map<string, GPU>();      // the stand-in's own image for an output WebGPU cannot store to (an sRGB format), by format and size
   private red(key: string, line: string) { if (!this.redOnce.has(key)) { this.redOnce.add(key); this.log(`[RED] ${line}`); } }
   private get dv() { return new DataView(this.memory.buffer); }
   private memView: Uint8Array | null = null;
@@ -329,7 +334,7 @@ export class GfxHost {
     this.live.clear();   // they belonged to the device that is gone
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.views.clear(); }
     for (const s of this.shaders) if (s) { s.module = undefined; s.variants = undefined; }
-    this.pipes.clear(); this.ndvePipes.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
+    this.pipes.clear(); this.ndvePipes.clear(); this.ndveScratch.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
     this.converted.clear(); this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
     this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.adopt(device);
@@ -401,6 +406,26 @@ export class GfxHost {
     return out;
   }
   private module(id: number): GPU { const s = this.shaders[id]; return (s.module ??= this.device.createShaderModule({ code: s.info.wgsl })); }
+  // WebGPU wants a vertex output and the fragment input at the same location to name the same interpolation; the translator puts flat / linear on
+  // the fragment input only (as the game's two stages have it). The vertex module for this fragment shader: its outputs take the fragment inputs'
+  // interpolation. null when the shader's own module already agrees
+  private interpModule(vsId: number, fsId: number): GPU | null {
+    const v = this.shaders[vsId], fw: string = this.shaders[fsId].info.wgsl ?? "", vw: string = v.info.wgsl ?? "";
+    const params = /@fragment\s*fn\s+\w+\(((?:[^()]|\([^()]*\))*)\)/.exec(fw)?.[1];
+    // the vertex stage's output is the struct its entry point returns (naga writes `-> VertexOutput`)
+    const ret = /@vertex\s*fn\s+\w+\((?:[^()]|\([^()]*\))*\)\s*->\s*(\w+)/.exec(vw)?.[1];
+    const out = ret ? new RegExp(`struct\\s+${ret}\\s*\\{[^}]*\\}`).exec(vw) : null;
+    if (params === undefined || !out) return null;
+    const want = new Map<number, string>();
+    for (const m of params.matchAll(/@location\((\d+)\)(?:\s*@interpolate\(([^)]*)\))?/g)) want.set(+m[1], m[2] ?? "");
+    const body = out[0].replace(/@location\((\d+)\)(\s*@interpolate\([^)]*\))?/g, (all, loc) => { const w = want.get(+loc); return w === undefined ? all : `@location(${loc})${w ? ` @interpolate(${w})` : ""}`; });
+    if (body.replace(/\s+/g, "") === out[0].replace(/\s+/g, "")) return null;
+    const sig = [...want].filter(([, w]) => w).map(([l, w]) => `${l}:${w}`).sort().join(";");
+    v.interp ??= new Map();
+    let mod = v.interp.get(sig);
+    if (mod === undefined) { mod = this.device.createShaderModule({ code: vw.slice(0, out.index) + body + vw.slice(out.index + out[0].length) }); v.interp.set(sig, mod); }
+    return mod;
+  }
   // The module of a vertex shader for attribute classes other than it declares; null when there is none (red: the request)
   private variantModule(id: number, classes: Record<number, VinClass>): GPU | null {
     const s = this.shaders[id], sig = Object.keys(classes).map(Number).sort((a, b) => a - b).map(l => `${l}:${classes[l]}`).join(",");
@@ -435,8 +460,9 @@ export class GfxHost {
   }
   private layerCount(t: Tex) { return t.gpu.depthOrArrayLayers; }
   // view: a view_t (16 bytes) or null; attach: one level and layer, for a render target or a copy
-  private view(t: Tex, src: GPU, view: Uint8Array | null, dim?: string, oneLevel = false): GPU {
-    const key = (src === t.snap ? "s" : "t") + (dim ?? "") + (oneLevel ? "1" : "") + (view ? Array.from(view).join(",") : "");
+  // sampled: a shader samples through this view, so the channel swizzle applies (the view's own when it sets one, else the texture builder's: nxnative nvn_mtl.m)
+  private view(t: Tex, src: GPU, view: Uint8Array | null, dim?: string, oneLevel = false, sampled = false): GPU {
+    const key = (src === t.snap ? "s" : "t") + (dim ?? "") + (oneLevel ? "1" : "") + (sampled ? "z" : "") + (view ? Array.from(view).join(",") : "");
     let v = t.views.get(key);
     if (v) return v;
     const d: any = {};
@@ -452,8 +478,16 @@ export class GfxHost {
         const want = hostFormat(view[4] | view[5] << 8, this.caps)?.tex;
         if (want && want !== t.fmt.tex) { if (want === SRGB_TWIN[t.fmt.tex!]) { d.format = want; d.usage = t.gpu.usage & ~0x08; } else this.red(`viewfmt${want}${t.fmt.tex}`, `a texture view reads ${t.fmt.tex} as ${want}: WebGPU views can only switch sRGB, the texture's own format is used`); }
       }
-      if ((bits & 16) && (view[10] !== 2 || view[11] !== 3 || view[12] !== 4 || view[13] !== 5)) this.red("swizzle", "a texture view with a channel swizzle: WebGPU views have none (the shader chain would have to apply it), ignored");
     } else if (d.dimension === "2d" && this.layerCount(t) > 1) d.arrayLayerCount = 1;
+    if (sampled && t.fmt.kind !== "depth") {
+      const sw = view && (view[0] & 16) ? [view[10], view[11], view[12], view[13]] : [0, 3, 6, 9].map(s => t.swz >> s & 7);
+      const s = sw.map((c, i) => "01rgba"[c > 5 ? 2 + i : c]).join("");
+      if (s !== "rgba") {
+        // WebGPU's texture-component-swizzle: such a view can only be sampled
+        if (this.device.features?.has?.("texture-component-swizzle")) { d.swizzle = s; d.usage = 0x04; }
+        else this.red("swizzle", `a texture is sampled with the channel swizzle ${s}: this device has no texture-component-swizzle, ignored`);
+      }
+    }
     if (d.dimension === "cube" && d.arrayLayerCount === undefined && this.layerCount(t) > 6) d.arrayLayerCount = 6;
     if (oneLevel) d.mipLevelCount = 1;
     if (t.fmt.kind === "depth" && t.fmt.stencil) d.aspect = view && (view[0] & 0x20) && (view[0] >> 6) === 1 ? "stencil-only" : "depth-only";
@@ -918,7 +952,7 @@ export class GfxHost {
     if (mesh) layouts.push(this.layoutOf([{ binding: 0, visibility: 1, buffer: { type: "uniform" } }, { binding: 1, visibility: 1, buffer: { type: "read-only-storage" } }]));
     pipe.layouts = layouts; pipe.g0 = g0; pipe.dynOnly = g0.length > 0 && g0.every(s => s.dyn);
     // Vertex inputs of another class than the shader declares (flag 2, decided by the recorder): the module must be a variant
-    const vmod = mesh ? this.meshVertexModule(id, vsId, fsId) : flags & 2 ? this.variantModule(vsId, classes) : this.module(vsId);
+    const vmod = mesh ? this.meshVertexModule(id, vsId, fsId) : flags & 2 ? this.variantModule(vsId, classes) : this.interpModule(vsId, fsId) ?? this.module(vsId);
     if (!vmod) { this.pipeFailed(id); return; }
     const desc: any = {
       layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }),
@@ -1026,7 +1060,7 @@ export class GfxHost {
       for (const t of s.textures ?? []) {
         const b = this.tex.get(st * 64 + t.slot), tx = b && b.serial ? this.texture(b.serial) : undefined;
         const src = tx && (b!.snap && tx.snap ? tx.snap : tx.gpu), filtering = !!t.depth || (t.sampleType ?? "float") === "float";
-        g1.push({ binding: st * 64 + t.slot * 2, resource: tx ? this.view(tx, src, b!.view, t.dim) : this.dummyView(t.dim ?? "2d") });
+        g1.push({ binding: st * 64 + t.slot * 2, resource: tx ? this.view(tx, src, b!.view, t.dim, false, true) : this.dummyView(t.dim ?? "2d") });
         g1.push({ binding: st * 64 + t.slot * 2 + 1, resource: this.sampler(b ? b.samp : 0, !!t.depth, filtering) });
       }
       for (const m of s.images ?? []) {
@@ -1060,8 +1094,10 @@ export class GfxHost {
   private ndveDispatch(dv: DataView, p: number) {
     const nd = this.ndve!, id = dv.getUint32(p + 8, true), sid = this.pipes.get(id)?.stages[0], pos = sid === undefined ? -1 : nd.pos(this.shaders[sid]?.key ?? "");
     const tex = (slot: number) => this.tex.get(2 * 64 + slot)?.serial ?? 0, img = (slot: number) => this.img.get(2 * 8 + slot)?.serial ?? 0, push = () => this.ubo.get(uboKey(2, 19))?.data ?? null;
+    if (pos === nd.keys.length - 1) this.ndveUploadedPlanes();
     if (pos >= 0 && nd.replaces(pos)) { this.ndveStandIn(img(NDVE_OUTPUT_IMAGE), push()); this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); return; }
     const ran = this.usePipeline(id) && this.bind();
+    if (pos === 0) this.ndvePlanes(tex, img);
     if (pos >= 0 && nd.saw(pos, ran, tex)) this.ndveStandIn(img(NDVE_OUTPUT_IMAGE), push());
     if (!ran) return;
     this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
@@ -1074,22 +1110,60 @@ export class GfxHost {
     if (!nd || !this.pass || !this.computePass) return;
     const pos = nd.pos(Array.from({ length: 8 }, (_, i) => dv.getUint8(p + 8 + i).toString(16).padStart(2, "0")).join(""));
     if (pos < 0) return;
+    if (pos === 0) this.ndvePlanes(slot => this.u64(dv, p + 32 + slot * 8), slot => this.u64(dv, p + 288 + slot * 8));
+    if (pos === nd.keys.length - 1) this.ndveUploadedPlanes();
     if (nd.saw(pos, false, slot => this.u64(dv, p + 32 + slot * 8))) this.ndveStandIn(this.u64(dv, p + 288 + NDVE_OUTPUT_IMAGE * 8), this.u8.slice(p + 352, p + 608));
+  }
+  // The decoder's picture as the colour conversion (dispatch 1) has it bound: an r8unorm luma plane and an rg8unorm chroma plane at half its size (NV12)
+  private ndvePlanes(tex: (slot: number) => number, img: (slot: number) => number) {
+    const nd = this.ndve!; nd.luma = 0; nd.chroma = 0; nd.rgb = 0;
+    let colour = 0, colours = 0;
+    // the game binds the planes to the conversion as images (it reads them with image loads); texture slots are looked at too
+    for (let slot = 0; slot < 40; slot++) {
+      const serial = slot < 32 ? tex(slot) : img(slot - 32), g = serial ? this.texture(serial)?.gpu : null;
+      if (!g || g.dimension !== "2d") continue;
+      if (g.format === "r8unorm" && !nd.luma) nd.luma = serial; else if (g.format === "rg8unorm" && !nd.chroma) nd.chroma = serial;
+      else if (/^(rgba|bgra)8unorm/.test(g.format)) { colour = serial; colours++; }
+    }
+    // one colour texture and no planes: the host's decoder gave the conversion an RGB picture (src/hle/codec_video.ts keeps the decoded pictures)
+    if (!(nd.luma && nd.chroma) && colours === 1 && (this.texture(colour)?.gpu?.width ?? 0) >= 64) nd.rgb = colour;   // (a 4x4 texture is a placeholder)
+    if (!(nd.luma && nd.chroma) && !nd.rgb) this.red("ndveplanes", `ndve=bypass: the colour conversion's planes were not found among its textures: ${Array.from({ length: 40 }, (_, i) => i).filter(i => (i < 32 ? tex(i) : img(i - 32))).map(i => { const sr = i < 32 ? tex(i) : img(i - 32), g = this.texture(sr)?.gpu; return `${i < 32 ? "texture" : "image"} slot ${i < 32 ? i : i - 32} tex#${sr} ${g ? `${g.format} ${g.width}x${g.height}` : "(not live)"}`; }).join(", ") || "nothing bound"}`);
+  }
+  // The game binds the planes to the colour conversion as separate textures, which the recorder's skipped-dispatch record does not carry: the pair
+  // of plane textures last uploaded stands for them when one is half the other's size (4:2:0). Looked at when the resampler comes by
+  private ndveUploadedPlanes() {
+    const nd = this.ndve!;
+    if (nd.converted || (nd.luma && nd.chroma)) return;
+    const y = this.texture(this.upR8)?.gpu, c = this.texture(this.upRg8)?.gpu;
+    if (y && c && y.width >= 64 && c.width === Math.ceil(y.width / 2) && c.height === Math.ceil(y.height / 2)) { nd.luma = this.upR8; nd.chroma = this.upRg8; }
   }
   // The stand-in: the frame's picture resampled bilinearly (texel centres, edges clamped) into the image the resampler writes, rows flipped as its push constants
   // say, alpha 1. In the open compute pass, where the resampler would have run
   private ndveStandIn(outSerial: number, push: Uint8Array | null) {
-    const nd = this.ndve!, src = this.texture(nd.pic), dst = this.texture(outSerial);
+    const nd = this.ndve!, dst = this.texture(outSerial);
+    // when the colour conversion did not run either, the picture was never written: the stand-in then reads the decoder's planes and converts them itself
+    const yT = nd.converted ? undefined : this.texture(nd.luma), cT = nd.converted ? undefined : this.texture(nd.chroma), planes = !!(yT?.gpu && cT?.gpu);
+    const rgbT = planes || nd.converted || !nd.rgb ? undefined : this.texture(nd.rgb);
+    const src = planes ? yT : rgbT?.gpu ? rgbT : this.texture(nd.pic);
     if (!src?.gpu || !dst?.gpu) { this.red("ndvetex", `ndve=bypass: the movie network's ${src?.gpu ? "output image" : "input picture"} is no live texture: no stand-in`); return; }
-    const fmt = dst.gpu.format;
-    if (!(dst.gpu.usage & 0x08) || !STORAGE_FORMATS.has(fmt) || dst.gpu.dimension !== "2d" || src.gpu.dimension !== "2d" || src.gpu.sampleCount > 1 || src.fmt.kind !== "float") {
-      this.red("ndvefmt", `ndve=bypass: the movie network writes a ${fmt} ${dst.gpu.dimension} image (a 2D storage format is needed) from a ${src.gpu.format} picture: no stand-in`); return;
+    // An sRGB output is no storage format in WebGPU: the stand-in then writes an image of its own in the format's linear twin and the texels are copied
+    // over as they are (the two formats copy to each other), which is what a store into the sRGB image would have left
+    const twin = SRGB_TWIN[dst.gpu.format], viaCopy = !STORAGE_FORMATS.has(dst.gpu.format) && !!twin && STORAGE_FORMATS.has(twin) && !!(dst.gpu.usage & 0x02) && dst.gpu.sampleCount === 1;
+    const fmt = viaCopy ? twin : dst.gpu.format;
+    if ((!viaCopy && !(dst.gpu.usage & 0x08)) || !STORAGE_FORMATS.has(fmt) || dst.gpu.dimension !== "2d" || src.gpu.dimension !== "2d" || src.gpu.sampleCount > 1 || src.fmt.kind !== "float") {
+      this.red("ndvefmt", `ndve=bypass: the movie network writes a ${dst.gpu.format} ${dst.gpu.dimension} image (a 2D storage format is needed) from a ${src.gpu.format} picture: no stand-in`); return;
     }
-    let k = this.ndvePipes.get(fmt);
+    let scratch: GPU = null;
+    if (viaCopy) {
+      const sk = `${fmt}:${dst.gpu.width}x${dst.gpu.height}`;
+      scratch = this.ndveScratch.get(sk);
+      if (!scratch) this.ndveScratch.set(sk, scratch = this.device.createTexture({ size: { width: dst.gpu.width, height: dst.gpu.height }, format: fmt, usage: 0x08 | 0x01 /* STORAGE_BINDING | COPY_SRC */ }));
+    }
+    let k = this.ndvePipes.get(fmt + (planes ? ":nv12" : ""));
     if (!k) {
       const module = this.device.createShaderModule({ code: `struct P { base: i32, flip: u32 }
 @group(0) @binding(0) var src: texture_2d<f32>;
-@group(0) @binding(1) var dst: texture_storage_2d<${fmt}, write>;
+${planes ? "@group(0) @binding(3) var chroma: texture_2d<f32>;\n" : ""}@group(0) @binding(1) var dst: texture_storage_2d<${fmt}, write>;
 @group(0) @binding(2) var<uniform> p: P;
 @compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) g: vec3u) {
   let ds = textureDimensions(dst);
@@ -1097,24 +1171,39 @@ export class GfxHost {
   let ss = vec2i(textureDimensions(src)); let hi = ss - vec2i(1);
   let c = (vec2f(g.xy) + 0.5) * vec2f(ss) / vec2f(ds) - 0.5; let f = floor(c); let w = c - f;
   let a = clamp(vec2i(f), vec2i(0), hi); let b = clamp(vec2i(f) + vec2i(1), vec2i(0), hi);
-  let t = mix(mix(textureLoad(src, a, 0), textureLoad(src, vec2i(b.x, a.y), 0), w.x), mix(textureLoad(src, vec2i(a.x, b.y), 0), textureLoad(src, b, 0), w.x), w.y);
-  var y = i32(g.y);
+  var t = mix(mix(textureLoad(src, a, 0), textureLoad(src, vec2i(b.x, a.y), 0), w.x), mix(textureLoad(src, vec2i(a.x, b.y), 0), textureLoad(src, b, 0), w.x), w.y);
+${planes ? `  // NV12 to RGB as BT.709 limited range (the stand-in's assumption; the network's own conversion is the game's shader)
+  let cs = vec2i(textureDimensions(chroma)); let ch = cs - vec2i(1);
+  let cc = (c + 0.5) * vec2f(cs) / vec2f(ss) - 0.5; let cf = floor(cc); let cw = cc - cf;
+  let ca = clamp(vec2i(cf), vec2i(0), ch); let cb = clamp(vec2i(cf) + vec2i(1), vec2i(0), ch);
+  let uv = mix(mix(textureLoad(chroma, ca, 0).rg, textureLoad(chroma, vec2i(cb.x, ca.y), 0).rg, cw.x), mix(textureLoad(chroma, vec2i(ca.x, cb.y), 0).rg, textureLoad(chroma, cb, 0).rg, cw.x), cw.y) - vec2f(128.0 / 255.0);
+  let yy = (t.r - 16.0 / 255.0) * 1.164383;
+  t = vec4f(clamp(vec3f(yy + 1.792741 * uv.y, yy - 0.213249 * uv.x - 0.532909 * uv.y, yy + 2.112402 * uv.x), vec3f(0.0), vec3f(1.0)), 1.0);
+` : ""}  var y = i32(g.y);
   if (p.flip != 0u) { y = p.base - y; }
   if (y < 0 || y >= i32(ds.y)) { return; }
   textureStore(dst, vec2i(i32(g.x), y), vec4f(t.rgb, 1.0));
 }` });
       const pipe = this.device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
-      this.ndvePipes.set(fmt, k = { pipe, layout: pipe.getBindGroupLayout(0) });
+      this.ndvePipes.set(fmt + (planes ? ":nv12" : ""), k = { pipe, layout: pipe.getBindGroupLayout(0) });
     }
     const pw = push && push.length >= 80 ? new DataView(push.buffer, push.byteOffset, push.byteLength) : null, flip = pw ? pw.getUint32(NDVE_FLIP_ON * 4, true) : 0;
     const ub = this.newBuffer({ size: 16, usage: 0x40 | 0x08 });
     this.device.queue.writeBuffer(ub, 0, new Int32Array([pw ? pw.getInt32(NDVE_FLIP_BASE * 4, true) : 0, flip ? 1 : 0, 0, 0]));
     this.inUse.push(ub);
-    const group = this.device.createBindGroup({ layout: k.layout, entries: [{ binding: 0, resource: this.view(src, src.gpu, null, "2d", true) }, { binding: 1, resource: this.view(dst, dst.gpu, null, "2d", true) }, { binding: 2, resource: { buffer: ub } }] });
+    const group = this.device.createBindGroup({ layout: k.layout, entries: [{ binding: 0, resource: this.view(src, src.gpu, null, "2d", true) }, { binding: 1, resource: scratch ? scratch.createView() : this.view(dst, dst.gpu, null, "2d", true) }, { binding: 2, resource: { buffer: ub } }, ...(planes ? [{ binding: 3, resource: this.view(cT!, cT!.gpu, null, "2d", true) }] : [])] });
     this.pass.setPipeline(k.pipe); this.pass.setBindGroup(0, group);
     this.pass.dispatchWorkgroups(Math.ceil(dst.gpu.width / 8), Math.ceil(dst.gpu.height / 8));
+    if (scratch) {
+      // the copy cannot be inside the compute pass: the pass ends here and a new one is open for the dispatches that follow
+      this.pass.end();
+      this.encoder().copyTextureToTexture({ texture: scratch }, { texture: dst.gpu }, { width: dst.gpu.width, height: dst.gpu.height });
+      this.pass = this.encoder().beginComputePass(); this.computePass = true;
+    }
     this.cur = null; this.bindDirty = true; this.stats.ndveStandIns++;
-    if (!nd.frames++) this.log(`[RED] ndve=bypass: nn::ndve's movie network did not run (its shaders are not ready or failed; nxweb has no HMMA lowering): a stand-in replaced it, the ${src.gpu.width}x${src.gpu.height} picture resampled bilinearly into the network's ${dst.gpu.width}x${dst.gpu.height} ${fmt} output${flip ? " (rows flipped)" : ""}. Diagnostic only: not the network's picture`);
+    // what it read and wrote, once for each kind of source (the first-frame line below is the summary)
+    this.red(`ndvesrc${planes ? "p" : rgbT?.gpu ? "r" : "c"}${src.gpu.format}${dst.gpu.format}`, `ndve=bypass: stand-in source ${planes ? "NV12 planes" : rgbT?.gpu ? "the decoder's RGB picture" : "the conversion's output picture"} tex#${src.serial} ${src.gpu.format} ${src.gpu.width}x${src.gpu.height} -> tex#${dst.serial} ${dst.gpu.format} ${dst.gpu.width}x${dst.gpu.height} (conversion ran: ${nd.converted}, rgb ${nd.rgb}, picture ${nd.pic})`);
+    if (!nd.frames++) this.log(`[RED] ndve=bypass: nn::ndve's movie network did not run (its shaders are not ready or failed; nxweb has no HMMA lowering): a stand-in replaced it, the ${src.gpu.width}x${src.gpu.height} ${planes ? "decoder picture (NV12 planes, converted as BT.709 limited range by the stand-in)" : rgbT?.gpu ? "decoder picture (the colour conversion's input, which the host's decoder wrote as RGB)" : "picture"} resampled bilinearly into the network's ${dst.gpu.width}x${dst.gpu.height} ${dst.gpu.format} output${scratch ? " (through an image of its own: the format is not one WebGPU stores to)" : ""}${flip ? " (rows flipped)" : ""}. Diagnostic only: not the network's picture`);
   }
   private zero: GPU = null;
   private zeroBuffer(): GPU { return (this.zero ??= this.newBuffer({ size: 65536, usage: 0x40 | 0x08 })); }
@@ -1480,6 +1569,8 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   private texData(dv: DataView, p: number) {
     const t = this.texture(this.u64(dv, p + 8));
     if (!t) return;
+    // the last 2D single- and two-channel textures whose texels came from guest memory: a decoder's NV12 planes are such a pair (ndveStandIn)
+    if (this.ndve && t.gpu.dimension === "2d") { if (t.gpu.format === "r8unorm") this.upR8 = t.serial; else if (t.gpu.format === "rg8unorm") this.upRg8 = t.serial; }
     const what = dv.getUint32(p + 56, true);
     const level = dv.getUint32(p + 16, true), z = dv.getUint32(p + 20, true), y = dv.getUint32(p + 24, true), slices = dv.getUint32(p + 36, true), ptr = this.u64(dv, p + 40), pitch = dv.getUint32(p + 48, true), x = dv.getUint32(p + 52, true);
     const f = t.fmt, up = (v: number, b: number) => Math.ceil(v / b) * b, lw = up(Math.max(1, t.gpu.width >> level), f.bw), lh = up(Math.max(1, t.gpu.height >> level), f.bh);
@@ -1536,17 +1627,20 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   }
 
   // ---- the stream ----
+  // the null replayer: nothing runs, the ledger still counts
+  account(ptr: number, len: number) { if (!this.disposed) this.ledger.walk(this.dv, ptr < 0 ? ptr + 4294967296 : ptr, len); }
   exec(ptr: number, len: number) {
     if (this.disposed) return;
     let dv = this.dv;
     for (let p = ptr, end = ptr + len; p < end;) {
       const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
       if (this.cap) this.captureRecord(op, dv, p);
+      this.ledger.record(op, dv, p);
       switch (op) {
         case H.TEX_CREATE: {
           const serial = this.u64(dv, p + 8), d = p + 16, format = dv.getInt32(d + 4, true);
           this.textures.set(serial, { serial, target: dv.getInt32(d, true), format, flags: dv.getInt32(d + 8, true), samples: dv.getInt32(d + 12, true), width: dv.getUint32(d + 16, true), height: dv.getUint32(d + 20, true),
-            depth: dv.getUint32(d + 24, true), levels: dv.getUint32(d + 28, true), views: new Map(), fmt: hostFormat(format, this.caps)! });
+            depth: dv.getUint32(d + 24, true), levels: dv.getUint32(d + 28, true), swz: dv.getUint16(p + 56, true) || 0x0b1a, views: new Map(), fmt: hostFormat(format, this.caps)! });
           break;
         }
         case H.TEX_DESTROY: { const s = this.u64(dv, p + 8), t = this.textures.get(s); if (t) { this.flush(); this.groups.clear(); this.kill(t.gpu); this.kill(t.snap); this.textures.delete(s); } break; }
@@ -1555,6 +1649,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.BEGIN_COMPUTE: this.endPass(); this.pass = this.encoder().beginComputePass(); this.computePass = true; this.cur = null; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); this.stats.computePasses++; break;
         case H.DISPATCH: this.dispatch(dv, p); break;
         case H.DISPATCH_SKIPPED: this.dispatchSkipped(dv, p); break;
+        case H.SKIP: break;
         case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (dv.getUint32(p + 28, true) & 1) !== 0 }); this.bindDirty = true; break;
         case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null }); this.bindDirty = true; break; }
         case H.MESH_BEGIN: this.meshBegin(dv, p); break;
@@ -1577,8 +1672,8 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.BLEND_COLOR: this.pass.setBlendConstant([0, 1, 2, 3].map(i => dv.getFloat32(p + 8 + i * 4, true))); break;
         case H.STENCIL_REF: this.pass.setStencilReference(dv.getUint32(p + 8, true)); break;
         case H.DRAW: case H.DRAW_IDX: {
-          if (!this.cur || this.computePass) break;
-          if (this.bindDirty && !this.bind()) break;
+          if (!this.cur || this.computePass) { this.ledger.dropped("pipeline not built on the host"); break; }
+          if (this.bindDirty && !this.bind()) { this.ledger.dropped("bindings not made on the host"); break; }
           if (this.cur.drawParams) this.setDrawParams(op === H.DRAW ? dv.getUint32(p + 8, true) : dv.getInt32(p + 24, true), dv.getUint32(p + 20, true), dv.getUint32(p + (op === H.DRAW ? 28 : 40), true));
           const conv = dv.getUint32(p + (op === H.DRAW ? 24 : 28), true);
           if (conv) { this.drawConverted(dv, p, op === H.DRAW_IDX, conv); this.stats.draws++; break; }
@@ -1586,7 +1681,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
           else {
             const itype = dv.getUint32(p + 8, true), count = dv.getUint32(p + 12, true), isz = itype === 2 ? 4 : itype === 1 ? 2 : 1;
             const ib = this.upload(this.u64(dv, p + 32), count * isz, itype === 0 ? 1 : 2);
-            if (!ib) break;
+            if (!ib) { this.ledger.dropped("index buffer not uploaded"); break; }
             this.pass.setIndexBuffer(ib, itype === 2 ? "uint32" : "uint16", this.upOff);
             this.pass.drawIndexed(count, dv.getUint32(p + 16, true), 0, dv.getInt32(p + 24, true), dv.getUint32(p + 20, true));
           }
@@ -1682,6 +1777,9 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   private captureEnd() {
     const c = this.cap!;
     this.cap = null;
+    c.lines.push(`F ${this.ledger.lastLine || "no frame was presented"}`);
+    const keys = this.ledger.keyLines(undefined, k => this.shaderStateOf?.(k));
+    if (keys.length) c.lines.push("K shader keys that skipped work, by first use:", ...keys.map(l => `K   ${l}`));
     void Promise.all(c.images).then(images => c.done({ text: c.lines.join("\n") + "\n", images: images.filter((i): i is CaptureImage => !!i), passes: c.state.pass, draws: c.state.draws, dispatches: c.dispatches, records: c.records }));
   }
 }

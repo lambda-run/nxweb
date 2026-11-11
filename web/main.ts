@@ -343,3 +343,8 @@ function rumble(source: number, low: number, high: number) {
 }
 (window as any).nxwebTest = { audio, rumbling };
 if (new URLSearchParams(location.search).has("demo")) worker.postMessage({ type: "demo", which: "cube" });
+
+// ?driver=<url>: a debugging driver (a module that exports run(options)) is imported into the page and started with ?run=<JSON options>.
+// Off by default; the driver of the development loop (it opens the remembered game, presses keys, captures frames and posts the report)
+{ const q = new URLSearchParams(location.search), u = q.get("driver");
+  if (u) import(/* the URL is the developer's own */ u).then(m => m.run(JSON.parse(q.get("run") ?? "{}")), e => addLog([{ text: `page: the driver ${u} could not be loaded (${e?.message ?? e})`, kind: "red" }])); }
