@@ -4,7 +4,7 @@
 //   Browser: every WGSL module compiled by Chromium's own compiler, the end-to-end scene rendered with WebGPU on SwiftShader and its pixels compared, the conversion
 //            run inside the page. `--no-browser` leaves that half out.
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, extname, normalize, dirname } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -16,6 +16,7 @@ import { ShaderLibrary, writeLibrary, type Reflection } from "../../src/shaders/
 import { build, glslToSpv } from "../../tools/shaders/build_lib.mts";
 import { load } from "../../tools/shaders/naga_node.mts";
 import { jobFor, keyControl, ctlLens } from "../../src/shaders/job.ts";
+import { convertStage } from "../../src/shaders/convert.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../.."), OUT = join(ROOT, "build/shaders");
 mkdirSync(OUT, { recursive: true });
@@ -220,6 +221,27 @@ await test("SPIR-V pass: bindless texture names (handle types 0, 1, 3) are place
   throws(() => renamed("fp_t_cb196613_1057000A"), /sampler is a separate sampler of the driver table \(c2 \+ 0x570\): not placed yet/, "type 1 with the sampler in c2");   // slots = (2 + 1) << 16 | 5
   throws(() => renamed("fp_t_cb20_A"), /uniform bank 20, which is not one of the game's uniform slots/, "a bank that is no uniform slot");
   throws(() => renamed("fp_t_cb5_2000000A"), /bindless handle of type 2/, "an unknown handle type");
+});
+
+await test("SPIR-V pass: storage buffers go to the NVN slot their address is read from in c0 (nxnative dmsh_reflect.py); what has no slot is refused by name", () => {
+  const d = mkdtempSync(join(tmpdir(), "nxsb-")), file = join(d, "sb.comp");
+  writeFileSync(file, `#version 450
+layout(local_size_x = 64) in;
+layout(std430, binding = 5) buffer W { uint w[]; } wb;
+layout(std430, binding = 6) readonly buffer R { uint r[]; } rb;
+void main() { wb.w[gl_GlobalInvocationID.x] = rb.r[gl_GlobalInvocationID.x] + 1u; }
+`);
+  let spv: Uint8Array; try { spv = glslToSpv(file); } finally { rmSync(d, { recursive: true, force: true }); }
+  const c0 = (slot: number) => (0x310 + 0x10 * slot) / 4;
+  const sbufs = [{ binding: 5, cb_slot: 0, cb_offset: c0(2), flags: 1 }, { binding: 6, cb_slot: 0, cb_offset: c0(7), flags: 0 }];
+  const got = convertStage(naga, spv, { bindings: "nxweb", sbufs });
+  eq(got.reflection.storage, [{ slot: 2, write: true }, { slot: 7, write: false }], "slots from c0 0x330 and 0x380 of the compute table; write unless NonWritable");
+  eq(got.reflection.extra, [], "no binding left for the host to refuse");
+  if (!/@group\(0\) @binding\(162\)\s*var<storage, read_write>/.test(got.wgsl) || !/@group\(0\) @binding\(167\)\s*var<storage(, read)?>/.test(got.wgsl)) throw new Error(got.wgsl);
+  throws(() => fixForWgsl(spv, { sbufs: [sbufs[0]] }), /storage buffer .*no storage buffer at binding 6/, "a binding the translator did not list");
+  throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 0xff, cb_offset: 0 }] }), /traced to no storage buffer/, "global memory with no buffer");
+  throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 4, cb_offset: 0xe }] }), /address is in uniform slot 1 \+ 0x38: not placed yet/, "an address in a game uniform slot");
+  throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 0, cb_offset: 0x110 / 4 }] }), /c0 \+ 0x110, which is no compute stage storage buffer slot/, "the vertex table in a compute shader");
 });
 
 // ---- the browser half ----

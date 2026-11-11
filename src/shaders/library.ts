@@ -26,6 +26,7 @@ export interface Reflection {
   attributes?: number[];                                                 // vertex: locations read
   outputs?: number[];                                                    // fragment: colour targets written
   fixup: boolean;                                                        // vertex: reads the position fix-up at @group(2) @binding(0)
+  storage?: { slot: number; write?: boolean }[];                         // storage buffer slots, at @group(0) @binding(128 + stage * 16 + slot)
   // more than src/gfx reads today (tools/shaders/README.md, "What src/gfx must change"):
   uboSize: Record<string, number>;                                       // slot -> bytes the WGSL type covers: the host binds at least this, zero-filled past what the game bound
   attributeTypes?: Record<string, "float" | "sint" | "uint">;            // vertex: the class each input is declared with

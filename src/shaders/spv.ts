@@ -14,7 +14,7 @@ export const Op = { Name: 5, MemberName: 6, Extension: 10, ExtInstImport: 11, En
   Constant: 43, ConstantComposite: 44, Function: 54, FunctionEnd: 56, Variable: 59, Load: 61, Store: 62, AccessChain: 65, InBoundsAccessChain: 66, Decorate: 71, MemberDecorate: 72,
   CompositeConstruct: 80, CompositeExtract: 81, SampledImage: 86, FAdd: 129, FMul: 133, Label: 248, Return: 253,
   BeginInvocationInterlockEXT: 5364, EndInvocationInterlockEXT: 5365 } as const;
-const Dec = { Block: 2, BufferBlock: 3, ArrayStride: 6, BuiltIn: 11, Location: 30, Binding: 33, DescriptorSet: 34, Offset: 35 };
+const Dec = { Block: 2, BufferBlock: 3, ArrayStride: 6, BuiltIn: 11, NonWritable: 24, Location: 30, Binding: 33, DescriptorSet: 34, Offset: 35 };
 const SC = { UniformConstant: 0, Input: 1, Uniform: 2, Output: 3, Private: 6, StorageBuffer: 12 };
 
 export interface Inst { op: number; w: number[] }   // w: the operand words, without the first (length and opcode)
@@ -56,10 +56,11 @@ function strWords(s: string): number[] {
 // ---- what the pass reports ----
 // kind: the names of nxnative's dmsh_abi.h where they mean the same thing
 export interface Binding {
-  kind: "cbuf" | "support" | "c1" | "drvcb" | "tex" | "samp_tex" | "fixup";
+  kind: "cbuf" | "support" | "c1" | "drvcb" | "tex" | "samp_tex" | "fixup" | "storage";
   group: number; binding: number;
   reg?: number;        // cbuf: uniform slot; tex / samp_tex: texture slot
   bank?: number;       // drvcb: 0 or 2
+  write?: boolean;     // storage: the shader may write it
   size?: number;       // buffers: bytes the WGSL type covers = the least the host may bind
   dim?: "2d" | "2d-array" | "cube" | "cube-array" | "3d";
   sampleType?: "float" | "depth" | "sint" | "uint";
@@ -82,6 +83,8 @@ export interface FixOptions {
   bindings?: "nxweb" | "keep";
   fixup?: boolean;     // vertex: append the position fix-up (default true)
   shrinkUniforms?: boolean;   // default true
+  // the translator's storage buffers (its <key>.res.json "sbufs"): SPIR-V binding -> where the shader reads the buffer's address
+  sbufs?: { binding: number; cb_slot: number; cb_offset: number; flags?: number }[];
 }
 
 // The nxweb binding convention (src/gfx/README.md), with the three things a translated shader has and a hand-written one has not:
@@ -312,6 +315,7 @@ function shrinkUniforms(c: Ctx): Map<number, number> {
   for (const v of vars) {
     const p = c.def.get(v.w[0])!, st = c.def.get(p.w[2])!;
     if (st.op !== Op.TypeStruct) continue;
+    if (c.has(st.w[0], Dec.BufferBlock)) continue;
     const full = structSize(c, st);
     size.set(v.w[1], full);
     if (st.w.length !== 2) continue;
@@ -412,7 +416,21 @@ function bindlessHandle(name: string, slots: number, h: number): NonNullable<Bin
   if (type === 1 && sb === 2) throw new Error(`texture ${name}: a bindless texture whose sampler is a separate sampler of the driver table (c2 + 0x${o1.toString(16)}): not placed yet (src/gfx has no separate samplers)`);
   throw new Error(`texture ${name}: a bindless handle of type ${type} (sampler bank ${sb}): not placed`);
 }
-function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep"): Binding[] {
+// A storage buffer's NVN slot (nxnative dmsh_reflect.py): the translator traced the buffer's address to driver segment c0, whose table for
+// the stage holds slot r at base + 0x10 r (dmsh_abi.h DMSH_C0_SSBO_*). Nothing else the translator can trace to has a binding in src/gfx
+const C0_SSBO = { vertex: 0x110, fragment: 0x510, compute: 0x310 } as const, C0_ROW = 0x10, C0_SSBO_SLOTS = 16, GMEM_MAP_CB_SLOT = 0xff;
+function storageSlot(binding: number | undefined, name: string, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>): number {
+  const b = sbufs.find(s => s.binding === binding);
+  if (!b) throw new Error(`storage buffer ${name}: the translator listed no storage buffer at binding ${binding}`);
+  if (b.cb_slot === GMEM_MAP_CB_SLOT) throw new Error(`storage buffer ${name}: global memory traced to no storage buffer (nxnative binds its pool table or write log): not placed yet`);
+  const off = b.cb_offset * 4;
+  if (b.cb_slot !== 0) throw new Error(`storage buffer ${name}: its address is in ${b.cb_slot >= 3 ? `uniform slot ${b.cb_slot - 3}` : `driver segment c${b.cb_slot}`} + 0x${off.toString(16)}: not placed yet`);
+  const r = (off - C0_SSBO[stage]) / C0_ROW;
+  if (!Number.isInteger(r) || r < 0 || r >= C0_SSBO_SLOTS) throw new Error(`storage buffer ${name}: its address is at c0 + 0x${off.toString(16)}, which is no ${stage} stage storage buffer slot: not placed yet`);
+  return r;
+}
+
+function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep", sbufs: NonNullable<FixOptions["sbufs"]> = []): Binding[] {
   const st = STAGE_INDEX[stage], out: Binding[] = [];
   const set = (id: number, group: number, binding: number) => { if (mode === "nxweb") { c.setDecoration(id, Dec.DescriptorSet, group); c.setDecoration(id, Dec.Binding, binding); } };
   const where = (id: number, group: number, binding: number) => mode === "nxweb" ? { group, binding } : { group: c.decoration(id, Dec.DescriptorSet) ?? 0, binding: c.decoration(id, Dec.Binding) ?? 0 };
@@ -425,7 +443,16 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
   const freeSlot = (name: string) => { for (let s = 0; s < 32; s++) if (!taken.has(s)) { taken.add(s); return s; } throw new Error(`texture ${name}: bindless, and the shader's 32 texture slots are all taken`); };
   for (const v of c.m.insts.filter(i => i.op === Op.Variable)) {
     const id = v.w[1], sc = v.w[2], name = c.names.get(id) ?? "";
-    if (sc === SC.StorageBuffer || (sc === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))) throw new Error(`storage buffer ${name}: not placed yet (src/gfx has no storage buffers)`);
+    if (sc === SC.StorageBuffer || (sc === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))) {
+      const slot = mode === "keep" ? (c.decoration(id, Dec.Binding) ?? 0) - 128 - st * 16 : storageSlot(c.decoration(id, Dec.Binding), name, stage, sbufs);
+      if (!(slot >= 0 && slot < C0_SSBO_SLOTS) || (mode === "keep" && (c.decoration(id, Dec.DescriptorSet) ?? 0) !== 0))
+        throw new Error(`storage buffer ${name}: at set ${c.decoration(id, Dec.DescriptorSet) ?? 0} binding ${c.decoration(id, Dec.Binding)}, not one of the ${stage} stage's storage buffer bindings (group 0, 128 + ${st * 16} + slot)`);
+      const struct = c.def.get(c.def.get(v.w[0])!.w[2])!.w[0];
+      const write = !c.has(id, Dec.NonWritable) && !(c.mdeco.get(struct) ?? []).some(i => i.w[2] === Dec.NonWritable);
+      set(id, 0, 128 + st * 16 + slot);
+      out.push({ kind: "storage", reg: slot, write, ...where(id, 0, 128 + st * 16 + slot), name });
+      continue;
+    }
     if (sc === SC.Uniform) {
       let b: Omit<Binding, "group" | "binding"> & { group: number; binding: number }, m;
       if (mode === "keep") b = { kind: "cbuf", reg: (c.decoration(id, Dec.Binding) ?? 0) - st * 16, group: 0, binding: 0, name };
@@ -528,7 +555,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   const posVar = perVertex(c); c.index();
   const samplerOf = splitSamplers(c); c.index();
   const sizes = opts.shrinkUniforms === false ? new Map<number, number>(c.m.insts.filter(i => i.op === Op.Variable && i.w[2] === SC.Uniform).map(v => [v.w[1], structSize(c, c.def.get(c.def.get(v.w[0])!.w[2])!)])) : shrinkUniforms(c);
-  const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb"); c.index();
+  const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs); c.index();
   if (stage === "vertex" && opts.fixup !== false) {
     if (!posVar) throw new Error("a vertex shader that never writes gl_Position");
     bindings.push(fixup(c, posVar)); c.index();
