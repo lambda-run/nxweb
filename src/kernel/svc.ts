@@ -11,6 +11,7 @@ import { PENDING, block, wake, lockHandoff, condSignal, addressWaiters, addressS
   refOfThread, refOfEvent } from "./sync";
 import { guestTicks, clockReasons, entropy64, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
+import { ringClear } from "./ring";
 
 // ---- the process ----
 export const STOP_NONE: i32 = 0, STOP_EXIT: i32 = 1, STOP_BREAK: i32 = 2, STOP_KILL: i32 = 3;
@@ -197,7 +198,7 @@ export function svc(t: KThread, n: i32): void {
         lineStart("[RED] kernel: CreateThread: no free "); puts(nt == null ? "thread slot" : "handle"); lineEnd();
         r = R_OUT_OF_RES; break;
       }
-      nt.handle = h;
+      nt.handle = h; ringClear(nt);
       t.setX(1, h);
       break;
     }

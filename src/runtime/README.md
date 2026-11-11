@@ -230,7 +230,8 @@ tests.
   mapped region from static data, the rest from an arena at the top of the code region which the layout sizes
   (`ProcessLayout.aliasArena`, 30 MB for a 10.8 GB region) and the runtime hands over (`kernel_alias_arena`).
 - *The page* (`web/worker.ts`): a game whose hand-off layout is a 64-bit one gets the wasm64 set (fetched and
-  compiled then), anything else the wasm32 set; `?mem64=1` puts every program in the mode. The Options row says
+  compiled then), anything else the wasm32 set; `?mem64=1` puts every program in the mode, `?precise=1` / `?precise=2` sets `preciseFaults` (2: a trap's
+  register dump is exact). The Options row says
   "64-bit memory mode" and why. The translation cache key has the mode (`m32` / `m64...`).
 - *Tests.* Every runner goes through `tools/modes.mjs`: memory32, memory64, and memory64 with **the whole process
   above 4 GB** (`NX_MEM=64hi`: code region at 0x1_8000_0000 with heap, stacks, thread-local, alias regions and
@@ -318,6 +319,17 @@ There is no SDK and no rtld in the guest; the runtime plays both.
    backwards and then its `DT_FINI`. A fini function may make SVCs and wait. Then the process ends with the
    entry's w0. `svc 0x07` (ExitProcess) ends it at once with w0 and runs none, as on Horizon, where the guest's
    own runtime has run them by then.
+
+## Start contract (SDK programs)
+
+A start set that defines `nnosInitialize` and `nnMain` (a game: its `sdk` module) starts as on hardware, where rtld
+enters the SDK's `nn::init::Start` (the order of nxnative `dm/host/main.c`). The main thread calls, each as a guest
+call returning to `<rt.start>`, those that are defined: `_init_libc0`, `nnosInitialize(x0 = the main thread's
+handle, x1 = 0)`, `_init_libc1`, `nninitInitializeSdkModule`, `nninitStartup`, `_init_libc2`; then rtld's
+InitModules: each module's `DT_INIT` in load order (an SDK module's `_init` runs its own `init_array`; the array
+is called only for a module with no `DT_INIT`); then `nnMain`, entered as the entry is in step 3 above. The SDK's
+constructors need nn::os up (the TLS slots of `SdkAllocateTlsSlot`). The module's crt0 is not run. Returning from
+`nnMain` is a clean exit as in step 4.
 
 `loadFlat(image, sidecar)` runs a flat guest of the contract's test ABI instead: one image at `base`, all registers
 zero (x1, `tpidr`, `tpidrro` cleared after the kernel made the thread), and `svc 0x1E` answered by the contract's
@@ -675,11 +687,28 @@ system, the shader lookup and `runAsync()`.
 `Empty -Load-> Loading -LoadOk-> Ready -Start-> Running <-Pause/Resume-> Paused`, and `Stopped` (final) from
 `Running` by `Exit`, `Break`, `Fault`, from `Loading` by `Fault`, and from `Ready`, `Running` or `Paused` by `Kill`
 (the embedder's stop). `Stopped` carries `kind << 32 | value`:
-exit code, break, or the fault kind. Every fault logs two red lines and `run()` returns; nothing is thrown:
+exit code, break, or the fault kind. Every fault logs its red lines and `run()` returns; nothing is thrown. The
+lines are also `StopInfo.fault.lines` (the page's report copies them into its fault block). What, where and in which
+thread; x0..x30, sp, pc, nzcv, tpidr_el0 and tpidrro_el0 on four lines; for a trap without `preciseFaults: 2` a note that the registers are
+as last written back; pc and x30 as module + offset from its image base and, when the module's symbol table has a
+function symbol there, symbol + offset (`Loader.symbolAt`), or the host stub's name; the frame records from x29 (at
+most 16, each return address placed the same way); then the thread's last SVCs (at most 16, the kernel's ring
+`src/kernel/ring.ts`), each with its arguments, its results (and a QueryMemory's MemoryInfo) or "waiting" / "did not
+return", and the pc it returns to:
 
 ```
-[RED] fault: wasm trap in thread 0x1001 (#0) at pc=0x8000128: memory access out of bounds: the instruction 0xb9400268 at 0x8000128 loads or stores through x19 at an address below 0x8000000 (a null or host-area pointer) or beyond the end of the memory
-[RED]   x0=0x0 x1=0x1f x2=0x0 x3=0x0 x29=0x780fffe0 x30=0x8000124 sp=0x780ffee0 nzcv=0x8
+[RED] fault: wasm trap in thread 0x1001 (#0) at pc=0x8000090: memory access out of bounds: the instruction 0xb9400000 at 0x8000090 loads or stores through x0 at an address below 0x7dc0000 (a null or host-area pointer) or beyond the end of the memory
+[RED]   x0=0x0 x1=0x1f x2=0x0 x3=0x0 x4=0x0 x5=0x0 x6=0x0 x7=0x0
+[RED]   x8=0x1f x9=0x780ffee8 x10=0xa x11=0x8001039 x12=0x0 x13=0x1e x14=0x0 x15=0x0
+[RED]   x16=0x8002108 x17=0x8000090 x18=0x0 x19=0x0 x20=0x0 x21=0x0 x22=0x0 x23=0x0
+[RED]   x24=0x0 x25=0x0 x26=0x0 x27=0x0 x28=0x0 x29=0x780ffed0 x30=0x80000b0 sp=0x780ffec0 pc=0x8000090 nzcv=0x8 tpidr=0x17c02000 tpidrro=0x17c01000
+[RED]   the registers are as last written back (the function's entry or its last call), pc excepted; preciseFaults: 2 (the page: ?precise=2) makes them exact
+[RED]   pc=0x8000090 is fault_null+0x90 (read_word+0x0); x30=0x80000b0 is fault_null+0xb0 (read_through+0x10)
+[RED]   the frames from x29=0x780ffed0, innermost first:
+[RED]     frame 1: fp=0x780ffed0 returns to 0x800016c, fault_null+0x16c (no symbol)
+[RED]     frame 2: fp=0x780fffe0 returns to 0xfffffff0, not in the text of a loaded module
+[RED]   the last 1 of the 1 SVCs of thread 0x1001, oldest first:
+[RED]     #1 svc 0x27 OutputDebugString(x0=0x780ffee8 x1=0x1f) -> 0x0, returns to 0x80004b4
 ```
 
 | Fault | Comes from | pc |
@@ -693,7 +722,7 @@ exit code, break, or the fault kind. Every fault logs two red lines and `run()` 
 | `load` | the loader or the kernel refused a file | none |
 | `host` | an exception in glue or in a host function | last written back |
 
-## Verified (`npm run rt:test`: 55 tests under Node; `npm run rt:browser`: 66 in Chromium)
+## Verified (`npm run rt:test`: 58 tests under Node; `npm run rt:browser`: 69 in Chromium)
 
 Large module files (`more_cases.ts`, `large_nso.ts`, `src/large.c`; Node and Chromium): a synthetic NSO of 41.6 MB
 made in the test (text and 24 MB of data LZ4 compressed, 40 MB of read-only data stored, three hashes checked,
@@ -720,7 +749,16 @@ New in the integration round (`test/runtime/int_cases.ts` and the cases named):
   budgets 100000 and 50, identical slices, units and clock on a second run; pointers into host static data read under
   the guard; the wall clock (60 buffers in 0.30 s). Audio in Chromium: the same guest with the page's AudioContext and
   AudioWorklet (`sab` transport): about 3 s of 440 Hz at amplitude 0.5 reach the device, fitted sine above 60 dB, no
-  gap, no device underrun (waived, and said, when the run loop came back more than 25 ms late).
+  gap, no device underrun (waived, and said, when the run loop came back more than 25 ms late). The test browsers
+  play through Chromium's fake output stream (`--disable-audio-output`; `RT_BROWSER_AUDIO=device` for the system's):
+  on this machine (no sound device, a PulseAudio server with a null sink) every new output stream through PulseAudio
+  plays about 3 quanta, then calls back no more for about 1.9 s, then 375 a second (a bare worklet, no nxweb code, a
+  fresh context each time: 400 quanta in 3 s where 1125 are due, the first report after 1947 ms; a context opened while
+  the stream is still up does not stall, one opened 5 s after the last one closed stalls again; the fake stream: 1128
+  quanta, the first report after 1 to 2 ms, every time). The tone case and the page's audio demo met it every run:
+  Live, then the module's stall watchdog (no callback for 200 ms) moved the output to the silent sink, retried 1 s
+  later, about 1.2 of the 3 s reached the device, and the page test failed on the watchdog's red line. The module did
+  what it is for; the tests were measuring the system's output stream.
 - Audio renderer (`audren.c` and its stand-in SDK `ren_sdk.h`): the host's take-overs open the guest SDK's renderer
   for CPU / manual rendering and run it from a render thread the SDK starts for them; two voices come out at the sink
   as the expected signal sample for sample, one block per 5 ms of guest time; the wave buffers come back consumed;
@@ -822,7 +860,9 @@ Earlier:
   same hash on a second run, a different one with `4:Right~6` (twice the same) and another with the left stick.
   `build/runtime/cube.png`, `triangle.png`, `cube_turned.png` are the presented textures read back.
 - Wall clock with `requestAnimationFrame`: 40 frames at the display rate, the run loop busy about 5 % of the time,
-  the Worker's event loop serving timers meanwhile.
+  the Worker's event loop serving timers meanwhile; each of the 39 acquires after the first parked for its display
+  frame or counted late (`acquireLate`: the frame before it took past its slot, so it is not held), at most 4 late.
+  The test used to want exactly 39 parked and failed once on 38 (one slow SwiftShader frame).
 - The page: opened in Chromium, demo started by a click, `Running`, frames advancing, ArrowRight seen in the pad
   readout, Pause (frames stop), Resume, Stop (`Stopped`, killed); then started and stopped five more times without
   a reload (take-over table, file system on OPFS and shader lookup attached each time), the later runs starting

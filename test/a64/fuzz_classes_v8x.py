@@ -142,6 +142,41 @@ E("rcpc2_ldapur_stlur", "size:2 011001 opc:2 0 imm9:9 00 Rn:5 Rt:5", base="Rn",
   filt=lambda f: not (f["opc"] == 2 and f["size"] == 3) and not (f["opc"] == 3 and f["size"] >= 2))
 
 
+# ------------------------------------------------------------------------------ SHA-512, SHA-3, SM3, SM4 (ARMv8.2)
+E("sha512_3reg", "1100 1110 011 Rm:5 1 0 00 k:2 Rn:5 Rd:5")                     # SHA512H SHA512H2 SHA512SU1 RAX1
+E("sha512su0_sm4e", "1100 1110 1100 0000 1000 k:2 Rn:5 Rd:5", fix={"k": [0, 1]})  # SHA512SU0 SM4E
+E("sm3partw_sm4ekey", "1100 1110 011 Rm:5 1 1 00 k:2 Rn:5 Rd:5", fix={"k": [0, 1, 2]})  # SM3PARTW1 SM3PARTW2 SM4EKEY
+E("sha3_4reg", "1100 1110 0 k:2 Rm:5 0 Ra:5 Rn:5 Rd:5", fix={"k": [0, 1, 2]})   # EOR3 BCAX SM3SS1
+E("sha3_xar", "1100 1110 100 Rm:5 imm6:6 Rn:5 Rd:5")                           # XAR
+E("sm3tt", "1100 1110 010 Rm:5 10 imm2:2 k:2 Rn:5 Rd:5")                        # SM3TT1A SM3TT1B SM3TT2A SM3TT2B
+
+
+# ------------------------------------------------------------------------------ FJCVTZS (ARMv8.3)
+def _jscvt(r, f, pre):
+    import struct
+    k = r.randrange(8)
+    if k == 0:
+        x = float(r.randrange(-2 ** 31, 2 ** 31))                                 # exact
+    elif k == 1:
+        x = float(r.choice((2 ** 31 - 1, -2 ** 31, 2 ** 31, -2 ** 31 - 1, 2 ** 32, 0))) * r.choice((1, -1))
+    elif k == 2:
+        x = r.randrange(-2 ** 40, 2 ** 40) / r.choice((2, 4, 1024, 3))            # inexact / fractional
+    elif k == 3:
+        x = float(r.getrandbits(r.randrange(32, 90))) * r.choice((1, -1))        # modulo 2^32
+    elif k == 4:
+        x = r.choice((float("inf"), float("-inf"), float("nan"), -0.0, 5e-324, -5e-324, 2.2e-308, 1e300, -1e300))
+    else:
+        bits = r.getrandbits(64)
+        if k == 5:
+            bits = (bits & ~(0x7FF << 52)) | ((1023 + r.randrange(-4, 90)) << 52)
+        pre["v%d" % f["Rn"]] = bits
+        return
+    pre["v%d" % f["Rn"]] = struct.unpack("<Q", struct.pack("<d", x))[0] | (r.getrandbits(64) << 64)
+
+
+E("fjcvtzs", "0001 1110 0111 1110 0000 00 Rn:5 Rd:5", setup=_jscvt)
+
+
 # ------------------------------------------------------------------------------ DotProd
 E("dotprod_vec", "0 Q:1 U:1 01110 10 0 Rm:5 1 0010 1 Rn:5 Rd:5")                     # SDOT / UDOT Vd.2S/4S, Vn.8B/16B, Vm
 E("dotprod_elem", "0 Q:1 U:1 01111 10 L:1 M:1 Rm:4 1110 H:1 0 Rn:5 Rd:5")            # SDOT / UDOT Vd.2S/4S, Vn, Vm.4B[H:L]

@@ -196,6 +196,13 @@ export function trFp(pc: u64, insn: u32): bool {
         if (opcode == 6) { vget(rn); simd(0x1B); b(0); setX(rd, false); } else { getX(rn, false); setVint(rd, false); }
         return true;
       }
+      if (rmode == 3 && ty == 1 && !sf && opcode == 6) { // FJCVTZS: Wd and Z from the helper, N C V clear
+        let t = t64(7);
+        vget(rn); simd(0x1D); b(0); rndConst(11); ltee(t); b(0xA7); setX(rd, false);
+        lget(t); i64c(32); b(0x88); b(0xA7); rset(R_Z);
+        i32c(0); rset(R_N); i32c(0); rset(R_C); i32c(0); rset(R_V); killCmp();
+        return true;
+      }
       if (rmode == 0 && ty == 1 && sf) {
         if (opcode == 6) { vget(rn); simd(0x1D); b(0); setX(rd, true); } else { getX(rn, true); setVint(rd, true); }
         return true;
