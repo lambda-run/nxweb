@@ -11,6 +11,7 @@ import { fetchProfiles } from "../src/prepare/host/profiles.ts";
 import { Prepare, STAGES, type StageName, type Snapshot, type DetectOut, type ProfileOut, type CodeOut, type IndexOut, type HandOffMessage, type PrepResult } from "../src/prepare/host/prepare.ts";
 import { verdictFor, failureSentence, explainFile, type Verdict } from "../src/prepare/host/verdict.ts";
 import { A64Scanner, scanHeadline, scanLines } from "../src/glue/a64_scan.ts";
+import { hleHeadline, hleLines } from "../src/glue/hle_scan.ts";
 import { pagePrewarm } from "./prepare_shaders.ts";
 import type { PrewarmOut } from "../src/prepare/host/shader_prewarm.ts";
 
@@ -88,8 +89,8 @@ function stageLine(s: StageName, snap: Snapshot): string {
   if (s === "index") { const i = o as IndexOut; return `${i.rom.files} files, ${i.rom.dirs} directories, ${fmtBytes(i.rom.bytes)}, read in place${i.aoc.length ? `; ${i.aoc.length} add-on contents` : ""}`; }
   if (s === "profile") { const p = o as ProfileOut; return p.found ? `${esc(p.name)} (${p.id}${p.by === "build" ? ", found by main's build ID" : ""})${p.registered ? "" : "; not a registered build"}` : "no profile: provisional"; }
   if (s === "code") {
-    const k = o as CodeOut, head = k.scan ? scanHeadline(k.scan) : "";
-    return `${k.modules.map(m => m.name).join(", ")}; ${k.cuts} cuts applied` + (head ? `<br><b id="scanline" class="warn">${esc(head)}</b>` : "");
+    const k = o as CodeOut, head = k.scan ? scanHeadline(k.scan) : "", hle = hleHeadline(k.hle ?? []);
+    return `${k.modules.map(m => m.name).join(", ")}; ${k.cuts} cuts applied` + (head ? `<br><b id="scanline" class="warn">${esc(head)}</b>` : "") + (hle ? `<br><b id="hleline" class="warn">${esc(hle)}</b>` : "");
   }
   return shadersLine(o.prewarm as PrewarmOut | null);
 }
@@ -139,10 +140,13 @@ function drawVerdict(snap: Snapshot): void {
   // the instruction scan of the Code stage, once it is done: a gap in plain words, the table under the details
   const codeRec = snap.manifest.stages.code, scans = codeRec.state === "done" ? (codeRec.output as CodeOut | null)?.scan ?? [] : [];
   const scanHead = scanHeadline(scans);
-  const gaps = [...(v?.gaps ?? []), ...(scanHead ? [`${scanHead}: the game stops if it reaches one.`] : [])];
+  // and its take-over scan: SDK functions nxnative replaces that are not answered here
+  const hle = codeRec.state === "done" ? (codeRec.output as CodeOut | null)?.hle ?? [] : [], hleHead = hleHeadline(hle);
+  const gaps = [...(v?.gaps ?? []), ...(scanHead ? [`${scanHead}: the game stops if it reaches one.`] : []), ...(hleHead ? [`${hleHead}: the game stops if it calls one.`] : [])];
   $("gaps").innerHTML = gaps.map(g => `<li>${esc(g)}</li>`).join("");
   $("vdetails").innerHTML = (v?.details ?? []).map(d => `<li>${esc(d)}</li>`).join("") +
-    (scans.length ? `<li id="scantable">instructions the translator does not have yet (a scan of each module's code with the translator's own decoder; opcode classes and offsets only):<pre>${esc(scans.flatMap(s => scanLines(s.module, s.scan)).join("\n"))}</pre></li>` : "");
+    (scans.length ? `<li id="scantable">instructions the translator does not have yet (a scan of each module's code with the translator's own decoder; opcode classes and offsets only):<pre>${esc(scans.flatMap(s => scanLines(s.module, s.scan)).join("\n"))}</pre></li>` : "") +
+    (hle.length ? `<li id="hletable">SDK functions nxnative takes over that nxweb does not answer yet (each module's dynamic symbols against src/hle/gen/coverage.ts; module, nxnative file, function):<pre>${esc(hleLines(hle).join("\n"))}</pre></li>` : "");
   const play = $("play") as HTMLButtonElement;
   play.disabled = snap.state !== "Ready";
   play.textContent = v?.level === "no" ? "Try anyway" : "Play";
