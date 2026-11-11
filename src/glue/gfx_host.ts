@@ -208,6 +208,11 @@ export class GfxHost {
     for (const l of LIMITS) if (typeof adapter.limits?.[l] === "number") requiredLimits[l] = adapter.limits[l];
     return { requiredFeatures: FEATURES.filter(f => adapter.features.has(f)), requiredLimits };
   }
+  // Weakly: a device outlives the replayers made on it (one per process), and its lost promise would keep each one and
+  // its memory. Static, so the callback's closure does not share adopt()'s context, which holds `this`
+  private static watchLost(device: GPU, self: WeakRef<GfxHost>, gen: number): void {
+    device.lost?.then?.((info: any) => { const h = self.deref(); if (h && gen === h.gen) void h.deviceLost(info); });
+  }
   private adopt(device: GPU) {
     this.device = device;
     const has = (f: string) => !!device.features?.has?.(f);
@@ -220,9 +225,7 @@ export class GfxHost {
       this.context.configure({ device, format: this.canvasFormat, alphaMode: "opaque" });
     }
     device.onuncapturederror = (e: any) => { this.stats.errors++; this.log(`[RED] WebGPU: ${String(e.error?.message ?? e).split("\n")[0]}`); };
-    // weakly: a device outlives the replayers made on it (one per process), and its lost promise would keep each one and its memory
-    const gen = this.gen, self = new WeakRef(this);
-    device.lost?.then?.((info: any) => { const h = self.deref(); if (h && gen === h.gen) void h.deviceLost(info); });
+    GfxHost.watchLost(device, new WeakRef(this), this.gen);
   }
   // Every texture and buffer the replayer makes, until it destroys it: what dispose() releases
   private live = new Set<GPU>();
