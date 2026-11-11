@@ -643,7 +643,8 @@ DeviceGetCurrentTimestampInNanoseconds.
   ranges that overlap without one containing the other keep separate GPU copies; a uniform range inside a
   GPU-written range must sit at a multiple of 256 bytes from its start; storage images only of WebGPU's storage
   formats and one level; storage written by a vertex or fragment stage is lowered but has no scene; atomics, buffer
-  textures, `nvnCommandBufferClearBuffer` / `ClearTexture` are not there.
+  textures, `nvnCommandBufferClearBuffer` are not there; `ClearTexture` of a depth / stencil region (not a whole
+  level) or of a converted format is red and dropped.
 - Multisampling: sampling a multisampled texture in a shader (`texture_multisampled_2d`: the chain has no such
   binding either); the depth resolve takes sample 0, the stencil is not resolved; sample counts other than 4.
 - Depth clamp needs the feature `depth-clip-control` (red once without it).
