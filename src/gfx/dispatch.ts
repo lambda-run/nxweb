@@ -656,6 +656,9 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferDrawElements: C.drawElements(P(a, 0), I(a, 1), I(a, 2), I(a, 3), X(a, 4), 0, 0, 1); return 0;
     case F.nvnCommandBufferDrawElementsBaseVertex: C.drawElements(P(a, 0), I(a, 1), I(a, 2), I(a, 3), X(a, 4), I(a, 5), 0, 1); return 0;
     case F.nvnCommandBufferDrawElementsInstanced: C.drawElements(P(a, 0), I(a, 1), I(a, 2), I(a, 3), X(a, 4), I(a, 5), I(a, 6), I(a, 7)); return 0;
+    // NVN2 mesh shading (lower.ts meshDraw): count task workgroups from first, or mesh workgroups in a program with no task shader; the indirect record {count, first} is the GPU's
+    case F.nvnCommandBufferDrawMeshTasks: C.drawMeshTasks(P(a, 0), I(a, 1), I(a, 2), 0); return 0;
+    case F.nvnCommandBufferDrawMeshTasksIndirect: C.drawMeshTasks(P(a, 0), 0, 0, X(a, 1)); return 0;
     case F.nvnCommandBufferDrawArraysIndirect: C.drawArraysIndirect(P(a, 0), I(a, 1), X(a, 2), 0, 0); return 0;
     case F.nvnCommandBufferDrawElementsIndirect: C.drawElementsIndirect(P(a, 0), I(a, 1), I(a, 2), X(a, 3), X(a, 4), 0, 0); return 0;
     // Multi-draws become `max` indirect draws that carry the count's address and their index (nxnative does the same up to 1024)

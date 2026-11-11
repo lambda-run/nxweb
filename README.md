@@ -19,7 +19,7 @@ through NVN in the browser, and so does one real third-party program built the s
 | Module loader (`src/loader`) | Working, 84 tests: NSO segments stored, LZ4 or ZBIC compressed (system 22.0.0 on; the decoder is checked against the reference codec), NRO. No real game file was loaded yet: the first one tried stopped at its ZBIC segments, which are decoded since |
 | Kernel core (`src/kernel`) | Working, 69 tests |
 | Runtime (`src/runtime`, `src/glue/rt_*`) | Working: 58 end-to-end tests under Node, 69 in Chromium: multi-threaded NSO modules (LZ4 and ZBIC), module files of any size (a 40 MB one in the tests), run-time modules (NRO), faults with exact pcs (host memory guarded by default), restart without reload, a per-game address-space layout, a robustness sweep (64 threads for 30 s of guest time, 500 module reloads, 2000 frames) |
-| NVN on WebGPU (`src/gfx`) | Working for 338 of 743 NVN functions (19 Node tests, 55 browser scenes); a translated guest draws through it in the page |
+| NVN on WebGPU (`src/gfx`) | Working for 375 of 743 NVN functions (19 Node tests, 57 browser scenes); a translated guest draws through it in the page |
 | Shaders (`tools/shaders`, `src/shaders`) | Chain works on hand-assembled Maxwell programs, offline and in the page (translated in a Worker, cached); no game shader has been through it |
 | File system (`src/fs`) | Working and attached: RomFS images, crash-safe saves on OPFS; 66 tests, 7 in the browser |
 | SDK take-overs (`src/hle`) | The names nxnative answers on the host (1,113 in scope: 985 implemented, 128 cut stubs for movies; `hle:test` 97 tests), attached to the runtime with one answer per name: controllers (several players, vibration), display layer, run-time modules; guests call a spread of them |

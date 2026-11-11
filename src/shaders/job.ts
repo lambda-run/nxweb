@@ -32,8 +32,10 @@ export function keyControl(c: Uint8Array): Uint8Array {
 
 export interface Job {
   key: string; stage: "vs" | "ps" | "cs"; code: string; tex: object; img: object; attr: object; fout: object; c1: string; debug: boolean; reduced: boolean;
-  arch?: "sm86"; nvn2_cs?: number[]; early_fragment_tests?: boolean; local?: number[]; shared?: number;
+  arch?: "sm86"; nvn2_cs?: number[]; early_fragment_tests?: boolean; local?: number[]; shared?: number; stage_memory?: number[];
+  mesh?: MeshStage;   // not the translator's: a task or mesh shader's facts, for the wrapper (meshstage.ts wrapStage) and the reflection
 }
+import { meshStage, ownShared, type MeshStage } from "./meshstage.ts";
 const hex = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
 
 // The job for one stage and the code the translator reads (written to the file the job names: `path`)
@@ -74,10 +76,16 @@ export function nvn2Stage(control: Uint8Array, code: Uint8Array): string | null 
 function nvn2Job(key: string, control: Uint8Array, code: Uint8Array, path: string): { job: Job; body: Uint8Array } {
   const stage = nvn2Stage(control, code);
   if (stage === null) throw new Error("an NVN2 stage whose control section and SPH name no stage");
-  if (stage === "ts" || stage === "ms") throw new Error(`an NVN2 ${stage === "ts" ? "task" : "mesh"} shader: WebGPU has no mesh pipeline (nxnative runs it as compute inside a Metal mesh stage, dmsh_meshstage.py)`);
-  if (stage !== "vs" && stage !== "ps" && stage !== "cs") throw new Error(`an NVN2 ${stage} shader (tessellation or geometry) is not translated`);
+  if (stage !== "vs" && stage !== "ps" && stage !== "cs" && stage !== "ts" && stage !== "ms") throw new Error(`an NVN2 ${stage} shader (tessellation or geometry) is not translated`);
   const a = u32(control, 0x40), e = u32(control, 0x44), c1 = a <= e && e <= code.length ? code.subarray(a, e) : new Uint8Array(0);
-  const body = code.subarray(0, u32(control, 0x38));
+  let body = code.subarray(0, u32(control, 0x38));
+  if (stage === "ts" || stage === "ms") {
+    // dmsh_build.py job_for: translated as compute, its SPH taken off, its stage memory in shared memory (meshstage.ts, as dmsh_meshstage.info / memory)
+    const mesh = meshStage(control, code);
+    body = body.subarray(0x80);
+    if (ownShared(body)) throw new Error(`an NVN2 ${stage === "ts" ? "task" : "mesh"} shader with shared memory of its own (LDS / STS / ATOMS): it would lie over the stage memory`);
+    return { job: { key, stage: "cs", code: path, tex: {}, img: {}, attr: {}, fout: {}, c1: hex(c1), arch: "sm86", stage_memory: mesh.layout, local: [mesh.threads, 1, 1], shared: mesh.shared, debug: true, reduced: true, mesh }, body };
+  }
   const job: Job = { key, stage, code: path, tex: {}, img: {}, attr: {}, fout: {}, c1: hex(c1), arch: "sm86", debug: true, reduced: true };
   if (stage === "cs") {
     if (control.length < 0xbc) throw new Error(`an NVN2 compute control section of ${control.length} bytes: its c0 layout is at +0xa9..+0xbb`);

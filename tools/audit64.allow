@@ -485,11 +485,12 @@ src/gfx/cmd.ts	D	1	load<u32>(word)
 src/gfx/cmd.ts	D	1	store<i32>(c + (tex ? O.CMD_tex_base : O.CMD_samp_base), dpoolBase(pool, tex))
 src/gfx/cmd.ts	C	1	store<i32>(r + 4 + (<usize>which << 2), v)
 src/gfx/cmd.ts	D	3	store<i32>(r, 0)
-src/gfx/cmd.ts	D	1	store<i32>(r, 1, 12)
+src/gfx/cmd.ts	D	2	store<i32>(r, 1, 12)
 src/gfx/cmd.ts	D	1	store<i32>(r, 1, 20)
 src/gfx/cmd.ts	D	1	store<i32>(r, 1, 4)
 src/gfx/cmd.ts	D	1	store<i32>(r, 1, O.P_COPY_T2T_dr + 20)
 src/gfx/cmd.ts	D	1	store<i32>(r, 1, O.P_COPY_T2T_sr + 20)
+src/gfx/cmd.ts	D	1	store<i32>(r, MESH_PRIM)
 src/gfx/cmd.ts	D	1	store<i32>(r, O.COPY_RESOLVE, O.P_COPY_T2T_flags)
 src/gfx/cmd.ts	D	2	store<i32>(r, baseInstance, 16)
 src/gfx/cmd.ts	D	1	store<i32>(r, baseVertex, 12)
@@ -497,7 +498,7 @@ src/gfx/cmd.ts	D	1	store<i32>(r, bits)
 src/gfx/cmd.ts	D	1	store<i32>(r, dmask & 0xff, 4)
 src/gfx/cmd.ts	D	1	store<i32>(r, face)
 src/gfx/cmd.ts	D	2	store<i32>(r, first)
-src/gfx/cmd.ts	D	2	store<i32>(r, first, 4)
+src/gfx/cmd.ts	D	3	store<i32>(r, first, 4)
 src/gfx/cmd.ts	D	1	store<i32>(r, flags, O.P_COPY_B2T_flags)
 src/gfx/cmd.ts	D	1	store<i32>(r, flags, O.P_COPY_T2T_flags)
 src/gfx/cmd.ts	C	1	store<i32>(r, h, 12)
@@ -517,7 +518,7 @@ src/gfx/cmd.ts	D	1	store<i32>(r, mask, O.P_CLEAR_COLOR_mask)
 src/gfx/cmd.ts	D	1	store<i32>(r, mode)
 src/gfx/cmd.ts	D	2	store<i32>(r, mode, 8)
 src/gfx/cmd.ts	C	4	store<i32>(r, n, 4)
-src/gfx/cmd.ts	C	3	store<i32>(r, n, 8)
+src/gfx/cmd.ts	C	4	store<i32>(r, n, 8)
 src/gfx/cmd.ts	C	1	store<i32>(r, n, O.P_SET_RT_n)
 src/gfx/cmd.ts	D	1	store<i32>(r, on ? 1 : 0)
 src/gfx/cmd.ts	D	4	store<i32>(r, prim)
@@ -807,6 +808,7 @@ src/gfx/lower.ts	D	2	load<u32>(ind, 4)
 src/gfx/lower.ts	D	3	load<u32>(ind, 8)
 src/gfx/lower.ts	D	1	load<u32>(libRefl(curVs), RF_io)
 src/gfx/lower.ts	D	1	load<u32>(libRefl(id), RF_bl)
+src/gfx/lower.ts	D	1	load<u32>(libRefl(ms), RF_flags)
 src/gfx/lower.ts	D	1	load<u32>(p)
 src/gfx/lower.ts	D	1	load<u32>(p, 4)
 src/gfx/lower.ts	D	1	load<u32>(prog)
@@ -817,7 +819,8 @@ src/gfx/lower.ts	D	1	load<u32>(r, 4)
 src/gfx/lower.ts	D	2	load<u32>(r, 8)
 src/gfx/lower.ts	D	1	load<u32>(r, O.P_COPY_T2T_flags)
 src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_IDX_instances)
-src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_first)
+src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_count)
+src/gfx/lower.ts	D	2	load<u32>(r, O.P_DRAW_first)
 src/gfx/lower.ts	D	1	load<u32>(r, O.P_DRAW_instances)
 src/gfx/lower.ts	D	1	load<u32>(rf + RF_ubo_size + (<usize>i << 2))
 src/gfx/lower.ts	D	2	load<u32>(rf, RF_bl)
@@ -839,8 +842,16 @@ src/gfx/lower.ts	D	1	load<u32>(t, RT_level)
 src/gfx/lower.ts	D	1	load<u32>(t, RT_samples)
 src/gfx/lower.ts	D	2	load<u32>(t, RT_w)
 src/gfx/lower.ts	D	1	load<u32>(w)
+src/gfx/lower.ts	D	1	store<i32>(b, ts, 36)
 src/gfx/lower.ts	D	1	store<i32>(o, baseVertex, 24)
+src/gfx/lower.ts	D	1	store<u32>(H.hostRec(H.H_MESH_DRAW, 16), curPipe, 8)
+src/gfx/lower.ts	D	1	store<u32>(H.hostRec(H.H_MESH_RUN, 16), mp, 8)
+src/gfx/lower.ts	D	1	store<u32>(H.hostRec(H.H_MESH_TASK, 16), tp, 8)
 src/gfx/lower.ts	D	1	store<u32>(H.hostRec(H.H_STENCIL_REF, 16), stRef, 8)
+src/gfx/lower.ts	C	1	store<u32>(b, (ind ? 1 : 0) | (withTask ? 2 : 0), 8)
+src/gfx/lower.ts	D	1	store<u32>(b, count, 16)
+src/gfx/lower.ts	D	1	store<u32>(b, first, 12)
+src/gfx/lower.ts	D	1	store<u32>(b, ms, 32)
 src/gfx/lower.ts	D	1	store<u32>(e, bits & 2 ? <u32>load<u16>(view, O.VIEW_min_layer) : 0, RT_layer)
 src/gfx/lower.ts	D	1	store<u32>(e, fmt, RT_fmt)
 src/gfx/lower.ts	D	1	store<u32>(e, level, RT_level)
@@ -1211,6 +1222,8 @@ src/glue/gfx_host.ts	B	1	c = this.uaCur = this.uaPool.pop() ?? { buf: this.newBu
 src/glue/gfx_host.ts	S	1	c.used = (off + size + this.uaAlign - 1) & ~(this.uaAlign - 1);
 src/glue/gfx_host.ts	V	1	case H.BUF_READBACK: this.bufReadback(this.u64(dv, p + 8), dv.getUint32(p + 16, true)); break;
 src/glue/gfx_host.ts	V	1	case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16),
+src/glue/gfx_host.ts	V	1	case H.MESH_RUN: this.meshRun(dv.getUint32(p + 8, true)); break;
+src/glue/gfx_host.ts	V	1	case H.MESH_TASK: this.meshTaskRun(dv.getUint32(p + 8, true)); break;
 src/glue/gfx_host.ts	V	1	case H.PIPELINE: if (this.pass && !this.computePass) this.usePipeline(dv.getUint32(p + 8, true)); break;
 src/glue/gfx_host.ts	V	1	case H.PIPELINE_CREATE: this.createPipeline(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true)); break;
 src/glue/gfx_host.ts	V	1	case H.SCISSOR: this.pass.setScissorRect(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true)); break;
@@ -1222,11 +1235,15 @@ src/glue/gfx_host.ts	V	1	case H.VBUF: { const b = this.upload(this.u64(dv, p + 1
 src/glue/gfx_host.ts	V	1	case H_REPORT: this.reportsSeen = true; this.reportsOpen.push({ id: dv.getUint32(p + 8, true), seg: this.segOf() }); break;
 src/glue/gfx_host.ts	B	1	classes[loc] = CLASSES[Number((dv.getBigUint64(k + PK.vin, true) >> BigInt(loc * 2)) & 3n)] ?? " ";
 src/glue/gfx_host.ts	V	1	colorAttachments.push({ view: this.attachView(t, dv.getUint32(o + 8, true), dv.getUint32(o + 12, true), af), loadOp: clear ? " " : " ", storeOp: " ",
+src/glue/gfx_host.ts	B	1	const SW = slotWords(m), TS = tm ? taskStride(tm) : 0, budget = Math.min(this.limit(" ", 134217728), 64 << 20);
 src/glue/gfx_host.ts	B	1	const UA_CHUNK = 1 << 20, UA_ALIGN = 256;
 src/glue/gfx_host.ts	V	1	const [sl, sy, dl, dy] = [24, 28, 32, 36].map(o => dv.getUint32(p + o, true)), sr = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 40 + i * 4, true)), dr = [0, 1, 
 src/glue/gfx_host.ts	V	1	const a = dv.getUint32(k + PK.attr + loc * 4, true), fmt = a & 0xff, stream = a >>> 27, vf = NVN_FORMATS[fmt]?.vtx;
 src/glue/gfx_host.ts	V	1	const a: any = { view: this.attachView(t, dv.getUint32(p + 360, true), dv.getUint32(p + 364, true)) };
+src/glue/gfx_host.ts	B	1	const args = (this.meshArgs[at >> 10] ??= this.newBuffer({ size: 1024 * CTL_WORDS * 4, usage: 0x80 | 0x100 }));
+src/glue/gfx_host.ts	B	1	const at = this.meshCtlAt++, off = (at & 1023) * CTL_WORDS * 4;
 src/glue/gfx_host.ts	B	1	const b = dv.getBigUint64(k + PK.blend + i * 8, true), fld = (s: number, w: number) => Number((b >> BigInt(s)) & ((1n << BigInt(w)) - 1n));
+src/glue/gfx_host.ts	B	1	const buf = this.newBuffer({ size: CTL_WORDS * 4, usage: 0x01 | 0x08 });
 src/glue/gfx_host.ts	B	1	const buf = this.newBuffer({ size: Math.max(4, out.length * 4), usage: 0x10 | 0x08 });
 src/glue/gfx_host.ts	B	1	const buf = this.newBuffer({ size: row * h, usage: 0x01 | 0x08 });
 src/glue/gfx_host.ts	B	1	const buf = this.newBuffer({ size: srcRow * by * depth, usage: 0x01 | 0x08 });
@@ -1235,11 +1252,13 @@ src/glue/gfx_host.ts	V	1	const c = [0, 1, 2, 3].map(i => dv.getInt32(p + 16 + i 
 src/glue/gfx_host.ts	V	1	const clear = dv.getUint32(o + 20, true) !== 0;
 src/glue/gfx_host.ts	V	1	const conv = dv.getUint32(p + (op === H.DRAW ? 24 : 28), true);
 src/glue/gfx_host.ts	V	1	const count = dv.getUint32(p + 12, true), inst = dv.getUint32(p + 16, true), baseInst = dv.getUint32(p + 20, true);
+src/glue/gfx_host.ts	B	1	const ctl = (this.meshCtls[at >> 10] ??= this.newBuffer({ size: 1024 * CTL_WORDS * 4, usage: 0x80 | 0x08 | 0x04 }));
 src/glue/gfx_host.ts	V	1	const divisor = dv.getUint32(k + PK.stream + stream * 8 + 4, true);
 src/glue/gfx_host.ts	B	1	const ds = dv.getBigUint64(k + PK.ds, true), fld = (s: number, w: number) => Number((ds >> BigInt(s)) & ((1n << BigInt(w)) - 1n));
 src/glue/gfx_host.ts	B	1	const dv = this.dv, r = Number(this.x.gfx_scratch()), bit = (a?: number[]) => (a ?? []).reduce((m, i) => m | (1 << i), 0) >>> 0;
 src/glue/gfx_host.ts	B	1	const f = t.fmt, up = (v: number, b: number) => Math.ceil(v / b) * b, lw = up(Math.max(1, t.gpu.width >> level), f.bw), lh = up(Math.max(1, t.gpu.height >> leve
 src/glue/gfx_host.ts	V	1	const flags = dv.getUint32(p + 24, true);
+src/glue/gfx_host.ts	V	1	const flags = dv.getUint32(p + 8, true), first = dv.getUint32(p + 12, true), count = dv.getUint32(p + 16, true), ind = this.u64(dv, p + 24);
 src/glue/gfx_host.ts	B	1	const gone = this.x.gfx_device_restored() >>> 0;
 src/glue/gfx_host.ts	S	1	const have = u ? (u.data ? u.data.length : u.size) : 0, size = Math.min(max, Math.max(16, ((u?.need || have) + 15) & ~15));
 src/glue/gfx_host.ts	V	1	const itype = dv.getUint32(p + 8, true), addr = this.u64(dv, p + 32), isz = itype === 2 ? 4 : itype === 1 ? 2 : 1;
@@ -1248,6 +1267,7 @@ src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 16, true), z = dv.getUin
 src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 24, true), layer = dv.getUint32(p + 28, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 32 + i * 4, true)), f = t.fmt;
 src/glue/gfx_host.ts	V	1	const level = dv.getUint32(p + 24, true), layer = dv.getUint32(p + 28, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 32 + i * 4, true));
 src/glue/gfx_host.ts	B	2	const lo = (b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, hi = (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0;
+src/glue/gfx_host.ts	V	1	const msId = dv.getUint32(p + 32, true), tsId = dv.getInt32(p + 36, true), task = (flags & 2) !== 0, indirect = (flags & 1) !== 0;
 src/glue/gfx_host.ts	B	1	const n = down4(size + 3), buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
 src/glue/gfx_host.ts	V	1	const n = dv.getUint32(p + 8, true), flags = dv.getUint32(p + 12, true);
 src/glue/gfx_host.ts	V	1	const ncolor = dv.getUint8(k + PK.ncolor), chmask = dv.getUint32(k + PK.chmask, true), blendEn = dv.getUint8(k + PK.blendEn), written = new Set(fs.outputs ?? []
@@ -1264,9 +1284,10 @@ src/glue/gfx_host.ts	S	1	const src = this.u8.subarray(addr, addr + size), wide =
 src/glue/gfx_host.ts	B	1	const sw = Math.max(1, s.width >> sl), sh = Math.max(1, s.height >> sl);
 src/glue/gfx_host.ts	B	1	const ub = this.newBuffer({ size: 16, usage: 0x40 | 0x08 });
 src/glue/gfx_host.ts	V	1	const vf = hostFormat(dv.getUint32(o + 16, true), this.caps)?.tex, af = vf && vf === SRGB_TWIN[t.fmt.tex!] ? vf : t.fmt.tex!;
-src/glue/gfx_host.ts	B	1	const vmod = flags & 2 ? this.variantModule(vsId, classes) : this.module(vsId);
 src/glue/gfx_host.ts	V	1	const w = Math.min(dv.getUint32(p + 28, true), lw - x), h = Math.min(dv.getUint32(p + 32, true), lh - y), rows = h / f.bh;
 src/glue/gfx_host.ts	V	1	const w = dv.getUint32(p + 44, true), h = dv.getUint32(p + 48, true);
+src/glue/gfx_host.ts	V	1	const w = new Uint32Array(CTL_WORDS);
+src/glue/gfx_host.ts	V	1	const w = new Uint32Array(q.buf.getMappedRange().slice(0)); q.buf.unmap(); this.kill(q.buf);
 src/glue/gfx_host.ts	B	1	const want = hostFormat(view[4] | view[5] << 8, this.caps)?.tex;
 src/glue/gfx_host.ts	V	1	const what = dv.getUint32(p + 56, true);
 src/glue/gfx_host.ts	V	1	depth: dv.getUint32(d + 24, true), levels: dv.getUint32(d + 28, true), views: new Map(), fmt: hostFormat(format, this.caps)! });
@@ -1281,6 +1302,7 @@ src/glue/gfx_host.ts	B	1	for (const l of info.attributes ?? []) vin |= BigInt(Ma
 src/glue/gfx_host.ts	B	1	for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? " "))); if (t.depth) depth |= 1 << t.slot; }
 src/glue/gfx_host.ts	V	1	for (let loc = 0, m = dv.getUint32(k + PK.attrMask, true); m; loc++, m >>>= 1) {
 src/glue/gfx_host.ts	B	1	if (!(m & 1)) continue;
+src/glue/gfx_host.ts	B	1	if (!fb) { fb = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(fb, 0, new Float32Array(this.fix)); this.fixBufs.set(key, fb); }
 src/glue/gfx_host.ts	B	1	if (!g) { const b = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(b, 0, new Float32Array(this.fix)); g = this.device.createBin
 src/glue/gfx_host.ts	V	1	if (!this.usePipeline(dv.getUint32(p + 8, true))) return;
 src/glue/gfx_host.ts	B	1	if (!tx || !(tx.gpu.usage & 0x08)) { this.red(` $ `, ` $ $ `a ${tx.fmt.tex} texture is bound, which WebGPU cannot bind as a storage image` `); return false; }
@@ -1289,7 +1311,7 @@ src/glue/gfx_host.ts	B	1	if ((bits & 16) && (view[10] !== 2 || view[11] !== 3 ||
 src/glue/gfx_host.ts	B	1	if ((bits & 8) && !dim) d.dimension = vt === 2 ? " " : vt === 8 ? " " : vt === 9 ? " " : vt === 4 || vt === 3 ? " " : " ";
 src/glue/gfx_host.ts	B	1	if ((blendEn >> i) & 1) {
 src/glue/gfx_host.ts	V	1	if ((dv.getUint32(p + 88, true) & 0x40000000) && s.gpu.sampleCount > 1 && d.gpu.sampleCount === 1) { this.resolve(s, sl, sy, d, dl, dy); return; }
-src/glue/gfx_host.ts	B	1	if ((dv.getUint8(k + PK.offsetEn) & 4) && df.kind === " " && prim >= 4) {
+src/glue/gfx_host.ts	B	1	if ((dv.getUint8(k + PK.offsetEn) & 4) && df.kind === " " && (mesh ? mesh.verts === 3 : prim >= 4)) {
 src/glue/gfx_host.ts	B	1	if (bits & 1) { d.baseMipLevel = view[2]; d.mipLevelCount = Math.max(1, Math.min(view[3] || 1, t.gpu.mipLevelCount - view[2])); }
 src/glue/gfx_host.ts	B	1	if (bits & 2) { d.baseArrayLayer = view[6] | view[7] << 8; d.arrayLayerCount = Math.max(1, view[8] | view[9] << 8); }
 src/glue/gfx_host.ts	B	1	if (bits & 4) {
@@ -1299,8 +1321,10 @@ src/glue/gfx_host.ts	V	1	if (dv.getUint32(p + 44, true) & 1) { uv[1] += uv[3]; u
 src/glue/gfx_host.ts	B	1	if (f.kind === " ") { d.depthCompare = " "; d.depthWriteEnabled = !!(kind && (mask & 1)); }
 src/glue/gfx_host.ts	B	1	if (flags & 1) {
 src/glue/gfx_host.ts	B	1	if (flags & 1) { if (this.device.features?.has?.(" ")) primitive.unclippedDepth = true; else this.red(" ", " "); }
+src/glue/gfx_host.ts	V	1	if (info.mesh?.task) dv.setUint32(r + 136, dv.getUint32(r + 136, true) | 4, true);
 src/glue/gfx_host.ts	B	1	if (kind && f.stencil && (mask >> 8)) { const op = { compare: " ", passOp: " ", failOp: " ", depthFailOp: " " }; d.stencilFront = op; d.stencilBack = op; d.sten
 src/glue/gfx_host.ts	V	1	if (kind) this.pass.setStencilReference(dv.getUint32(p + 24, true) & 0xff);
+src/glue/gfx_host.ts	B	1	if (n <= 3 || (n & (n - 1)) === 0 && n <= 4096) {
 src/glue/gfx_host.ts	V	1	if (op === H.DRAW) this.pass.draw(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 8, true), dv.getUint32(p + 20, true));
 src/glue/gfx_host.ts	B	1	if (s.gpu.format !== d.gpu.format || s.gpu.width !== Math.max(1, d.gpu.width >> dl) || s.gpu.height !== Math.max(1, d.gpu.height >> dl)) { this.red(" ", ` $ $ $
 src/glue/gfx_host.ts	B	1	if (t.fmt.kind === " " && t.fmt.stencil) d.aspect = view && (view[0] & 0x20) && (view[0] >> 6) === 1 ? " " : " ";
@@ -1319,6 +1343,8 @@ src/glue/gfx_host.ts	B	1	onShaderVariant: ((keyHex: string, classes: Record<numb
 src/glue/gfx_host.ts	B	1	private alloc(cap: number): GPU { return this.pool.get(cap)?.pop() ?? this.newBuffer({ size: cap, usage: 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80 }); }
 src/glue/gfx_host.ts	B	1	private cap: { lines: string[]; images: Promise<CaptureImage | null>[]; state: { pass: number; draws: number; inPass: number }; png: boolean; records: number; d
 src/glue/gfx_host.ts	B	1	private img = new Map<number, { serial: number; view: Uint8Array | null }>();
+src/glue/gfx_host.ts	B	1	private meshCur: { ctl: GPU; args: GPU; off: number; task: boolean } | null = null;
+src/glue/gfx_host.ts	B	1	private meshHelp: { prep: GPU; fin: GPU; layout: GPU } | null = null;
 src/glue/gfx_host.ts	B	1	private passInfo: { colorFmt: (string | null)[]; depthFmt: string | null; samples: number; w: number; h: number; targets: { name: string; serial: number; level:
 src/glue/gfx_host.ts	B	1	private scratchStorage(): GPU { return (this.scratchSt ??= this.newBuffer({ size: 65536, usage: 0x80 | 0x08 })); }
 src/glue/gfx_host.ts	B	1	private shaders: { info: ShaderInfo; key: string; module?: GPU; variants?: Map<string, GPU | null> }[] = [];
@@ -1326,6 +1352,7 @@ src/glue/gfx_host.ts	B	1	private storageBuffer(addr: number, size: number, write
 src/glue/gfx_host.ts	V	1	private u64(dv: DataView, p: number) { return dv.getUint32(p, true) + dv.getUint32(p + 4, true) * 4294967296; }
 src/glue/gfx_host.ts	B	1	private zeroBuffer(): GPU { return (this.zero ??= this.newBuffer({ size: 65536, usage: 0x40 | 0x08 })); }
 src/glue/gfx_host.ts	S	1	return buf ? { buf, off: this.upOff, size: Math.min(buf.size - this.upOff, (u!.size + 15) & ~15) } : { buf: this.zeroBuffer(), off: 0, size: 65536 };
+src/glue/gfx_host.ts	B	1	return this.newBuffer({ size: Math.max(size, Math.min(budget, (cur?.size ?? 32768) * 2)), usage: 0x80 | 0x08 | 0x04 });
 src/glue/gfx_host.ts	A	1	src = itype === 2 ? new Uint32Array(this.memory.buffer, addr, count) : itype === 1 ? new Uint16Array(this.memory.buffer, addr, count) : new Uint8Array(this.memo	an index buffer in guest memory viewed in place: the typed array's byte offset is a number (exact above 4 GB), its elements are the indices
 src/glue/gfx_host.ts	B	1	t.snap ??= this.newTexture({ size: { width: g.width, height: g.height, depthOrArrayLayers: g.depthOrArrayLayers }, format: g.format, dimension: g.dimension, mip
 src/glue/gfx_host.ts	V	1	targets.push({ name: " ", serial: t.serial, level: dv.getUint32(p + 360, true), layer: dv.getUint32(p + 364, true) });
