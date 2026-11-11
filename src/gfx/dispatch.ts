@@ -675,7 +675,7 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferBarrier: C.barrier(P(a, 0), I(a, 1)); return 0;
     case F.nvnCommandBufferSetTexturePool: C.setPool(P(a, 0), X(a, 1), true); return 0;
     case F.nvnCommandBufferSetSamplerPool: C.setPool(P(a, 0), X(a, 1), false); return 0;
-    case F.nvnCommandBufferCopyBufferToTexture: C.copyBufferTexture(P(a, 0), X(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), false); return 0;
+    case F.nvnCommandBufferCopyBufferToTexture: C.copyBufferTexture(P(a, 0), X(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), 0); return 0;
     case F.nvnCommandBufferCopyTextureToBuffer: C.copyBufferTexture(P(a, 0), X(a, 4), P(a, 1), P(a, 2), P(a, 3), I(a, 5), true); return 0;
     case F.nvnCommandBufferCopyTextureToTexture: C.copyTextureToTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), P(a, 5), P(a, 6), I(a, 7)); return 0;
     case F.nvnCommandBufferCopyBufferToBuffer: C.copyBufferToBuffer(P(a, 0), X(a, 1), X(a, 2), X(a, 3)); return 0;
@@ -705,9 +705,9 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferDispatchCompute: C.dispatch(P(a, 0), I(a, 1), I(a, 2), I(a, 3), 0); return 0;
     case F.nvnCommandBufferDispatchComputeIndirect: C.dispatch(P(a, 0), 0, 0, 0, X(a, 1)); return 0;
     case F.nvnCommandBufferSetDepthClamp: C.depthClamp(P(a, 0), B(a, 1)); return 0;
-    case F.nvnCommandBufferClearTexture: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), false); return 0;
-    case F.nvnCommandBufferClearTexturei: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), true); return 0;
-    case F.nvnCommandBufferClearTextureui: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), true); return 0;
+    case F.nvnCommandBufferClearTexture: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), 0); return 0;
+    case F.nvnCommandBufferClearTexturei: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), 2); return 0;
+    case F.nvnCommandBufferClearTextureui: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), 1); return 0;
     case F.nvnCommandBufferPushGraphicsConstants: C.pushConstants(P(a, 0), false, X(a, 1), X(a, 2), X(a, 3), P(a, 4)); return 0;
     case F.nvnCommandBufferPushComputeConstants: C.pushConstants(P(a, 0), true, X(a, 1), X(a, 2), X(a, 3), P(a, 4)); return 0;
     case F.nvnCommandBufferDownsample: C.downsample(P(a, 0), P(a, 1), 0, P(a, 2), 0); return 0;

@@ -563,9 +563,9 @@ export class GfxHost {
   private hostBlock(b: Slot) {
     const key = uboKey(b.st, b.i), want = Math.max(16, ((b.size ?? 0) + 15) & ~15);
     let u = this.ubo.get(key);
-    if (!u && b.i === 16) { u = { addr: 0, size: 0, need: 0, data: b.info?.c1Data ?? new Uint8Array(0) }; this.ubo.set(key, u); }
+    if (b.i === 16) { const d = b.info?.c1Data ?? new Uint8Array(0); if (u?.data !== d) { u = { addr: 0, size: 0, need: 0, data: d }; this.ubo.set(key, u); } }   // c1 is the bound shader's own
     if (!u) { this.red("hostblock", "a shader reads a driver segment or push constants the recorder did not send: a zeroed block is bound"); u = { addr: 0, size: 0, need: 0, data: new Uint8Array(0) }; this.ubo.set(key, u); }
-    if (u.data && u.data.length < want) { const d = new Uint8Array(want); d.set(u.data); u.data = d; }
+    if (u.data && u.data.length < want) { const d = new Uint8Array(want); d.set(u.data); u.data = d; if (b.i === 16 && b.info) b.info.c1Data = d; }
   }
   private uboSlot(st: number, i: number): { buf: GPU; off: number; size: number } {
     const u = this.ubo.get(uboKey(st, i)), max = this.limit("maxUniformBufferBindingSize", 65536);
@@ -1244,52 +1244,52 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.device.queue.writeTexture({ texture: t.gpu, mipLevel: level, origin: { x: r[0], y: r[1], z: r[2] + layer } }, this.u8.subarray(src, src + bytes), { bytesPerRow: row, rowsPerImage: rows },
       { width: bx * f.bw, height: by * f.bh, depthOrArrayLayers: depth });
   }
-  // ClearTexture(i/ui) (lower.ts clearTex): the region of one level, layer by layer, outside a render pass. A whole layer with every component is a render pass's
-  // clear; otherwise a helper draws the colour under a scissor with the component mask as its write mask. The colour's words are floats, or for i/ui integers
-  // (bit-cast in the helper, so a signed one keeps its sign)
+  // ClearTexture / ClearTexturei / ClearTextureui (lower.ts clearTex): the region of one level, slice by slice, outside a render pass. As nxnative's clear_tex (nvn_mtl.m):
+  // the value is the four floats, or the four integers as numbers, converted to the texture's format as a render pass clear converts them. A whole slice with every
+  // component is a render pass's clear (depth from value 0, stencil from value 1 of a depth-stencil texture, value 0 of a stencil one); otherwise a helper draws the
+  // value under a scissor with the component mask as its write mask
   private clearTex(dv: DataView, p: number) {
     const t = this.texture(this.u64(dv, p + 8));
     if (!t) return;
     const level = dv.getUint32(p + 16, true), layer = dv.getUint32(p + 20, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 24 + i * 4, true));
-    const mask = dv.getUint32(p + 48, true) & 15, isInt = dv.getUint32(p + 52, true) !== 0, f = t.fmt;
+    const mask = dv.getUint32(p + 48, true) & 15, src = dv.getUint32(p + 52, true), f = t.fmt;
+    const v = [0, 1, 2, 3].map(i => src === 1 ? dv.getUint32(p + 56 + i * 4, true) : src === 2 ? dv.getInt32(p + 56 + i * 4, true) : dv.getFloat32(p + 56 + i * 4, true));
     if (!mask) return;
-    if (!(t.gpu.usage & 0x10) || f.kind === "depth" || f.stencil || f.conv) { this.red(`cleartex${f.tex}`, `ClearTexture of a ${f.tex} texture, which WebGPU cannot render to (or the host converts): the clear is dropped`); return; }
-    const lw = Math.max(1, t.width >> level), lh = Math.max(1, t.height >> level);
-    const x = Math.max(0, r[0]), y = Math.max(0, r[1]), w = Math.min(lw, r[0] + r[3]) - x, h = Math.min(lh, r[1] + r[4]) - y;
-    if (w <= 0 || h <= 0 || r[5] <= 0) return;
+    const lw = Math.max(1, t.width >> level), lh = Math.max(1, t.height >> level), is3d = t.gpu.dimension === "3d";
+    const x = Math.max(0, r[0]), y = Math.max(0, r[1]), w = Math.min(lw, r[0] + r[3]) - x, h = Math.min(lh, r[1] + r[4]) - y, nz = Math.max(1, r[5]);
+    if (w <= 0 || h <= 0) return;
+    const ds = f.kind === "depth" || !!f.stencil, whole = x === 0 && y === 0 && w === lw && h === lh && (ds || mask === 15);
+    if (!(t.gpu.usage & 0x10) || f.conv || (ds && !whole)) {
+      this.red(`cleartex${f.tex}${ds}`, `ClearTexture of ${ds ? "part of a depth or stencil" : `a ${f.tex}`} texture, which ${ds ? "the host clears only whole" : "WebGPU cannot render to (or the host converts)"}: the clear is dropped`);
+      return;
+    }
     this.endPass();
     this.stats.clearRects++;
-    const words = new Uint32Array(4); for (let i = 0; i < 4; i++) words[i] = dv.getUint32(p + 56 + i * 4, true);
-    const kind = f.kind === "uint" ? "uint" : f.kind === "sint" ? "sint" : "float", ty = kind === "uint" ? "vec4u" : kind === "sint" ? "vec4i" : "vec4f";
-    const whole = x === 0 && y === 0 && w === lw && h === lh && mask === 15;
-    const fl = new Float32Array(words.buffer);
-    const value = (i: number) => kind === "float" ? (isInt ? words[i] | 0 : fl[i]) : isInt ? (kind === "sint" ? words[i] | 0 : words[i]) : kind === "sint" ? Math.trunc(fl[i]) : Math.max(0, Math.trunc(fl[i]));
-    let pl: GPU | undefined, ub: GPU | undefined;
+    const kind = f.kind === "uint" || f.kind === "sint" ? f.kind : "float", ty = kind === "uint" ? "vec4u" : kind === "sint" ? "vec4i" : "vec4f";
+    const num = v.map(c => kind === "float" ? c : kind === "uint" ? Math.min(0xffffffff, Math.max(0, Math.trunc(c))) : Math.min(0x7fffffff, Math.max(-0x80000000, Math.trunc(c))));
+    let pl: GPU | undefined, bg: GPU | undefined;
     if (!whole) {
-      const key = `cleartex|${f.tex}|${mask}|${kind === "float" && isInt ? "i" : ""}`;
+      const key = `cleartex|${f.tex}|${mask}`;
       pl = this.helpers.get(key);
       if (!pl) {
-        const conv = kind === "float" ? (isInt ? "vec4f(bitcast<vec4i>(u.c))" : "bitcast<vec4f>(u.c)") : kind === "sint" ? "bitcast<vec4i>(u.c)" : "u.c";
-        const code = `struct U { c: vec4u } @group(0) @binding(0) var<uniform> u: U;
+        const m = this.device.createShaderModule({ code: `struct U { c: ${ty} } @group(0) @binding(0) var<uniform> u: U;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0); }
-@fragment fn fs() -> @location(0) ${ty} { return ${conv}; }`;
-        const m = this.device.createShaderModule({ code });
+@fragment fn fs() -> @location(0) ${ty} { return u.c; }` });
         pl = this.device.createRenderPipeline({ layout: "auto", vertex: { module: m, entryPoint: "vs" }, primitive: { topology: "triangle-list" }, fragment: { module: m, entryPoint: "fs", targets: [{ format: f.tex, writeMask: mask }] } });
         this.helpers.set(key, pl);
       }
-      const data = new Uint32Array(4);
-      for (let i = 0; i < 4; i++) data[i] = kind === "float" ? words[i] : value(i) >>> 0;
-      ub = this.alloc(256); this.device.queue.writeBuffer(ub, 0, data); this.inUse.push(ub);
+      const ub = this.alloc(256);
+      this.device.queue.writeBuffer(ub, 0, kind === "uint" ? new Uint32Array(num) : kind === "sint" ? new Int32Array(num) : new Float32Array(num));
+      this.inUse.push(ub);
+      bg = this.device.createBindGroup({ layout: pl.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ub, size: 16 } }] });
     }
-    for (let z = r[2]; z < r[2] + r[5]; z++) {
-      const view = this.attachView(t, level, layer + z);
-      const pass = this.encoder().beginRenderPass({ colorAttachments: [{ view, loadOp: whole ? "clear" : "load", storeOp: "store", clearValue: whole ? { r: value(0), g: value(1), b: value(2), a: value(3) } : undefined }] });
-      if (!whole) {
-        pass.setPipeline(pl);
-        pass.setBindGroup(0, this.device.createBindGroup({ layout: pl!.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ub, size: 16 } }] }));
-        pass.setScissorRect(x, y, w, h);
-        pass.draw(3);
-      }
+    for (let z = r[2]; z < r[2] + nz; z++) {
+      const view = this.attachView(t, level, is3d ? 0 : layer + z);
+      const pass = this.encoder().beginRenderPass(ds
+        ? { colorAttachments: [], depthStencilAttachment: { view, ...(f.kind === "depth" ? { depthLoadOp: "clear", depthStoreOp: "store", depthClearValue: Math.min(1, Math.max(0, v[0])) } : {}),
+            ...(f.stencil ? { stencilLoadOp: "clear", stencilStoreOp: "store", stencilClearValue: (f.kind === "depth" ? v[1] : v[0]) >>> 0 & 255 } : {}) } }
+        : { colorAttachments: [{ view, ...(is3d ? { depthSlice: z } : {}), loadOp: whole ? "clear" : "load", storeOp: "store", ...(whole ? { clearValue: { r: num[0], g: num[1], b: num[2], a: num[3] } } : {}) }] });
+      if (!whole) { pass.setPipeline(pl); pass.setBindGroup(0, bg); pass.setScissorRect(x, y, w, h); pass.draw(3); }
       pass.end();
     }
   }

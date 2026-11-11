@@ -377,12 +377,12 @@ export function downsample(c: usize, s: usize, sv: usize, d: usize, dv: usize): 
   store<i32>(r, O.COPY_RESOLVE, O.P_COPY_T2T_flags);
 }
 // ClearTexture(i/ui): the texture (snapshot), its view, the region, the component mask; is_uint: the colour is 32-bit integer words (i and ui), else floats
-export function clearTexture(c: usize, t: usize, v: usize, region: usize, rgba: usize, mask: i32, isUint: bool): void {
+export function clearTexture(c: usize, t: usize, v: usize, region: usize, rgba: usize, mask: i32, kind: u8): void {   // kind: 0 floats, 1 unsigned (ClearTextureui), 2 signed integers (ClearTexturei)
   const r = rec(c, O.OP_CLEAR_TEX, snapOff(O.P_CLEAR_TEX_SIZE) + O.TEX_SIZE);
   if (!r) return;
   store<u64>(r, texSnap(r, snapOff(O.P_CLEAR_TEX_SIZE), 0, t), O.P_CLEAR_TEX_tex);
   copyView(r + O.P_CLEAR_TEX_view, r + O.P_CLEAR_TEX_has_view, v);
-  store<u8>(r, isUint ? 1 : 0, O.P_CLEAR_TEX_is_uint);
+  store<u8>(r, kind, O.P_CLEAR_TEX_is_uint);
   if (region) memory.copy(r + O.P_CLEAR_TEX_r, region, 24);
   store<i32>(r, mask, O.P_CLEAR_TEX_mask);
   if (rgba) memory.copy(r + O.P_CLEAR_TEX_c, rgba, 16);
