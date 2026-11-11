@@ -372,7 +372,8 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     // gate) shows what happens while a stage is on its way, and the store what a second run does
     const mem = new Map<string, Translated>(), store: ShaderStore = { get: async id => mem.get(id) ?? null, put: async (id, t) => { mem.set(id, t); } };
     let open!: () => void, asked = 0; const gate = new Promise<void>(r => { open = r; });
-    const standIn: ShaderTranslator = { chain: "stand-in-1", translate: async b => { asked++; await gate; const e = lib.get(b.key); if (!e) throw new Error("the stand-in translator has no such stage"); return { wgsl: e.wgsl, reflection: e.reflection }; } };
+    const wanted = new Set<string>();
+    const standIn: ShaderTranslator = { chain: "stand-in-1", prioritize: k => { wanted.add(k); }, translate: async b => { asked++; await gate; const e = lib.get(b.key); if (!e) throw new Error("the stand-in translator has no such stage"); return { wgsl: e.wgsl, reflection: e.reflection }; } };
     let opened = false;
     const b = await mx("mx", { translator: standIn, store }, p => {
       const d = draws(p);
@@ -380,9 +381,11 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
       return opened && p.shaders!.stats.translated === 2 && d.issued >= 3;
     }, "quad");
     eq([asked, b.p.shaders!.stats.translated, mem.size, b.red.length], [2, 2, 2, 0], "translator calls, translated, stored, red lines");
+    // the presents while the draws were skipped told the translator which keys they wait on (src/gfx/shader.ts waited, RtShaders.waited)
+    eq([...wanted].sort(), [...mem.keys()].map(id => id.split("/")[0]).sort(), "keys the skipped draws waited on, handed to the translator's prioritize");
     eq(b.info.filter(l => l.includes("draws that use it are skipped until it is there")).length, 2, "one informational line a stage: " + b.info.join(" | "));
     if (a.pixels) eq(b.pixels, a.pixels, "the picture with translated stages against the library's");
-    lines.push(`translator (stand-in): ${draws(b.p).skipped} draws skipped while the stages were on their way, then ${draws(b.p).issued} drawn; one informational line a stage, no red line`, "  " + b.info[0]);
+    lines.push(`translator (stand-in): ${draws(b.p).skipped} draws skipped while the stages were on their way, then ${draws(b.p).issued} drawn; one informational line a stage, no red line; both keys handed to prioritize by the presents`, "  " + b.info[0]);
     const c = await mx("mx", { translator: standIn, store }, p => p.shaders!.stats.fromStore === 2 && draws(p).issued >= 3, "quad");
     eq([asked, c.p.shaders!.stats.fromStore, c.p.shaders!.stats.translated], [2, 2, 0], "second run: translator calls in all, from the store, translated");
     lines.push(`second run: both stages from the store, the translator was not asked`);

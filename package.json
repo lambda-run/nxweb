@@ -49,6 +49,7 @@
     "shaders:lib": "node tools/shaders/build_lib.mts --spv build/shaders/maxwell/spv -o build/shaders/maxwell.nxsl --report build/shaders/maxwell.report.json",
     "shaders:xlate-wasm": "sh tools/shaders/build_xlate_wasm.sh",
     "shaders:test": "node test/shaders/run.mts",
+    "shaders:latency": "node test/shaders/latency/run.mts",
     "shaders:sweep": "node tools/shaders/sweep.mts",
     "shaders:sweep:setup": "npm run -s prepare:build && npm run -s shaders:naga && sh tools/shaders/build_xlate_wasm.sh",
     "shaders:sweep:test": "node tools/modes.mjs test/shaders/sweep.mts",

@@ -493,7 +493,18 @@ replayer does not provide.
 nxnative's translator driver over Ryujinx.Graphics.Shader published for `browser-wasm`, then `src/shaders`' SPIR-V
 pass and naga. It is talked to over a BroadcastChannel: the .NET runtime, started in a Worker, never finishes
 starting once the Worker's own `message` event has fired (found here; so is that its console forwarding hangs
-there). `webShaderStore()` keeps translations in the Cache API. Measured in Chromium (SwiftShader): the two stages
+there). `webShaderStore()` keeps translations in the Cache API. Stages wait in one queue in the page until a Worker is free; a free
+Worker takes up to `batch` (4) of them for one run of the translator's main, and there are `workers` of them
+(`defaultShaderWorkers()`: half of `hardwareConcurrency`, 1 to 4; each has its own .NET runtime, started when the
+queue is longer than the Workers already up can take). At each present, `RtShaders.waited` hands the translator's
+`prioritize` the pending keys a draw or dispatch was skipped for since the last one (`gfx_shader_waited`, the
+recorder's `progShader`), so a frame's stages go before the rest of a boot's. Each `shader <key> arrived` line splits
+its time into queued (a free Worker, the Worker's own start included), runtime start, translator (its share of the
+batch) and pass + naga; the report's `shader translation in the page` counter sums it up. `npm run shaders:latency`
+measures it on a synthetic Maxwell corpus (`test/shaders/latency/corpus.py`, the ps_ops body repeated, every stage a
+distinct key) in headless Chromium on 8 cores: 720 stages handed over at once took 6.9-7.1 s with one Worker a stage at
+a time (median arrival 3.8 s; the 14 asked for last 6.9 s), and take 1.7 s with 4 Workers in batches (median 1.25 s;
+the 14 asked for last, moved to the front, 0.53 s). Measured in Chromium (SwiftShader): the two stages
 of the test guest arrive 781 and 835 ms after the first miss (translator start included), 51 draws skipped
 meanwhile; a second run takes both from the store in 130 ms.
 

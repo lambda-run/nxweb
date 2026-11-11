@@ -227,6 +227,10 @@ function counters(): Record<string, string | number> {
   if (!rt.disposed) {
     const l = rt.libcStats.filter(x => x.calls);
     c["libc intrinsic calls"] = l.length ? l.map(x => `${x.name} ${x.calls} (${(x.bytes / 1048576).toFixed(1)} MB)`).join(", ") : "none (no module defines memcpy, strlen, ... or none was called)";
+    const sh = shaderLookup?.stats, ws = shaderTranslator?.stats;
+    // where in-page shader translation time went (RtShaders, workerTranslator): each stage's own split is its "arrived" log line
+    if (sh && ws) c["shader translation in the page"] = `${sh.translated} translated by ${ws.started} of ${ws.workers} Workers in ${ws.batches} batches; at most ${ws.maxQueued} waiting; ` +
+      `arrival ${sh.translated + sh.fromStore ? (sh.translateMs / (sh.translated + sh.fromStore)).toFixed(0) : 0} ms on average, ${sh.maxMs.toFixed(0)} ms the slowest; ${sh.prioritized} moved to the front for a draw that waited`;
   }
   if (gfx) Object.assign(c, { frames: gfx.stats.frames, "NVN calls": gfx.stats.nvnCalls, "SyncWait parked / timed out": `${gfx.stats.syncParked} / ${gfx.stats.syncTimeouts}`, "QueueFinish parked": gfx.stats.finishParked });
   if (audio) Object.assign(c, { "nn::audio calls": audio.stats.calls, "audio ticks": audio.stats.ticks, "audio event signals": audio.stats.signals });

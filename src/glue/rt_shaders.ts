@@ -15,7 +15,8 @@ import { ShaderLibrary, unsupportedExtra, type Reflection } from "../shaders/lib
 
 export interface ShaderBlob { key: string; control: Uint8Array; code: Uint8Array }
 export interface Translated { wgsl: string; reflection: Reflection }
-export interface ShaderTranslator { chain: string; translate(blob: ShaderBlob): Promise<Translated>; close?(): void }
+export interface ShaderTranslator { chain: string; translate(blob: ShaderBlob): Promise<Translated>; prioritize?(key: string): void; close?(): void; stats?: ShaderWorkerStats }
+export interface ShaderWorkerStats { workers: number; started: number; batches: number; maxQueued: number }
 export interface ShaderStore { get(id: string): Promise<Translated | null>; put(id: string, t: Translated): Promise<void> }
 export interface ShaderOptions {
   library?: Uint8Array | ShaderLibrary;   // consulted first
@@ -24,7 +25,7 @@ export interface ShaderOptions {
 }
 
 export class RtShaders {
-  stats = { stages: 0, registered: 0, fromLibrary: 0, fromStore: 0, translated: 0, failed: 0, unknown: 0, translateMs: 0 };
+  stats = { stages: 0, registered: 0, fromLibrary: 0, fromStore: 0, translated: 0, failed: 0, unknown: 0, translateMs: 0, maxMs: 0, prioritized: 0 };
   readonly library: ShaderLibrary | null;
   private state = new Map<string, "ready" | "pending" | "failed" | "unknown">();
   private waiting: Promise<unknown>[] = [];
@@ -74,10 +75,20 @@ export class RtShaders {
       if (this.gfx.rt.disposed) return;
       if (!this.register(key, got, from)) return;
       if (from === "the translator") this.stats.translated++; else this.stats.fromStore++;
-      this.stats.translateMs += performance.now() - t0;
-      this.log(`shader ${key} arrived from ${from} after ${(performance.now() - t0).toFixed(0)} ms (${got.wgsl.length} bytes of WGSL)`);
+      const ms = performance.now() - t0, tm = (got as Translated & { timing?: { startMs: number; xlateMs: number; convertMs: number; batch: number } }).timing;
+      this.stats.translateMs += ms; this.stats.maxMs = Math.max(this.stats.maxMs, ms);
+      // the split says where the time went: waiting for a free Worker, its runtime's start, the translator, the pass and naga
+      const split = tm ? `: ${Math.max(0, ms - tm.startMs - tm.xlateMs - tm.convertMs).toFixed(0)} queued, ${tm.startMs.toFixed(0)} runtime start, ${tm.xlateMs.toFixed(0)} translator` +
+        ` (a batch of ${tm.batch}), ${tm.convertMs.toFixed(0)} pass + naga` : "";
+      this.log(`shader ${key} arrived from ${from} after ${ms.toFixed(0)} ms${split} (${got.wgsl.length} bytes of WGSL)`);
       this.gfx.rt.requestWake();
     })());
+  }
+  // At each present: the keys the frame's draws were skipped for go to the front of the translator's queue
+  waited(): void {
+    const tr = this.o.translator;
+    if (!tr?.prioritize || !this.gfx.host.shaderWaited) return;
+    for (const k of this.gfx.host.shaderWaited()) if (this.state.get(k) === "pending") { tr.prioritize(k); this.stats.prioritized++; }
   }
   private register(key: string, t: Translated, from: string): boolean {
     const r = t.reflection;
@@ -97,39 +108,77 @@ export class RtShaders {
   }
 }
 
-// ---- the in-page translator: a Worker of its own (rt_shader_worker.ts, bundled as a module) ----
+// ---- the in-page translator: Workers of their own (rt_shader_worker.ts, bundled as a module) ----
+// Stages wait in one queue here, in the order they were asked for, until a Worker is free; a free Worker takes up to
+// `batch` of them for one run of the translator. `prioritize` moves a key a draw waits on to the front. Each Worker
+// has its own .NET runtime (started when there is work for it), so `workers` of them translate at once.
 export const SHADER_CHAIN = "nxweb-shaders-4/page";
 // subgroups: the device has WebGPU's subgroups feature (GfxHost.hasSubgroups): warp operations become WGSL subgroup builtins, else one-invocation subgroups
 // (src/shaders/spv_subgroups.ts). The output differs, so the chain (and with it every store id) says which.
-export function workerTranslator(o: { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean }): ShaderTranslator {
-  let w: Worker | null = null, bc: BroadcastChannel | null = null, up = false, seq = 0;
-  const calls = new Map<number, { res: (t: Translated) => void; rej: (e: Error) => void }>(), queue: unknown[] = [];
-  const failAll = (why: string) => { for (const c of calls.values()) c.rej(new Error(why)); calls.clear(); };
-  const start = (): void => {
-    // the Worker is talked to over a BroadcastChannel named like it (rt_shader_worker.ts says why)
-    const name = "nxweb-shaders-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    bc = new BroadcastChannel(name);
-    bc.onmessage = ev => {
-      const m = ev.data;
-      if (m.ready) { up = true; bc!.postMessage({ init: { framework: o.framework, naga: o.naga, subgroups: !!o.subgroups } }); for (const q of queue.splice(0)) bc!.postMessage(q); return; }
-      const c = calls.get(m.id);
-      if (!c || (m.wgsl === undefined && m.error === undefined)) return;
-      calls.delete(m.id);
-      if (m.error !== undefined) c.rej(new Error(m.error)); else c.res({ wgsl: m.wgsl, reflection: m.reflection });
-    };
-    w = new Worker(o.worker, { type: "module", name });
-    w.onerror = ev => { failAll("the shader translator's Worker failed: " + (ev.message || "it could not be started")); stop(); };
+export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean; workers?: number; batch?: number }
+export const defaultShaderWorkers = (): number => Math.max(1, Math.min(4, Math.floor(((globalThis as any).navigator?.hardwareConcurrency ?? 2) / 2)));
+export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator & { prioritize(key: string): void; stats: ShaderWorkerStats } {
+  type Call = { id: number; key: string; control: Uint8Array; code: Uint8Array; res: (t: Translated) => void; rej: (e: Error) => void };
+  type W = { w: Worker; bc: BroadcastChannel; up: boolean; busy: Map<number, Call> };
+  const nMax = Math.max(1, o.workers ?? defaultShaderWorkers()), batch = Math.max(1, o.batch ?? 4);
+  const pool: W[] = [], queue: Call[] = [], stats = { workers: nMax, started: 0, batches: 0, maxQueued: 0 };
+  let seq = 0, closed = false;
+  const pump = (): void => {
+    for (const x of pool) {
+      if (!queue.length) return;
+      if (!x.up || x.busy.size) continue;
+      const take = queue.splice(0, batch);
+      for (const c of take) x.busy.set(c.id, c);
+      stats.batches++;
+      x.bc.postMessage({ batch: take.map(c => ({ id: c.id, key: c.key, control: c.control, code: c.code })) });
+    }
+    // more work than Workers that are up or starting: one more
+    if (queue.length > pool.filter(x => !x.up).length * batch && pool.length < nMax) start();
   };
-  const stop = (): void => { w?.terminate(); bc?.close(); w = null; bc = null; up = false; queue.length = 0; };
+  const drop = (x: W, why: string): void => {
+    x.w.terminate(); x.bc.close();
+    pool.splice(pool.indexOf(x), 1);
+    for (const c of x.busy.values()) c.rej(new Error(why));
+    x.busy.clear();
+    // the queue is another Worker's, unless none can start
+    if (!pool.length) { for (const c of queue.splice(0)) c.rej(new Error(why)); }
+  };
+  const start = (): void => {
+    // a Worker is talked to over a BroadcastChannel named like it (rt_shader_worker.ts says why)
+    const name = "nxweb-shaders-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const x: W = { w: null as unknown as Worker, bc: new BroadcastChannel(name), up: false, busy: new Map() };
+    pool.push(x); stats.started++;
+    x.bc.onmessage = ev => {
+      const m = ev.data;
+      if (m.ready) { x.up = true; x.bc.postMessage({ init: { framework: o.framework, naga: o.naga, subgroups: !!o.subgroups } }); pump(); return; }
+      const c = x.busy.get(m.id);
+      if (!c || (m.wgsl === undefined && m.error === undefined)) return;
+      x.busy.delete(m.id);
+      if (m.error !== undefined) c.rej(new Error(m.error)); else c.res({ wgsl: m.wgsl, reflection: m.reflection, timing: m.timing } as Translated);
+      if (!x.busy.size) pump();
+    };
+    x.w = new Worker(o.worker, { type: "module", name });
+    x.w.onerror = ev => drop(x, "the shader translator's Worker failed: " + (ev.message || "it could not be started"));
+  };
   return {
     chain: (o.chain ?? SHADER_CHAIN) + (o.subgroups ? "+subgroups" : ""),
+    stats,
     translate: blob => new Promise((res, rej) => {
-      if (!w) start();
-      const id = ++seq, m = { id, key: blob.key, control: blob.control, code: blob.code };
-      calls.set(id, { res, rej });
-      if (up) bc!.postMessage(m); else queue.push(m);
+      if (closed) { rej(new Error("the shader translator was closed")); return; }
+      queue.push({ id: ++seq, key: blob.key, control: blob.control, code: blob.code, res, rej });
+      stats.maxQueued = Math.max(stats.maxQueued, queue.length);
+      if (!pool.length) start();
+      pump();
     }),
-    close: () => { failAll("the shader translator was closed"); stop(); },
+    prioritize: key => {
+      const i = queue.findIndex(c => c.key === key);
+      if (i > 0) queue.unshift(...queue.splice(i, 1));
+    },
+    close: () => {
+      closed = true;
+      for (const x of [...pool]) drop(x, "the shader translator was closed");
+      for (const c of queue.splice(0)) c.rej(new Error("the shader translator was closed"));
+    },
   };
 }
 // The store of translations in the Cache API (window or Worker, secure context): one entry per key + chain version

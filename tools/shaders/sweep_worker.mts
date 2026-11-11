@@ -44,7 +44,7 @@ async function run(m: SweepJob): Promise<SweepReply> {
     const sim = simulate.get(m.key);
     if (sim === "hang") for (;;);
     if (sim === "crash") process.abort();
-    // the same steps as rt_shader_worker.ts translate()
+    // the same steps as rt_shader_worker.ts translateBatch() (one stage a batch here)
     const n = ++serial, dir = `/w/out${n}`, bin = `/w/${m.key}.bin`, jobs = `/w/jobs${n}.json`;
     const { job, body } = jobFor(m.key, m.control, m.code, bin);
     FS.writeFile(bin, body);
