@@ -237,11 +237,14 @@ export function gfxCases(env: Env, gpu: Gpu | undefined, shots: Shot[]): GfxCase
     const ms = performance.now() - t0;
     clearInterval(timer);
     eq(p.rt.stdout(), "cube: 40 frames, 40 pad reads, buttons seen 0x0\n", "stdout");
-    ok(p.gfx.stats.acquireParked === 39, "parked acquires: " + p.gfx.stats.acquireParked);
+    // every acquire after the first is held for its display frame unless the frame before it took past its slot (a
+    // slow SwiftShader frame on a busy machine: 38 parked and 1 late, seen once); a few late ones are the host's
+    const { acquireParked: parked, acquireLate: late } = p.gfx.stats;
+    ok(parked + late === 39 && late <= 4, `parked acquires ${parked}, at or past their slot ${late}, of 39`);
     ok(turns > 20, `the event loop got ${turns} timer turns while the guest ran`);
     const busy = p.rt.stats.runMs;
     ok(busy < ms * 0.8, `run loop busy ${busy.toFixed(0)} ms of ${ms.toFixed(0)} ms: it spins`);
-    return [`40 frames in ${ms.toFixed(0)} ms = ${(39000 / ms).toFixed(1)} frames/s; run loop busy ${busy.toFixed(0)} ms (${(busy / ms * 100).toFixed(0)} %), ${turns} timer turns of the event loop meanwhile, ${p.rt.stats.slices} slices`];
+    return [`40 frames in ${ms.toFixed(0)} ms = ${(39000 / ms).toFixed(1)} frames/s; ${parked} acquires parked, ${late} late; run loop busy ${busy.toFixed(0)} ms (${(busy / ms * 100).toFixed(0)} %), ${turns} timer turns of the event loop meanwhile, ${p.rt.stats.slices} slices`];
   });
   test("gfx speed: the cube guests unpaced on the wall clock (an acquire waits only for the GPU): frames, guest instructions, and where a frame's time goes", async () => {
     const lines: string[] = [], N = 300;
