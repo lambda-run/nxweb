@@ -42,6 +42,8 @@ export interface HleGfx {
   viLayer(w: number, h: number): void; viCrop(x: number, y: number, w: number, h: number): void;
   viFrameCount(): bigint; viPresentProgress(): { queued: bigint; done: bigint }; viPresentedNs(ticket: bigint): bigint;
   onPresentQueued(fn: (frames: number) => void): void;
+  // nn::codec's native image handles for nvnTextureInitializeFromNativeImage (RtGfx has it)
+  nativeImageOf?: ((handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null) | null;
 }
 export interface HleRtOptions { front?: HleFront; config?: Parameters<HleHost["config"]>[0]; scratch?: number; gfx?: HleGfx }
 
@@ -148,6 +150,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     host.viFrameQueued(BigInt(frames));
     for (let i = ticks.length - 1; i >= 0; i--) if (!ticks[i]()) ticks.splice(i, 1);
   });
+  if (gfx && "nativeImageOf" in gfx) gfx.nativeImageOf = h => host.nativeImage(h);
   if (front.vibration) host.haptics({ output: true });
   rt.expectOutsideEvents();   // the front end's reports (focus, operation mode, an answer) signal events the guest waits on
   const st = range("hle static");

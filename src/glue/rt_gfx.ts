@@ -88,6 +88,7 @@ export class RtGfx implements HleGfx {
     this.host.onDeviceRestored = () => { this.stats.deviceRestores++; this.lastPresentDone = null; rt.requestWake(); };
     rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => { this.setApiOnce(rt); return this.stubOfName(cpu.cstr(cpu.x(0), 128)); } });
     this.registerNv(rt);
+    this.registerNativeImages(rt);
     rt.onDispose(() => this.dispose());
   }
   // nv:: (the driver glue under NVN) and nn::gs's check, as nxnative dm/gfx/hle_nv.c: NVN is the replayer's, so the
@@ -113,6 +114,60 @@ export class RtGfx implements HleGfx {
     }
     this.x.gfx_set_api(api[0], api[1]);
     rt.log(`nvn: device API ${api[0]}.${api[1]} (SDK ${m || "unknown"}${note})`);
+  }
+  // nvnNativeImage* (nxnative dm/gfx/nvn/hle_nvn.c, "Native images"): a decoded movie picture as a texture
+  // (nn::gs::NativeImageHandle → nvnNativeImage → nvnTextureInitializeFromNativeImage). The handle is nn::codec's
+  // (src/hle/codec_video.ts; attachHle sets nativeImageOf): its pool keeps each picture as RGBA in the game's pool
+  // memory, so a linear texture over a memory pool of that memory takes each new picture through the texture content
+  // check (texcontent.ts). The builder (0x100 bytes of the game's): +0 device, +8 handle, +12 format; the image
+  // (0x200): +0 device, +8 handle, +12 format, +16 has a pool, +0x20 the NVNmemoryPool.
+  nativeImageOf: ((handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null) | null = null;
+  readonly nativeStats = { textures: 0, refused: 0 };
+  private niScratch = 0;
+  private registerNativeImages(rt: Runtime): void {
+    const reg = (name: string, fn: (cpu: HostCpu) => HostResult) => rt.register({ name, forced: true, fn });
+    const nvn = (name: string, ...args: (bigint | number)[]) => {
+      const a = this.stubOfName(name);
+      if (!a) throw new Error(`nvn: no ${name}`);
+      return rt.guestCall(BigInt(a), args);
+    };
+    const le = (n: bigint | number, bytes: number) => { const b = new Uint8Array(bytes), dv = new DataView(b.buffer); if (bytes === 8) dv.setBigUint64(0, BigInt.asUintN(64, BigInt(n)), true); else dv.setUint32(0, Number(n) >>> 0, true); return b; };
+    const u32 = (cpu: HostCpu, a: bigint) => new DataView(cpu.read(a, 4).buffer).getUint32(0, true);
+    const u64 = (cpu: HostCpu, a: bigint) => new DataView(cpu.read(a, 8).buffer).getBigUint64(0, true);
+    reg("_Z32nvnNativeImageBuilderSetDefaultsP21NVNnativeImageBuilder", cpu => { const b = cpu.x(0), d = u64(cpu, b); cpu.write(b, new Uint8Array(16)); cpu.write(b, le(d, 8)); });
+    reg("_Z30nvnNativeImageBuilderSetDeviceP21NVNnativeImageBuilderP9NVNdevice", cpu => { cpu.write(cpu.x(0), le(cpu.x(1), 8)); });
+    reg("_Z41nvnNativeImageBuilderSetNativeImageHandleP21NVNnativeImageBuilderN2nn2gs17NativeImageHandleE", cpu => { cpu.write(cpu.x(0) + 8n, le(cpu.x(1), 4)); });
+    reg("_Z40nvnNativeImageBuilderSetMemoryPermissionP21NVNnativeImageBuilder30NVNnativeImageMemoryPermission", () => {});
+    reg("_Z30nvnNativeImageBuilderSetFormatP21NVNnativeImageBuilder9NVNformat", cpu => { cpu.write(cpu.x(0) + 12n, le(cpu.x(1), 4)); });
+    reg("_Z24nvnNativeImageInitializeP14NVNnativeImagePK21NVNnativeImageBuilder", cpu => {
+      const i = cpu.x(0), b = cpu.x(1);
+      cpu.write(i, cpu.read(b, 16)); cpu.write(i + 16n, le(0, 4));
+      return 1n;
+    });
+    reg("_Z22nvnNativeImageFinalizeP14NVNnativeImage", cpu => {
+      const i = cpu.x(0);
+      if (u32(cpu, i + 16n)) nvn("nvnMemoryPoolFinalize", i + 0x20n);
+      cpu.write(i + 16n, le(0, 4));
+    });
+    reg("_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage", cpu => {
+      const t = cpu.x(0), i = cpu.x(1), dev = u64(cpu, i), handle = u32(cpu, i + 8n), format = u32(cpu, i + 12n);
+      const img = this.nativeImageOf?.(handle) ?? null;
+      if (!img) { this.nativeStats.refused++; cpu.log(`[RED] nvnTextureInitializeFromNativeImage: handle 0x${handle.toString(16)} names no picture${this.nativeImageOf ? "" : " (no nn::codec attached)"}`); return 0n; }
+      if (!this.niScratch) this.niScratch = rt.hostAlloc(0x400);
+      const pb = BigInt(this.niScratch), tb = pb + 0x200n;
+      if (!u32(cpu, i + 16n)) {
+        nvn("nvnMemoryPoolBuilderSetDefaults", pb); nvn("nvnMemoryPoolBuilderSetDevice", pb, dev); nvn("nvnMemoryPoolBuilderSetStorage", pb, img.mem, img.size);
+        nvn("nvnMemoryPoolBuilderSetFlags", pb, 0x22);   // CPU_UNCACHED | GPU_CACHED
+        if (!(nvn("nvnMemoryPoolInitialize", i + 0x20n, pb) & 0xffn)) { cpu.log("[RED] nvnTextureInitializeFromNativeImage: the memory pool over the picture failed"); return 0n; }
+        cpu.write(i + 16n, le(1, 4));
+      }
+      nvn("nvnTextureBuilderSetDefaults", tb); nvn("nvnTextureBuilderSetDevice", tb, dev);
+      nvn("nvnTextureBuilderSetTarget", tb, 1); nvn("nvnTextureBuilderSetFormat", tb, format); nvn("nvnTextureBuilderSetSize2D", tb, img.w, img.h); nvn("nvnTextureBuilderSetLevels", tb, 1);
+      nvn("nvnTextureBuilderSetFlags", tb, 0x10); nvn("nvnTextureBuilderSetStride", tb, img.stride); nvn("nvnTextureBuilderSetStorage", tb, i + 0x20n, 0);   // LINEAR
+      const ok = nvn("nvnTextureInitialize", t, tb) & 0xffn;
+      if (ok && !this.nativeStats.textures++) cpu.log(`[codec] nvnTextureInitializeFromNativeImage: a ${img.w}x${img.h} linear texture (format ${format}, stride ${img.stride}) over the movie picture of handle 0x${handle.toString(16)}`);
+      return ok;
+    });
   }
   private registerNv(rt: Runtime): void {
     const nv = this.nv, mb = (n: bigint) => (Number(n) / 1048576).toFixed(2);
