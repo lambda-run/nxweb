@@ -497,6 +497,30 @@ const BLK_CAP = 16384;
 export const blkPc = mk<u64>(BLK_CAP);
 export const succ0 = mk<i32>(BLK_CAP);
 export const succ1 = mk<i32>(BLK_CAP);
+// structured function body (unit.ts structure()): label levels, counted from the function body outwards in
+export const STRUCT_CAP = 1536;   // blocks of a function with a structured body at most
+export let structOn = false;
+export let structFail = false;
+export function setStruct(on: bool): void { structOn = on; structFail = false; }
+export const lvBlk = mk<i32>(STRUCT_CAP);    // labels around block k's code
+export const lvWrap = mk<i32>(STRUCT_CAP);   // the block a forward branch to block j leaves (-1: none)
+export const fwLo = mk<i32>(STRUCT_CAP);     // first block of the region that block is in
+export const lvLoop = mk<i32>(STRUCT_CAP);   // the loop of header j (-1: not a header)
+export const loopEnd = mk<i32>(STRUCT_CAP);  // last block of the loop of header j
+// (the arrays above are by position in the structured order; posOf: block -> position)
+export const posOf = mk<i32>(STRUCT_CAP);
+function pos(j: i32): i32 { return structOn ? posOf[j] : j; }
+function fwdDepth(j: i32): i32 {
+  if (!structOn) return j - curBlk - 1;
+  let pj = posOf[j], pk = posOf[curBlk];
+  if (lvWrap[pj] < 0 || pk < fwLo[pj]) { structFail = true; return 0; }
+  return lvBlk[pk] - lvWrap[pj];
+}
+function backDepth(j: i32): i32 {
+  let pj = posOf[j], pk = posOf[curBlk];
+  if (lvLoop[pj] < 0 || pk > loopEnd[pj]) { structFail = true; return 0; }
+  return lvBlk[pk] - lvLoop[pj];
+}
 export let nBlk: i32 = 0;
 export let curBlk: i32 = 0;
 export let term: bool = false;   // current instruction ended the block (no fallthrough)
@@ -659,18 +683,19 @@ export function gotoPc(target: u64, isLast: bool): void {
     return;
   }
   addSucc(j);
-  if (j > curBlk) {
-    if (!(isLast && j == curBlk + 1 && ifDepth == 0)) { b(0x0C); leb(j - curBlk - 1 + ifDepth); }
+  if (pos(j) > pos(curBlk)) {
+    if (!(isLast && pos(j) == pos(curBlk) + 1 && ifDepth == 0)) { b(0x0C); leb(fwdDepth(j) + ifDepth); }
   } else {
     budgetCheck(target);
-    i32c(j); lset(L_STATE); b(0x0C); leb(nBlk - 1 - curBlk + ifDepth);
+    if (structOn) { b(0x0C); leb(backDepth(j) + ifDepth); }
+    else { i32c(j); lset(L_STATE); b(0x0C); leb(nBlk - 1 - curBlk + ifDepth); }
   }
   term = true;
 }
 // stack: i32 cond -> ; conditional transfer, falls through otherwise
 export function branchIf(target: u64): void {
   let j = blockOf(target);
-  if (j > curBlk) { addSucc(j); b(0x0D); leb(j - curBlk - 1); return; }
+  if (j >= 0 && pos(j) > pos(curBlk)) { addSucc(j); b(0x0D); leb(structOn ? fwdDepth(j) + ifDepth : j - curBlk - 1); return; }
   ifVoid(); gotoPc(target, false); end();
   term = false;
 }

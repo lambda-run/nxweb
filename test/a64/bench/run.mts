@@ -84,7 +84,8 @@ for (const name of ["zstd_bench", "str_bench"]) {
     const r = runGuest(t, h, name, side, readFileSync(join(out, side.image)), expected, { ...defaultOpts, mem64: m64, libc, profile: true });
     if (!r.ok) { console.log(`[RED] a64:bench ${name} ${mode} (profile): ${r.why}`); bad++; continue; }
     const p = r.prof!, g = p["guest insns"];
-    console.log(`  ${mode} profile: ${g} guest insns; per 1000: ` + Object.entries(p).filter(([k]) => k !== "guest insns").map(([k, v]) => `${k} ${(v / g * 1000).toFixed(1)}`).join(", "));
+    const RAW = new Set(["functions translated with loops", "with the dispatch loop"]);
+    console.log(`  ${mode} profile: ${g} guest insns; per 1000: ` + Object.entries(p).filter(([k]) => k !== "guest insns").map(([k, v]) => RAW.has(k) ? `${k} ${v} (count)` : `${k} ${(v / g * 1000).toFixed(1)}`).join(", "));
   }
 }
 if (opt("--json")) writeFileSync(opt("--json")!, JSON.stringify(report, null, 1));

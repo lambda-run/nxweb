@@ -82,11 +82,21 @@ functions of the same module, up to `maxFuncs` (the fuzz gate sets 1: one module
 One module per instruction cost about 280 KB of engine memory each: counting the instructions of a
 program with 125,000 of them (the Doom guest, `test/doom`) ran out of memory after 7,000.
 
-**Function body.** Basic blocks sorted by address inside
-`loop { block..block { br_table state } b0 } b1 } ... }`: fallthrough and forward branches are plain
-`br`/`br_if`, backward branches set the block index and `br` to the loop. Function entry and every
-backward branch decrement `budget` and leave with `pc` = function entry / block address when it
-goes negative.
+**Function body (structured).** The blocks' branches are scanned and the blocks put in reverse post-order from
+the entry; loops are the natural loops of the retreating edges (innermost first), and each loop's blocks are made
+contiguous (header first). Every guest loop is then a wasm `loop` and every region (the function, a loop) wraps
+its items after the first in `block`s: `block..block { item0 } item1 } ... }`, an item being a block or a loop
+(`loop block..block { header } .. }`). A back edge is a `br` to its `loop`, a forward branch a `br` out of the
+target's `block`, so the engine compiles the guest's loops as loops. `unit.ts` `structure()`; the `--profile`
+counters "functions translated with loops" / "with the dispatch loop" count both kinds.
+
+**Function body (dispatch loop)**, when the graph is irreducible (a loop entered past its header), a function has
+more than `STRUCT_CAP` (1536) blocks, or a branch the scan did not see turns up while emitting. Basic blocks sorted
+by address inside `loop { block..block { br_table state } b0 } b1 } ... }`: fallthrough and forward branches are
+plain `br`/`br_if`, backward branches set the block index and `br` to the loop.
+
+Function entry and every backward branch decrement `budget` and leave with `pc` = function entry / block address
+when it goes negative.
 
 **Register cache.** Guest registers used by a function (x0..x30, sp, N, Z, C, V, v0..v31) live in
 wasm locals. Every read/write is logged; after the body is emitted two data-flow passes over the

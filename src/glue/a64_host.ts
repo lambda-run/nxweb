@@ -90,7 +90,8 @@ const OPT = { pcmapBase: 0, entryBase: 1, regionLo: 2, maxInsns: 3, maxFuncs: 4,
 export const PROF_NAMES = ["function entries", "back edges", "direct calls", "calls through the table", "BLR", "jumps through the table",
   "BR/tail through the table", "returns", "registers written back", "registers reloaded", "guest insns", "loads/stores", "dp imm", "branch/sys", "dp reg", "fp/simd", "libc calls in place",
   "written back at BL", "at BLR", "at RET", "at B out", "at BR", "at budget exit", "at svc/cntpct", "elsewhere",
-  "reloaded at entry", "after a call/svc", "reloaded elsewhere"];
+  "reloaded at entry", "after a call/svc", "reloaded elsewhere",
+  "functions translated with loops", "with the dispatch loop"];
 const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
