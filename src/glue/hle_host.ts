@@ -3,6 +3,7 @@
 // connects an HleHost to a Runtime, the tests (test/hle) give it a fake guest memory and fake kernel events.
 import type { KitExports } from "../kit/host/reader.mts";
 import { instantiate } from "./wasm_abi.ts";
+import type { VideoBackend, VideoPicture } from "./video_host.ts";
 
 export interface HleExports extends KitExports {
   hle_init(): void;
@@ -42,6 +43,10 @@ export interface HleExports extends KitExports {
   hle_vi_frame_queued(frame: bigint): void; hle_vi_layer_size(): number; hle_vi_layer_crop(): bigint; hle_vi_native_window(): number;
   hle_ro_refuse(sha: number): void; hle_ro_loaded(): number; hle_jit_envs(): number;
   hle_sha256(p: number, n: number, out: number): void;
+  // nn::codec's pictures (src/hle/codec_video.ts)
+  hle_cv_pic_alloc(w: number, h: number): number; hle_cv_pic_ptr(id: number): number;
+  hle_cv_picture(dec: number, gen: number, seq: bigint, pic: number, matrix: number, full: number): number;
+  hle_cv_native_image(handle: number, out: number): number; hle_cv_native_writes(): bigint;
 }
 
 // hle_cfg keys (src/hle/base.ts CFG_*) and hle_cfg_str keys (STR_*)
@@ -134,6 +139,9 @@ export interface HleEnv {
   jitMemory?(rxSize: bigint, roSize: bigint): { rx: bigint; ro: bigint } | null;   // code memory the game can jump into, and data memory
   jitCodeWritten?(rx: bigint, offset: bigint, size: bigint): void;                 // translations of that range are stale
   jitFree?(rx: bigint, rxSize: bigint, ro: bigint, roSize: bigint): void;
+  // nn::codec's video decoders (src/glue/video_webcodecs.ts in a browser). Without it every packet gives a picture
+  // of video black, with one red line per decoder; its pictures come back through HleHost.videoPicture
+  video?: VideoBackend;
 }
 
 export interface HleEntry { id: number; name: string; demangled: string; forced: boolean; implemented: boolean; shadowed: boolean; duplicate: boolean; internal: boolean }
@@ -237,6 +245,15 @@ export class HleHost {
       },
       hle_jit_code_written: (rx: bigint, off: bigint, size: bigint) => env.jitCodeWritten?.(u64(rx), u64(off), u64(size)),
       hle_jit_free: (rx: bigint, rxSize: bigint, ro: bigint, roSize: bigint) => env.jitFree?.(u64(rx), u64(rxSize), u64(ro), u64(roSize)),
+      hle_cv_open: (d: number, codec: number, w: number, h: number, name: number, cap: number) => {
+        const n = env.video ? enc.encode(env.video.open(d >>> 0, codec >>> 0, w >>> 0, h >>> 0)).subarray(0, cap) : new Uint8Array(0);
+        new Uint8Array(mem()).set(n, name);
+        return n.length;
+      },
+      hle_cv_decode: (d: number, gen: number, seq: bigint, p: number, n: number, eos: number) =>
+        env.video ? env.video.decode(d >>> 0, gen >>> 0, u64(seq), n ? new Uint8Array(mem(), p, n) : null, eos !== 0) : 0,
+      hle_cv_reset: (d: number, gen: number) => env.video?.reset(d >>> 0, gen >>> 0),
+      hle_cv_close: (d: number) => env.video?.close(d >>> 0),
       hle_native_image_blank: (w: number, h: number) => env.nativeImageBlank(w >>> 0, h >>> 0),
       hle_native_image_blank_free: (h: number) => env.nativeImageBlankFree(h >>> 0),
       hle_exit_request: (reason: number, value: bigint, p: number, n: number) =>
@@ -246,6 +263,27 @@ export class HleHost {
     this.x = x;
     this.memory = memory ?? x.memory;
     x.hle_init();
+  }
+  // A packet's completion from HleEnv.video: its picture (copied here) or null for none
+  videoPicture(dec: number, gen: number, seq: bigint, pic: VideoPicture | null): void {
+    const id = pic ? this.x.hle_cv_pic_alloc(pic.w, pic.h) >>> 0 : 0;
+    if (pic && id) {
+      const at = this.x.hle_cv_pic_ptr(id), b = new Uint8Array(this.memory.buffer), w = pic.w, h = pic.h, cw = (w + 1) >> 1, ch = (h + 1) >> 1;
+      for (let y = 0; y < h; y++) b.set(pic.y.subarray(y * pic.yStride, y * pic.yStride + w), at + y * w);
+      const u = at + w * h, v = u + cw * ch;
+      for (let y = 0; y < ch; y++) {
+        b.set(pic.u.subarray(y * pic.uvStride, y * pic.uvStride + cw), u + y * cw);
+        b.set(pic.v.subarray(y * pic.uvStride, y * pic.uvStride + cw), v + y * cw);
+      }
+    }
+    this.x.hle_cv_picture(dec >>> 0, gen >>> 0, BigInt.asUintN(64, seq), id, pic ? pic.matrix >>> 0 : 2, pic?.fullRange ? 1 : 0);
+  }
+  // A native image handle of nn::codec's pools: the picture's memory (RGBA rows of `stride` bytes), null for none
+  nativeImage(handle: number): { mem: number; size: number; w: number; h: number; stride: number } | null {
+    const out = this.x.hle_scratch();
+    if (!this.x.hle_cv_native_image(handle >>> 0, out)) return null;
+    const dv = new DataView(this.memory.buffer);
+    return { mem: Number(dv.getBigUint64(out, true)), size: Number(dv.getBigUint64(out + 8, true)), w: dv.getUint32(out + 16, true), h: dv.getUint32(out + 20, true), stride: dv.getUint32(out + 24, true) };
   }
   private cstr(p: number): string { const b = new Uint8Array(this.memory.buffer); let e = p; while (b[e]) e++; return dec.decode(b.slice(p, e)); }
   private scratch(bytes: Uint8Array): number {

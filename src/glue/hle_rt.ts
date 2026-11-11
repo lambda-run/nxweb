@@ -10,6 +10,8 @@
 // and libc by their mangled names); test/hle drives the same HleHost through a fake outside.
 import type { Runtime, HostCpu, HostResult } from "./rt_runtime.ts";
 import { range } from "./rt_layout.ts";
+import { WebCodecsVideo } from "./video_webcodecs.ts";
+import type { VideoBackend } from "./video_host.ts";
 import { HleHost, type HleEnv, type HleEntry, type HleResult, type TextRequest, type VibrationState } from "./hle_host.ts";
 
 // The front end's side: everything is optional; without it the take-overs answer as nxnative does windowless
@@ -30,6 +32,9 @@ export interface HleFront {
   ctrlPrompt?(min: number, max: number, answer: (ok: boolean) => void): boolean;
   vibration?(state: VibrationState): void;                    // a player's motors changed (the Gamepad API's vibrationActuator)
   joyMouseWanted?(on: boolean): void;
+  // nn::codec's video decoder: by default WebCodecs' VideoDecoder where the browser has one (video_webcodecs.ts);
+  // null for none (every packet then gives a picture of video black)
+  video?: VideoBackend | null;
 }
 // What the graphics glue offers nn::vi (RtGfx implements it): the layer's shape for the present, the frame count and
 // the present queue, and a report of every present the game queues
@@ -37,6 +42,8 @@ export interface HleGfx {
   viLayer(w: number, h: number): void; viCrop(x: number, y: number, w: number, h: number): void;
   viFrameCount(): bigint; viPresentProgress(): { queued: bigint; done: bigint }; viPresentedNs(ticket: bigint): bigint;
   onPresentQueued(fn: (frames: number) => void): void;
+  // nn::codec's native image handles for nvnTextureInitializeFromNativeImage (RtGfx has it)
+  nativeImageOf?: ((handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null) | null;
 }
 export interface HleRtOptions { front?: HleFront; config?: Parameters<HleHost["config"]>[0]; scratch?: number; gfx?: HleGfx }
 
@@ -133,6 +140,8 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     jitMemory: (rxSize, roSize) => rt.jitAlloc(Number(rxSize), Number(roSize)),
     jitCodeWritten: (rx, off, size) => rt.jitCodeWritten(Number(rx), Number(off), Number(size)),
     jitFree: (rx, rxSize, ro, roSize) => rt.jitFree(Number(rx), Number(rxSize), Number(ro), Number(roSize)),
+    video: front.video === null ? undefined : front.video ?? (WebCodecsVideo.available()
+      ? new WebCodecsVideo({ picture: (dec, gen, seq, pic) => host.videoPicture(dec, gen, seq, pic), log: line => rt.log(line) }) : undefined),
   };
   host = new HleHost(module, env, rt.memory, rt.memImports);
   if (o.config) host.config(o.config);
@@ -141,6 +150,7 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     host.viFrameQueued(BigInt(frames));
     for (let i = ticks.length - 1; i >= 0; i--) if (!ticks[i]()) ticks.splice(i, 1);
   });
+  if (gfx && "nativeImageOf" in gfx) gfx.nativeImageOf = h => host.nativeImage(h);
   if (front.vibration) host.haptics({ output: true });
   rt.expectOutsideEvents();   // the front end's reports (focus, operation mode, an answer) signal events the guest waits on
   const st = range("hle static");
