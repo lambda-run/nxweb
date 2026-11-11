@@ -2,7 +2,7 @@
 // published for browser-wasm (tools/shaders/build_xlate_wasm.sh; the .NET runtime interprets it), then the SPIR-V
 // pass (src/shaders/spv.ts) and naga as WebAssembly. Stages come one a request or as a batch:
 //   (over a BroadcastChannel named like the Worker, see the end of the file)
-//   in:  { init: { framework, naga } }  once: where `_framework/dotnet.js` and nx_naga.wasm are served
+//   in:  { init: { framework, naga, subgroups } }  once: where `_framework/dotnet.js` and nx_naga.wasm are served; whether the device has WebGPU subgroups
 //        { id, key, control, code }     a stage as the game passed it (control section, code area)
 //        { batch: [{ id, key, control, code }, ...] }  stages translated by one run of the translator
 //   out: { id, wgsl, reflection, timing: { startMs, xlateMs, convertMs, batch } } | { id, error }   one a stage
@@ -14,7 +14,9 @@ import { jobFor } from "../shaders/job.ts";
 import type { FixOptions } from "../shaders/spv.ts";
 
 let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null;
-async function start(init: { framework: string; naga: string }) {
+let subgroups: "native" | "single" = "single";   // FixOptions.subgroups for every stage (init)
+async function start(init: { framework: string; naga: string; subgroups?: boolean }) {
+  subgroups = init.subgroups ? "native" : "single";
   const { dotnet } = await import(/* @vite-ignore */ init.framework + "/dotnet.js");
   const lines: string[] = [];
   // (no console forwarding: in a Worker the runtime's start waits on its forwarding socket and never finishes)
@@ -54,7 +56,7 @@ async function translateBatch(reqs: Req[], post: (m: unknown) => void) {
       }
       let res: { sbufs?: FixOptions["sbufs"] } = {};
       try { res = JSON.parse(FS.readFile(`${out}/${key}.res.json`, { encoding: "utf8" })); } catch { /* not written: no storage buffers to place */ }
-      const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh: mesh[key] as any, c1: c1[key] as any });
+      const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh: mesh[key] as any, c1: c1[key] as any, subgroups });
       post({ id: r.id, wgsl: c.wgsl, reflection: c.reflection, timing: { startMs: t1 - t0, xlateMs: share, convertMs: performance.now() - t3, batch: ok.length } });
     } catch (e) { post({ id: r.id, error: e instanceof Error ? e.message : String(e) }); }
     for (const f of [`/w/${key}.bin`, `${out}/${key}.spv`, `${out}/${key}.res.json`]) { try { FS.unlink(f); } catch { /* not written */ } }

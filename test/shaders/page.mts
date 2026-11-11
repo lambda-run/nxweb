@@ -15,7 +15,9 @@ async function dev() {
   if (device) return device;
   const adapter = await g.navigator.gpu?.requestAdapter();
   if (!adapter) throw new Error("no WebGPU adapter");
-  device = await adapter.requestDevice();
+  // with WebGPU's subgroups when the adapter has them (GfxHost.deviceDescriptor asks for them too): the corpus's native warp path compiles against them
+  device = await adapter.requestDevice(adapter.features.has("subgroups") ? { requiredFeatures: ["subgroups"] } : undefined);
+  g.__subgroups = device.features.has("subgroups");
   g.__adapter = `${adapter.info?.vendor ?? ""} ${adapter.info?.architecture ?? ""} ${adapter.info?.description ?? ""}`.trim();
   return device;
 }

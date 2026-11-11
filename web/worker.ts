@@ -58,6 +58,8 @@ const requestDevice = async (): Promise<any> => {
 let mods64: Promise<RuntimeModules> | undefined;
 const forceMem64 = new URLSearchParams(self.location?.search ?? "").get("mem64") === "1";
 const precise = ({ "1": 1, "2": 2 } as const)[new URLSearchParams(self.location?.search ?? "").get("precise") ?? ""];
+// ?ndve=bypass: a bilinear stand-in for nn::ndve's movie network when its dispatches cannot run (diagnostic, src/glue/ndve.ts)
+const ndve = new URLSearchParams(self.location?.search ?? "").get("ndve") === "bypass" ? "bypass" as const : undefined;
 function modules64(): Promise<RuntimeModules> {
   return mods64 ??= (async () => {
     const mod = async (n: string) => WebAssembly.compileStreaming(fetch(`wasm/${n}64.wasm`));
@@ -70,9 +72,10 @@ async function init() {
   const [r, kernel, loader, translator, helpers, g, fsm, hlem, aud] = await Promise.all(["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"].map(mod));
   mods = { rt: r, kernel, loader, translator, helpers, gfx: g, fs: fsm, hle: hlem, audio: aud };
   // the in-page shader translator, when the build put its files beside the page (build/web/shaders)
-  try { if ((await fetch("shaders/xlate_wasm/_framework/dotnet.js", { method: "HEAD" })).ok && (await fetch("shaders/nx_naga.wasm", { method: "HEAD" })).ok)
-    shaderTranslator = workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href }); } catch { /* none */ }
   try { device = await requestDevice(); } catch (e: any) { gpuInfo = "no WebGPU device (" + (e?.message ?? e) + "): the null replayer (nothing is drawn)"; }
+  // (after the device: whether it has WebGPU subgroups decides how warp operations are translated)
+  try { if ((await fetch("shaders/xlate_wasm/_framework/dotnet.js", { method: "HEAD" })).ok && (await fetch("shaders/nx_naga.wasm", { method: "HEAD" })).ok)
+    shaderTranslator = workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href, subgroups: GfxHost.hasSubgroups(device) }); } catch { /* none */ }
   log("page: runtime modules compiled; " + gpuInfo);
 }
 const ready = init().catch(e => log("[RED] page: " + (e?.message ?? e)));
@@ -131,7 +134,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   title = `nxweb report: ${o.name ?? files.map(f => f.name).join(" + ")}`;
   // a lost device: the replayer asks here for a new one (the page's test button destroys the device on purpose)
   gfx = new RtGfx(me, set.gfx!, { device: device ?? undefined, canvas: device ? canvas : undefined, nextFrame: () => new Promise(res => (self as any).requestAnimationFrame(res)),
-    requestDevice: async () => { device = await requestDevice(); return device; }, profile: game?.gfx });
+    requestDevice: async () => { device = await requestDevice(); return device; }, profile: game?.gfx, ndve });
   // shaders: a library the user gave first, then translation in the page (stored by key and chain version)
   try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined }); }
   catch (e: any) { log("[RED] page: the shader library was refused: " + (e?.message ?? e)); shaderLookup = new RtShaders(gfx, { translator: shaderTranslator }); }

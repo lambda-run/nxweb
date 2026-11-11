@@ -9,7 +9,8 @@ import { scenes4 } from "./scenes4.mts";
 import { scenes5 } from "./scenes5.mts";
 import { scenes6 } from "./scenes6.mts";
 import { scenes7 } from "./scenes7.mts";
-const scenes = [...scenes1, ...scenes2, ...scenes3, ...scenes4, ...scenes5, ...scenes6, ...scenes7];
+import { scenes8 } from "./scenes8.mts";
+const scenes = [...scenes1, ...scenes2, ...scenes3, ...scenes4, ...scenes5, ...scenes6, ...scenes7, ...scenes8];
 import { GfxHost } from "../../src/glue/gfx_host.ts";
 
 async function main() {
@@ -20,6 +21,9 @@ async function main() {
   // every feature the replayer can use and the adapter's own limits, as an embedder should ask (GfxHost.deviceDescriptor)
   const dd = GfxHost.deviceDescriptor(adapter), want = dd.requiredFeatures;
   const device = await adapter.requestDevice(dd);
+  // every asked-for feature granted (subgroups among them where the adapter has it: the shader translator's native warp path, GfxHost.hasSubgroups)
+  for (const f of want) if (!device.features.has(f)) throw new Error(`the device lacks the feature ${f} it was asked for`);
+  if (adapter.features.has("subgroups") !== GfxHost.hasSubgroups(device)) throw new Error("subgroups: the adapter's and the device's disagree");
   const limits = ["maxUniformBuffersPerShaderStage", "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage", "maxStorageTexturesPerShaderStage", "maxDynamicUniformBuffersPerPipelineLayout", "maxVertexAttributes", "maxVertexBuffers", "maxBindGroups"]
     .map(l => `${l} ${adapter.limits[l]} (${device.limits[l]} granted)`).join(", ");
   const mem = new URLSearchParams(location.search).get("mem") ?? "32";

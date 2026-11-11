@@ -112,8 +112,10 @@ export class RtShaders {
 // Stages wait in one queue here, in the order they were asked for, until a Worker is free; a free Worker takes up to
 // `batch` of them for one run of the translator. `prioritize` moves a key a draw waits on to the front. Each Worker
 // has its own .NET runtime (started when there is work for it), so `workers` of them translate at once.
-export const SHADER_CHAIN = "nxweb-shaders-3/page";
-export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; workers?: number; batch?: number }
+export const SHADER_CHAIN = "nxweb-shaders-4/page";
+// subgroups: the device has WebGPU's subgroups feature (GfxHost.hasSubgroups): warp operations become WGSL subgroup builtins, else one-invocation subgroups
+// (src/shaders/spv_subgroups.ts). The output differs, so the chain (and with it every store id) says which.
+export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean; workers?: number; batch?: number }
 export const defaultShaderWorkers = (): number => Math.max(1, Math.min(4, Math.floor(((globalThis as any).navigator?.hardwareConcurrency ?? 2) / 2)));
 export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator & { prioritize(key: string): void; stats: ShaderWorkerStats } {
   type Call = { id: number; key: string; control: Uint8Array; code: Uint8Array; res: (t: Translated) => void; rej: (e: Error) => void };
@@ -148,7 +150,7 @@ export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator &
     pool.push(x); stats.started++;
     x.bc.onmessage = ev => {
       const m = ev.data;
-      if (m.ready) { x.up = true; x.bc.postMessage({ init: { framework: o.framework, naga: o.naga } }); pump(); return; }
+      if (m.ready) { x.up = true; x.bc.postMessage({ init: { framework: o.framework, naga: o.naga, subgroups: !!o.subgroups } }); pump(); return; }
       const c = x.busy.get(m.id);
       if (!c || (m.wgsl === undefined && m.error === undefined)) return;
       x.busy.delete(m.id);
@@ -159,7 +161,7 @@ export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator &
     x.w.onerror = ev => drop(x, "the shader translator's Worker failed: " + (ev.message || "it could not be started"));
   };
   return {
-    chain: o.chain ?? SHADER_CHAIN,
+    chain: (o.chain ?? SHADER_CHAIN) + (o.subgroups ? "+subgroups" : ""),
     stats,
     translate: blob => new Promise((res, rej) => {
       if (closed) { rej(new Error("the shader translator was closed")); return; }

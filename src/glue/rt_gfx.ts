@@ -25,6 +25,8 @@ export interface GfxOptions {
   requestDevice?: () => Promise<any>;
   // Tests, null replayer only: while it returns true the "GPU" does not finish (fences stay pending until releaseFences())
   holdFences?: () => boolean;
+  // "bypass": the diagnostic stand-in for nn::ndve's movie network (GfxHost.ndveBypass, src/glue/ndve.ts; the page's ?ndve=bypass). Omitted: off
+  ndve?: "bypass";
   // The game profile's graphics switches (rt_process.ts gfxSettingsFor: the bits of src/gfx/profile.ts). Omitted: none
   profile?: { bits: number };
   sdkMajor?: number;                  // the game's SDK major version (nv::GetGraphicsMemoryInfo's record is 0x20 bytes up to SDK 10). Omitted: newer
@@ -83,6 +85,7 @@ export class RtGfx implements HleGfx {
     // The replayer's reports arrive through its hooks; guest threads wait on host.fence(n) promises (Runtime.waitFor
     // wakes the run loop when one resolves)
     this.host.attach(this.x);
+    if (opts.ndve === "bypass") this.host.ndveBypass();
     this.host.onImage = (_w, _i, what) => { if (what === 1) this.imageShown(); };
     this.host.onDeviceLost = () => { this.stats.deviceLosses++; rt.requestWake(); };
     this.host.onDeviceRestored = () => { this.stats.deviceRestores++; this.lastPresentDone = null; rt.requestWake(); };
