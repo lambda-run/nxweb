@@ -38,6 +38,7 @@ export type VinClass = "float" | "sint" | "uint";
 // library.ts Reflection) plus the WGSL. Binding convention (src/gfx/README.md), stage = 0 vertex, 1 fragment, 2 compute:
 //   @group(0) @binding(stage * 16 + i)          uniform buffer i of the stage; i = 14 is the translator's support buffer
 //   @group(0) @binding(128 + stage * 16 + i)    storage buffer i
+//   @group(0) @binding(208 + stage * 4 + k)     the blocks the host supplies (`extra`): k = 0 the shader's c1, 1 driver segment c0, 2 driver segment c2, 3 the NVN2 push constants
 //   @group(1) @binding(stage * 64 + slot * 2)   texture slot, and + 1 its sampler
 //   @group(1) @binding(256 + stage * 8 + i)     storage image i
 //   @group(2) @binding(0)                       the position fix-up (vertex, `fixup`)
@@ -64,8 +65,13 @@ export interface ShaderInfo {
   support?: boolean;       // reads the support buffer; also taken from `extra` (kind "support")
   storage?: { slot: number; write?: boolean }[];
   images?: { slot: number; format: string; access?: "write-only" | "read-only" | "read-write"; dim?: "2d" | "2d-array" | "3d" }[];
-  extra?: { kind: string; group: number; binding: number; size?: number }[];   // the chain's other bindings: only "support" is provided
+  extra?: { kind: string; group: number; binding: number; size?: number; bank?: number; data?: string }[];   // the chain's other bindings: "support", "c1" (data: its bytes in hex), "drvcb" (bank 0 or 2), "push"
+  hostBlocks?: { k: number; size: number }[];   // from `extra` at registration: the blocks at 208 + stage * 4 + k
+  c1Data?: Uint8Array;
 }
+// The extra bindings the replayer supplies (src/shaders/library.ts HOST_EXTRA) and their k in 208 + stage * 4 + k
+const HOST_BLOCK = (e: { kind: string; bank?: number }) => e.kind === "c1" ? 0 : e.kind === "drvcb" ? (e.bank === 0 ? 1 : e.bank === 2 ? 2 : -1) : e.kind === "push" ? 3 : -1;
+const uboKey = (st: number, i: number) => i < 16 ? st * 16 + i : 256 + st * 4 + i - 16;
 export interface TextureHandle { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } }
 export interface GfxHostOptions {
   canvas?: any;
@@ -89,7 +95,7 @@ export interface GfxHostOptions {
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
   BLEND_COLOR: 12, STENCIL_REF: 13, DRAW: 14, DRAW_IDX: 15, CLEAR_RECT: 16, COPY_B2T: 17, COPY_T2T: 18, SNAPSHOT: 19, PRESENT: 20, FENCE: 21, FLUSH: 22, MEM_DIRTY: 23, TEX_DATA: 24, COPY_T2B: 25, FIXUP: 26,
   UBO_DATA: 27, SSBO: 28, IMG: 29, BEGIN_COMPUTE: 30, DISPATCH: 31, BUF_READBACK: 32,
-  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38 };
+  MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, MESH_DRAW: 38, CLEAR_TEX: 39 };
 // Pipeline key offsets (src/gfx/pipeline.ts)
 const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8, samples: 9, ncolor: 10, depthFmt: 11, colorFmt: 12, a2c: 20, flags: 21, blendEn: 22, stencilV: 23, stencilW: 24,
   itype: 25, chmask: 28, ds: 32, blend: 40, offset: 104, attrMask: 116, attr: 120, stream: 248, vin: 376 };
@@ -97,7 +103,7 @@ const DIMS = ["2d", "2d-array", "cube", "3d", "cube-array"], CLASSES: VinClass[]
 
 interface Tex { serial: number; target: number; format: number; flags: number; samples: number; width: number; height: number; depth: number; levels: number;
   gpu?: GPU; snap?: GPU; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
-interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo"; dyn: boolean; write: boolean }
+interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo" | "host"; dyn: boolean; write: boolean; size?: number; info?: ShaderInfo }
 interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
   mesh?: boolean; dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU }
 interface Chunk { buf: GPU; staging: Uint8Array; used: number }
@@ -319,10 +325,12 @@ export class GfxHost {
   // shader chain's reflection record with the WGSL. -1 (with a red line) when it needs a binding the replayer lacks
   registerShader(keyHex: string, info: ShaderInfo): number {
     const dv = this.dv, r = Number(this.x.gfx_scratch()), bit = (a?: number[]) => (a ?? []).reduce((m, i) => m | (1 << i), 0) >>> 0;
-    const unknown = (info.extra ?? []).filter(e => e.kind !== "support");
+    const unknown = (info.extra ?? []).filter(e => e.kind !== "support" && HOST_BLOCK(e) < 0);
     if (unknown.length) { this.log(`[RED] shader ${keyHex} needs bindings the replayer does not provide (${unknown.map(e => e.kind).join(", ")}): not registered`); return -1; }
     if ((info.stage === "task" || info.stage === "mesh") && info.mesh?.kind !== (info.stage === "task" ? "ts" : "ms")) { this.log(`[RED] ${info.stage} shader ${keyHex} has no stage facts (reflection "mesh"): not registered`); return -1; }
     const support = info.support || (info.extra ?? []).some(e => e.kind === "support"), st = info.stage === "vertex" ? 0 : info.stage === "fragment" ? 1 : info.stage === "task" ? 3 : info.stage === "mesh" ? 4 : 2;
+    const hostBlocks = (info.extra ?? []).filter(e => HOST_BLOCK(e) >= 0).map(e => ({ k: HOST_BLOCK(e), size: e.size ?? 0 })).sort((a, b) => a.k - b.k);
+    const c1 = info.extra?.find(e => e.kind === "c1")?.data, c1Data = c1 ? Uint8Array.from(c1.match(/../g) ?? [], h => parseInt(h, 16)) : undefined;
     new Uint8Array(this.memory.buffer, r, 400).fill(0);
     let depth = 0, bindless = 0;
     for (const t of info.textures ?? []) {
@@ -341,7 +349,7 @@ export class GfxHost {
     }
     dv.setUint32(r + 140, bindless >>> 0, true);
     for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? "2d"))); if (t.depth) depth |= 1 << t.slot; }
-    dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0)) >>> 0, true); dv.setUint32(r + 8, bit((info.textures ?? []).map(t => t.slot)), true);
+    dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0) | (bit(hostBlocks.map(b => b.k)) << 16)) >>> 0, true); dv.setUint32(r + 8, bit((info.textures ?? []).map(t => t.slot)), true);
     dv.setUint32(r + 12, bit(st === 0 ? info.attributes : info.outputs), true); dv.setUint32(r + 16, depth >>> 0, true);
     dv.setUint32(r + 20, bit((info.storage ?? []).map(b => b.slot)), true); dv.setUint32(r + 24, bit((info.storage ?? []).filter(b => b.write).map(b => b.slot)), true);
     dv.setUint32(r + 28, (bit((info.images ?? []).map(b => b.slot)) | bit((info.images ?? []).filter(b => (b.access ?? "write-only") !== "read-only").map(b => b.slot)) << 8) >>> 0, true);
@@ -355,7 +363,7 @@ export class GfxHost {
     const b = keyHex.match(/../g)!.map(h => parseInt(h, 16));
     const lo = (b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, hi = (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0;
     const id = this.x.gfx_shader_register(lo, hi, r);
-    if (id >= 0) this.shaders[id] = { info: { ...info, support }, key: keyHex };
+    if (id >= 0) this.shaders[id] = { info: { ...info, support, hostBlocks, c1Data }, key: keyHex };
     return id;
   }
   // What the embedder does about a key that is not registered: "pending" it is being fetched or translated (the
@@ -550,8 +558,17 @@ export class GfxHost {
     this.uaDone = []; this.uaSeen.clear();
   }
   // The buffer, offset and size uniform binding i of stage st is bound with
+  // A block the host supplies (Slot "host"): the shader's c1 from its reflection, the others as the recorder sent them (UBO_DATA). Each is at least the size the
+  // shader declares, zero past what it was given
+  private hostBlock(b: Slot) {
+    const key = uboKey(b.st, b.i), want = Math.max(16, ((b.size ?? 0) + 15) & ~15);
+    let u = this.ubo.get(key);
+    if (b.i === 16) { const d = b.info?.c1Data ?? new Uint8Array(0); if (u?.data !== d) { u = { addr: 0, size: 0, need: 0, data: d }; this.ubo.set(key, u); } }   // c1 is the bound shader's own
+    if (!u) { this.red("hostblock", "a shader reads a driver segment or push constants the recorder did not send: a zeroed block is bound"); u = { addr: 0, size: 0, need: 0, data: new Uint8Array(0) }; this.ubo.set(key, u); }
+    if (u.data && u.data.length < want) { const d = new Uint8Array(want); d.set(u.data); u.data = d; if (b.i === 16 && b.info) b.info.c1Data = d; }
+  }
   private uboSlot(st: number, i: number): { buf: GPU; off: number; size: number } {
-    const u = this.ubo.get(st * 16 + i), max = this.limit("maxUniformBufferBindingSize", 65536);
+    const u = this.ubo.get(uboKey(st, i)), max = this.limit("maxUniformBufferBindingSize", 65536);
     if (!this.uniformArena) {
       if (u?.data) { const b = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(u.data.length)))); this.device.queue.writeBuffer(b, 0, u.data); this.inUse.push(b); return { buf: b, off: 0, size: Math.min(b.size, (u.data.length + 15) & ~15) }; }
       const buf = u && this.upload(u.addr, u.size, 0);
@@ -771,6 +788,10 @@ export class GfxHost {
         e0.push({ binding: st * 16 + i, visibility, buffer: { type: "uniform", hasDynamicOffset: dyn } });
         g0.push({ binding: st * 16 + i, st, i, kind: "ubo", dyn, write: false });
       }
+      for (const b of s.hostBlocks ?? []) {
+        e0.push({ binding: 208 + st * 4 + b.k, visibility, buffer: { type: "uniform" } });
+        g0.push({ binding: 208 + st * 4 + b.k, st, i: 16 + b.k, kind: "host", dyn: false, write: false, size: b.size, info: s });
+      }
       for (const b of s.storage ?? []) {
         e0.push({ binding: 128 + st * 16 + b.slot, visibility, buffer: { type: b.write ? "storage" : "read-only-storage" } });
         g0.push({ binding: 128 + st * 16 + b.slot, st, i: b.slot, kind: "ssbo", dyn: false, write: !!b.write });
@@ -802,7 +823,7 @@ export class GfxHost {
     };
     for (const { info: s, st } of stages) {
       const counts: [string, number, string, number][] = [
-        ["uniform buffers", (s.ubos?.length ?? 0) + (s.support ? 1 : 0) + (st === 0 && fixup ? 1 : 0), "maxUniformBuffersPerShaderStage", 12],
+        ["uniform buffers", (s.ubos?.length ?? 0) + (s.support ? 1 : 0) + (s.hostBlocks?.length ?? 0) + (st === 0 && fixup ? 1 : 0), "maxUniformBuffersPerShaderStage", 12],
         ["sampled textures", s.textures?.length ?? 0, "maxSampledTexturesPerShaderStage", 16], ["samplers", s.textures?.length ?? 0, "maxSamplersPerShaderStage", 16],
         ["storage buffers", (s.storage?.length ?? 0) + (s.stage === "mesh" ? (s.mesh?.task ? 3 : 2) : s.stage === "task" ? 2 : 0), "maxStorageBuffersPerShaderStage", 8], ["storage textures", s.images?.length ?? 0, "maxStorageTexturesPerShaderStage", 4]];
       if (st === 0) counts.push(["vertex attributes", s.attributes?.length ?? 0, "maxVertexAttributes", 16]);
@@ -960,7 +981,8 @@ export class GfxHost {
   private bind() {
     const c = this.cur!, layouts = c.layouts, e0: any[] = [], offs: number[] = [], g1: any[] = [];
     for (const b of c.g0) {
-      if (b.kind === "ubo") {
+      if (b.kind === "ubo" || b.kind === "host") {
+        if (b.kind === "host") this.hostBlock(b);
         const r = this.uboSlot(b.st, b.i);
         if (b.dyn) { e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: 0, size: r.size } }); offs.push(r.off); }
         else e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: r.off, size: r.size } });
@@ -1222,6 +1244,55 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.device.queue.writeTexture({ texture: t.gpu, mipLevel: level, origin: { x: r[0], y: r[1], z: r[2] + layer } }, this.u8.subarray(src, src + bytes), { bytesPerRow: row, rowsPerImage: rows },
       { width: bx * f.bw, height: by * f.bh, depthOrArrayLayers: depth });
   }
+  // ClearTexture / ClearTexturei / ClearTextureui (lower.ts clearTex): the region of one level, slice by slice, outside a render pass. As nxnative's clear_tex (nvn_mtl.m):
+  // the value is the four floats, or the four integers as numbers, converted to the texture's format as a render pass clear converts them. A whole slice with every
+  // component is a render pass's clear (depth from value 0, stencil from value 1 of a depth-stencil texture, value 0 of a stencil one); otherwise a helper draws the
+  // value under a scissor with the component mask as its write mask
+  private clearTex(dv: DataView, p: number) {
+    const t = this.texture(this.u64(dv, p + 8));
+    if (!t) return;
+    const level = dv.getUint32(p + 16, true), layer = dv.getUint32(p + 20, true), r = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 24 + i * 4, true));
+    const mask = dv.getUint32(p + 48, true) & 15, src = dv.getUint32(p + 52, true), f = t.fmt;
+    const v = [0, 1, 2, 3].map(i => src === 1 ? dv.getUint32(p + 56 + i * 4, true) : src === 2 ? dv.getInt32(p + 56 + i * 4, true) : dv.getFloat32(p + 56 + i * 4, true));
+    if (!mask) return;
+    const lw = Math.max(1, t.width >> level), lh = Math.max(1, t.height >> level), is3d = t.gpu.dimension === "3d";
+    const x = Math.max(0, r[0]), y = Math.max(0, r[1]), w = Math.min(lw, r[0] + r[3]) - x, h = Math.min(lh, r[1] + r[4]) - y, nz = Math.max(1, r[5]);
+    if (w <= 0 || h <= 0) return;
+    const ds = f.kind === "depth" || !!f.stencil, whole = x === 0 && y === 0 && w === lw && h === lh && (ds || mask === 15);
+    if (!(t.gpu.usage & 0x10) || f.conv || (ds && !whole)) {
+      this.red(`cleartex${f.tex}${ds}`, `ClearTexture of ${ds ? "part of a depth or stencil" : `a ${f.tex}`} texture, which ${ds ? "the host clears only whole" : "WebGPU cannot render to (or the host converts)"}: the clear is dropped`);
+      return;
+    }
+    this.endPass();
+    this.stats.clearRects++;
+    const kind = f.kind === "uint" || f.kind === "sint" ? f.kind : "float", ty = kind === "uint" ? "vec4u" : kind === "sint" ? "vec4i" : "vec4f";
+    const num = v.map(c => kind === "float" ? c : kind === "uint" ? Math.min(0xffffffff, Math.max(0, Math.trunc(c))) : Math.min(0x7fffffff, Math.max(-0x80000000, Math.trunc(c))));
+    let pl: GPU | undefined, bg: GPU | undefined;
+    if (!whole) {
+      const key = `cleartex|${f.tex}|${mask}`;
+      pl = this.helpers.get(key);
+      if (!pl) {
+        const m = this.device.createShaderModule({ code: `struct U { c: ${ty} } @group(0) @binding(0) var<uniform> u: U;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0); }
+@fragment fn fs() -> @location(0) ${ty} { return u.c; }` });
+        pl = this.device.createRenderPipeline({ layout: "auto", vertex: { module: m, entryPoint: "vs" }, primitive: { topology: "triangle-list" }, fragment: { module: m, entryPoint: "fs", targets: [{ format: f.tex, writeMask: mask }] } });
+        this.helpers.set(key, pl);
+      }
+      const ub = this.alloc(256);
+      this.device.queue.writeBuffer(ub, 0, kind === "uint" ? new Uint32Array(num) : kind === "sint" ? new Int32Array(num) : new Float32Array(num));
+      this.inUse.push(ub);
+      bg = this.device.createBindGroup({ layout: pl.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ub, size: 16 } }] });
+    }
+    for (let z = r[2]; z < r[2] + nz; z++) {
+      const view = this.attachView(t, level, is3d ? 0 : layer + z);
+      const pass = this.encoder().beginRenderPass(ds
+        ? { colorAttachments: [], depthStencilAttachment: { view, ...(f.kind === "depth" ? { depthLoadOp: "clear", depthStoreOp: "store", depthClearValue: Math.min(1, Math.max(0, v[0])) } : {}),
+            ...(f.stencil ? { stencilLoadOp: "clear", stencilStoreOp: "store", stencilClearValue: (f.kind === "depth" ? v[1] : v[0]) >>> 0 & 255 } : {}) } }
+        : { colorAttachments: [{ view, ...(is3d ? { depthSlice: z } : {}), loadOp: whole ? "clear" : "load", storeOp: "store", ...(whole ? { clearValue: { r: num[0], g: num[1], b: num[2], a: num[3] } } : {}) }] });
+      if (!whole) { pass.setPipeline(pl); pass.setBindGroup(0, bg); pass.setScissorRect(x, y, w, h); pass.draw(3); }
+      pass.end();
+    }
+  }
   private copyT2T(dv: DataView, p: number) {
     const s = this.texture(this.u64(dv, p + 8)), d = this.texture(this.u64(dv, p + 16));
     if (!s || !d) return;
@@ -1378,7 +1449,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.MESH_RUN: this.meshRun(dv.getUint32(p + 8, true)); break;
         case H.MESH_DRAW: this.meshDraw(); break;
         case H.BUF_READBACK: this.bufReadback(this.u64(dv, p + 8), dv.getUint32(p + 16, true)); break;
-        case H.UBO_DATA: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: 0, size: 0, need: 0, data: this.u8.slice(p + 24, p + 24 + dv.getUint32(p + 16, true)) }); this.bindDirty = true; break;
+        case H.UBO_DATA: this.ubo.set(uboKey(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true)), { addr: 0, size: 0, need: 0, data: this.u8.slice(p + 24, p + 24 + dv.getUint32(p + 16, true)) }); this.bindDirty = true; break;
         case H.VIEWPORT: this.pass.setViewport(dv.getFloat32(p + 8, true), dv.getFloat32(p + 12, true), dv.getFloat32(p + 16, true), dv.getFloat32(p + 20, true), dv.getFloat32(p + 24, true), Math.max(dv.getFloat32(p + 24, true), dv.getFloat32(p + 28, true))); break;
         case H.SCISSOR: this.pass.setScissorRect(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true)); break;
         case H.PIPELINE_CREATE: this.createPipeline(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true)); break;
@@ -1410,6 +1481,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.CLEAR_RECT: this.clearRect(dv, p); break;
         case H.COPY_B2T: this.copyB2T(dv, p); break;
         case H.COPY_T2T: this.copyT2T(dv, p); break;
+        case H.CLEAR_TEX: this.clearTex(dv, p); break;
         case H.SNAPSHOT: this.snapshot(this.u64(dv, p + 8)); break;
         case H.PRESENT: this.present(dv, p); break;
         case H.FENCE: {

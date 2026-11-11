@@ -56,10 +56,10 @@ function strWords(s: string): number[] {
 // ---- what the pass reports ----
 // kind: the names of nxnative's dmsh_abi.h where they mean the same thing
 export interface Binding {
-  kind: "cbuf" | "support" | "c1" | "drvcb" | "tex" | "samp_tex" | "fixup" | "storage";
+  kind: "cbuf" | "support" | "c1" | "drvcb" | "push" | "tex" | "samp_tex" | "fixup" | "storage";
   group: number; binding: number;
   reg?: number;        // cbuf: uniform slot; tex / samp_tex: texture slot
-  bank?: number;       // drvcb: 0 or 2
+  bank?: number;       // drvcb: 0 or 2; push: 24
   write?: boolean;     // storage: the shader may write it
   size?: number;       // buffers: bytes the WGSL type covers = the least the host may bind
   dim?: "2d" | "2d-array" | "cube" | "cube-array" | "3d";
@@ -89,7 +89,7 @@ export interface FixOptions {
 
 // The nxweb binding convention (src/gfx/README.md), with the three things a translated shader has and a hand-written one has not:
 //   group 0, binding stage * 16 + 14: the translator's support buffer (only when the shader reads it)
-//   group 3, binding stage * 16 + 0: the shader's own constants c1;  + 1: driver segment c0;  + 2: driver segment c2
+//   group 0, binding 208 + stage * 4 + 0: the shader's own constants c1;  + 1: driver segment c0;  + 2: driver segment c2;  + 3: NVN2 push constants (c[24])
 //   group 2, binding 0: the position fix-up (one vec4f), vertex shaders
 export const STAGE_INDEX = { vertex: 0, fragment: 1, compute: 2 } as const;
 export const SUPPORT_SLOT = 14, CBSIZE_BANK = 25;
@@ -307,6 +307,64 @@ function splitSamplers(c: Ctx): Map<number, number> {
   return samplerOf;
 }
 
+// 3b. OpImageQueryLod (Maxwell TMML, GLSL textureQueryLod): WGSL has no such query. In a pixel shader the LOD is computed as the hardware does, from the screen-space
+// derivatives of the coordinate scaled by the texture's size at level 0: λ = log2(max(|∂uv/∂x|, |∂uv/∂y|)); x = λ clamped to the mip chain, y = λ unclamped. The
+// sampler's LOD bias and clamps are not applied. A cube's coordinate is a direction: its derivatives are divided by the major axis (a face spans [-1, 1], so half its
+// size). Another stage has no derivatives: the query reads 0 there (what an implicit LOD outside a pixel shader is)
+function queryLod(c: Ctx, stage: FixResult["stage"]) {
+  if (!c.m.insts.some(i => i.op === 105)) return;
+  let at = c.firstFunction(), r;
+  const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
+  let glsl = c.m.insts.find(i => i.op === Op.ExtInstImport && str(i.w, 1) === "GLSL.std.450")?.w[0];
+  if (glsl === undefined) {
+    glsl = c.id();
+    const mm = c.m.insts.findIndex(i => i.op === 14);
+    c.m.insts.splice(mm < 0 ? 0 : mm, 0, { op: Op.ExtInstImport, w: [glsl, ...strWords("GLSL.std.450")] });
+    at = c.firstFunction();
+  }
+  const f32 = add(Op.TypeFloat, [32], false), i32 = add(Op.TypeInt, [32, 1], false), v2 = add(Op.TypeVector, [f32, 2], false), v3 = add(Op.TypeVector, [f32, 3], false);
+  const iv2 = add(Op.TypeVector, [i32, 2], false), iv3 = add(Op.TypeVector, [i32, 3], false);
+  const k0 = add(Op.Constant, [i32, 0], true), k1 = add(Op.Constant, [i32, 1], true), f0 = add(Op.Constant, [f32, 0], true), fh = add(Op.Constant, [f32, 0x3f000000], true);
+  const zero2 = add(Op.ConstantComposite, [v2, f0, f0], true);
+  const out: Inst[] = [];
+  let n = 0;
+  for (const i of c.m.insts) {
+    if (i.op !== 105) { out.push(i); continue; }
+    n++;
+    const [type, id, si, coord] = i.w;
+    if (stage !== "fragment") { out.push({ op: 83 /* CopyObject */, w: [type, id, zero2] }); continue; }
+    const e = (op: number, t: number, ...ops: number[]) => { const x = c.id(); out.push({ op, w: [t, x, ...ops] }); return x; };
+    const ext = (t: number, inst: number, ...ops: number[]) => e(12, t, glsl!, inst, ...ops);
+    const s = c.def.get(si), imgType = s && c.def.get(c.def.get(s.w[0])?.w[1] ?? -1);
+    if (!s || !imgType || imgType.op !== Op.TypeImage) throw new Error("OpImageQueryLod on an image whose type the pass cannot see");
+    const dim = imgType.w[2], arrayed = imgType.w[4];
+    if (dim !== 1 && dim !== 2 && dim !== 3) throw new Error(`OpImageQueryLod on a ${["1D", "", "", "", "rect", "buffer"][dim] ?? "dim " + dim} image: not lowered`);
+    const img = s.op === Op.SampledImage ? s.w[2] : e(100 /* Image */, imgType.w[0], si);
+    const sizeComps = (dim === 2 ? 3 : 2) + (arrayed ? 1 : 0), sizeT = sizeComps === 2 ? iv2 : sizeComps === 3 ? iv3 : add(Op.TypeVector, [i32, 4], false);
+    const size = e(103 /* ImageQuerySizeLod */, sizeT, img, k0), levels = e(106 /* ImageQueryLevels */, i32, img);
+    const nc = dim === 1 ? 2 : 3, vt = nc === 2 ? v2 : v3;
+    const uv = e(79 /* VectorShuffle */, vt, coord, coord, ...Array.from({ length: nc }, (_, k) => k));   // the coordinate may carry more components (a layer)
+    let dx = e(207 /* DPdx */, vt, uv), dy = e(208 /* DPdy */, vt, uv);
+    if (dim === 3) {   // cube: (size / 2) / |major axis|
+      const ax = ext(vt, 4 /* FAbs */, uv), comp = (k: number) => e(Op.CompositeExtract, f32, ax, k);
+      const ma = ext(f32, 40 /* FMax */, ext(f32, 40, comp(0), comp(1)), comp(2));
+      const sc = e(136 /* FDiv */, f32, e(Op.FMul, f32, e(111 /* ConvertSToF */, f32, e(Op.CompositeExtract, i32, size, 0)), fh), ma);
+      dx = e(142 /* VectorTimesScalar */, vt, dx, sc); dy = e(142, vt, dy, sc);
+    } else {
+      const sz = e(111 /* ConvertSToF */, vt, e(79 /* VectorShuffle */, nc === 2 ? iv2 : iv3, size, size, ...Array.from({ length: nc }, (_, k) => k)));
+      dx = e(Op.FMul, vt, dx, sz); dy = e(Op.FMul, vt, dy, sz);
+    }
+    const rho2 = ext(f32, 40 /* FMax */, e(148 /* Dot */, f32, dx, dx), e(148, f32, dy, dy));
+    const lambda = e(Op.FMul, f32, ext(f32, 30 /* Log2 */, rho2), fh);
+    const top = e(111 /* ConvertSToF */, f32, e(130 /* ISub */, i32, levels, k1));
+    const clamped = ext(f32, 43 /* FClamp */, lambda, f0, ext(f32, 40, top, f0));
+    out.push({ op: Op.CompositeConstruct, w: [type, id, clamped, lambda] });
+  }
+  c.m.insts = out;
+  c.notes.push(stage === "fragment" ? `${n} texture LOD quer${n === 1 ? "y" : "ies"} (textureQueryLod) computed from derivatives: the sampler's LOD bias and clamps are left out`
+    : `${n} texture LOD quer${n === 1 ? "y" : "ies"} outside a pixel shader read 0`);
+}
+
 // 4. A uniform block the translator declares is `struct { vec4 data[4096]; }` whatever the shader reads: 64 KB, which WebGPU would require the host to bind for every slot.
 // When every access has a constant vector index the array is cut after the last one read; an access with a computed index keeps the whole array
 function shrinkUniforms(c: Ctx): Map<number, number> {
@@ -430,6 +488,15 @@ function storageSlot(binding: number | undefined, name: string, stage: FixResult
   return r;
 }
 
+// The constant banks the host supplies itself (src/gfx/README.md): group 0, binding HOST_BANK_BINDING + stage * 4 + k, k = 0 the shader's c1, 1 and 2 the NVN driver
+// segments c0 and c2, 3 the NVN2 push constants (c[24], nxnative DMSH_PUSH_BANK)
+export const HOST_BANK_BINDING = 208, PUSH_BANK = 24;
+function placeHostBank(bank: number, st: number, name: string): Omit<Binding, "group" | "binding"> & { group: number; binding: number } {
+  const k = bank === 1 ? 0 : bank === 0 ? 1 : bank === 2 ? 2 : bank === PUSH_BANK ? 3 : -1;
+  if (k < 0) throw new Error(`uniform bank ${bank} (${name}): not placed`);
+  const binding = HOST_BANK_BINDING + st * 4 + k;
+  return k === 0 ? { kind: "c1", group: 0, binding, name } : k === 3 ? { kind: "push", bank, group: 0, binding, name } : { kind: "drvcb", bank, group: 0, binding, name };
+}
 function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep", sbufs: NonNullable<FixOptions["sbufs"]> = []): Binding[] {
   const st = STAGE_INDEX[stage], out: Binding[] = [];
   const set = (id: number, group: number, binding: number) => { if (mode === "nxweb") { c.setDecoration(id, Dec.DescriptorSet, group); c.setDecoration(id, Dec.Binding, binding); } };
@@ -460,9 +527,7 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
       else if ((m = /^[a-z]+_c(\d+)$/.exec(name))) {
         const bank = +m[1];
         if (bank >= 3 && bank <= 16) b = { kind: "cbuf", reg: bank - 3, group: 0, binding: st * 16 + bank - 3, name };
-        else if (bank === 1) b = { kind: "c1", group: 3, binding: st * 16, name };
-        else if (bank === 0 || bank === 2) b = { kind: "drvcb", bank, group: 3, binding: st * 16 + 1 + bank / 2, name };
-        else throw new Error(`uniform bank ${bank} (${name}): not placed`);
+        else b = placeHostBank(bank, st, name);
       } else throw new Error(`uniform block ${name || id}: not a name the translator gives`);
       Object.assign(b, where(id, b.group, b.binding), { size: sizes.get(id) });
       set(id, b.group, b.binding); out.push(b);
@@ -554,6 +619,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   privatizeBoundSizes(c); c.index();
   const posVar = perVertex(c); c.index();
   const samplerOf = splitSamplers(c); c.index();
+  queryLod(c, stage); c.index();
   const sizes = opts.shrinkUniforms === false ? new Map<number, number>(c.m.insts.filter(i => i.op === Op.Variable && i.w[2] === SC.Uniform).map(v => [v.w[1], structSize(c, c.def.get(c.def.get(v.w[0])!.w[2])!)])) : shrinkUniforms(c);
   const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs); c.index();
   if (stage === "vertex" && opts.fixup !== false) {

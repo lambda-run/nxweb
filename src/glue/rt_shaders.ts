@@ -11,7 +11,7 @@
 // machine gfx_shader: a key that is on its way or failed is not reported missing by the recorder).
 import type { RtGfx } from "./rt_gfx.ts";
 import { ndveRole } from "./ndve.ts";
-import { ShaderLibrary, type Reflection } from "../shaders/library.ts";
+import { ShaderLibrary, unsupportedExtra, type Reflection } from "../shaders/library.ts";
 
 export interface ShaderBlob { key: string; control: Uint8Array; code: Uint8Array }
 export interface Translated { wgsl: string; reflection: Reflection }
@@ -81,7 +81,8 @@ export class RtShaders {
   }
   private register(key: string, t: Translated, from: string): boolean {
     const r = t.reflection;
-    if (r.extra?.length) return this.fail(key, `${from} has it with bindings src/gfx does not provide: ${r.extra.map(x => x.kind).join(", ")}`);
+    const unknown = unsupportedExtra(r);
+    if (unknown.length) return this.fail(key, `${from} has it with bindings src/gfx does not provide: ${unknown.join(", ")}`);
     if (this.gfx.host.registerShader(key, { ...r, entry: r.entry ?? "main", wgsl: t.wgsl } as any) < 0) return this.fail(key, "registerShader refused the record");
     this.state.set(key, "ready"); this.stats.registered++;
     return true;
@@ -97,7 +98,7 @@ export class RtShaders {
 }
 
 // ---- the in-page translator: a Worker of its own (rt_shader_worker.ts, bundled as a module) ----
-export const SHADER_CHAIN = "nxweb-shaders-1/page";
+export const SHADER_CHAIN = "nxweb-shaders-2/page";
 export function workerTranslator(o: { worker: string | URL; framework: string; naga: string; chain?: string }): ShaderTranslator {
   let w: Worker | null = null, bc: BroadcastChannel | null = null, up = false, seq = 0;
   const calls = new Map<number, { res: (t: Translated) => void; rej: (e: Error) => void }>(), queue: unknown[] = [];

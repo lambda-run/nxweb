@@ -68,6 +68,9 @@ int main(void) {
     printf("COPY_STRIDES_OFF=%zu\n", (size_t)COPY_STRIDES_OFF); S(P_COPY_STRIDES, p_copy_strides);
     S(P_COPY_T2T, p_copy_t2t); O(P_COPY_T2T, p_copy_t2t, src); O(P_COPY_T2T, p_copy_t2t, dst); O(P_COPY_T2T, p_copy_t2t, sv); O(P_COPY_T2T, p_copy_t2t, dv); O(P_COPY_T2T, p_copy_t2t, has_sv);
     O(P_COPY_T2T, p_copy_t2t, has_dv); O(P_COPY_T2T, p_copy_t2t, sr); O(P_COPY_T2T, p_copy_t2t, dr); O(P_COPY_T2T, p_copy_t2t, flags);
+    S(P_CLEAR_TEX, p_clear_tex); O(P_CLEAR_TEX, p_clear_tex, tex); O(P_CLEAR_TEX, p_clear_tex, view); O(P_CLEAR_TEX, p_clear_tex, has_view); O(P_CLEAR_TEX, p_clear_tex, is_uint);
+    O(P_CLEAR_TEX, p_clear_tex, r); O(P_CLEAR_TEX, p_clear_tex, mask); O(P_CLEAR_TEX, p_clear_tex, c);
+    S(P_PUSH_CONST, p_push_const); O(P_PUSH_CONST, p_push_const, compute); O(P_PUSH_CONST, p_push_const, offset); O(P_PUSH_CONST, p_push_const, size); O(P_PUSH_CONST, p_push_const, data);
     S(P_BLEND_COLOR, p_blend_color); S(P_SET_POOL, p_set_pool);
     printf("OP_COUNT_=%d\nOP_WAIT_SYNC=%d\nOP_BIND_TEX1=%d\nOP_DRAW_IDX=%d\nOP_COPY_T2T=%d\nOP_SET_RT=%d\nOP_BIND_VBUF1=%d\nOP_BIND_UBO_SMALL=%d\nOP_FENCE_SYNC=%d\n", OP_COUNT_, OP_WAIT_SYNC, OP_BIND_TEX1, OP_DRAW_IDX, OP_COPY_T2T, OP_SET_RT, OP_BIND_VBUF1, OP_BIND_UBO_SMALL, OP_FENCE_SYNC);
     // The sizes NVN reserves for each object (include/nvn.h): what the game allocates

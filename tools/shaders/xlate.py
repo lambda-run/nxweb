@@ -98,10 +98,10 @@ def main(corpus_path, out):
         r = subprocess.run(XLATE + [str(work / 'jobs.json'), str(out)], capture_output=True, text=True)
         dt = time.time() - t
     sys.stderr.write(r.stderr)
-    done = []
+    done, c1 = [], {j['key']: j['c1'] for j in jobs}
     for row in corpus:
         if (out / (row['key'] + '.spv')).exists() and (out / (row['key'] + '.res.json')).exists():
-            done.append(dict(name=row['name'], stage=row['stage'], key=row['key'], spv=row['key'] + '.spv', res=row['key'] + '.res.json'))
+            done.append(dict(name=row['name'], stage=row['stage'], key=row['key'], spv=row['key'] + '.spv', res=row['key'] + '.res.json', c1=c1[row['key']]))
     (out / 'xlate.json').write_text(json.dumps(done, indent=1))
     print(f'{r.stdout.strip()} ({dt * 1000:.0f} ms for {len(jobs)} stages, process start included)')
     return r.returncode
