@@ -82,6 +82,30 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     eq("side table agrees", t.host.faultFromError(err)?.pc, BASE + 0x10);
     return "pc, x1, x2, x3 exact";
   });
+  test("preciseFaults=2: registers changed between earlier accesses and in a loop are exact at a later fault", () => {
+    const t = mk(m, { preciseFaults: 2 });
+    t.put(BASE, [
+      0xD28000A1,    // 00 mov x1, #5
+      0xD2800066,    // 04 mov x6, #3
+      0xF90000A1,    // 08 loop: str x1, [x5]
+      0x91000421,    // 0c add x1, x1, #1
+      0xF94000A9,    // 10 ldr x9, [x5]
+      0xF10004C6,    // 14 subs x6, x6, #1
+      0x54FFFF81,    // 18 b.ne loop
+      0x91000908,    // 1c add x8, x8, #2
+      0x9281FFE2,    // 20 mov x2, #-0x1000
+      0xF9400040,    // 24 ldr x0, [x2]
+      RET]);
+    t.host.addCode(BASE, 44);
+    t.c.x5.value = BigInt(DATA); t.c.x8.value = 40n;
+    let err: unknown;
+    try { t.call(BASE); } catch (e) { err = e; }
+    if (!err) throw new Error("no trap");
+    eq("pc global", t.c.pc.value, BigInt(BASE + 0x24));
+    eq("x1", t.c.x1.value, 8n); eq("x9", t.c.x9.value, 7n); eq("x6", t.c.x6.value, 0n); eq("x8", t.c.x8.value, 42n);
+    eq("x5", t.c.x5.value, BigInt(DATA)); eq("x2", BigInt.asUintN(64, t.c.x2.value), 0xFFFFFFFFFFFFF000n);
+    return "x1, x9, x6, x8, x5, x2 exact after three loop passes";
+  });
   test("preciseFaults=1: pc is exact, registers are not written", () => {
     const t = mk(m, { preciseFaults: 1 });
     t.put(BASE, faulty(true)); t.host.addCode(BASE, 32);

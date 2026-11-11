@@ -236,7 +236,9 @@ the innermost wasm frame of the trap's stack (`f_8000000 (wasm://wasm/..:wasm-fu
 Node and Chromium), finds the unit by the function name and the instruction by the offset. Registers are then those
 of the last write-back (dirty cached registers are lost with the wasm frame). `preciseFaults: 1` writes `pc` before
 every memory instruction; `preciseFaults: 2` also writes back the dirty registers there, which makes pc and all
-registers exact at the faulting instruction at about twice the run time (see Status).
+registers exact at the faulting instruction (see Status). That write-back is on the block's straight path, so the
+may-dirty analysis counts every register clean after it (insertion mode `INS_SEQ`): each memory instruction writes
+back only what changed since the one before (zstd_bench: 9028 -> 1062 registers per 1000 guest insns, run time 503 -> 136 ms in memory64).
 
 **Translation cache.** `host.keepBytes = true; ...; blob = host.exportCache(lo, size)` serializes the units of a
 range (wasm bytes, function pcs, side tables); `host.importCache(blob)` on a later start makes them available and a

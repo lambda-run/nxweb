@@ -12,7 +12,7 @@ import {
   M64, optMaxPages, blockOf,
 } from "./emit";
 import { posOf, optProf, STRUCT_CAP, structOn, structFail, setStruct, lvBlk, lvWrap, fwLo, lvLoop, loopEnd } from "./emit";
-import { prof, profBase, intrinsicAt, insSite, RL_ENTRY, insMode, insG, INS_CALL, INS_BACK, INS_AFTER, sRI, sRV, sWI, sWV, sOk, accRI, accRV, accWI, accWV, accAll, resetAcc } from "./emit";
+import { prof, profBase, intrinsicAt, insSite, RL_ENTRY, insMode, insG, INS_CALL, INS_BACK, INS_AFTER, INS_SEQ, writebackSeq, sRI, sRV, sWI, sWV, sOk, accRI, accRV, accWI, accWV, accAll, resetAcc } from "./emit";
 import { trDpImm, trDpReg, trBranchSys, trLoadStoreInt } from "./int";
 import { trFp, trLoadStoreVec } from "./fp";
 
@@ -185,9 +185,9 @@ function translateInsn(pc: u64, insn: u32): void {
   if (optPrecise != 0 && ((op0 & 5) == 4 || (insn & 0xFFFFFFE0) == 0xD50B7420)) {
     // precise faults: the embedder sees this pc (and with level 2 every register) if the access traps
     i64c(<i64>pc); gset(G_PC);
-    if (optPrecise >= 2) writeback();
+    if (optPrecise >= 2) writebackSeq();
   }
-  prof(10, 1); prof((op0 & 5) == 4 ? 11 : (op0 & 14) == 8 ? 12 : (op0 & 14) == 10 ? 13 : (op0 & 7) == 5 ? 14 : 15, 1);
+  prof(10, 1); if (!structOn) prof(30, 1); prof((op0 & 5) == 4 ? 11 : (op0 & 14) == 8 ? 12 : (op0 & 14) == 10 ? 13 : (op0 & 7) == 5 ? 14 : 15, 1);
   ok = decode(pc, insn);
   if (!ok) { rollback(p, e, i); emitTrap(F_UNIMPL, pc, insn); }
 }
@@ -238,6 +238,7 @@ function analyse(): void {
           let m = insMode[r], g = <i32>insG[r];
           insMI[r] = m == INS_CALL ? di & (sRI[g] | sWI[g]) : m == INS_BACK ? di & ~sWI[g] : di;
           insMV[r] = m == INS_CALL ? dv & (sRV[g] | sWV[g]) : m == INS_BACK ? dv & ~sWV[g] : dv;
+          if (m == INS_SEQ) { di = 0; dv = 0; }
         }
         else if (kind == EV_RELOAD) {
           if (insMode[r] == INS_AFTER) { let g = <i32>insG[r]; di &= ~(sRI[g] | sWI[g]); dv &= ~(sRV[g] | sWV[g]); }

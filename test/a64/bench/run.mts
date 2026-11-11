@@ -1,7 +1,7 @@
 // The translator benchmark (npm run a64:bench): real-world-shaped aarch64 code (test/a64/bench/build.py) through
 // the translator, against the same C compiled native and to wasm32 by clang. Each measurement is the median of
 // --runs runs, interleaved; every translated run's output is checked against the native build's.
-//   node test/a64/bench/run.mts [--runs 5] [--only zstd] [--mode memory32|memory64|memory64-high|all] [--json out.json] [--base DIR] [--profile]
+//   node test/a64/bench/run.mts [--runs 5] [--only zstd] [--mode memory32|memory64|memory64-high|all] [--json out.json] [--base DIR] [--profile] [--precise 0|1|2]
 //   --profile: one more run per mode with the translator's event counters (A64HostOptions.profile), per 1000 guest insns
 //   --base DIR: also runs the translator built in another checkout (DIR/build/a64), interleaved, as the rows ending in @base
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -21,6 +21,7 @@ const libcArg = opt("--libc", "both")!;   // off | on | both: the C library func
 const libcRuns = libcArg === "both" ? [false, true] : [libcArg === "on"];
 const baseDir = opt("--base");
 const profile = argv.includes("--profile");
+const precise = Number(opt("--precise", "0"));   // A64HostOptions.preciseFaults for the translated runs
 const LIBC = ["memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp"];
 const modes0 = modeArg === "all" ? ["memory32", "memory64", "memory64-high"] : modeArg.split(",");
 if (!existsSync(join(out, "zstd_bench.json"))) { console.error("[RED] no benchmark images: run npm run a64:bench:build"); process.exit(2); }
@@ -64,7 +65,7 @@ for (const name of ["zstd_bench", "str_bench"]) {
       const image = readFileSync(join(out, side.image));
       const [t, h] = tr(m64, mode.endsWith("@base") ? baseDir : root);
       const libc = lc ? LIBC.filter(n => side.symbols[n] !== undefined).map(n => ({ pc: side.symbols[n], name: n })) : undefined;
-      const r = runGuest(t, h, name, side, image, expected, { ...defaultOpts, mem64: m64, libc });
+      const r = runGuest(t, h, name, side, image, expected, { ...defaultOpts, mem64: m64, libc, preciseFaults: precise });
       if (!r.ok) { console.log(`[RED] a64:bench ${name} ${mode}: ${r.why}`); bad++; }
       (tx[mode] ??= []).push(r);
     }
@@ -81,7 +82,7 @@ for (const name of ["zstd_bench", "str_bench"]) {
     const side = JSON.parse(readFileSync(join(out, name + (hi ? "_hi" : "") + ".json"), "utf8"));
     const [t, h] = tr(m64);
     const libc = lc ? LIBC.filter(n => side.symbols[n] !== undefined).map(n => ({ pc: side.symbols[n], name: n })) : undefined;
-    const r = runGuest(t, h, name, side, readFileSync(join(out, side.image)), expected, { ...defaultOpts, mem64: m64, libc, profile: true });
+    const r = runGuest(t, h, name, side, readFileSync(join(out, side.image)), expected, { ...defaultOpts, mem64: m64, libc, profile: true, preciseFaults: precise });
     if (!r.ok) { console.log(`[RED] a64:bench ${name} ${mode} (profile): ${r.why}`); bad++; continue; }
     const p = r.prof!, g = p["guest insns"];
     const RAW = new Set(["functions translated with loops", "with the dispatch loop"]);

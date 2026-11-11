@@ -91,12 +91,12 @@ export const PROF_NAMES = ["function entries", "back edges", "direct calls", "ca
   "BR/tail through the table", "returns", "registers written back", "registers reloaded", "guest insns", "loads/stores", "dp imm", "branch/sys", "dp reg", "fp/simd", "libc calls in place",
   "written back at BL", "at BLR", "at RET", "at B out", "at BR", "at budget exit", "at svc/cntpct", "elsewhere",
   "reloaded at entry", "after a call/svc", "reloaded elsewhere",
-  "functions translated with loops", "with the dispatch loop"];
+  "functions translated with loops", "with the dispatch loop", "guest insns in dispatch-loop functions"];
 const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
 const num = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;   // a wasm64 export's usize result
-export const A64_CACHE_VERSION = 13;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+export const A64_CACHE_VERSION = 14;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
 // the C library functions src/a64/libc.ts implements, by op number (index 0 unused)
 export const LIBC_OPS = ["", "memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp"];
 const PAIR_LOCK_BYTES = 16;           // the end of the helpers' range: the lock word of 16-byte CASPs on a shared memory (src/a64/int.ts casp)
