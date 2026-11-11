@@ -10,6 +10,7 @@
 // The gfx side is reached through GfxHost.registerShader and GfxHost.shaderPending (the key's state in the recorder,
 // machine gfx_shader: a key that is on its way or failed is not reported missing by the recorder).
 import type { RtGfx } from "./rt_gfx.ts";
+import { ndveRole } from "./ndve.ts";
 import { ShaderLibrary, type Reflection } from "../shaders/library.ts";
 
 export interface ShaderBlob { key: string; control: Uint8Array; code: Uint8Array }
@@ -34,6 +35,7 @@ export class RtShaders {
     this.library = !o.library ? null : o.library instanceof ShaderLibrary ? o.library : new ShaderLibrary(o.library);
     gfx.shaders = this;
   }
+  private ndveSeen = 0;
   private log(line: string): void { this.gfx.rt.log(line); }
   // the embedder registered this key itself
   known(key: string): void { this.state.set(key, "ready"); }
@@ -46,6 +48,8 @@ export class RtShaders {
   need(key: string, blob: () => ShaderBlob): void {
     if (this.state.has(key)) return;
     this.stats.stages++;
+    const ndve = ndveRole(key);
+    if (ndve) this.log(`[ndve] shader ${key} is ${ndve}${this.ndveSeen++ ? "" : " (the movie path reached nn::ndve; a failed one leaves the movie's picture undrawn)"}`);
     const lib = this.library?.get(key);
     if (lib) {
       if (this.register(key, { wgsl: lib.wgsl, reflection: lib.reflection }, "the library")) this.stats.fromLibrary++;
@@ -86,7 +90,8 @@ export class RtShaders {
   private fail(key: string, why: string): false {
     this.state.set(key, "failed"); this.stats.failed++;
     this.gfx.host.shaderPending(key, "failed");   // this line is the report: the recorder adds none of its own
-    this.log(`[RED] shader ${key}: ${why}; its draws are skipped`);
+    const ndve = ndveRole(key);
+    this.log(`[RED] shader ${key}: ${why}; its draws are skipped${ndve ? ` (${ndve}: the movie's picture is not drawn)` : ""}`);
     return false;
   }
 }

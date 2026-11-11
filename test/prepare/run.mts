@@ -808,6 +808,44 @@ test("the Shaders stage's scan (shader_scan.ts, after shader_split.py): BNSH loo
   return [`BNSH loose/SARC/Yaz0/zstd/nested and GLSLC (one and two stages) give the chain's keys ${chainKey(vs)}, ${chainKey(ps)}, ${chainKey(ps2)}`];
 });
 
+test("the Shaders stage's scan of agl's NDSR pack and nn::ndve's NDVE movie file (shader_split.py ndsr_shaders / ndve_shaders): NVN2 compute stages, the runtime's keys, a data entry moving the next record by 8", () => {
+  const w = newWasm();
+  const le = (b: Uint8Array, o: number, v: number) => new DataView(b.buffer, b.byteOffset).setUint32(o, v >>> 0, true);
+  // an NVN2 control section of `own` bytes for a compute shader whose code area is `n` bytes
+  const ctl2 = (own: number, n: number, salt: number) => { const c = new Uint8Array(own); le(c, 0, 0x98761234); le(c, 4, 0xc9); le(c, 0x30, own); le(c, 0x44, n); c[0x56] = 5; c[0x60] = salt; return c; };
+  const code2 = (n: number, salt: number) => Uint8Array.from({ length: n }, (_, i) => (i * 7 + salt) & 255);
+  const nvn2Key = (c: Uint8Array, k: Uint8Array) => { const h = c.slice(0, 0x48); h.fill(0, 0x30, 0x34); return createHash("sha256").update(h).update(k).digest("hex").slice(0, 16); };
+  // NDSR: records from +0x10, the second preceded by an 8-byte data entry
+  const a = ctl2(0xd8, 0x100, 1), ak = code2(0x100, 1), b = ctl2(0xd8, 0x80, 2), bk = code2(0x80, 2);
+  const ndsr = (base: number) => {
+    const p = new Uint8Array(0x400); p.set(ascii("NDSR"));
+    const ca = 0x60, ka = ca + 0xd8, cb = ka + 0x100, kb = cb + 0xd8;
+    p.set(a, ca); p.set(ak, ka); p.set(b, cb); p.set(bk, kb);
+    le(p, base, ca); le(p, base + 4, 0xd8 << 4 | 6); le(p, base + 8, ka); le(p, base + 12, 0x100 / 16 << 8 | 6);
+    le(p, base + 16, 0x10); le(p, base + 20, 0x50c);                                                   // a data entry: 8 bytes
+    le(p, base + 24, cb); le(p, base + 28, 0xd8 << 4 | 6); le(p, base + 32, kb); le(p, base + 36, 0x80 / 16 << 8 | 6);
+    return p.subarray(0, kb + 0x80);
+  };
+  const s = scanFile(w, "Lib/agl/agl_ndsr.pck", ndsr(0x10));
+  assert.deepEqual(s.stages.map(x => [x.key, x.stage, x.where]), [[nvn2Key(a, ak), "cs", "Lib/agl/agl_ndsr.pck#NDSR@0x60"], [nvn2Key(b, bk), "cs", `Lib/agl/agl_ndsr.pck#NDSR@0x${(0x60 + 0xd8 + 0x100).toString(16)}`]]);
+  assert.deepEqual([s.notRead, s.unreadable], [[], []]);
+  assert.deepEqual(scanFile(w, "f", ndsr(0x14)).stages.map(x => x.key), [nvn2Key(a, ak), nvn2Key(b, bk)], "records from +0x14 (Splatoon Raiders' header)");
+  // NDVE: 2 model records, the pack, then two networks' control sections each with its code right behind it
+  const pk = ndsr(0x10), c = ctl2(0x90, 0x40, 3), ck = code2(0x40, 3), e = ctl2(0xd8, 0x200, 4), ek = code2(0x200, 4);
+  const nets = 0x18 + 16 + pk.length, f = new Uint8Array(nets + 0x20 + 0x90 + 0x40 + 0xd8 + 0x200);
+  f.set(ascii("NDVE")); le(f, 0xc, pk.length); le(f, 0x14, 2); f.set(pk, 0x18 + 16);
+  f.set(c, nets + 0x20); f.set(ck, nets + 0x20 + 0x90); f.set(e, nets + 0x20 + 0xd0); f.set(ek, nets + 0x20 + 0xd0 + 0xd8);
+  const v = scanFile(w, "romfs/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat", zstdCompressSync(f));
+  assert.deepEqual(v.stages.map(x => [x.key, x.stage]), [[nvn2Key(a, ak), "cs"], [nvn2Key(b, bk), "cs"], [nvn2Key(c, ck), "cs"], [nvn2Key(e, ek), "cs"]]);
+  assert.deepEqual(v.stages.map(x => x.where.replace(/@0x[0-9a-f]+$/, "")), ["romfs/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat#NDVE#NDSR", "romfs/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat#NDVE#NDSR", "romfs/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat#NDVE", "romfs/Movie/Ndve/Ndve-Nvn2-vid_seq5.dat#NDVE"]);
+  assert.deepEqual([v.notRead, v.unreadable, v.stages[3].code.length, v.containers.zstd], [[], [], 0x200, 1]);
+  // a control section whose code runs past the file gives no stage; a truncated header gives none and no error
+  const cut = f.slice(0, f.length - 0x100);
+  assert.equal(scanFile(w, "f", cut).stages.length, 3);
+  assert.deepEqual(scanFile(w, "f", ascii("NDVE\0\0\0\0")).stages, []);
+  return [`NDSR (from +0x10 and +0x14, an 8-byte data entry between) and NDVE (pack + 2 networks, in zstd) give the NVN2 runtime keys ${nvn2Key(a, ak)}, ${nvn2Key(e, ek)}`];
+});
+
 test("the Shaders stage's translation ahead (shader_prewarm.ts): each key once to the translator, into the store under <key>/<chain>; failures grouped by the translator's reason; a second run is all store hits; Cancel ends it at once", async () => {
   const { vs, ps, ps2 } = maxwell(), w = newWasm();
   const cs = { control: vs.control.slice(), code: vs.code.slice() }; new DataView(cs.code.buffer).setUint32(0, 0x12345679, true);
