@@ -4,92 +4,161 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nxweb</title>
 <style>
-  :root { color-scheme: dark; --bg: #11151c; --panel: #1a202b; --line: #2b3444; --text: #d7dde8; --dim: #8b96a8; --red: #ff6b6b; --acc: #6cb6ff; }
+  /* Tokens and scales after the oneshot-ui kit (@lyndon/ui, its Default palette): colours only through variables,
+     radius 4/8/14, type 11/12/13/14/16/22, control heights 24/30/36. Written out by hand: the page takes no
+     library, no fonts and nothing from another origin. */
+  :root { color-scheme: light dark;
+    --bg: #FAFAFA; --card: #FFFFFF; --muted: #F4F4F5; --line: #E4E4E7; --line2: #D4D4D8; --fg: #09090B; --fg2: #52525B; --fg3: #68686F;
+    --primary: #18181B; --on-primary: #FAFAFA; --accent: #2563EB; --ok: #15803D; --warn: #B45309; --bad: #DC2626; --tint: 12%;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 10px 30px rgba(0,0,0,.08);
+    --r-sm: 4px; --r-md: 8px; --r-lg: 14px; --r-full: 9999px;
+    --t-xs: 11px; --t-sm: 12px; --t-md: 13px; --t-base: 14px; --t-lg: 16px; --t-xl: 22px;
+    --h-xs: 24px; --h-sm: 30px; --h-md: 36px;
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg: #09090B; --card: #111113; --muted: #1A1A1D; --line: #27272A; --line2: #3F3F46; --fg: #FAFAFA; --fg2: #A1A1AA; --fg3: #8E8E98;
+    --primary: #FAFAFA; --on-primary: #09090B; --accent: #60A5FA; --ok: #4ADE80; --warn: #FBBF24; --bad: #F87171; --tint: 18%;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.5); } }
+  :root { --accent-soft: color-mix(in srgb, var(--accent) var(--tint), var(--card)); --ok-soft: color-mix(in srgb, var(--ok) var(--tint), var(--card));
+    --warn-soft: color-mix(in srgb, var(--warn) var(--tint), var(--card)); --bad-soft: color-mix(in srgb, var(--bad) var(--tint), var(--card)); }
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; background: radial-gradient(1200px 600px at 50% -200px, #1b2740 0%, var(--bg) 70%) fixed; color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
-  h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: .2px; display: flex; align-items: center; gap: 8px; }
-  h1::before { content: ""; width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, #e60012 0 50%, #00c3e3 50% 100%); box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset; }
-  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 2px; }
-  header span { color: var(--dim); font-size: 13px; }
-  #build { margin-left: auto; font: 12px ui-monospace, monospace; color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
-  .panel .panel { box-shadow: none; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg); font: var(--t-base)/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+
+  /* ---- type ---- */
+  h1 { font-size: var(--t-lg); line-height: 1.25; margin: 0; font-weight: 600; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
+  h1::before { content: ""; width: 18px; height: 18px; border-radius: var(--r-sm); background: linear-gradient(135deg, #e60012 0 50%, #00c3e3 50% 100%); flex: none; }
+  h2 { font-size: var(--t-md); margin: 0 0 8px; font-weight: 600; }
+  h2 small { font-weight: 400; }
+  small { color: var(--fg3); font-size: var(--t-sm); }
+  .mono { font: var(--t-sm)/1.5 var(--mono); }
+  header { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
+  header span { color: var(--fg2); font-size: var(--t-md); flex: 1 1 260px; min-width: 0; }
+  #build { font: var(--t-xs)/1 var(--mono); color: var(--fg3); background: var(--muted); border-radius: var(--r-full); padding: 5px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---- surfaces ---- */
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; min-width: 0; }
+  .panel .panel { border-radius: var(--r-md); padding: 12px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  button, label.file { transition: border-color .12s, background-color .12s; background: #263044; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
-  button:hover:not(:disabled), label.file:hover { border-color: var(--acc); }
-  button:disabled { opacity: .45; cursor: default; }
-  input[type=file] { display: none; }
-  #drop { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 12px; color: var(--dim); flex: 1 1 260px; min-width: 0; }
-  #drop.over { border-color: var(--acc); color: var(--text); }
-  #state { font-weight: 600; padding: 3px 12px 3px 10px; border-radius: 999px; background: #263044; display: inline-flex; align-items: center; gap: 6px; }
-  #state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
-  #state[data-state=Running]::before { background: #4cc38a; box-shadow: 0 0 8px #4cc38a; } #state[data-state=Paused]::before { background: #e3b341; }
-  #state[data-fault="1"]::before { background: var(--red); }
-  #why { color: var(--dim); font-size: 13px; }
-  #state[data-state=Running] { background: #1f4d2e; } #state[data-state=Paused] { background: #57471c; }
-  #state[data-state=Stopped] { background: #3a2530; } #state[data-fault="1"] { background: #6b1f25; }
-  #doomnote { flex-basis: 100%; } #doomnote.ask { color: var(--acc); }
-  canvas { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; display: block; }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
-  dt { color: var(--dim); } dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  #log { height: 260px; overflow: auto; font: 12px/1.45 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
-  #log .red { color: var(--red); } #log .out { color: #b9e4a0; }
-  #log.onlyred span:not(.red) { display: none; } #log span.hide { display: none; }
-  small { color: var(--dim); }
-  h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 3px 10px 3px 0; vertical-align: top; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
-  th { color: var(--dim); font-weight: 500; white-space: nowrap; }
-  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  tr.main td:first-child { font-weight: 600; }
-  tr.idle td { color: var(--dim); }
-  .mono { font: 12px/1.45 ui-monospace, monospace; }
-  input[type=text] { background: #11151c; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 0; flex: 1 1 160px; }
-  #redcount { font-weight: 600; padding: 2px 10px; border-radius: 999px; background: #263044; }
-  #redcount[data-red="1"] { background: #6b1f25; }
-  #capture pre, #reporttext { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
-  #reporttext { width: 100%; height: 180px; background: #11151c; color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
-  #captureimages { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-  #captureimages figure { margin: 0; } #captureimages img { max-width: 240px; height: auto; display: block; border: 1px solid var(--line); }
-  #captureimages figcaption { color: var(--dim); font-size: 12px; }
-  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; max-width: 420px; }
-  dialog::backdrop { background: rgba(0, 0, 0, .55); }
-  details > summary { cursor: pointer; color: var(--dim); }
-  /* ---- the first five minutes: open a game, the picture, what to press ---- */
-  :focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
-  #open { display: grid; gap: 10px; padding: 14px; }
-  #open h2 { font-size: 20px; margin: 0; }
-  #prepare { width: 100%; height: 250px; border: 0; background: transparent; display: block; }
-  .demos { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--dim); border-top: 1px solid var(--line); padding-top: 10px; }
-  .demos button { padding: 4px 10px; font-size: 13px; }
-  #player { display: grid; gap: 10px; }
-  #screen { position: relative; justify-self: center; width: min(100%, calc((100vh - 150px) * 16 / 9)); min-width: min(100%, 320px); background: #000; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1px var(--line), 0 12px 32px rgba(0,0,0,.45); }
-  #emptyhint { position: absolute; inset: 0; display: none; place-content: center; text-align: center; gap: 6px; color: var(--dim); font-size: 13px; pointer-events: none; padding: 12px;
-    background: repeating-linear-gradient(45deg, #0b0e13 0 12px, #0e121a 12px 24px); }
-  #emptyhint b { color: var(--text); font-size: 15px; font-weight: 600; }
+  .grow { flex: 1 1 0; min-width: 0; }
+
+  /* ---- controls: the kit's default button, 36 px; small ones 30 px ---- */
+  button, label.file { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--h-md); padding: 0 12px; white-space: nowrap;
+    background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-md); font: 500 var(--t-md)/1 var(--font); cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+    transition: background-color .15s, border-color .15s, opacity .15s; }
+  button:hover:not(:disabled), label.file:hover { background: var(--muted); }
+  button:active:not(:disabled) { background: var(--line); }
+  button:disabled { opacity: .6; color: var(--fg3); cursor: default; }
+  button.sm, .demos button, #dev details button { height: var(--h-sm); font-size: var(--t-sm); }
+  button[aria-pressed=true] { background: var(--muted); border-color: var(--line2); }
+  button[aria-pressed=false] { color: var(--fg2); }
+  /* a file chooser is its label; the input stays focusable for the keyboard */
+  label.file { position: relative; }
+  label.file input[type=file] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 0; }
+  label.file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  label:not(.file) { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-md); min-height: var(--h-sm); }
+  input[type=checkbox] { accent-color: var(--primary); width: 16px; height: 16px; margin: 0; }
+  input[type=text] { height: var(--h-md); background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-md); padding: 0 12px; font: var(--t-md) var(--font); min-width: 0; flex: 1 1 160px; transition: border-color .15s; }
+  input[type=text]:hover { border-color: var(--line2); }
+  input[type=text]::placeholder { color: var(--fg3); }
+  @media (pointer: coarse) { input[type=text] { font-size: 16px; } button.sm, .demos button, #dev details button { height: 32px; } }
+  details > summary { cursor: pointer; color: var(--fg2); font-size: var(--t-md); border-radius: var(--r-sm); }
+  details > summary:hover { color: var(--fg); }
+
+  /* ---- open a game: the frame's cards are the cards; the demos are a quiet line under them ---- */
+  #open { display: grid; gap: 12px; }
+  #open h2 { font-size: var(--t-xl); line-height: 1.2; font-weight: 600; letter-spacing: -.02em; margin: 0; }
+  #prepare { width: calc(100% + 6px); margin: 0 -3px; height: 250px; border: 0; background: transparent; display: block; color-scheme: light dark; }
+  .demos { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: var(--t-md); color: var(--fg2); }
+  #doomnote { flex-basis: 100%; } #doomnote.ask { color: var(--accent); font-weight: 500; }
+
+  /* ---- the game ---- */
+  #player { display: grid; gap: 12px; }
+  /* the process state: the kit's badge with a dot */
+  #state, #redcount { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: var(--r-full); background: var(--muted); color: var(--fg); font-size: var(--t-sm); font-weight: 500; line-height: 1; white-space: nowrap; }
+  #state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--fg3); }
+  #state[data-state=Running] { background: var(--ok-soft); } #state[data-state=Running]::before { background: var(--ok); }
+  #state[data-state=Paused] { background: var(--warn-soft); } #state[data-state=Paused]::before { background: var(--warn); }
+  #state[data-state=Ready] { background: var(--accent-soft); } #state[data-state=Ready]::before { background: var(--accent); }
+  #state[data-fault="1"] { background: var(--bad-soft); } #state[data-fault="1"]::before { background: var(--bad); }
+  #redcount[data-red="1"] { background: var(--bad-soft); color: color-mix(in srgb, var(--bad) 78%, var(--fg)); }
+  #why { color: var(--fg2); font-size: var(--t-md); overflow-wrap: anywhere; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  canvas { width: 100%; aspect-ratio: 16 / 9; background: #000; display: block; }
+  #screen { position: relative; justify-self: center; width: min(100%, calc((100vh - 150px) * 16 / 9)); min-width: min(100%, 320px); background: #000; border-radius: var(--r-md); overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
+  #screen canvas { outline-offset: -2px; }
+  #screen:fullscreen { width: 100vw; height: 100vh; border-radius: 0; box-shadow: none; display: flex; align-items: center; justify-content: center; }
+  #screen:fullscreen canvas { width: min(100vw, calc(100vh * 16 / 9)); height: auto; }
+  #emptyhint { position: absolute; inset: 0; display: none; place-content: center; text-align: center; gap: 4px; color: var(--fg2); font-size: var(--t-md); pointer-events: none; padding: 12px; background: var(--muted); }
+  #emptyhint b { color: var(--fg); font-size: var(--t-base); font-weight: 600; }
   #player[data-idle="1"] #emptyhint { display: grid; }
   #player[data-idle="1"] #screen { width: min(100%, 480px); }
-  #screen canvas { border-radius: 0; outline-offset: -2px; }
-  #screen:fullscreen { width: 100vw; height: 100vh; border-radius: 0; display: flex; align-items: center; justify-content: center; }
-  #screen:fullscreen canvas { width: min(100vw, calc(100vh * 16 / 9)); height: auto; }
-  #focushint { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); background: rgba(0, 0, 0, .72); color: #fff; padding: 4px 12px; border-radius: 999px; font-size: 13px; pointer-events: none; white-space: nowrap; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; }
-  #trouble { border: 1px solid #6b1f25; background: #2a1215; border-radius: 8px; padding: 8px 10px; }
-  #keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin: 0; font-size: 13px; }
-  #keys > div { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: #151a23; border: 1px solid var(--line); border-radius: 8px; }
-  #keys dt { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; } #keys dd { margin: 0; display: flex; gap: 3px; flex-wrap: wrap; align-items: center; color: var(--dim); }
-  kbd { font: 12px/1 ui-monospace, monospace; background: #263044; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 3px 5px; min-width: 1.6em; text-align: center; }
-  #dev > summary { font-size: 15px; font-weight: 600; color: var(--text); padding: 4px 0; }
-  #dev[open] > summary { margin-bottom: 12px; }
-  #devbody { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
-  [hidden] { display: none !important; }
-  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+  /* what lies over the picture is white on black at any scheme: the picture under it can be anything */
+  #focushint, #hud { position: absolute; background: rgba(0, 0, 0, .72); color: #fff; pointer-events: none; white-space: nowrap; }
+  #focushint { left: 50%; bottom: 10px; transform: translateX(-50%); padding: 5px 12px; border-radius: var(--r-full); font-size: var(--t-md); max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; }
+  #hud { top: 8px; right: 8px; display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; border-radius: var(--r-sm); font: 600 var(--t-md)/1.3 var(--mono); font-variant-numeric: tabular-nums; text-shadow: 0 1px 1px #000; box-shadow: 0 0 0 1px rgba(255, 255, 255, .16); }
+  #hud small { color: rgba(255, 255, 255, .8); font-size: var(--t-xs); font-weight: 500; }
+  #hudstate { color: #FBBF24; }
+  #trouble { border: 1px solid color-mix(in srgb, var(--bad) 35%, var(--line)); background: var(--bad-soft); border-radius: var(--r-md); padding: 8px 12px; font-size: var(--t-md); }
+  #trouble small { color: var(--fg2); flex: 1 1 240px; }
+  #capture pre, #reporttext { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
+  #reporttext { width: 100%; height: 180px; background: var(--muted); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px; }
+  #keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 16px; margin: 0; font-size: var(--t-md); border-top: 1px solid var(--line); padding-top: 12px; }
+  #keys > div { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; min-width: 0; }
+  #keys > div:first-child { grid-column: span 2; }
+  #keys dt { color: var(--fg3); font-size: var(--t-xs); font-weight: 500; }
+  #keys dd { margin: 0; display: flex; gap: 3px; flex-wrap: wrap; align-items: center; color: var(--fg2); }
+  kbd { font: var(--t-xs)/1 var(--mono); color: var(--fg2); background: var(--muted); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 5px; min-width: 22px; text-align: center; }
+
+  /* ---- details for developers: there, but second ---- */
+  #dev { background: transparent; border-color: var(--line); padding: 0; }
+  #dev > summary { font-size: var(--t-md); font-weight: 500; color: var(--fg2); padding: 12px 16px; border-radius: var(--r-lg); }
+  #dev[open] > summary { color: var(--fg); border-bottom: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) 0 0; }
+  #devbody { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  #drop { border: 1px dashed var(--line2); border-radius: var(--r-md); padding: 8px 12px; color: var(--fg2); font-size: var(--t-md); flex: 1 1 260px; min-width: 0; }
+  #drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--fg); }
+  dl { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 4px 16px; margin: 0 0 8px; font-size: var(--t-md); }
+  dt { color: var(--fg2); } dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: var(--t-md); }
+  th, td { text-align: left; padding: 6px 12px 6px 0; vertical-align: top; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  th { color: var(--fg3); font-weight: 500; font-size: var(--t-sm); white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr.main td:first-child { font-weight: 600; }
+  tr.idle td { color: var(--fg3); }
+  #log { height: 260px; overflow: auto; font: var(--t-sm)/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; padding: 8px 12px; background: var(--muted); border: 1px solid var(--line); border-radius: var(--r-md); }
+  #log .red { color: color-mix(in srgb, var(--bad) 78%, var(--fg)); } #log .out { color: color-mix(in srgb, var(--ok) 78%, var(--fg)); }
+  #log.onlyred span:not(.red) { display: none; } #log span.hide { display: none; }
+  #captureimages { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  #captureimages figure { margin: 0; } #captureimages img { max-width: 240px; height: auto; display: block; border: 1px solid var(--line); border-radius: var(--r-sm); }
+  #captureimages figcaption { color: var(--fg3); font-size: var(--t-sm); }
+  dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow); padding: 20px; max-width: min(420px, calc(100vw - 32px)); }
+  dialog h2 { font-size: var(--t-lg); }
+  dialog p { margin: 0 0 12px; }
+  dialog .row { justify-content: flex-end; }
+  dialog::backdrop { background: rgba(0, 0, 0, .55); }
+  button.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+  button.primary:hover:not(:disabled) { background: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent); }
+
+  @media (max-width: 520px) {
+    main { padding: 16px 16px 40px; gap: 16px; }
+    .panel { padding: 12px; } #devbody { padding: 8px; }
+    #open h2 { font-size: 20px; }
+    #player .controls { width: 100%; }
+    header span { flex-basis: 100%; }
+    dl:not(#keys) { grid-template-columns: minmax(0, 1fr); gap: 0; } dl:not(#keys) dt { margin-top: 8px; }
+    #keys { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
 </style>
 <main>
   <header><h1>nxweb</h1><span>Play Switch games you own in this browser tab. Nothing is uploaded; nothing from any game is here.</span><code id="build" title="the build: commit, build time (UTC), md5 of the built files">build …</code></header>
-  <section class="panel" id="open">
-    <h2>Open a game</h2>
+  <section id="open" aria-labelledby="openhead">
+    <h2 id="openhead">Open a game</h2>
     <iframe id="prepare" src="prepare.html" title="Open a game: drop a .nup file or a game folder, or choose one"></iframe>
     <div class="demos"><span>No game? Try the built-in demos:</span>
     <button id="demo">Run the built-in demo (spinning cube)</button>
@@ -101,16 +170,19 @@
   </section>
   <section class="panel" id="player" aria-label="The game" data-idle="1">
     <div class="row">
-      <span id="state" data-state="Empty">Empty</span><span id="why"></span>
-      <span style="flex:1"></span>
-      <button id="pause" disabled>Pause</button><button id="resume" disabled>Resume</button><button id="stop" disabled>Stop</button><button id="fullscreen">Fullscreen</button>
+      <span id="state" data-state="Empty">Empty</span><span id="why" class="grow"></span>
+      <div class="controls" role="group" aria-label="Game controls">
+        <button id="pause" disabled>Pause</button><button id="resume" disabled>Resume</button><button id="stop" disabled>Stop</button><button id="fullscreen">Fullscreen</button>
+        <button id="fpstoggle" aria-pressed="true" aria-keyshortcuts="F3" title="Show or hide the frames-per-second readout on the picture (F3)">FPS</button>
+      </div>
     </div>
     <div id="screen"><canvas id="canvas" width="480" height="270" tabindex="0" aria-label="The game's picture. Click it to use the keyboard."></canvas>
+      <div id="hud" aria-hidden="true" hidden><span id="hudstate" hidden></span><span id="hudfps"><span id="hudnum">–</span> <small>FPS</small></span></div>
       <div id="focushint" hidden>Click the picture to use the keyboard</div>
       <div id="emptyhint" aria-hidden="true"><b>No game running</b><span>Open a .nup above, or try one of the demos.</span></div></div>
     <div id="trouble" class="row" role="status" hidden><b>Something went wrong?</b><button id="copyreport">Copy report</button>
       <small id="reportnote">The report says what nxweb did (states, counters, its own log lines). It has no game data.</small></div>
-    <details id="reportbox" hidden><summary>the report (one text block: machine states, modules, counters, the adapter, the options key, the last 200 log lines; nothing from guest memory)</summary><textarea id="reporttext" class="mono" readonly></textarea></details>
+    <details id="reportbox" hidden><summary>the report (one text block: machine states, modules, counters, the adapter, the options key, the last 200 log lines; nothing from guest memory)</summary><textarea id="reporttext" class="mono" readonly aria-label="The report"></textarea></details>
     <dl id="keys" aria-label="Keyboard controls">
       <div><dt>Move</dt><dd><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or <kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd></dd></div>
       <div><dt>Look</dt><dd><kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd></dd></div>
@@ -118,6 +190,7 @@
       <div><dt>L and R</dt><dd><kbd>Q</kbd><kbd>E</kbd></dd></div>
       <div><dt>Plus (+)</dt><dd><kbd>Enter</kbd></dd></div>
       <div><dt>Minus (&minus;)</dt><dd><kbd>Backspace</kbd></dd></div>
+      <div><dt>Frames per second</dt><dd><kbd>F3</kbd> shows or hides it</dd></div>
       <div><dt>Controller</dt><dd>press any button on it</dd></div>
     </dl>
   </section>
@@ -146,21 +219,21 @@
     <small>Every controller the Gamepad API reports is a player of its own (the first one joins the keyboard as player 1); vibration goes to the player's controller. F9 captures a frame.</small></div>
   <div class="panel"><h2>Machines <small>the kit's state machines as this process has stepped them; the state now for the ones the page can ask</small></h2>
     <div class="scroll"><table id="machines"><thead><tr><th>Machine</th><th>State now</th><th>Transitions taken</th><th>Newest step</th><th>Stepped by</th></tr></thead><tbody></tbody></table></div>
-    <details><summary id="idlemachines">machines not stepped yet</summary><div id="idlelist" class="mono"></div></details></div>
+    <details style="margin-top:8px"><summary id="idlemachines">machines not stepped yet</summary><div id="idlelist" class="mono"></div></details></div>
   <div class="panel"><h2>Modules</h2>
     <div class="scroll"><table id="modtable"><thead><tr><th>Module</th><th>Build id</th><th>Base</th><th>Image</th><th>Text / read-only / data / bss</th><th>Unresolved imports</th></tr></thead><tbody></tbody></table></div>
     <div id="takeovers" style="margin-top:8px"></div>
     <details><summary>take-overs this program refers to</summary><div id="hitnames" class="mono"></div></details></div>
-  <div class="panel" id="capture"><div class="row"><h2 style="margin:0">Frame capture</h2><button id="capturebtn">Capture a frame (F9)</button><small>the host stream of one frame as text, and the render targets of each pass</small>
-      <span style="flex:1"></span><details><summary>tests</summary><button id="losedevice">Destroy the GPU device now (the replayer asks for a new one)</button></details></div>
+  <div class="panel" id="capture"><div class="row"><h2 style="margin:0">Frame capture</h2><button id="capturebtn" class="sm">Capture a frame (F9)</button><small>the host stream of one frame as text, and the render targets of each pass</small>
+      <span class="grow"></span><details><summary>tests</summary><button id="losedevice">Destroy the GPU device now (the replayer asks for a new one)</button></details></div>
     <div id="captureimages"></div><pre id="capturetext" class="mono"></pre></div>
   <div class="panel"><div class="row"><h2 style="margin:0">Log</h2><span id="redcount" data-red="0">0 red</span>
-      <label><input id="onlyred" type="checkbox"> red lines only</label><input id="logfilter" type="text" placeholder="filter the log (text)">
+      <label><input id="onlyred" type="checkbox"> red lines only</label><input id="logfilter" type="text" placeholder="filter the log (text)" aria-label="Filter the log">
       <button id="copyreportdev">Copy report</button></div>
-    <pre id="log"></pre></div>
+    <pre id="log" tabindex="0" aria-label="Log"></pre></div>
   </div></details>
-  <dialog id="ctrlprompt"><h2>Controllers</h2><p id="ctrltext"></p><p><small>Connect controllers and press a button on each (the keyboard is player 1). OK when enough players have joined.</small></p>
-    <div class="row"><button id="ctrlok">OK</button><button id="ctrlclose">Close</button></div></dialog>
+  <dialog id="ctrlprompt" aria-labelledby="ctrlhead"><h2 id="ctrlhead">Controllers</h2><p id="ctrltext"></p><p><small>Connect controllers and press a button on each (the keyboard is player 1). OK when enough players have joined.</small></p>
+    <div class="row"><button id="ctrlok" class="primary">OK</button><button id="ctrlclose">Close</button></div></dialog>
 </main>
 <script src="main.js"></script>
 </html>

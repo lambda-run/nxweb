@@ -67,6 +67,26 @@ $("fullscreen").onclick = async () => {
   catch (e: any) { addLog([{ text: `page: fullscreen was refused here (${e?.message ?? e})`, kind: "" }]); }
 };
 document.addEventListener("fullscreenchange", () => { $("fullscreen").textContent = document.fullscreenElement ? "Leave fullscreen" : "Fullscreen"; });
+// The readout on the picture's top right corner: frames per second while a program runs, and the process state when
+// it is not Running (Ready, Paused). The button in the control row and F3 hide it; the choice is remembered.
+let hudOn = true, hudFps = "–", hudState = "Empty";
+try { hudOn = localStorage.getItem("nxweb-fps") !== "0"; } catch { /* no storage here: shown */ }
+function drawHud(): void {
+  const live = hudState === "Running" || hudState === "Paused" || hudState === "Ready", run = hudState === "Running";
+  $("hud").hidden = !(hudOn && live);
+  if ($("hudnum").textContent !== hudFps) $("hudnum").textContent = hudFps;
+  $("hudfps").hidden = !run;
+  $("hudstate").hidden = run;
+  if ($("hudstate").textContent !== hudState) $("hudstate").textContent = hudState;
+  $("fpstoggle").setAttribute("aria-pressed", hudOn ? "true" : "false");
+}
+function toggleHud(): void {
+  hudOn = !hudOn;
+  try { localStorage.setItem("nxweb-fps", hudOn ? "1" : "0"); } catch { /* not remembered */ }
+  drawHud();
+}
+$("fpstoggle").onclick = toggleHud;
+drawHud();
 // "Details for developers": open or closed as it was left
 const dev = $("dev") as HTMLDetailsElement;
 try { dev.open = localStorage.getItem("nxweb-dev-open") === "1"; } catch { /* no storage here: closed */ }
@@ -83,6 +103,7 @@ worker.onmessage = ev => {
     ($("resume") as HTMLButtonElement).disabled = m.state !== "Paused";
     ($("stop") as HTMLButtonElement).disabled = !["Ready", "Running", "Paused"].includes(m.state);
     $("fps").textContent = m.fps === undefined ? "–" : m.fps.toFixed(1);
+    hudFps = m.fps === undefined ? "–" : m.fps.toFixed(1); hudState = m.state; drawHud();
     $("ups").textContent = m.ups === undefined ? "–" : fmt(m.ups);
     $("ips").textContent = m.ips === undefined ? "– (not measured for this module: see budget units)" : `${fmt(m.ips)} (budget units × ${m.ratio.toFixed(2)}, the ratio measured for the demo at build time)`;
     $("frames").textContent = `${m.frames}, ${m.nvnCalls}`;
@@ -315,6 +336,7 @@ function sample() {
 addEventListener("keydown", e => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
   if (e.code === "F9") { e.preventDefault(); worker.postMessage({ type: "capture" }); return; }
+  if (e.code === "F3") { e.preventDefault(); if (!e.repeat) toggleHud(); return; }
   if (!e.repeat) { keys.add(e.code); keyboard(); }
   if (e.code.startsWith("Arrow")) e.preventDefault();
 });
