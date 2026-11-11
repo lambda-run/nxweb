@@ -500,7 +500,7 @@ export class Runtime {
         return pc !== undefined && this.ld.stubId(pc) < 0 && pc >= m.text.addr && pc < m.text.addr + m.text.size ? [{ pc, name }] : [];
       });
       const took = defs.length ? this.a64.setLibcIntrinsics(defs) : [];
-      if (took.length) this.log(`runtime: ${m.name}: C library intrinsics for ${took.join(" ")} (its definitions run as wasm: src/a64/libc.ts; the report's "libc intrinsic calls" counts them)`);
+      if (took.length) this.log(`runtime: ${m.name}: C library intrinsics for ${took.join(" ")} (its definitions run as wasm: src/a64/libc.ts, and a BL or B to one calls it in place with no register write-back; the report's "libc intrinsic calls" counts them)`);
     }
     this.text.push({ lo: m.text.addr, hi: m.text.addr + m.text.size, handle: m.handle });
     const cuts = this.opts.cutsKey?.[m.name];

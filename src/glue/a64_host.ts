@@ -54,6 +54,7 @@ export interface A64Options {
   depthLimit?: number;          // nested guest calls before a call unwinds through run() (default 160, 0 = off)
   shared?: boolean;             // memory is shared: modules import it as shared, exclusives and LDAR/STLR are atomic
   cntYield?: boolean;           // `mrs cntpct_el0` is a yield point (see README)
+  profile?: boolean;            // translated code counts events (calls, exits, write-backs, instructions by class): profileCounters()
   preciseFaults?: 0 | 1 | 2;    // 1: pc written before every memory instruction; 2: registers too (default 0: side table)
   guardBase?: number;           // guest data accesses below this address trap (default 0 = off): the embedder's host area
   // called by the index-0 trampoline when a pc has no translation yet; returns a table index.
@@ -84,12 +85,15 @@ export interface A64Unit {
 export interface A64Fault { pc: number; unit: A64Unit; funcPc: number; offset: number }
 
 const OPT = { pcmapBase: 0, entryBase: 1, regionLo: 2, maxInsns: 3, maxFuncs: 4, fma: 5, tail: 6, nan: 7, depth: 8, chunk: 9, rmArith: 10,
-              regionSize: 11, shared: 12, cntYield: 13, precise: 14, guard: 15, pcSpan: 16, maxPages: 17, pairLock: 18 };
+              regionSize: 11, shared: 12, cntYield: 13, precise: 14, guard: 15, pcSpan: 16, maxPages: 17, pairLock: 18, prof: 19 };
+// dynamic counters of the profile option (A64Host.profile), in the translator's order (src/a64 prof(k, n))
+export const PROF_NAMES = ["function entries", "back edges", "direct calls", "calls through the table", "BLR", "jumps through the table",
+  "BR/tail through the table", "returns", "registers written back", "registers reloaded", "guest insns", "loads/stores", "dp imm", "branch/sys", "dp reg", "fp/simd", "libc calls in place"];
 const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
 const num = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;   // a wasm64 export's usize result
-export const A64_CACHE_VERSION = 10;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+export const A64_CACHE_VERSION = 12;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
 // the C library functions src/a64/libc.ts implements, by op number (index 0 unused)
 export const LIBC_OPS = ["", "memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp"];
 const PAIR_LOCK_BYTES = 16;           // the end of the helpers' range: the lock word of 16-byte CASPs on a shared memory (src/a64/int.ts casp)
@@ -203,6 +207,7 @@ export class A64Host {
     if (o.shared !== undefined) t.setOpt(OPT.shared, o.shared ? 1 : 0);
     if (o.cntYield !== undefined) t.setOpt(OPT.cntYield, o.cntYield ? 1 : 0);
     if (o.preciseFaults !== undefined) t.setOpt(OPT.precise, o.preciseFaults);
+    if (o.profile !== undefined) t.setOpt(OPT.prof, o.profile ? 1 : 0);
     if (o.guardBase !== undefined) { this.setAddr(OPT.guard, o.guardBase); this.hlp?.libcGuard(BigInt(o.guardBase)); }
     Object.assign(this.opts, o);
   }
@@ -211,7 +216,7 @@ export class A64Host {
   optionsKey(): string {
     const o = this.opts, l = this.lay;
     return [A64_CACHE_VERSION, l.pcmapBase, o.maxInsns ?? "", o.maxFuncs ?? "", o.chunk ?? "", o.fma ?? "", o.tailCalls ?? "", o.nanFix ?? "",
-            o.rmodeArith ?? "", o.depthLimit ?? "", o.shared ?? "", o.cntYield ?? "", o.preciseFaults ?? "", o.guardBase ?? "",
+            o.rmodeArith ?? "", o.depthLimit ?? "", o.shared ?? "", o.cntYield ?? "", o.preciseFaults ?? "", o.guardBase ?? "", o.profile ? "prof" : "",
             this.mem64 ? `m64.${this.span / LEAF}.${o.shared ? o.memoryMaxPages ?? MEM64_MAX_PAGES : ""}` : "m32",
             ...(this.libcNamed.size ? ["libc", ...[...this.libcNamed].map(([pc, n]) => pc.toString(16) + "=" + LIBC_OPS.indexOf(n))] : [])].join(".");
   }
@@ -231,6 +236,12 @@ export class A64Host {
     return took;
   }
   // calls and bytes of each named function so far (all of them, named or not, share the helpers' counters)
+  // the profile option's counters (zero without it): name -> count
+  profileCounters(): Record<string, number> {
+    const a = num(this.tr.profAddr()), v = new BigUint64Array(this.memory.buffer, a, PROF_NAMES.length), r: Record<string, number> = {};
+    PROF_NAMES.forEach((n, i) => r[n] = Number(v[i]));
+    return r;
+  }
   libcStats(): { name: string; calls: number; bytes: number }[] {
     return LIBC_OPS.slice(1).map((name, i) => ({ name, calls: Number(this.hlp.libcStat(i + 1, 0)), bytes: Number(this.hlp.libcStat(i + 1, 1)) }));
   }

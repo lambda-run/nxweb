@@ -3,7 +3,7 @@
 import { A64Host, makeMemory64, MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 import { A64, HOST_END } from "../../src/glue/rt_layout.ts";
 
-export interface GuestOpts { budget: number; maxInsns: number; maxFuncs: number; fma: boolean; nanFix: boolean; tailCalls: boolean; depthLimit: number; chunk: number; rmodeArith: boolean;
+export interface GuestOpts { profile?: boolean; budget: number; maxInsns: number; maxFuncs: number; fma: boolean; nanFix: boolean; tailCalls: boolean; depthLimit: number; chunk: number; rmodeArith: boolean;
   shared: boolean; cntYield: boolean; preciseFaults: 0 | 1 | 2; guardBase?: number;
   mem64?: boolean;   // a 64-bit memory and the wasm64 translator (the caller passes translator64 / helpers64)
   libc?: { pc: number; name: string }[];   // C library definitions to translate as intrinsics (A64Host.setLibcIntrinsics)
@@ -13,7 +13,7 @@ export const defaultOpts: GuestOpts = { budget: 1 << 30, maxInsns: 1500, maxFunc
 export interface Result {
   name: string; ok: boolean; why: string; insns: number; runMs: number; trMs: number; trOnlyMs: number; trInsns: number;
   funcs: number; bytes: number; slices: number; tableLen: number; modules?: number; maxModule?: number; trMem?: number;
-  libcTook?: string[]; libcCalls?: number;
+  libcTook?: string[]; libcCalls?: number; prof?: Record<string, number>;
   faultPc?: number; cacheHits?: number; cacheBlob?: Uint8Array; pcMapBytes?: number; optionsKey?: string; yields?: number;
 }
 
@@ -48,7 +48,7 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
     layout: { ...A64, codeRegionLo: base - base % 65536, codeRegionSize: 0x1000_0000, ...(high ? { pcmapEnd: A64.pcmapBase + A64Host.pcMapFixedBytes(true) + 0x10000 } : {}) },
     ...(high ? { leafAlloc: () => { if (leafNext + 0x10000 > leafEnd) return 0; const a = leafNext; leafNext += 0x10000; return a; } } : {}),
     maxInsns: o.maxInsns, maxFuncs: o.maxFuncs, fma: o.fma, nanFix: o.nanFix,
-    tailCalls: o.tailCalls, depthLimit: o.depthLimit, chunk: o.chunk, rmodeArith: o.rmodeArith, shared: o.shared, cntYield: o.cntYield, preciseFaults: o.preciseFaults, ...(o.guardBase ? { guardBase: o.guardBase } : {}),
+    tailCalls: o.tailCalls, depthLimit: o.depthLimit, chunk: o.chunk, rmodeArith: o.rmodeArith, shared: o.shared, cntYield: o.cntYield, preciseFaults: o.preciseFaults, profile: o.profile, ...(o.guardBase ? { guardBase: o.guardBase } : {}),
     imports: {
       svc: (n: number) => {
         const c = host.core as any;
@@ -117,7 +117,7 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
   const trMs = host.translateNs / 1e6;
   return { name, ok: why === "", why, insns: side.insn_count ?? 0, runMs: total - trMs, trMs, trOnlyMs: host.translatorNs / 1e6,
            trInsns: host.translatedInsns, funcs: host.translatedFuncs, bytes: host.moduleBytes, slices, tableLen: host.table.length, modules: host.modules, maxModule: host.maxModuleBytes, trMem: host.translatorMemoryBytes,
-           faultPc, cacheHits: host.cacheHits, cacheBlob: o.wantCache ? host.exportCache(base, image.length) : undefined,
+           faultPc, prof: o.profile ? host.profileCounters() : undefined, cacheHits: host.cacheHits, cacheBlob: o.wantCache ? host.exportCache(base, image.length) : undefined,
            pcMapBytes: host.pcMapBytes, optionsKey: host.optionsKey(), yields, libcTook, libcCalls: host.libcStats().reduce((a, x) => a + x.calls, 0) };
 }
 

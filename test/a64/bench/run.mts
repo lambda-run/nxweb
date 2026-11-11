@@ -1,7 +1,9 @@
 // The translator benchmark (npm run a64:bench): real-world-shaped aarch64 code (test/a64/bench/build.py) through
 // the translator, against the same C compiled native and to wasm32 by clang. Each measurement is the median of
 // --runs runs, interleaved; every translated run's output is checked against the native build's.
-//   node test/a64/bench/run.mts [--runs 5] [--only zstd] [--mode memory32|memory64|memory64-high|all] [--json out.json]
+//   node test/a64/bench/run.mts [--runs 5] [--only zstd] [--mode memory32|memory64|memory64-high|all] [--json out.json] [--base DIR] [--profile]
+//   --profile: one more run per mode with the translator's event counters (A64HostOptions.profile), per 1000 guest insns
+//   --base DIR: also runs the translator built in another checkout (DIR/build/a64), interleaved, as the rows ending in @base
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -17,13 +19,15 @@ const only = opt("--only") ? new RegExp(opt("--only")!) : null;
 const modeArg = opt("--mode", "memory32")!;
 const libcArg = opt("--libc", "both")!;   // off | on | both: the C library functions as translated SDK code, as intrinsics
 const libcRuns = libcArg === "both" ? [false, true] : [libcArg === "on"];
+const baseDir = opt("--base");
+const profile = argv.includes("--profile");
 const LIBC = ["memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp"];
 const modes0 = modeArg === "all" ? ["memory32", "memory64", "memory64-high"] : modeArg.split(",");
 if (!existsSync(join(out, "zstd_bench.json"))) { console.error("[RED] no benchmark images: run npm run a64:bench:build"); process.exit(2); }
 const median = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
 const mods: Record<string, [WebAssembly.Module, WebAssembly.Module]> = {};
-const tr = (m64: boolean) => mods[String(m64)] ??= [new WebAssembly.Module(readFileSync(join(root, `build/a64/translator${m64 ? "64" : ""}.wasm`))),
-                                                     new WebAssembly.Module(readFileSync(join(root, `build/a64/helpers${m64 ? "64" : ""}.wasm`)))];
+const tr = (m64: boolean, dir = root) => mods[m64 + dir] ??= [new WebAssembly.Module(readFileSync(join(dir, `build/a64/translator${m64 ? "64" : ""}.wasm`))),
+                                                     new WebAssembly.Module(readFileSync(join(dir, `build/a64/helpers${m64 ? "64" : ""}.wasm`)))];
 
 function wasmNative(name: string, expected: Uint8Array): number {
   const mod = new WebAssembly.Module(readFileSync(join(out, name + ".wasm")));
@@ -46,7 +50,7 @@ function native(name: string): number {
 
 const report: any[] = [];
 let bad = 0;
-const modes = modes0.flatMap(m => libcRuns.map(l => m + (l ? "+libc" : "")));
+const modes = modes0.flatMap(m => libcRuns.map(l => m + (l ? "+libc" : ""))).flatMap(m => baseDir ? [m + "@base", m] : [m]);
 for (const name of ["zstd_bench", "str_bench"]) {
   if (only && !only.test(name)) continue;
   const expected = readFileSync(join(out, name + ".out"));
@@ -55,10 +59,10 @@ for (const name of ["zstd_bench", "str_bench"]) {
   for (let i = 0; i < runs; i++) {
     nat.push(native(name)); wn.push(wasmNative(name, expected));
     for (const mode of modes) {
-      const hi = mode.startsWith("memory64-high"), m64 = !mode.startsWith("memory32"), lc = mode.endsWith("+libc");
+      const hi = mode.startsWith("memory64-high"), m64 = !mode.startsWith("memory32"), lc = mode.replace("@base", "").endsWith("+libc");
       const side = JSON.parse(readFileSync(join(out, name + (hi ? "_hi" : "") + ".json"), "utf8"));
       const image = readFileSync(join(out, side.image));
-      const [t, h] = tr(m64);
+      const [t, h] = tr(m64, mode.endsWith("@base") ? baseDir : root);
       const libc = lc ? LIBC.filter(n => side.symbols[n] !== undefined).map(n => ({ pc: side.symbols[n], name: n })) : undefined;
       const r = runGuest(t, h, name, side, image, expected, { ...defaultOpts, mem64: m64, libc });
       if (!r.ok) { console.log(`[RED] a64:bench ${name} ${mode}: ${r.why}`); bad++; }
@@ -71,6 +75,16 @@ for (const name of ["zstd_bench", "str_bench"]) {
     const rs = tx[mode], run = median(rs.map(r => r.runMs)), trm = median(rs.map(r => r.trMs));
     console.log(`  ${mode.padEnd(19)} translated run ${run.toFixed(1).padStart(7)} ms = ${(run / w).toFixed(2)}x wasm-native, ${(run / n).toFixed(2)}x native; translate ${trm.toFixed(0)} ms for ${rs[0].trInsns} insns in ${rs[0].funcs} funcs, ${rs[0].slices} slices${rs[0].libcTook?.length ? `, ${rs[0].libcTook.length} libc intrinsics ${rs[0].libcCalls} calls` : ""}${rs.every(r => r.ok) ? "" : "  FAILED"}`);
     report.push({ name, mode, nativeMs: n, wasmMs: w, runMs: run, trMs: trm, runs: rs.map(r => r.runMs), ok: rs.every(r => r.ok) });
+  }
+  for (const mode of profile ? modes.filter(m => !m.endsWith("@base")) : []) {
+    const hi = mode.startsWith("memory64-high"), m64 = !mode.startsWith("memory32"), lc = mode.endsWith("+libc");
+    const side = JSON.parse(readFileSync(join(out, name + (hi ? "_hi" : "") + ".json"), "utf8"));
+    const [t, h] = tr(m64);
+    const libc = lc ? LIBC.filter(n => side.symbols[n] !== undefined).map(n => ({ pc: side.symbols[n], name: n })) : undefined;
+    const r = runGuest(t, h, name, side, readFileSync(join(out, side.image)), expected, { ...defaultOpts, mem64: m64, libc, profile: true });
+    if (!r.ok) { console.log(`[RED] a64:bench ${name} ${mode} (profile): ${r.why}`); bad++; continue; }
+    const p = r.prof!, g = p["guest insns"];
+    console.log(`  ${mode} profile: ${g} guest insns; per 1000: ` + Object.entries(p).filter(([k]) => k !== "guest insns").map(([k, v]) => `${k} ${(v / g * 1000).toFixed(1)}`).join(", "));
   }
 }
 if (opt("--json")) writeFileSync(opt("--json")!, JSON.stringify(report, null, 1));
