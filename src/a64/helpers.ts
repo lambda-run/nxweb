@@ -3,6 +3,8 @@
 // instructions: reciprocal estimates, NaN propagation, directed rounding, crypto, polynomial
 // multiply, saturating odds and ends. Nothing here touches guest memory or CPU state.
 
+import { sfop, sfflush, sfcvt } from "./softfp";
+
 // ---------------------------------------------------------------------------------------------
 // NaN processing (called only when a result is NaN)
 // @ts-ignore
@@ -267,6 +269,8 @@ export function rnd(op: i32, x: i64): i64 {
     case 9: return <i64>f64ToF16(<f64>reinterpret<f32>(<u32>x));
     case 10: return <i64>f64ToF16(reinterpret<f64>(x));
     case 11: return fjcvtzs(<u64>x);
+    case 12: return <i64>sfcvt(<u64>x, (op >> 12) & 3, (op >> 14) & 3, op);   // FCVT under FPCR (bits 22..25)
+    case 13: return <i64>sfflush(<u64>x, (op >> 12) & 3);                     // FPCR.FZ input flush
   }
   return 0;
 }
@@ -287,6 +291,26 @@ function fjcvtzs(x: u64): i64 {
     if (neg) f = -f;
   }
   return <i64>((f & 0xFFFFFFFF) | (exact ? <u64>1 << 32 : 0));
+}
+
+// FRECPE / FRSQRTE / FRECPX under FPCR FZ / DN / RMode (bits 22..25 of fpcr)
+function estF(k: i32, v: u64, single: bool, fpcr: i32): u64 {
+  let fz = (fpcr & 0x1000000) != 0, dn = (fpcr & 0x2000000) != 0, mode = (fpcr >> 22) & 3;
+  if (fz) v = sfflush(v, single ? 1 : 2);
+  let mag = single ? v & 0x7FFFFFFF : v & 0x7FFFFFFFFFFFFFFF;
+  let isn = single ? mag > 0x7F800000 : mag > 0x7FF0000000000000;
+  if (isn && dn) return single ? <u64>DN32 : DN64;
+  if (k == 16 && !isn) {
+    let sbit: u64 = single ? 0x80000000 : 0x8000000000000000;
+    let sgn = v & sbit;
+    let tinyLim: u64 = single ? 0x00200000 : 0x0004000000000000, bigLim: u64 = single ? 0x7E800000 : 0x7FD0000000000000;
+    if (mag != 0 && mag < tinyLim) {   // |x| < 2^-128 / 2^-1024: overflows
+      let inf = mode == 0 || (mode == 1 && sgn == 0) || (mode == 2 && sgn != 0);
+      return sgn | (inf ? (single ? <u64>0x7F800000 : 0x7FF0000000000000) : (single ? <u64>0x7F7FFFFF : 0x7FEFFFFFFFFFFFFF));
+    }
+    if (fz && mag >= bigLim) return sgn;   // |x| >= 2^126 / 2^1022: flushed result
+  }
+  return k == 16 ? recpe64(v, single) : k == 17 ? rsqrte64(v, single) : recpx(v, single);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -581,8 +605,9 @@ export function vop(op: i32, a: v128, b: v128, c: v128): v128 {
         }
         return v128.load(PR);
       }
-      if (single) for (let i = 0; i < 4; i++) { let v: u64 = W(PA, i); SW(PR, i, <u32>(k == 16 ? recpe64(v, true) : k == 17 ? rsqrte64(v, true) : recpx(v, true))); }
-      else for (let i = 0; i < 2; i++) { let v = load<u64>(PA + 8 * i); store<u64>(PR + 8 * i, k == 16 ? recpe64(v, false) : k == 17 ? rsqrte64(v, false) : recpx(v, false)); }
+      let fpcr = op & 0x3C00000;
+      if (single) for (let i = 0; i < 4; i++) { let v: u64 = W(PA, i); SW(PR, i, <u32>(fpcr ? estF(k, v, true, fpcr) : k == 16 ? recpe64(v, true) : k == 17 ? rsqrte64(v, true) : recpx(v, true))); }
+      else for (let i = 0; i < 2; i++) { let v = load<u64>(PA + 8 * i); store<u64>(PR + 8 * i, fpcr ? estF(k, v, false, fpcr) : k == 16 ? recpe64(v, false) : k == 17 ? rsqrte64(v, false) : recpx(v, false)); }
       return v128.load(PR);
     }
     case 25: { // FPMulAdd NaN result per lane: a = addend, b = op1, c = op2 (caller selects the NaN lanes)
@@ -651,7 +676,11 @@ export function vop(op: i32, a: v128, b: v128, c: v128): v128 {
     }
     case 29: { // half precision vector conversions: fl=0 FCVTL from 4 halves (low 64 of a) -> 4 singles ; fl=1 FCVTN 4 singles -> 4 halves
       v128.store(PA, a); store<u64>(PR, 0); store<u64>(PR + 8, 0);
-      if (!fl) for (let i = 0; i < 4; i++) SW(PR, i, reinterpret<u32>(<f32>f16ToF64(load<u16>(PA + 2 * i))));
+      let fpcr = op & 0x3C00000;
+      if (fpcr) {
+        if (!fl) for (let i = 0; i < 4; i++) SW(PR, i, <u32>sfcvt(<u64>load<u16>(PA + 2 * i), 0, 1, fpcr));
+        else for (let i = 0; i < 4; i++) store<u16>(PR + 2 * i, <u16>sfcvt(<u64>W(PA, i), 1, 0, fpcr));
+      } else if (!fl) for (let i = 0; i < 4; i++) SW(PR, i, reinterpret<u32>(<f32>f16ToF64(load<u16>(PA + 2 * i))));
       else for (let i = 0; i < 4; i++) store<u16>(PR + 2 * i, <u16>f64ToF16(<f64>reinterpret<f32>(W(PA, i))));
       return v128.load(PR);
     }
@@ -691,6 +720,13 @@ export function vop(op: i32, a: v128, b: v128, c: v128): v128 {
     }
     case 48: return sm4(a, b, false);   // SM4E(d, n)
     case 49: return sm4(a, b, true);    // SM4EKEY(n, m)
+    case 33: { // FCVTL (sz 2: singles 0..1 -> doubles) / FCVTN (sz 3: doubles -> singles 0..1, upper zero) under FPCR (bits 22..25)
+      v128.store(PA, a); store<u64>(PR, 0); store<u64>(PR + 8, 0);
+      let fpcr = op & 0x3C00000;
+      if (sz == 2) for (let i = 0; i < 2; i++) store<u64>(PR + 8 * i, sfcvt(<u64>W(PA, i), 1, 2, fpcr));
+      else for (let i = 0; i < 2; i++) SW(PR, i, <u32>sfcvt(load<u64>(PA + 8 * i), 2, 1, fpcr));
+      return v128.load(PR);
+    }
     case 30: { // lanewise directed rounding: extra (bits 12..19) = rnd op, bits 20..21 mode, bits 22..29 fbits; sz 2 = 4 lanes of 32, 3 = 2 lanes of 64
       v128.store(PA, a);
       let rop = ((op >> 12) & 0xFF) | (((op >> 20) & 3) << 8) | (((op >> 22) & 0xFF) << 16);
@@ -698,122 +734,30 @@ export function vop(op: i32, a: v128, b: v128, c: v128): v128 {
       else for (let i = 0; i < 2; i++) store<i64>(PR + 8 * i, rnd(rop, load<i64>(PA + 8 * i)));
       return v128.load(PR);
     }
+    case 31: { // lanewise soft FP under FPCR: bits 12..19 sfop op, 22..25 FPCR RMode/FZ/DN, 26..28 frint mode
+      v128.store(PA, a); v128.store(PB, b); v128.store(PC, c);
+      let sop = ((op >> 12) & 0xFF) | (((op >> 26) & 7) << 8) | (op & 0x3C00000);
+      if (sz == 2) for (let i = 0; i < 4; i++) SW(PR, i, <u32>sfop(sop, <u64>W(PA, i), <u64>W(PB, i), <u64>W(PC, i), 1));
+      else for (let i = 0; i < 2; i++) store<u64>(PR + 8 * i, sfop(sop, load<u64>(PA + 8 * i), load<u64>(PB + 8 * i), load<u64>(PC + 8 * i), 2));
+      return v128.load(PR);
+    }
+    case 32: { // lanewise FPCR.FZ input flush
+      v128.store(PA, a);
+      if (sz == 2) for (let i = 0; i < 4; i++) SW(PR, i, <u32>sfflush(<u64>W(PA, i), 1));
+      else for (let i = 0; i < 2; i++) store<u64>(PR + 8 * i, sfflush(load<u64>(PA + 8 * i), 2));
+      return v128.load(PR);
+    }
   }
   return a;
 }
 
 // ---------------------------------------------------------------------------------------------
-// directed-rounding scalar arithmetic (FPCR.RMode != 0). op: 0 add 1 sub 2 mul 3 div 4 sqrt; mode in bits 8..9
-// @ts-ignore
-@inline function fma64(a: f64, b: f64, c: f64): f64 { return f64x2.extract_lane(v128.relaxed_madd<f64>(f64x2.splat(a), f64x2.splat(b), f64x2.splat(c)), 0); }
-// @ts-ignore
-@inline function sgn(x: f64): i32 { return x > 0 ? 1 : x < 0 ? -1 : 0; }
-const MAX64: f64 = 1.7976931348623157e308;
-function ovf64(r: f64, mode: u32): f64 {   // r is +-inf produced from finite operands
-  if (r > 0) return mode == 1 ? r : MAX64;
-  return mode == 2 ? r : -MAX64;
+// soft FP under a non-default FPCR (softfp.ts); op bits 0..7 operation, 8..10 frint mode, 22..25 FPCR
+export function sfs(op: i32, a: f32, b: f32, c: f32): f32 {
+  return reinterpret<f32>(<u32>sfop(op, <u64>reinterpret<u32>(a), <u64>reinterpret<u32>(b), <u64>reinterpret<u32>(c), 1));
 }
-function tiny64(neg: bool, mode: u32): f64 {   // nonzero exact result that rounded to zero
-  if (!neg) return mode == 1 ? reinterpret<f64>(1) : 0.0;
-  return mode == 2 ? reinterpret<f64>(0x8000000000000001) : -0.0;
-}
-function add64(a: f64, b: f64, mode: u32): f64 {
-  let s = a + b;
-  if (s != s) return reinterpret<f64>(n2d(reinterpret<u64>(a), reinterpret<u64>(b)));
-  if (!isFinite(a) || !isFinite(b)) return s;
-  if (!isFinite(s)) return ovf64(s, mode);
-  if (s == 0) {
-    if (a == 0 && b == 0 && reinterpret<u64>(a) == reinterpret<u64>(b)) return a;
-    return mode == 2 ? -0.0 : 0.0;
-  }
-  let bb = s - a;
-  let e = (a - (s - bb)) + (b - bb);
-  return adj64(s, sgn(e), mode);
-}
-let gE: i32 = 0;
-// exact split a = m * 2^gE with |m| in [1, 2) (a finite, nonzero)
-function norm64(a: f64): f64 {
-  let b = reinterpret<u64>(a);
-  let e = <i32>((b >> 52) & 0x7FF);
-  if (e == 0) { a *= 18014398509481984.0; b = reinterpret<u64>(a); e = <i32>((b >> 52) & 0x7FF) - 54; }
-  gE = e - 1023;
-  return reinterpret<f64>((b & 0x800FFFFFFFFFFFFF) | 0x3FF0000000000000);
-}
-// @ts-ignore
-@inline function pow2(e: i32): f64 { return e >= -1022 ? reinterpret<f64>(<u64>(e + 1023) << 52) : reinterpret<f64>(<u64>1 << (e + 1074)); }
-// directed rounding of X * 2^e where x = RN(X) has magnitude in [0.5, 4) and err = sign(X - x)
-function fixScaled(x: f64, err: i32, e: i32, mode: u32): f64 {
-  if (e > 1030) return ovf64(x > 0 ? Infinity : -Infinity, mode);
-  if (e < -1080) return tiny64(x < 0, mode);
-  let r: f64;
-  if (e > 1000) r = x * pow2(1000) * pow2(e - 1000);
-  else if (e < -1074) r = (x * pow2(e + 1074)) * pow2(-1074);
-  else r = x * pow2(e);
-  if (!isFinite(r)) return ovf64(r, mode);
-  if (Math.abs(r) >= 4.450147717014403e-308) return adj64(r, err, mode);   // at least 2^-1021: the scaling was exact
-  let back = (r * pow2(537)) * pow2(537) * pow2(-e - 1074);   // exact: r is a multiple of 2^-1074
-  let d = x - back;
-  let s: i32 = d > 0 ? 1 : d < 0 ? -1 : err;
-  return adj64(r, s, mode);
-}
-export function rarithd(op: i32, a: f64, b: f64): f64 {
-  let mode: u32 = (op >> 8) & 3;
-  switch (op & 0xFF) {
-    case 0: return add64(a, b, mode);
-    case 1: return (a != a || b != b) ? reinterpret<f64>(n2d(reinterpret<u64>(a), reinterpret<u64>(b))) : add64(a, -b, mode);
-    case 2: {
-      let p = a * b;
-      if (p != p) return reinterpret<f64>(n2d(reinterpret<u64>(a), reinterpret<u64>(b)));
-      if (!isFinite(a) || !isFinite(b) || a == 0 || b == 0) return p;
-      let ma = norm64(a), ea = gE, mb = norm64(b), eb = gE;
-      let x = ma * mb;
-      return fixScaled(x, sgn(fma64(ma, mb, -x)), ea + eb, mode);
-    }
-    case 3: {
-      let q = a / b;
-      if (q != q) return reinterpret<f64>(n2d(reinterpret<u64>(a), reinterpret<u64>(b)));
-      if (!isFinite(a) || !isFinite(b) || a == 0 || b == 0) return q;
-      let ma = norm64(a), ea = gE, mb = norm64(b), eb = gE;
-      let x = ma / mb;
-      return fixScaled(x, sgn(fma64(-x, mb, ma)) * (mb > 0 ? 1 : -1), ea - eb, mode);
-    }
-    default: {
-      let s = Math.sqrt(a);
-      if (s != s) return reinterpret<f64>(n1d(reinterpret<u64>(a)));
-      if (!isFinite(a) || a == 0) return s;
-      let ma = norm64(a), ea = gE;
-      if (ea & 1) { ma *= 2; ea -= 1; }
-      let x = Math.sqrt(ma);
-      return fixScaled(x, sgn(fma64(-x, x, ma)), ea >> 1, mode);
-    }
-  }
-}
-export function rariths(op: i32, a: f32, b: f32): f32 {
-  let mode: u32 = (op >> 8) & 3;
-  let k = op & 0xFF;
-  if (k == 1) { if (a != a || b != b) return reinterpret<f32>(n2s(reinterpret<u32>(a), reinterpret<u32>(b))); k = 0; b = -b; }
-  if (k == 0) {
-    let s = a + b;
-    if (s != s) return reinterpret<f32>(n2s(reinterpret<u32>(a), reinterpret<u32>(b)));
-    if (!isFinite<f32>(a) || !isFinite<f32>(b)) return s;
-    if (!isFinite<f32>(s)) return s > 0 ? (mode == 1 ? s : reinterpret<f32>(0x7F7FFFFF)) : (mode == 2 ? s : reinterpret<f32>(0xFF7FFFFF));
-    if (s == 0) {
-      if (a == 0 && b == 0 && reinterpret<u32>(a) == reinterpret<u32>(b)) return a;
-      return mode == 2 ? <f32>-0.0 : <f32>0.0;
-    }
-    let bb = s - a;
-    let e = (a - (s - bb)) + (b - bb);
-    return adj32(s, e > 0 ? 1 : e < 0 ? -1 : 0, mode);
-  }
-  let x: f64;
-  if (k == 2) x = <f64>a * <f64>b; else if (k == 3) x = <f64>a / <f64>b; else x = Math.sqrt(<f64>a);
-  if (x != x) return k == 4 ? reinterpret<f32>(n1s(reinterpret<u32>(a))) : reinterpret<f32>(n2s(reinterpret<u32>(a), reinterpret<u32>(b)));
-  let r = f64ToF32(x, mode);
-  if (r == 0 && x != 0) {   // underflow to zero from a nonzero value
-    if (x > 0) return mode == 1 ? reinterpret<f32>(1) : <f32>0.0;
-    return mode == 2 ? reinterpret<f32>(0x80000001) : <f32>-0.0;
-  }
-  return r;
+export function sfd(op: i32, a: f64, b: f64, c: f64): f64 {
+  return reinterpret<f64>(sfop(op, reinterpret<u64>(a), reinterpret<u64>(b), reinterpret<u64>(c), 2));
 }
 
 // where this module's static data lives in the shared memory (asc --memoryBase)
