@@ -338,6 +338,12 @@ export const insPos = mk<u32>(INS_CAP);
 export const insKind = mk<u8>(INS_CAP);
 export const insMI = mk<u64>(INS_CAP);
 export const insMV = mk<u32>(INS_CAP);
+export const insSite = mk<u8>(INS_CAP);   // which kind of site (WB_* / RL_*): profile counters 17 + site
+// an insertion at a call with a summary (sRI): the function called, and INS_CALL (write back dirty & (R | W)),
+// INS_BACK (it did not come back: write back dirty & ~W) or INS_AFTER (reload needed & W; dirty & ~(R | W) stays dirty)
+export const INS_CALL: u8 = 1, INS_BACK: u8 = 2, INS_AFTER: u8 = 3;
+export const insMode = mk<u8>(INS_CAP);
+export const insG = mk<u16>(INS_CAP);
 export let nIns: i32 = 0;
 export let fbBase: usize = 0;
 export const FB_CAP: usize = 2 << 20;
@@ -351,13 +357,20 @@ export function rget(r: i32): void { ev(EV_R, r); lget(regLocal(r)); }
 export function rset(r: i32): void { if (ifDepth > 0) ev(EV_R, r); ev(EV_W, r); lset(regLocal(r)); }
 export function rtee(r: i32): void { if (ifDepth > 0) ev(EV_R, r); ev(EV_W, r); ltee(regLocal(r)); }
 
-function insertion(kind: u32): void {
+export const WB_BL: u8 = 0, WB_BLR: u8 = 1, WB_RET: u8 = 2, WB_B: u8 = 3, WB_BR: u8 = 4, WB_BUDGET: u8 = 5, WB_SVC: u8 = 6, WB_OTHER: u8 = 7;
+export const RL_ENTRY: u8 = 8, RL_CALL: u8 = 9, RL_OTHER: u8 = 10;
+function insertion(kind: u32, site: u8): void {
   if (nIns >= INS_CAP) { overflow = true; return; }
-  insPos[nIns] = <u32>(P - fbBase); insKind[nIns] = <u8>kind; insMI[nIns] = 0; insMV[nIns] = 0;
+  insPos[nIns] = <u32>(P - fbBase); insKind[nIns] = <u8>kind; insMI[nIns] = 0; insMV[nIns] = 0; insSite[nIns] = site;
+  insMode[nIns] = 0;
   ev(kind, nIns); nIns++;
 }
-export function writeback(): void { insertion(EV_WB); }
-export function reload(): void { insertion(EV_RELOAD); lastCmp = 0; }
+export function writeback(site: u8 = WB_OTHER): void { insertion(EV_WB, site); }
+export function reload(site: u8 = RL_OTHER): void { insertion(EV_RELOAD, site); lastCmp = 0; }
+function insSum(mode: u8, g: i32): void {
+  if (nIns == 0 || overflow) return;
+  insMode[nIns - 1] = mode; insG[nIns - 1] = <u16>g;
+}
 
 // rollback support (used when an instruction turns out not to be translatable)
 export function rollback(p: usize, e: i32, i: i32): void { P = p; nEv = e; nIns = i; ifDepth = 0; }
@@ -484,6 +497,30 @@ const BLK_CAP = 16384;
 export const blkPc = mk<u64>(BLK_CAP);
 export const succ0 = mk<i32>(BLK_CAP);
 export const succ1 = mk<i32>(BLK_CAP);
+// structured function body (unit.ts structure()): label levels, counted from the function body outwards in
+export const STRUCT_CAP = 1536;   // blocks of a function with a structured body at most
+export let structOn = false;
+export let structFail = false;
+export function setStruct(on: bool): void { structOn = on; structFail = false; }
+export const lvBlk = mk<i32>(STRUCT_CAP);    // labels around block k's code
+export const lvWrap = mk<i32>(STRUCT_CAP);   // the block a forward branch to block j leaves (-1: none)
+export const fwLo = mk<i32>(STRUCT_CAP);     // first block of the region that block is in
+export const lvLoop = mk<i32>(STRUCT_CAP);   // the loop of header j (-1: not a header)
+export const loopEnd = mk<i32>(STRUCT_CAP);  // last block of the loop of header j
+// (the arrays above are by position in the structured order; posOf: block -> position)
+export const posOf = mk<i32>(STRUCT_CAP);
+function pos(j: i32): i32 { return structOn ? posOf[j] : j; }
+function fwdDepth(j: i32): i32 {
+  if (!structOn) return j - curBlk - 1;
+  let pj = posOf[j], pk = posOf[curBlk];
+  if (lvWrap[pj] < 0 || pk < fwLo[pj]) { structFail = true; return 0; }
+  return lvBlk[pk] - lvWrap[pj];
+}
+function backDepth(j: i32): i32 {
+  let pj = posOf[j], pk = posOf[curBlk];
+  if (lvLoop[pj] < 0 || pk > loopEnd[pj]) { structFail = true; return 0; }
+  return lvBlk[pk] - lvLoop[pj];
+}
 export let nBlk: i32 = 0;
 export let curBlk: i32 = 0;
 export let term: bool = false;   // current instruction ended the block (no fallthrough)
@@ -512,6 +549,19 @@ export function resetFns(): void {
   for (let i = 0; i < HSZ; i++) hKey[i] = 0;
   nFn = 0;
 }
+// Call summaries. A function of the unit that has been translated has a summary: R, the registers it (or a function
+// it calls) may read from the globals, and W, the ones it may write there. A BL to it writes back only the dirty
+// registers in R | W and reloads only those in W; the rest stay in locals across the call. When the call does not
+// come back to the return address (budget, depth, a yield further down) the dirty registers outside W are written
+// back before the return. A function with a call or jump the unit cannot see (BLR, BR, B out of the function, a
+// call through the table, SVC, a trap) has R = W = everything. Not with precise faults.
+export const sRI = mk<u64>(FN_CAP);
+export const sRV = mk<u32>(FN_CAP);
+export const sWI = mk<u64>(FN_CAP);
+export const sWV = mk<u32>(FN_CAP);
+export const sOk = mk<u8>(FN_CAP);
+export let accRI: u64 = 0, accRV: u32 = 0, accWI: u64 = 0, accWV: u32 = 0, accAll = false;
+export function resetAcc(): void { accRI = 0; accRV = 0; accWI = 0; accWV = 0; accAll = false; }
 export function setFnLimit(n: i32): void { fnLimit = n < FN_CAP ? n : FN_CAP; }
 export function addFn(pc: u64, force: bool): i32 {
   let h = <i32>((<u32>(pc >> 2) * 0x9E3779B1) >> 18);
@@ -568,29 +618,34 @@ function tailIndirect(): void {
   if (optTail) { if (optDepth > 0) { lget(L_DEPTH); gset(G_DEPTH); } b(0x13); b(0); b(0); }
   else { depthForCall(); b(0x11); b(0); b(0); b(0x0F); }
 }
-function pcCheck(ret: u64): void {
-  gget(G_PC); i64c(<i64>ret); b(0x52); b(0x04); b(0x40); b(0x0F); b(0x0B);
-  reload();
+function pcCheck(ret: u64, g: i32 = -1): void {
+  gget(G_PC); i64c(<i64>ret); b(0x52); b(0x04); b(0x40);
+  if (g >= 0) { writeback(WB_OTHER); insSum(INS_BACK, g); }
+  b(0x0F); b(0x0B);
+  reload(RL_CALL);
+  if (g >= 0) insSum(INS_AFTER, g);
 }
 function budgetCheck(target: u64): void {
   gget(G_BUDGET); i32c(1); b(0x6B); ltee(L_BUD); gset(G_BUDGET);
   prof(1, 1);
   lget(L_BUD); i32c(0); b(0x48);
-  ifVoid(); i64c(<i64>target); gset(G_PC); writeback(); b(0x0F); end();
+  ifVoid(); i64c(<i64>target); gset(G_PC); writeback(WB_BUDGET); b(0x0F); end();
 }
 // leave the function towards a constant pc (tail transfer through the table)
 export function exitConst(target: u64): void {
-  prof(5, 1); i64c(<i64>target); gset(G_PC); writeback(); idxConst(target); tailIndirect();
+  accAll = true;
+  prof(5, 1); i64c(<i64>target); gset(G_PC); writeback(WB_B); idxConst(target); tailIndirect();
   term = true;
 }
 // stack: i64 target ->
 export function exitDyn(): void {
   let t = t64(11);
-  prof(6, 1); ltee(t); gset(G_PC); writeback(); lget(t); idxDyn(); tailIndirect();
+  accAll = true;
+  prof(6, 1); ltee(t); gset(G_PC); writeback(WB_BR); lget(t); idxDyn(); tailIndirect();
   term = true;
 }
 // stack: i64 target -> ; RET
-export function exitRet(): void { prof(7, 1); gset(G_PC); writeback(); b(0x0F); term = true; }
+export function exitRet(): void { prof(7, 1); gset(G_PC); writeback(WB_RET); b(0x0F); term = true; }
 // plain exit with pc already set by the caller of this helper
 export function exitNow(): void { writeback(); b(0x0F); term = true; }
 
@@ -628,18 +683,19 @@ export function gotoPc(target: u64, isLast: bool): void {
     return;
   }
   addSucc(j);
-  if (j > curBlk) {
-    if (!(isLast && j == curBlk + 1 && ifDepth == 0)) { b(0x0C); leb(j - curBlk - 1 + ifDepth); }
+  if (pos(j) > pos(curBlk)) {
+    if (!(isLast && pos(j) == pos(curBlk) + 1 && ifDepth == 0)) { b(0x0C); leb(fwdDepth(j) + ifDepth); }
   } else {
     budgetCheck(target);
-    i32c(j); lset(L_STATE); b(0x0C); leb(nBlk - 1 - curBlk + ifDepth);
+    if (structOn) { b(0x0C); leb(backDepth(j) + ifDepth); }
+    else { i32c(j); lset(L_STATE); b(0x0C); leb(nBlk - 1 - curBlk + ifDepth); }
   }
   term = true;
 }
 // stack: i32 cond -> ; conditional transfer, falls through otherwise
 export function branchIf(target: u64): void {
   let j = blockOf(target);
-  if (j > curBlk) { addSucc(j); b(0x0D); leb(j - curBlk - 1); return; }
+  if (j >= 0 && pos(j) > pos(curBlk)) { addSucc(j); b(0x0D); leb(structOn ? fwdDepth(j) + ifDepth : j - curBlk - 1); return; }
   ifVoid(); gotoPc(target, false); end();
   term = false;
 }
@@ -651,32 +707,37 @@ export function callConst(target: u64, ret: u64): void {
   let f = addFn(target, false);
   depthForCall();
   prof(f >= 0 ? 2 : 3, 1);
-  if (f >= 0) { writeback(); b(0x10); leb(NIMPF + f); }
-  else { i64c(<i64>target); gset(G_PC); writeback(); idxConst(target); b(0x11); b(0); b(0); }
-  pcCheck(ret);
+  let g = f >= 0 && optPrecise == 0 && sOk[f] != 0 ? f : -1;
+  if (g >= 0) { accRI |= sRI[g]; accRV |= sRV[g]; accWI |= sWI[g]; accWV |= sWV[g]; } else accAll = true;
+  if (f >= 0) { writeback(WB_BL); if (g >= 0) insSum(INS_CALL, g); b(0x10); leb(NIMPF + f); }
+  else { i64c(<i64>target); gset(G_PC); writeback(WB_BL); idxConst(target); b(0x11); b(0); b(0); }
+  pcCheck(ret, g);
 }
 // stack: i64 target -> ; BLR
 export function callDyn(ret: u64): void {
   let t = t64(11);
   ltee(t); gset(G_PC);
   i64c(<i64>ret); rset(30);
-  depthForCall(); prof(4, 1);
-  writeback(); lget(t); idxDyn(); b(0x11); b(0); b(0);
+  depthForCall(); prof(4, 1); accAll = true;
+  writeback(WB_BLR); lget(t); idxDyn(); b(0x11); b(0); b(0);
   pcCheck(ret);
 }
 // `mrs xN, cntpct_el0` as a yield point: leaves the i64 counter on the stack
 export function emitCntYield(pc: u64): void {
   let t = t64(9);
-  i64c(<i64>pc); gset(G_PC); writeback(); b(0x10); leb(F_CNTPCT); lset(t);
+  accAll = true;
+  i64c(<i64>pc); gset(G_PC); writeback(WB_SVC); b(0x10); leb(F_CNTPCT); lset(t);
   pcCheck(pc);
   lget(t);
 }
 export function emitSvc(imm: u32, ret: u64): void {
-  i64c(<i64>ret); gset(G_PC); writeback(); i32c(<i32>imm); b(0x10); leb(F_SVC);
+  accAll = true;
+  i64c(<i64>ret); gset(G_PC); writeback(WB_SVC); i32c(<i32>imm); b(0x10); leb(F_SVC);
   pcCheck(ret);
 }
 // call an import that reports (pc, arg) and stop: unimpl / brk
 export function emitTrap(fn: u32, pc: u64, arg: u32): void {
+  accAll = true;
   i64c(<i64>pc); gset(G_PC); writeback();
   i64c(<i64>pc); i32c(<i32>arg); b(0x10); leb(fn);
   i32c(-1); gset(G_BUDGET); b(0x0F);
