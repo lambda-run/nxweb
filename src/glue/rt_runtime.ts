@@ -1335,7 +1335,7 @@ export class Runtime {
           // the translator's side table gives the instruction that trapped (the registers stay those of the last write-back)
           const at = this.a64.faultFromError(trap);
           if (at) this.dv().setBigUint64(ctx + 0x100, BigInt(at.pc), true);
-          this.faultNow(FAULT.trap, this.trapText(trap.message, at?.pc), 0n, ctx, !!at);
+          this.faultNow(FAULT.trap, this.trapText(trap.message, at?.pc, ctx), 0n, ctx, !!at);
         }
         else if (trap instanceof RangeError) this.faultNow(FAULT.trap, "the wasm stack is exhausted (" + trap.message + ")", 0n, ctx, false);
         else this.faultNow(FAULT.host, trap instanceof Error ? `${trap.name}: ${trap.message}` : String(trap), 0n, ctx, false);
@@ -1364,12 +1364,18 @@ export class Runtime {
     return null;
   }
   // What a trap in translated code most likely was, from the instruction at the exact pc
-  private trapText(message: string, pc: number | undefined): string {
+  private trapText(message: string, pc: number | undefined, ctx: number): string {
     if (pc === undefined || !/out of bounds/.test(message)) return message;
-    const insn = this.dv().getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
+    const dv = this.dv(), insn = dv.getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
     if (!isMem) return message;
-    const guard = this.guarded;
-    return `${message}: the instruction ${hex(insn)} at ${hex(pc)} loads or stores through ${base === 31 ? "sp" : "x" + base} at an address ` +
+    const guard = this.guarded, rn = base === 31 ? "sp" : "x" + base, bv = dv.getBigUint64(ctx + base * 8, true);
+    // base + offset is a valid address and only the translator's folded form traps: say so (not a guest bug)
+    const fold = this.a64.memargFold(insn, bv);
+    if (fold) return `${message}: the instruction ${hex(insn)} at ${hex(pc)} loads or stores through ${rn} = ${hex(bv)} + offset ${hex(fold.imm)} = ` +
+      `${hex(fold.addr)}, a valid address: base + offset wraps or the base is below the guard, and the memarg-offset fold (the translator ` +
+      `carries the offset in the wasm memory operand, where the address does not wrap and the guard checks the base) traps where hardware would not` +
+      (this.opts.preciseFaults === 2 ? "" : ` (if ${rn} is as last written back; ?precise=2 makes it exact)`);
+    return `${message}: the instruction ${hex(insn)} at ${hex(pc)} loads or stores through ${rn} at an address ` +
       (guard ? `below ${hex(GUARD_BASE)} (a null or host-area pointer) or beyond the end of the memory` : "beyond the end of the memory");
   }
   // The main thread returned from the entry (a clean exit): the fini functions run on it, as guest calls that return
