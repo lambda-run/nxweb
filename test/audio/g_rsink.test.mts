@@ -96,7 +96,7 @@ test("render sink: at least one rendered frame between two updates: an update wi
   assert.equal(update(), 1);
   assert.equal(r.render(1), 240); x.audio_rs_update_end(s);
   assert.deepEqual([stat(a, s, 4), stat(a, s, 6)], [1, 1]);
-  assert.match(a.logs.at(-1)!, /^audren: renderer 0: no frame rendered before update 2, rendering a catch-up frame first \(1 so far\)$/);
+  assert.match(a.logs.filter((l) => !l.includes("first frame that is not silent")).at(-1)!, /^audren: renderer 0: no frame rendered before update 2, rendering a catch-up frame first \(1 so far\)$/);
   // the render loop plays the queued frame instead of rendering, and says so on the catch-up event only
   const renders = stat(a, s, 3);
   assert.equal(x.audio_rs_ready(s), 1); assert.equal(x.audio_rs_next(s), 0);

@@ -118,8 +118,13 @@ export function scheduleNext(): KThread | null {
   return null;
 }
 // After an SVC of t: must it give up its core now? (it stopped running, or a better thread is ready on its core)
+// Depth of guest callbacks run inside host functions (kernel_preempt_hold): such a thread cannot give up its core, so
+// a better thread made ready meanwhile waits for the callback's first SVC after it returns (RESCHED stays set)
+let preemptHold: i32 = 0;
+export function schedPreemptHold(on: bool): void { preemptHold += on ? 1 : (preemptHold > 0 ? -1 : 0); }
 export function schedMustSwitch(t: KThread): bool {
   if (t.state != KthreadS.Running) return true;
+  if (preemptHold) return false;
   const c = t.runCore;
   if (!load<u8>(RESCHED + <usize>c)) return false;
   computeEff();

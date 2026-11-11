@@ -42,7 +42,7 @@ export const SAVE_S = ["Unmounted", "Recovering", "Clean", "Dirty", "Committing"
 
 type Arg = number | bigint;
 export interface Entry { name: Buffer; type: number; size: number }
-export interface FsOptions { async?: boolean; arena?: number; guest?: number; cover?: boolean }
+export interface FsOptions { async?: boolean; arena?: number; guest?: number; cover?: boolean; more?: number }   // more: bytes the embedder can add to the arena (arenaMore)
 
 let module: WebAssembly.Module | undefined;
 const live: Fs[] = [];
@@ -57,6 +57,7 @@ export class Fs {
   private waiters = new Map<number, (r: bigint) => void>();
   private retry: (() => void)[] = [];
   retries = 0; pendings = 0;
+  moreGiven = 0; private moreAt = 0; private moreLeft = 0;
 
   constructor(storage: FsStorage, o: FsOptions = {}) {
     module ??= new WebAssembly.Module(readFileSync(WASM));
@@ -65,6 +66,7 @@ export class Fs {
       ...(mem ? { memory: mem.memory, memEnv: mem.imports() } : {}),
       log: l => { this.logs.push(l); if (process.env.FS_TEST_LOG) console.log("    | " + l); },
       saveFailed: e => { this.saveFailed.push(e); },
+      arenaMore: n => { const a = this.moreAt; if (!a || n > this.moreLeft) return 0; this.moreAt += n; this.moreLeft -= n; this.moreGiven += n; return a; },
       completed: (token, r) => {
         const w = this.waiters.get(token); this.waiters.delete(token);
         w?.(r);
@@ -74,7 +76,9 @@ export class Fs {
     this.x = this.host.x as FsExports & KitExports;
     const guest = o.guest ?? (8 << 20), arena = o.arena ?? (64 << 20);
     const end = Math.ceil(this.x.fs_static_end() / 0x10000) * 0x10000;
-    const have = this.host.memory.buffer.byteLength, top = HI ? HI + guest : end + guest + arena;
+    const more = o.more ?? 0, lowTop = end + guest + arena + more;
+    const have = this.host.memory.buffer.byteLength, top = HI ? Math.max(HI + guest, lowTop) : lowTop;
+    if (more) { this.moreAt = HI ? end + arena : end + guest + arena; this.moreLeft = more; }
     if (top > have) { const n = Math.ceil((top - have) / 65536); if (mem) mem.grow(n); else this.x.memory.grow(n); }
     this.base = this.top = HI ? HI : end; this.limit = this.base + guest;
     this.x.fs_init(HI ? end : end + guest, arena);

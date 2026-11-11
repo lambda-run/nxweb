@@ -1,6 +1,6 @@
 // nxweb a64: half-precision floating point (FP16, ARMv8.2): scalar H-register data processing and conversions, the
-// Advanced SIMD .4H / .8H and scalar H forms. Every operation is one call of the helper vop (case 31, `hlanes` in
-// helpers.ts) with FPCR.RMode folded into the op word at run time; FCVT between H and S / D, FCVTL / FCVTN are in fp.ts / simd.ts.
+// Advanced SIMD .4H / .8H and scalar H forms. Every operation is one call of the helper vop (cases 64..71, `hlanes` in
+// helpers.ts) with FPCR.RMode, FZ16, FZ and DN folded into the op word at run time; FCVT between H and S / D, FCVTL / FCVTN are in fp.ts / simd.ts.
 import {
   b, leb, i32c, v128c, lget, lset, simd, gget, rget, rset, getX, setX, t32, emitCond, killCmp,
   G_FPCR, F_VOP, R_N, R_Z, R_C, R_V, R_V0,
@@ -19,8 +19,10 @@ function vget(r: i32): void { rget(R_V0 + r); }
 function vset(r: i32): void { rset(R_V0 + r); }
 function zero(): void { v128c(0, 0); }
 function op(kind: u32, lanes: u32, sub: u32 = 0, fbits: u32 = 0, flags: u32 = 0): void {
-  i32c(<i32>(31 | (lanes << 8) | (kind << 12) | (sub << 18) | (fbits << 24) | flags));
-  gget(G_FPCR); i32c(0xC00000); b(0x71); b(0x72);
+  i32c(<i32>(64 | (lanes << 8) | (kind << 12) | (sub << 18) | (fbits << 24) | flags));
+  gget(G_FPCR); i32c(0xC00000); b(0x71); b(0x72);                     // RMode -> bits 22..23
+  gget(G_FPCR); i32c(19); b(0x76); i32c(1); b(0x71); b(0x72);          // FZ16 -> bit 0
+  gget(G_FPCR); i32c(23); b(0x76); i32c(6); b(0x71); b(0x72);          // FZ, DN -> bits 1, 2
 }
 function call(): void { b(0x10); leb(F_VOP); }
 // stack: -> ; three operand registers (-1: zero)

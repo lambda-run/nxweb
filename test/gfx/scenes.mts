@@ -376,6 +376,19 @@ export const scenes: Scene[] = [
     t.rect(await e.read(), 0, 0, 64, 64, GREEN, "drawn once the key is in the library"); t.eq(e.g.red().length, 1, "no further red line");
   } },
 
+  { name: "an NVN2 (Switch 2) stage: its key is nxnative's (0x48 control bytes, +0x30 as zero, code length +0x44); found under it, it draws", async run(e, t) {
+    const G = e.G, cmd = G.cmd, i = G.acquire(e.win);
+    const vs = await e.blobs2("vs_nvn2_quad"), fs = await e.shader("fs_ubo");
+    const prog = G.program([vs, fs]);
+    G.begin(); e.frame(cmd, e.wtex[i], prog); G.clear(cmd, [0.25, 0.25, 0.25, 1]); bindUbos(e, cmd, ubo(e, IDENT), ubo(e, [1, 0, 0, 1])); e.drawQuad(cmd); e.finish(i);
+    t.rect(await e.read(), 0, 0, 64, 64, [64, 64, 64, 255], "only the clear");
+    t.eq(e.g.red(), [`[RED] shader ${vs.key} is not in the shader map`], "the red line names the NVN2 key");
+    e.host.registerShader(vs.key, { entry: "main", ...SHADERS.vs_quad_ubo });
+    const j = G.acquire(e.win);
+    G.begin(); e.frame(cmd, e.wtex[j], prog); G.clear(cmd, [0, 0, 0, 1]); bindUbos(e, cmd, ubo(e, IDENT), ubo(e, [0, 1, 0, 1])); e.drawQuad(cmd); e.finish(j);
+    t.rect(await e.read(), 0, 0, 64, 64, GREEN, "drawn under the NVN2 key"); t.eq(e.g.red().length, 1, "no further red line"); t.eq(e.host.stats.errors, 0, "WebGPU errors");
+  } },
+
   { name: "command memory exhaustion with a callback", cmdBytes: 1 << 20, async run(e, t) {
     const G = e.G, prog = await uboProgram(e), i = G.acquire(e.win), asked: number[] = [];
     // a command buffer with 1 KB of command memory; its callback hands out 2 KB blocks, as a game's does

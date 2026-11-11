@@ -714,6 +714,10 @@ function exec(p: usize, depth: i32): void {
       case O.OP_COPY_T2B: copyT2B(a, size); break;
       case O.OP_COPY_B2B: memWrite(<usize>load<u64>(a, 8), <usize>load<u64>(a), <usize>load<u64>(a, 16)); break;
       case O.OP_UPDATE_UB: memWrite(<usize>load<u64>(a), a + 16, <usize>load<u64>(a, 8)); break;
+      // The replay is in submission order on one host queue: an event signal lands when its submission is replayed, and
+      // a wait on an event of this queue has nothing earlier to wait for
+      case O.OP_SIGNAL_EVENT: { const w = <usize>load<u64>(a), v = load<u32>(a, 12); if (w) store<u32>(w, load<i32>(a, 8) == 1 ? load<u32>(w) + v : v); break; }
+      case O.OP_WAIT_EVENT: break;
       case O.OP_FENCE_SYNC: { const s = <usize>load<u64>(a); passBreak(); emitFence(s); break; }
       // Counter reports and render enable (report.ts). A reset has nothing to do while no counter is counted here
       case O.OP_REPORT_COUNTER: R.reportIssue(<u32>load<u64>(a), load<u64>(a, 8)); break;

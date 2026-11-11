@@ -4,7 +4,8 @@
 // of returning at once or spinning. The WebGPU replayer (gfx_host.ts) runs in the same JavaScript context.
 // With no device (Node) the recorder runs against a null replayer: every NVN call and the lowering happen, nothing is
 // drawn, fences complete at once. See src/runtime/README.md, "Graphics".
-import { Runtime, type HostCpu, type HostResult } from "./rt_runtime.ts";
+import { Runtime, nvn2Items, type HostCpu, type HostResult } from "./rt_runtime.ts";
+import { ctlLens, isNvn2, keyControl, NVN2_CTL_READ, NVN2_KEY_CTL } from "../shaders/job.ts";
 import { GfxHost, type ShaderInfo, type Capture } from "./gfx_host.ts";
 import { range } from "./rt_layout.ts";
 import { instantiate } from "./wasm_abi.ts";
@@ -26,6 +27,7 @@ export interface GfxOptions {
   holdFences?: () => boolean;
   // The game profile's graphics switches (rt_process.ts gfxSettingsFor: the bits of src/gfx/profile.ts). Omitted: none
   profile?: { bits: number };
+  sdkMajor?: number;                  // the game's SDK major version (nv::GetGraphicsMemoryInfo's record is 0x20 bytes up to SDK 10). Omitted: newer
 }
 // nvnSyncWait's timeout is in nanoseconds; games pass ~0 (NVN's "wait forever") or values of years: no timer then
 const SYNC_FOREVER = 1n << 62n;
@@ -84,8 +86,52 @@ export class RtGfx implements HleGfx {
     this.host.onImage = (_w, _i, what) => { if (what === 1) this.imageShown(); };
     this.host.onDeviceLost = () => { this.stats.deviceLosses++; rt.requestWake(); };
     this.host.onDeviceRestored = () => { this.stats.deviceRestores++; this.lastPresentDone = null; rt.requestWake(); };
-    rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => this.stubOfName(cpu.cstr(cpu.x(0), 128)) });
+    rt.register({ name: "nvnBootstrapLoader", forced: true, fn: cpu => { this.setApiOnce(rt); return this.stubOfName(cpu.cstr(cpu.x(0), 128)); } });
+    this.registerNv(rt);
     rt.onDispose(() => this.dispose());
+  }
+  // nv:: (the driver glue under NVN) and nn::gs's check, as nxnative dm/gfx/hle_nv.c: NVN is the replayer's, so the
+  // SDK's own driver boot must not run (nv::InitializeGraphics -> nn::gs::sdk::BootGraphicsSystem ->
+  // nn::gsv::BootWithRemoteMemory asks nn::am for a graphics supervisor nxweb never has: Zelda faulted there at
+  // sdk+0x1dd76c, x0 = 0). The allocators and the pool are recorded; GetGraphicsMemoryInfo reports the pool.
+  readonly nv = { alloc: [] as bigint[], devtoolsAlloc: [] as bigint[], pool: 0n, poolSize: 0n, inited: false };
+  // The NVN API version nvnDeviceGetInteger reports follows the game's SDK, as its own driver's would: 53.313 up to
+  // SDK 10, 55.15 from SDK 11 (nxnative nvn_api). Games compare it with the version they were built against
+  private apiSet = false;
+  private setApiOnce(rt: Runtime): void {
+    if (this.apiSet) return;
+    this.apiSet = true;
+    const m = this.opts.sdkMajor ?? rt.sdkMajor;
+    let api = m > 0 && m <= 10 ? [53, 313] : [55, 15], note = "";
+    if (rt.sdkOunce) {
+      // NVN2 (Switch 2): API 231, its minor and GPU code versions read from the driver compiled into the game's sdk
+      const items = rt.sdkModule ? nvn2Items(rt.u8(), rt.sdkModule) : new Map<number, number>();
+      this.x.gfx_set_nvn2(1);
+      for (const [i, v] of items) if (i > 1) this.x.gfx_set_devinfo2(i, v);
+      api = [231, items.get(1) ?? 39];
+      note = items.size ? `, Switch 2: ${items.size} of its driver's constants read from the sdk` : ", Switch 2: [RED] the sdk's nvnDeviceGetInteger switch was not found, the newest known values answer";
+    }
+    this.x.gfx_set_api(api[0], api[1]);
+    rt.log(`nvn: device API ${api[0]}.${api[1]} (SDK ${m || "unknown"}${note})`);
+  }
+  private registerNv(rt: Runtime): void {
+    const nv = this.nv, mb = (n: bigint) => (Number(n) / 1048576).toFixed(2);
+    const reg = (name: string, fn: (cpu: HostCpu) => HostResult) => rt.register({ name, forced: true, fn });
+    reg("_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", cpu => { nv.alloc = [0, 1, 2, 3].map(i => cpu.x(i)); });
+    reg("_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", cpu => { nv.devtoolsAlloc = [0, 1, 2, 3].map(i => cpu.x(i)); });
+    reg("_ZN2nv18InitializeGraphicsEPvm", cpu => {
+      nv.pool = cpu.x(0); nv.poolSize = cpu.x(1); nv.inited = true;
+      cpu.log(`nv::InitializeGraphics: pool ${mb(nv.poolSize)} MB at 0x${nv.pool.toString(16)}, recorded (the replayer allocates its own)`);
+    });
+    reg("_ZN2nv16FinalizeGraphicsEv", () => { nv.pool = 0n; nv.poolSize = 0n; nv.inited = false; });
+    reg("_ZN2nv9InitCheckEv", cpu => { if (!nv.inited) cpu.log("[RED] nv::InitCheck: graphics not initialised (nv::InitializeGraphics was not called)"); });
+    reg("_ZN2nv21GetGraphicsMemoryInfoEPNS_10MemoryInfoE", cpu => {
+      const rec = new Uint8Array((this.opts.sdkMajor ?? (rt.sdkMajor || 99)) <= 10 ? 0x20 : 0x40), dv = new DataView(rec.buffer);
+      if (nv.inited) { dv.setBigUint64(0, nv.poolSize, true); dv.setBigUint64(16, nv.poolSize, true); }   // total, used 0, free
+      cpu.write(cpu.x(0), rec);
+    });
+    reg("_ZN2nv22DumpGraphicsMemoryInfoEv", cpu => cpu.log(`nv::DumpGraphicsMemoryInfo: pool ${mb(nv.poolSize)} MB, 0 used (the replayer's)`));
+    reg("_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm", () => {});
   }
   // Releases the GPU objects the replayer made for this process (GfxHost.dispose: every texture and buffer; pipelines,
   // bind groups and samplers have no destroy and go with their last reference), so that the next process starts from
@@ -121,16 +167,18 @@ export class RtGfx implements HleGfx {
     this.shownAt[n & 255] = BigInt(Math.round(performance.now() * 1e6));
   }
 
-  // The key of a stage as the recorder computes it (src/gfx/shader.ts shaderKey; an NVN2 control section: none here)
-  // and the bytes it is made of: NVNshaderData { u64 data; u64 control } at sd
+  // The key of a stage as the recorder computes it (src/gfx/shader.ts shaderKey; src/shaders/job.ts keyControl, NVN and NVN2)
+  // and the bytes it is made of: NVNshaderData { u64 data; u64 control } at sd. The translator's job reads the control
+  // section's first 0x880 bytes (NVN2: NVN2_CTL_READ)
   private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
-    const rt = this.rt, dv = rt.dv(), data = Number(dv.getBigUint64(sd, true)), c = Number(dv.getBigUint64(sd + 8, true));
-    if (!c || c + 0x880 > rt.u8().length) return null;
-    if (dv.getUint32(c, true) === 0x98761234 && dv.getUint32(c + 4, true) === 0xc9) return null;
-    const own = dv.getUint32(c + 0x20, true), nctl = own >= 0x760 && own < 0x880 ? own : 0x880, ncode = dv.getUint32(c + 0x704, true);
-    const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= rt.u8().length;
-    const control = () => rt.u8().slice(c, c + 0x880), code = () => hasCode ? rt.u8().slice(data, data + ncode) : new Uint8Array(0);
-    const key = Array.from(rt.sha256Of([rt.u8().subarray(c, c + nctl), hasCode ? rt.u8().subarray(data, data + ncode) : new Uint8Array(0)]).subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
+    const rt = this.rt, mem = rt.u8(), dv = rt.dv(), data = Number(dv.getBigUint64(sd, true)), c = Number(dv.getBigUint64(sd + 8, true));
+    if (!c || c + NVN2_KEY_CTL > mem.length) return null;
+    const nctl = isNvn2(mem.subarray(c, c + NVN2_KEY_CTL)) ? NVN2_CTL_READ : 0x880;
+    if (c + nctl > mem.length) return null;
+    const { ncode } = ctlLens(mem.subarray(c, c + nctl));
+    const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= mem.length;
+    const control = () => rt.u8().slice(c, c + nctl), code = () => hasCode ? rt.u8().slice(data, data + ncode) : new Uint8Array(0);
+    const key = Array.from(rt.sha256Of([keyControl(mem.subarray(c, c + nctl)), hasCode ? mem.subarray(data, data + ncode) : new Uint8Array(0)]).subarray(0, 8), b => b.toString(16).padStart(2, "0")).join("");
     return { key, blob: () => ({ key, control: control(), code: code() }) };
   }
   private workDone(): Promise<unknown> | null {
