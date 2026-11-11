@@ -433,6 +433,34 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     return `${atomics} wasm atomic instructions`;
   });
 
+  // ---- DotProd (ARMv8.2): SDOT / UDOT, vector and by element, 4S and 2S
+  test("DotProd: SDOT / UDOT loops (vector, by element), 2S forms clear the upper half, Rd = Rn", () => {
+    const t = mk(m);
+    const loop = (dot: number, ldb: number) => [0x6E201C00, 0x3CC10401, ldb, dot, 0xF1004042, 0x54FFFF81, 0x4EB1B800, 0x1E260000, RET];
+    t.put(BASE, loop(0x4E829420, 0x3CC10422));            // eor v0; 1: ldr q1,[x0],#16; ldr q2,[x1],#16; sdot v0.4s, v1.16b, v2.16b; subs; b.ne 1b; addv s0, v0.4s; fmov w0, s0
+    t.put(BASE + 0x40, loop(0x6FB1E820, 0x3CC10431));     // ... ldr q17,[x1],#16; udot v0.4s, v1.16b, v17.4b[3] ...
+    t.put(BASE + 0x80, [0x3DC00001, 0x3DC00022, 0x6F07E7E3, 0x0FA2E023, 0x4EA11C24, 0x2E829484, 0x4E183C60, 0x4E083C61, 0x4E183C82, 0x4E083C83, RET]);
+    // ldr q1,[x0]; ldr q2,[x1]; movi v3.2d,#-1; sdot v3.2s, v1.8b, v2.4b[1]; mov v4.16b, v1.16b; udot v4.2s, v4.8b, v2.8b; x0..x3 = v3.d[1], v3.d[0], v4.d[1], v4.d[0]
+    t.host.addCode(BASE, 0xAC, { entries: [BASE, BASE + 0x40, BASE + 0x80] });
+    const N = 256, a = new Uint8Array(t.memory.buffer, DATA, N), bb = new Uint8Array(t.memory.buffer, DATA + 0x1000, N);
+    let seed = 12345; const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) >>> 24;
+    for (let i = 0; i < N; i++) { a[i] = i < 16 ? (i & 1 ? 0x80 : 0x7F) : rnd(); bb[i] = i < 16 ? 0x80 : rnd(); }
+    const s8 = (x: number) => (x << 24) >> 24;
+    let want = 0;
+    for (let i = 0; i < N; i++) want += s8(a[i]) * s8(bb[i]);
+    eq("SDOT vector loop", t.call(BASE, [BigInt(DATA), BigInt(DATA + 0x1000), BigInt(N)]), BigInt(want >>> 0));
+    want = 0;
+    for (let i = 0; i < N; i++) want += a[i] * bb[(i & ~15) + 12 + (i & 3)];
+    eq("UDOT by element loop", t.call(BASE + 0x40, [BigInt(DATA), BigInt(DATA + 0x1000), BigInt(N)]), BigInt(want >>> 0));
+    t.call(BASE + 0x80, [BigInt(DATA), BigInt(DATA + 0x1000)]);
+    const lane = (f: (k: number) => number) => [0, 1].map(j => BigInt.asUintN(32, BigInt([0, 1, 2, 3].reduce((acc, k) => acc + f(4 * j + k), 0)))).reduce((lo, hi) => lo | (hi << 32n));
+    eq("SDOT 2S by element: upper half", t.c.x0.value, 0n);
+    eq("SDOT 2S by element: lanes", BigInt.asUintN(64, t.c.x1.value), BigInt.asUintN(64, lane(i => (i % 4 == 0 ? -1 : 0) + s8(a[i]) * s8(bb[4 + (i & 3)])) ));
+    eq("UDOT 2S vector, Rd = Rn: upper half", t.c.x2.value, 0n);
+    eq("UDOT 2S vector, Rd = Rn: lanes", BigInt.asUintN(64, t.c.x3.value), lane(i => (i % 4 == 0 ? a[i + 0] | a[i + 1] << 8 | a[i + 2] << 16 | a[i + 3] * 2 ** 24 : 0) + a[i] * bb[i]));
+    return `sum of ${N} byte products, signed and unsigned`;
+  });
+
   test("an instruction outside the implemented set is reported with its word and pc when executed, not before", () => {
     const words = [0xD69F0BFF /* eretaa */, 0x04603000 /* SVE */, 0xD4000002 /* hvc */];
     const t = mk(m);

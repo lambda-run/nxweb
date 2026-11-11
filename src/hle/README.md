@@ -28,7 +28,7 @@ the movie and video codec names as stubs (cut). Not here: file system, graphics,
 | `src/glue/hle_rt.ts` | `attachHle(rt, module, options)`: the table registered with a `Runtime` (run by `test/runtime` and the page) |
 
 ```
-npm run hle:names     # inventory, status, gen/table.ts and the table in this file, from nxnative's sources
+npm run hle:names     # inventory, status, gen/table.ts, the coverage (gen/coverage.ts) and the tables in this file, from nxnative's sources
 npm run hle:check     # fails when one of them is out of date
 npm run hle:build     # build/hle/hle.wasm
 npm run hle:test      # 102 tests, and the coverage rule for the fifteen machines as the module drives them
@@ -263,6 +263,54 @@ the second a per-entry call counter, which is `hle_call_count(id)` here. `hle_to
 table entries are ported (entropy, getenv, the allocator hook); its guest clock, freeze reasons and object side table
 are the kernel's. `hle_glslc.c` (not assigned) registers a name that belongs to graphics. One of `hle_movie.c`'s 27
 (`Extractor::SetDataSource`) is under `#if 0` in nxnative; the tool counts it and "Cut" says why it is active here.
+
+## Coverage: nxnative's take-overs nxweb does not answer
+
+`tools/hle_coverage.py` (run by `npm run hle:names`, checked by `npm run hle:check`) lists every name nxnative takes
+over: the HLE / HLE_FORCE / HLE_FORCE_BIG entries of `dm/host/*.c` and of every source under `dm/gfx` (hle_vi.c,
+hle_nv.c, nvn/hle_nvn.c), the libc pass-through list and the GL / Vulkan import tables, and what in nxweb answers each:
+this directory's table, `src/fs/names.ts`, `src/audio/names.ts`, or a literal `name: "..."` in `src/glue/*.ts` (the
+runtime registrations such as `nvnBootstrapLoader`). `test/hle/coverage.tsv` has every name;
+`src/hle/gen/coverage.ts` the ones not answered, which the Prepare page's Code stage looks up in each module's dynamic
+symbol table (`src/glue/hle_scan.ts`, `npm run prepare:scan -- <game folder>`). A port that registers a name
+another way than a literal `name:` is not seen: add the name literally.
+
+<!-- coverage:begin -->
+| nxnative file | names | answered in nxweb | not answered |
+|---|---|---|---|
+| `dm/gfx/gl/hle_gl.m` | 171 | 0 | 171 |
+| `dm/gfx/hle_nv.c` | 8 | 0 | 8 |
+| `dm/gfx/hle_vi.c` | 31 | 31 | 0 |
+| `dm/gfx/nvn/hle_nvn.c` | 9 | 1 | 8 |
+| `dm/gfx/vk/hle_vk.m` | 134 | 0 | 134 |
+| `dm/host/hle_account.c` | 41 | 41 | 0 |
+| `dm/host/hle_audio.c` | 64 | 64 | 0 |
+| `dm/host/hle_audren.c` | 22 | 22 | 0 |
+| `dm/host/hle_codec.c` | 32 | 32 | 0 |
+| `dm/host/hle_codec_video.c` | 101 | 101 | 0 |
+| `dm/host/hle_friends.c` | 33 | 33 | 0 |
+| `dm/host/hle_fs.c` | 73 | 73 | 0 |
+| `dm/host/hle_glslc.c` | 1 | 0 | 1 |
+| `dm/host/hle_hid.c` | 169 | 169 | 0 |
+| `dm/host/hle_jit.c` | 7 | 7 | 0 |
+| `dm/host/hle_mii.c` | 17 | 17 | 0 |
+| `dm/host/hle_misc.c` | 138 | 138 | 0 |
+| `dm/host/hle_movie.c` | 27 | 27 | 0 |
+| `dm/host/hle_net.c` | 101 | 101 | 0 |
+| `dm/host/hle_nvdrv.c` | 7 | 7 | 0 |
+| `dm/host/hle_oe.c` | 55 | 55 | 0 |
+| `dm/host/hle_offline.c` | 132 | 132 | 0 |
+| `dm/host/hle_os.c` | 4 | 4 | 0 |
+| `dm/host/hle_ro.c` | 10 | 10 | 0 |
+| `dm/host/hle_sdk16.c` | 84 | 84 | 0 |
+| `dm/host/hle_sdkinit.c` | 7 | 7 | 0 |
+| `dm/host/hle_sf.c` | 13 | 13 | 0 |
+| `dm/host/hle_swkbd.c` | 31 | 31 | 0 |
+| `dm/host/hle_table.c` | 63 | 63 | 0 |
+| `dm/host/hle_time.c` | 29 | 29 | 0 |
+| `dm/host/hle_web.c` | 13 | 13 | 0 |
+| **all (distinct names)** | **1625** | **1303** | **322** |
+<!-- coverage:end -->
 
 ## Controllers (`hid.ts`)
 

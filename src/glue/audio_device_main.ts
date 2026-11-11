@@ -82,7 +82,14 @@ export class AudioDeviceMain {
       // Where autoplay is allowed a new context runs at once: it only runs while an output wants it
       if (this.wanted) this.start(); else if (ctx.state === "running") void ctx.suspend().catch(() => { /* closed */ });
     } catch (e) {
-      if (serial === this.serial) this.send({ audio: { ev: "open", rate: 0, error: String(e) } });
+      if (serial === this.serial) {
+        // a context whose worklet did not load has no output: it is released, so a start does not report it running
+        const ctx = this.ctx, node = this.node;
+        this.ctx = null; this.node = null;
+        try { node?.disconnect(); } catch { /* gone */ }
+        if (ctx) { ctx.onstatechange = null; void ctx.close().catch(() => { /* closed already */ }); }
+        this.send({ audio: { ev: "open", rate: 0, error: String(e) } });
+      }
     }
     this.openDone();
   }

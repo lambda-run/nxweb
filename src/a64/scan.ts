@@ -215,7 +215,7 @@ export function classify(insn: u32): u32 {
   if ((insn & 0x9F208400) == 0x0E008400) {       // three-same extra (bit 15 = 1, bit 10 = 1, bit 21 = 0)
     let opc = (insn >> 11) & 15, U = (insn >> 29) & 1;
     if (opc <= 1) return U ? C_RDM : C_UNALLOC;
-    if (opc == 2) return C_DOTPROD;
+    if (opc == 2) return ((insn >> 22) & 3) == 2 ? C_DOTPROD : C_UNALLOC;
     if (opc == 3) return C_I8MM;                 // USDOT
     if (opc == 4 || opc == 5) return C_I8MM;     // SMMLA / UMMLA / USMMLA
     if (opc >= 8 && opc <= 15) return U ? (opc == 15 || opc == 13 ? C_BF16 : C_FCMA) : C_UNALLOC;
@@ -225,7 +225,7 @@ export function classify(insn: u32): u32 {
     let opc = (insn >> 12) & 15, U = (insn >> 29) & 1, sz = (insn >> 22) & 3;
     if (U && (opc & 9) == 1 && sz != 0 && sz != 3) return C_FCMA;
     if (U && (opc == 13 || opc == 15)) return C_RDM;
-    if (opc == 14) return C_DOTPROD;
+    if (opc == 14) return sz == 2 ? C_DOTPROD : C_SIMD_OTHER;
     if (opc == 15 && !U) return sz == 1 || sz == 3 ? C_BF16 : C_I8MM;
     if ((opc == 0 || opc == 4) && !U && sz == 2) return C_FHM;
     if ((opc == 8 || opc == 12) && U && sz == 2) return C_FHM;

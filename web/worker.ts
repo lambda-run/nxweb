@@ -276,7 +276,7 @@ function report(userAgent: string): string {
   const live = liveStates();
   return reportText({ title: title || "nxweb report (no program loaded)", build: buildStamp, when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
     state: rt ? STATES[rt.r.rt_state()] : "Empty", stop: live.process?.match(/\((.*)\)$/)?.[1] ?? "", fault, modules: modRows, takeovers: tk,
-    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, log: lines.slice(-200), redTotal, scan: scanReport });
+    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, fs: fsys ? fsys.lines() : undefined, log: lines.slice(-200), redTotal, scan: scanReport });
 }
 let lastMachines: ReturnType<typeof machineRows> = [], lastOptionsKey = "";
 let scanReport: string[] | undefined;   // the instruction scan of the program that is loaded, when the prepare step handed it off (its Code stage)
@@ -321,7 +321,16 @@ async function demo(which: string) {
   await load([{ name: "cube", bytes: new Uint8Array(nso) }], await demoShaders(), info.instructionsPerUnit, { name: "the built-in demo (cube.nso)", hooks: me => me.register({ name: "demo_frames", fn: () => 0 }) });
 }
 
-self.onmessage = async (ev: MessageEvent) => {
+// The messages that end or make a process take turns: two loads at once would both end the old process, then both
+// make one, and the first would run on unseen while the second never starts (run loop already taken)
+let turn: Promise<void> = Promise.resolve();
+const PROCESS = new Set(["demo", "load", "handoff", "resume", "stop"]);
+self.onmessage = (ev: MessageEvent) => {
+  if (!PROCESS.has(ev.data?.type) || ev.data.audio) { void handle(ev); return; }
+  const mine = turn.then(() => handle(ev));
+  turn = mine.catch(() => { /* handle logs its own */ });
+};
+async function handle(ev: MessageEvent): Promise<void> {
   const m = ev.data;
   try {
     if (m.audio) { audio?.handle(m); rt?.requestWake(); }
@@ -373,4 +382,4 @@ self.onmessage = async (ev: MessageEvent) => {
       else log("page: there is no WebGPU device to lose");
     }
   } catch (e: any) { log("[RED] page: " + (e?.stack ?? e)); }
-};
+}

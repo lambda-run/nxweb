@@ -22,6 +22,10 @@ export class RtFs {
   readonly host: FsHost;
   readonly x: FsHost["x"];
   stats = { calls: 0, pended: 0, retried: 0, names: 0 };
+  private byId = new Map<number, number>();               // calls by fs function id
+  private fnName = new Map<number, string>();
+  private openFile = -1;                                   // the id of nn::fs::OpenFile
+  private opened: string[] = [];                           // the last paths OpenFile was given
   private done = new Map<number, (r: bigint) => void>();   // token -> the wake of the thread parked under it
   private anyDone: (() => void)[] = [];                    // threads parked on `retry`
 
@@ -56,6 +60,8 @@ export class RtFs {
       const id = this.x.fs_lookup(p);
       if (id !== n.id) throw new Error(`runtime: fs_lookup(${n.name}) gives ${id}, the table says ${n.id}`);
       rt.register({ name: n.name, forced: o.forced !== false, fn: cpu => this.call(n.id, cpu) });
+      this.fnName.set(n.id, shortName(n.name));
+      if (this.openFile < 0 && /^nn::fs::OpenFile$/.test(shortName(n.name))) this.openFile = n.id;
     }
     this.x.fs_set_account_save(-1);
     this.stats.names = names.length;
@@ -65,7 +71,26 @@ export class RtFs {
   }
   private call(id: number, cpu: HostCpu): HostResult {
     this.stats.calls++;
-    return this.step(id, cpu, cpu.read(cpu.args(), 64));
+    this.byId.set(id, (this.byId.get(id) ?? 0) + 1);
+    const saved = cpu.read(cpu.args(), 64);
+    if (id === this.openFile) {
+      const at = Number(new DataView(saved.buffer, saved.byteOffset, 64).getBigUint64(8, true)), u8 = this.rt.u8();
+      let e = at;
+      while (e < u8.length && e < at + 160 && u8[e]) e++;
+      if (at > 0 && at < u8.length) {
+        this.opened.push(new TextDecoder().decode(u8.slice(at, e)));
+        if (this.opened.length > 8) this.opened.shift();
+      }
+    }
+    return this.step(id, cpu, saved);
+  }
+  // For the report: the most called nn::fs functions, and the last paths given to OpenFile
+  lines(max = 8): string[] {
+    const rows = [...this.byId].sort((x, y) => y[1] - x[1]);
+    const out = rows.slice(0, max).map(([id, n]) => `${String(n).padStart(8)}  ${this.fnName.get(id) ?? "#" + id}`);
+    if (rows.length > max) out.push(`(${rows.length - max} more functions, ${rows.slice(max).reduce((t, r) => t + r[1], 0)} calls)`);
+    if (this.opened.length) out.push("the last files opened, the newest last:", ...this.opened.map(f => "  " + f));
+    return out;
   }
   // One fs_call with the guest's x0..x7 (kept: the registers are gone when a parked thread comes back)
   private step(id: number, cpu: HostCpu, saved: Uint8Array): HostResult {
@@ -86,4 +111,19 @@ export class RtFs {
     }
     return BigInt.asUintN(64, r);
   }
+}
+
+// "_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci" -> "nn::fs::OpenFile" (the nested name only; others as they are)
+export function shortName(m: string): string {
+  if (!m.startsWith("_ZN")) return m;
+  const parts: string[] = [];
+  let i = 3;
+  if (m[i] === "K") i++;
+  while (i < m.length && m[i] >= "0" && m[i] <= "9") {
+    let n = 0;
+    while (m[i] >= "0" && m[i] <= "9") n = 10 * n + (m.charCodeAt(i++) - 48);
+    parts.push(m.slice(i, i + n));
+    i += n;
+  }
+  return parts.length ? parts.join("::") : m;
 }

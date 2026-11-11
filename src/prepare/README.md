@@ -98,7 +98,22 @@ predicts and never fails the prepare: its lines in the log are plain, not red. T
 scanner's key, so a new translator binary runs the Code stage (and only it) again. The page shows the result as a
 line in the stage's row ("3 kinds of instruction in this game are not supported yet"), a sentence on the verdict
 card and the table under its technical details; `HandOff.scan` / `HandOffMessage.scan` carry it to the runtime, for
-the report text. Without a scanner nothing changes: no `scan`, the same stage hash as before.
+the report text. Without a scanner there is no `scan`.
+
+### The take-over scan (Code stage)
+
+The "grep ahead" for SDK functions: every module's dynamic symbol table (MOD0, `DT_SYMTAB` / `DT_STRTAB`, the count
+from `DT_HASH` / `DT_GNU_HASH`, read from the image `scan_image` unpacks; `src/glue/hle_scan.ts`) against
+`src/hle/gen/coverage.ts`, the names nxnative takes over by name and nxweb does not answer (made by
+`tools/hle_coverage.py`, `src/hle/README.md` "Coverage"). An HLE_FORCE name is a gap in every module that defines or
+imports it; an HLE name (and the GL / Vulkan tables) where a module imports it and none of the game's modules defines
+it, as nxnative's loader takes them over. It runs with or without a scanner, records `CodeOut.hle` (module, mangled
+and demangled name, nxnative file, forced, defines or imports), logs plain lines (`prepare: hle: ...`), never fails
+the prepare. The stage's input hash holds `HLE_SCAN_KEY` (the format and the list's hash), so a new answer in nxweb
+runs the Code stage again. The page shows "N SDK functions nxnative replaces are not answered here yet" in the stage's
+row and on the verdict card, the table under the technical details. `npm run prepare:scan -- <game folder | exefs
+folder | NSO file>` prints the same (the version the prepare picks; `--version N`, `--json`, `--max N`; exit 1 when
+something is not answered).
 
 ### The manifest
 
@@ -487,7 +502,7 @@ every profile's address-space verdict against `settingsFor`; the machine; BNSH; 
 groups of cases on hand-made images (relocation, changed code and callees, imports, system call wrappers, ambiguity,
 several functions, several implementations, overlap, damaged unwind data, 400 mutations), the fingerprints and the
 write table against nxnative and Capstone, and the pipeline (a patch placed by its function, the game exits with
-7 instead of 42); **the converter on a synthetic nxnative tree** (patch files it cannot evaluate, `--strict`).
+7 instead of 42); **the converter on a synthetic nxnative tree** (patch files it cannot evaluate, `--strict`); **the take-over scan** on a synthetic two-module game (forced, weak, defined elsewhere, answered; the stage output, the log, `prepare:scan`).
 
 Containers (`test/prepare/nup_tests.mts`): the listing and bytes of a synthetic container with raw and zstd files
 (open reads the superblock and table only; of a 9 MB raw file only the range asked for is read); **44 damaged or
