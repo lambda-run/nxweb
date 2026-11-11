@@ -98,8 +98,10 @@ export class RtShaders {
 }
 
 // ---- the in-page translator: a Worker of its own (rt_shader_worker.ts, bundled as a module) ----
-export const SHADER_CHAIN = "nxweb-shaders-2/page";
-export function workerTranslator(o: { worker: string | URL; framework: string; naga: string; chain?: string }): ShaderTranslator {
+export const SHADER_CHAIN = "nxweb-shaders-3/page";
+// subgroups: the device has WebGPU's subgroups feature (GfxHost.hasSubgroups): warp operations become WGSL subgroup builtins, else one-invocation subgroups
+// (src/shaders/spv_subgroups.ts). The output differs, so the chain (and with it every store id) says which.
+export function workerTranslator(o: { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean }): ShaderTranslator {
   let w: Worker | null = null, bc: BroadcastChannel | null = null, up = false, seq = 0;
   const calls = new Map<number, { res: (t: Translated) => void; rej: (e: Error) => void }>(), queue: unknown[] = [];
   const failAll = (why: string) => { for (const c of calls.values()) c.rej(new Error(why)); calls.clear(); };
@@ -109,7 +111,7 @@ export function workerTranslator(o: { worker: string | URL; framework: string; n
     bc = new BroadcastChannel(name);
     bc.onmessage = ev => {
       const m = ev.data;
-      if (m.ready) { up = true; bc!.postMessage({ init: { framework: o.framework, naga: o.naga } }); for (const q of queue.splice(0)) bc!.postMessage(q); return; }
+      if (m.ready) { up = true; bc!.postMessage({ init: { framework: o.framework, naga: o.naga, subgroups: !!o.subgroups } }); for (const q of queue.splice(0)) bc!.postMessage(q); return; }
       const c = calls.get(m.id);
       if (!c || (m.wgsl === undefined && m.error === undefined)) return;
       calls.delete(m.id);
@@ -120,7 +122,7 @@ export function workerTranslator(o: { worker: string | URL; framework: string; n
   };
   const stop = (): void => { w?.terminate(); bc?.close(); w = null; bc = null; up = false; queue.length = 0; };
   return {
-    chain: o.chain ?? SHADER_CHAIN,
+    chain: (o.chain ?? SHADER_CHAIN) + (o.subgroups ? "+subgroups" : ""),
     translate: blob => new Promise((res, rej) => {
       if (!w) start();
       const id = ++seq, m = { id, key: blob.key, control: blob.control, code: blob.code };

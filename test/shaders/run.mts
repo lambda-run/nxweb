@@ -33,6 +33,9 @@ const naga = await load();
 const CORPUS = join(ROOT, "test/shaders/corpus"), E2E = join(ROOT, "test/shaders/e2e");
 const corpus = await build({ glsl: CORPUS });
 writeFileSync(join(OUT, "corpus.nxsl"), corpus.library); writeFileSync(join(OUT, "corpus.report.json"), JSON.stringify(corpus.report, null, 1));
+// the corpus again as for a device with WebGPU subgroups (warp operations as WGSL subgroup builtins, src/shaders/spv_subgroups.ts)
+const corpusSg = await build({ glsl: CORPUS, subgroups: "native" });
+writeFileSync(join(OUT, "corpus_sg.nxsl"), corpusSg.library);
 const e2e = await build({ glsl: E2E });
 writeFileSync(join(OUT, "e2e.nxsl"), e2e.library);
 const byName = (r: typeof corpus, n: string) => { const x = r.report.find(e => e.name === n)!; return { ...x, entry: r.entries.find(e => e.key === x.key) }; };
@@ -72,6 +75,30 @@ await test("SPIR-V pass: every rewritten module passes spirv-val", () => {
     n++;
   }
   return `${n} modules`;
+});
+await test("SPIR-V pass: warp operations, native (WGSL subgroups, a 32-lane warp view) and one-invocation subgroups; vertex shaders always the latter", () => {
+  const cases = JSON.parse(readFileSync(join(CORPUS, "manifest.json"), "utf8")).filter((m: any) => m.name.startsWith("subgroup_"));
+  const d = mkdtempSync(join(tmpdir(), "nxsl-sg-")), warp = (b: Uint8Array) => parse(b).insts.filter(i => i.op >= 333 && i.op <= 366).length;
+  for (const m of cases) {
+    const spv = glslToSpv(join(CORPUS, m.file)), vertex = m.file.endsWith(".vert");
+    if (!warp(spv)) throw new Error(`${m.name}: glslang wrote no warp operation`);
+    const one = fixForWgsl(spv, { bindings: "keep", subgroups: "single" }), nat = fixForWgsl(spv, { bindings: "keep", subgroups: "native" });
+    eq([one.subgroups, nat.subgroups, warp(one.spv)], ["single", vertex ? "single" : "native", 0], `${m.name}: paths taken, warp operations left on the one-invocation path`);
+    if (!one.notes.some(n => /one-invocation subgroups \(the device has no WebGPU subgroups feature\)/.test(n))) throw new Error(`${m.name}: no one-invocation note: ${one.notes}`);
+    if (vertex ? !nat.notes.some(n => /no subgroup operations in vertex shaders/.test(n)) : !warp(nat.spv) || !nat.notes.some(n => /32-lane Maxwell warps/.test(n))) throw new Error(`${m.name}: native path: ${nat.notes}`);
+    for (const f of [one, nat]) {
+      writeFileSync(join(d, "m.spv"), f.spv);
+      const r = spawnSync("spirv-val", ["--target-env", "vulkan1.1", join(d, "m.spv")], { encoding: "utf8" });
+      if (have("spirv-val") && r.status) throw new Error(`${m.name} (${f.subgroups}): ${r.stderr.trim()}`);
+    }
+    const w = convertStage(naga, spv, { bindings: "keep", subgroups: "native" }).wgsl, w1 = convertStage(naga, spv, { bindings: "keep" }).wgsl;
+    if (/subgroup[A-Z]|subgroup_|enable subgroups/.test(w1)) throw new Error(`${m.name}: subgroup builtins on the one-invocation path:\n${w1}`);
+    if (!vertex && (!w.startsWith("enable subgroups;\ndiagnostic(off, subgroup_uniformity);\n") || !/subgroup(Ballot|Shuffle|Add)/.test(w))) throw new Error(`${m.name}: native WGSL:\n${w}`);
+  }
+  // the one-invocation values (lane 0 of 1): a ballot of p is p's bit 0, an exclusive min scan the identity, SubgroupSize 1
+  const b1 = convertStage(naga, glslToSpv(join(CORPUS, "subgroup_ballot.frag")), { bindings: "keep" }).wgsl;
+  if (!/select\(0u, 1u,/.test(b1) && !/select\(vec4<u32>\(0u, 0u, 0u, 0u\), vec4<u32>\(1u, 0u, 0u, 0u\)/.test(b1)) throw new Error(`one-invocation ballot:\n${b1}`);
+  return `${cases.length} stages, both paths pass spirv-val`;
 });
 await test("SPIR-V pass: uniform blocks are cut to what is read; a computed index keeps the whole array", () => {
   eq(byName(corpus, "ubo_const_index").entry!.reflection.uboSize, { "0": 96 }, "data[0] and data[5] read");
@@ -414,11 +441,12 @@ if (!process.argv.includes("--no-browser")) {
       await page.goto(`${url}/test/shaders/test.html`);
       await page.waitForFunction("window.__ready === true", null, { timeout: 30000 });
 
-      const libs = ["corpus", "e2e", ...(maxwell ? ["maxwell"] : [])];
+      const libs = ["corpus", "corpus_sg", "e2e", ...(maxwell ? ["maxwell"] : [])];
       for (const l of libs) await test(`browser: Chromium's WGSL compiler accepts every module of ${l}.nxsl`, async () => {
+        if (l === "corpus_sg" && !await page.evaluate("window.__subgroups")) return "SKIPPED: the adapter has no WebGPU subgroups feature";
         const r: any[] = await page.evaluate(`validate("${url}/build/shaders/${l}.nxsl")`);
-        const names = new Map((l === "corpus" ? corpus : l === "e2e" ? e2e : maxwell!).report.map(x => [x.key, x.name]));
-        const known: Record<string, string> = l === "corpus" ? JSON.parse(readFileSync(join(CORPUS, "expect_wgsl.json"), "utf8")) : {};
+        const names = new Map((l === "corpus" ? corpus : l === "corpus_sg" ? corpusSg : l === "e2e" ? e2e : maxwell!).report.map(x => [x.key, x.name]));
+        const known: Record<string, string> = l.startsWith("corpus") ? JSON.parse(readFileSync(join(CORPUS, "expect_wgsl.json"), "utf8")) : {};
         const bad: string[] = [];
         for (const m of r) {
           const n = names.get(m.key)!, want = known[n];

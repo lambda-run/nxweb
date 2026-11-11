@@ -8,14 +8,15 @@
 //   5. gives every resource its nxweb binding (src/gfx/README.md) from the translator's variable name, and reports it;
 //   6. appends the position fix-up to a vertex shader (origin and depth mode are run-time state, lower.ts H_FIXUP).
 // Every loss is a note; a construct that has no place yet is an error, so a library never holds a shader that silently differs.
+import { subgroups, type SubgroupPath } from "./spv_subgroups.ts";
 
 export const Op = { Name: 5, MemberName: 6, Extension: 10, ExtInstImport: 11, EntryPoint: 15, ExecutionMode: 16, Capability: 17, TypeVoid: 19, TypeBool: 20, TypeInt: 21, TypeFloat: 22,
   TypeVector: 23, TypeImage: 25, TypeSampler: 26, TypeSampledImage: 27, TypeArray: 28, TypeRuntimeArray: 29, TypeStruct: 30, TypePointer: 32, TypeFunction: 33,
   Constant: 43, ConstantComposite: 44, Function: 54, FunctionEnd: 56, Variable: 59, Load: 61, Store: 62, AccessChain: 65, InBoundsAccessChain: 66, Decorate: 71, MemberDecorate: 72,
   CompositeConstruct: 80, CompositeExtract: 81, SampledImage: 86, FAdd: 129, FMul: 133, Label: 248, Return: 253,
   BeginInvocationInterlockEXT: 5364, EndInvocationInterlockEXT: 5365 } as const;
-const Dec = { Block: 2, BufferBlock: 3, ArrayStride: 6, BuiltIn: 11, NonWritable: 24, Location: 30, Binding: 33, DescriptorSet: 34, Offset: 35 };
-const SC = { UniformConstant: 0, Input: 1, Uniform: 2, Output: 3, Private: 6, StorageBuffer: 12 };
+export const Dec = { Block: 2, BufferBlock: 3, ArrayStride: 6, BuiltIn: 11, NonWritable: 24, Location: 30, Binding: 33, DescriptorSet: 34, Offset: 35 };
+export const SC = { UniformConstant: 0, Input: 1, Uniform: 2, Output: 3, Private: 6, StorageBuffer: 12 };
 
 export interface Inst { op: number; w: number[] }   // w: the operand words, without the first (length and opcode)
 export interface Module { version: number; generator: number; bound: number; insts: Inst[] }
@@ -42,7 +43,7 @@ export function serialize(m: Module): Uint8Array {
   for (const i of m.insts) { u[p++] = ((1 + i.w.length) << 16) | i.op; u.set(i.w, p); p += i.w.length; }
   return new Uint8Array(u.buffer);
 }
-function str(w: number[], at: number): string {
+export function str(w: number[], at: number): string {
   let s = "";
   for (let i = at; i < w.length; i++) for (let b = 0; b < 4; b++) { const c = (w[i] >>> (8 * b)) & 0xff; if (!c) return s; s += String.fromCharCode(c); }
   return s;
@@ -76,6 +77,7 @@ export interface FixResult {
   inputs: { location: number; type: "float" | "sint" | "uint" }[];
   outputs: { location: number; type: "float" | "sint" | "uint" }[];
   notes: string[];     // what was lost or assumed, in words
+  subgroups?: SubgroupPath;   // how its warp operations were made (none: it has none)
 }
 export interface FixOptions {
   // "nxweb": the translator's names decide (step 5). "keep": descriptor sets and bindings stay as they are; a sampler split off a texture at (set, b) goes to (set, b + 1)
@@ -85,6 +87,8 @@ export interface FixOptions {
   shrinkUniforms?: boolean;   // default true
   // the translator's storage buffers (its <key>.res.json "sbufs"): SPIR-V binding -> where the shader reads the buffer's address
   sbufs?: { binding: number; cb_slot: number; cb_offset: number; flags?: number }[];
+  // warp operations (spv_subgroups.ts): "native" when the device has WebGPU's subgroups feature, else "single" (the default: one-invocation subgroups)
+  subgroups?: SubgroupPath;
 }
 
 // The nxweb binding convention (src/gfx/README.md), with the three things a translated shader has and a hand-written one has not:
@@ -95,7 +99,7 @@ export const STAGE_INDEX = { vertex: 0, fragment: 1, compute: 2 } as const;
 export const SUPPORT_SLOT = 14, CBSIZE_BANK = 25;
 const C2_TEX = 0x20, C2_SEPTEX = 0x168;   // nxnative dmsh_abi.h: combined texture slot r's handle word is at c2 byte 0x20 + 8 r, up to the separate texture table
 
-class Ctx {
+export class Ctx {
   m: Module; notes: string[] = [];
   names = new Map<number, string>();
   def = new Map<number, Inst>();               // result id -> its instruction (types, constants, variables, body results)
@@ -155,17 +159,15 @@ const CAP = { Float64: 10, SampledBuffer: 46, ImageBuffer: 47, GroupNonUniform: 
 // 1. The translator declares these for every shader (CodeGen/Spirv/SpirvGenerator.cs); naga stops at the extension
 function dropUnused(c: Ctx) {
   const ops = new Set(c.m.insts.map(i => i.op));
-  const subgroup = [...ops].some(o => o >= 333 && o <= 366), f64 = c.m.insts.some(i => i.op === Op.TypeFloat && i.w[1] === 64);
+  const f64 = c.m.insts.some(i => i.op === Op.TypeFloat && i.w[1] === 64);
   const bufferImage = c.m.insts.some(i => i.op === Op.TypeImage && i.w[2] === 5);
   const drawParams = c.m.insts.some(i => (i.op === Op.Decorate && i.w[1] === Dec.BuiltIn && i.w[2] >= 4424 && i.w[2] <= 4426));
   const interlock = ops.has(Op.BeginInvocationInterlockEXT) || ops.has(Op.EndInvocationInterlockEXT);
-  if (subgroup) throw new Error("subgroup operations (Maxwell warp instructions): WGSL has none without the subgroups feature, and nothing here lowers them");
   if (f64) throw new Error("64-bit floats: WGSL has none (nxnative retranslates with softfloat64; do the same before this pass)");
   if (bufferImage) throw new Error("a buffer texture: WGSL has none (nxnative's host binds them as 2D rows; needs the same decision here)");
   if (interlock) c.notes.push("pixel interlock dropped: WebGPU has no fragment shader interlock, so read-modify-write of images or storage in this pixel shader is not ordered");
   if (drawParams) c.notes.push("reads the draw's base vertex / base instance / draw index: left to naga");
-  const gone = new Set([CAP.Float64, CAP.SampledBuffer, CAP.ImageBuffer, CAP.GroupNonUniform, CAP.GroupNonUniformVote, CAP.GroupNonUniformArithmetic, CAP.GroupNonUniformBallot,
-    CAP.GroupNonUniformShuffle, CAP.FragmentShaderPixelInterlockEXT, ...(drawParams ? [] : [CAP.DrawParameters])]);
+  const gone = new Set([CAP.Float64, CAP.SampledBuffer, CAP.ImageBuffer, CAP.FragmentShaderPixelInterlockEXT, ...(drawParams ? [] : [CAP.DrawParameters])]);
   c.m.insts = c.m.insts.filter(i => !(i.op === Op.Capability && gone.has(i.w[0])) && !(i.op === Op.Extension && str(i.w, 0) === "SPV_EXT_fragment_shader_interlock") &&
     i.op !== Op.BeginInvocationInterlockEXT && i.op !== Op.EndInvocationInterlockEXT && !(i.op === Op.ExecutionMode && i.w[1] >= 5366 && i.w[1] <= 5371));
 }
@@ -612,6 +614,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   if (ep.length !== 1) throw new Error(`${ep.length} entry points: one stage per module is expected`);
   const model = ep[0].w[0], stage = model === 0 ? "vertex" : model === 4 ? "fragment" : model === 5 ? "compute" : undefined;
   if (!stage) throw new Error(`execution model ${model} (geometry, tessellation, task or mesh): WebGPU has no such stage`);
+  const sg = subgroups(c, stage, opts.subgroups ?? "single"); c.index();
   dropUnused(c); c.index();
   nanTests(c); c.index();
   mulExtended(c); c.index();
@@ -627,5 +630,5 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
     bindings.push(fixup(c, posVar)); c.index();
   }
   for (const i of c.m.insts) delete (i as any).image, delete (i as any).sampler;
-  return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes };
+  return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, ...(sg ? { subgroups: sg } : {}) };
 }

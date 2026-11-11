@@ -14,7 +14,9 @@ export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions 
   if (opts.mesh && f.stage !== "compute") throw new Error(`a ${opts.mesh.kind} shader that is not compute after the translator`);
   // WGSL refuses an implicit-derivative sample (textureSample, dpdx) under control flow that differs between pixels; Maxwell code does it freely (a TEX after a
   // predicate), with the derivative then undefined, as on the hardware. The directive turns WGSL's error off for the module
-  let wgsl = (f.stage === "fragment" ? "diagnostic(off, derivative_uniformity);\n" : "") + naga.spvToWgsl(f.spv);
+  // native warp operations (spv_subgroups.ts): WGSL's subgroup builtins, whose uniformity analysis would refuse the translator's divergent votes and shuffles
+  const sg = f.subgroups === "native" ? "enable subgroups;\ndiagnostic(off, subgroup_uniformity);\n" : "";
+  let wgsl = sg + (f.stage === "fragment" ? "diagnostic(off, derivative_uniformity);\n" : "") + naga.spvToWgsl(f.spv);
   if (opts.mesh) wgsl = wrapStage(wgsl, opts.mesh);
   const cb = f.bindings.filter(b => b.kind === "cbuf"), tex = f.bindings.filter(b => b.kind === "tex"), sb = f.bindings.filter(b => b.kind === "storage");
   for (const t of tex) if (t.sampleType === "sint" || t.sampleType === "uint") f.notes.push(`texture slot ${t.reg} is sampled as ${t.sampleType}: src/gfx declares every texture float or depth`);
