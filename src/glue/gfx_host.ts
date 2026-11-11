@@ -218,9 +218,13 @@ export class GfxHost {
       this.context.configure({ device, format: this.canvasFormat, alphaMode: "opaque" });
     }
     device.onuncapturederror = (e: any) => { this.stats.errors++; this.log(`[RED] WebGPU: ${String(e.error?.message ?? e).split("\n")[0]}`); };
-    const gen = this.gen;
-    device.lost?.then?.((info: any) => { if (gen === this.gen) void this.deviceLost(info); });
+    // the device outlives a disposed replayer: its lost promise holds the replayer through a link dispose() cuts, so the replayer (and the guest memory
+    // it holds) can go
+    const gen = this.gen, link = { host: this as GfxHost | null };
+    this.lostLinks.push(link);
+    device.lost?.then?.((info: any) => { const h = link.host; if (h && gen === h.gen) void h.deviceLost(info); });
   }
+  private lostLinks: { host: GfxHost | null }[] = [];
   // Every texture and buffer the replayer makes, until it destroys it: what dispose() releases
   private live = new Set<GPU>();
   private newBuffer(desc: any): GPU { const o = this.device.createBuffer(desc); this.live.add(o); return o; }
@@ -250,6 +254,8 @@ export class GfxHost {
     for (const w of waiters) w.go();
     this.onFence = this.onImage = this.onDeviceLost = this.onDeviceRestored = null;
     if (this.device.onuncapturederror) this.device.onuncapturederror = null;
+    for (const l of this.lostLinks) l.host = null;
+    this.lostLinks = [];
     return n;
   }
   private limit(name: string, fallback: number): number {
