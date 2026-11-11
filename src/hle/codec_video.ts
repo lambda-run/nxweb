@@ -36,6 +36,9 @@ declare function cvDecode(dec: u32, gen: u32, seq: u64, data: usize, size: usize
 @external("env", "hle_cv_reset")
 declare function cvReset(dec: u32, gen: u32): void;
 // @ts-ignore: decorator
+// a picture was written into the game's memory (the graphics side is told: a texture over it has new texels)
+@external("env", "hle_cv_wrote")
+declare function cvWrote(ptr: usize, size: usize): void;
 @external("env", "hle_cv_close")
 declare function cvClose(dec: u32): void;
 
@@ -166,6 +169,7 @@ function picNv12(id: u32, ydst: usize, uvdst: usize, w: u32, h: u32): void {
     const u = pu_ + <usize>y * cw, v = pv + <usize>y * cw, o = uvdst + <usize>y * w;
     for (let x: u32 = 0; (x < vw2) && (x * 2 + 1 < w); x++) { store<u8>(o + 2 * <usize>x, load<u8>(u + x)); store<u8>(o + 2 * <usize>x + 1, load<u8>(v + x)); }
   }
+  cvWrote(ydst, <usize>w * h); cvWrote(uvdst, <usize>w * (h >> 1));
 }
 // I420 → RGBA rows of `stride` bytes, by the matrix and range the picture declares (not given: BT.709 from 720 lines
 // up, else BT.601, as md_rgba), 16-bit fixed point; a smaller picture is padded with opaque black, a larger one cropped

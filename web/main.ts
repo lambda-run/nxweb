@@ -225,8 +225,10 @@ async function showReport(text: string) {
   box.hidden = false; $("trouble").hidden = false;
   let copied = false;
   try { await navigator.clipboard.writeText(text); copied = true; } catch { /* no clipboard permission (a sandboxed frame, or no gesture): the text is in the page */ }
+  // the report's text is in one place, with the log (Details for developers): shown there when it could not be copied
   box.open = !copied || dev.open;
-  $("reportnote").textContent = (copied ? `Copied (${text.split("\n").length} lines). Paste it where you report the problem.` : "This browser did not let the page copy by itself: the report is below, select it and copy.") + " It has no game data.";
+  if (!copied) { dev.open = true; box.scrollIntoView({ block: "nearest" }); }
+  $("reportnote").textContent = (copied ? `Copied (${text.split("\n").length} lines). Paste it where you report the problem.` : "This browser did not let the page copy by itself: the report is with the log under Details for developers, select it there and copy.") + " It has no game data.";
 }
 
 // ---- a game folder: the prepare step (web/prepare.html, in the frame) hands over what it made; Play starts it here ----

@@ -18,6 +18,9 @@ export interface RuntimeModules {
   audio?: WebAssembly.Module;         // build/runtime/audio.wasm, for src/glue/rt_audio.ts
 }
 export interface RuntimeOptions {
+  // runAsync's timer (default setTimeout). A browser fires a hidden page's timers rarely (once a minute after five minutes), which leaves guest
+  // threads that sleep or wait with a timeout almost stopped while frames still come: an embedder that runs unwatched gives a timer of its own
+  timer?: (fn: () => void, ms: number) => void;
   budget?: number;                    // budget units per time slice (function entries + backward branches); default 100000
   clock?: "deterministic" | "wall";   // deterministic (default): guest time is a function of executed budget
   nsPerUnit?: number;                 // deterministic clock: ns per budget unit (default 100)
@@ -1137,17 +1140,18 @@ export class Runtime {
   // run() for a host with an event loop: slices stay synchronous, and between them control goes back to the event
   // loop, every yieldMs while threads run and for as long as every thread waits for something outside the guest.
   async runAsync(o: { yieldMs?: number } = {}): Promise<RunResult> {
+    const timer = this.opts.timer ?? ((fn: () => void, ms: number) => { setTimeout(fn, ms); });
     for (;;) {
       const r = this.run({ async: true, yieldMs: o.yieldMs ?? 8 });
       if (!r.idle && !r.yielded) return r;
       await new Promise<void>(res => {
         this.wake = res;
-        if (!r.idle) setTimeout(res, 0);
+        if (!r.idle) timer(res, 0);
         else {
-          if (r.wakeMs !== undefined) setTimeout(res, Math.max(0, r.wakeMs));
+          if (r.wakeMs !== undefined) timer(res, Math.max(0, r.wakeMs));
           // something finished between run() returning and this promise: do not sleep through it
           const wall = this.opts.clock === "wall", now = wall ? this.wallNs() : 0n;
-          for (const e of this.exts) if (e.done && !e.signaled) { if (!wall || e.at <= now) res(); else setTimeout(res, Number(e.at - now) / 1e6); }
+          for (const e of this.exts) if (e.done && !e.signaled) { if (!wall || e.at <= now) res(); else timer(res, Number(e.at - now) / 1e6); }
           if (this.pauseAsked || this.state === "Stopped") res();
         }
       });

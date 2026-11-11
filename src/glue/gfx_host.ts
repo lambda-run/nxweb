@@ -31,6 +31,7 @@ export interface GfxExports {
   gfx_sampler_table(): number;
   gfx_scratch(): number;
   gfx_flush(): void;
+  gfx_note_flush?(lo: bigint, n: bigint): void;
   gfx_stat(i: number): number;
   [name: string]: any;
 }
@@ -282,6 +283,7 @@ export class GfxHost {
     for (const k of new Set(keys)) { const b = k.match(/../g)!.map(h => parseInt(h, 16)); this.x.gfx_watch_key((b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0); }
     this.log("ndve=bypass: when nn::ndve's movie network cannot run, a bilinear stand-in writes its output (diagnostic; off by default)");
   }
+  fitCanvas = false; onCanvasSize: ((width: number, height: number) => void) | null = null;
   private ndve: NdveBypass | null = null;
   private ndvePipes = new Map<string, { pipe: GPU; layout: GPU }>();
   private upR8 = 0; private upRg8 = 0;
@@ -1616,6 +1618,12 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     if (t && this.context) {
       const c = [0, 1, 2, 3].map(i => dv.getInt32(p + 16 + i * 4, true)), uv = c[2] > 0 && c[3] > 0 ? [c[0] / t.width, c[1] / t.height, c[2] / t.width, c[3] / t.height] : [0, 0, 1, 1];
       if (dv.getUint32(p + 44, true) & 1) { uv[1] += uv[3]; uv[3] = -uv[3]; }
+      // fitCanvas (a game, not a demo with a canvas of its own size): the canvas takes the size of what the game presents, so the picture is not
+      // drawn small and stretched by the page
+      if (this.fitCanvas && c[2] > 0 && c[3] > 0) {
+        const cv = this.context.canvas, w = Math.min(c[2], 3840), h = Math.min(c[3], 2160);
+        if (cv && (cv.width !== w || cv.height !== h)) { cv.width = w; cv.height = h; this.onCanvasSize?.(w, h); }
+      }
       this.blit(this.view(t, t.gpu, null, "2d"), uv, this.context.getCurrentTexture().createView(), this.canvasFormat, null, true);
     }
     if (dv.getUint32(p + 44, true) & 1) this.presentFlips++;

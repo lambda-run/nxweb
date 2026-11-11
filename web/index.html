@@ -182,7 +182,6 @@
       <div id="emptyhint" aria-hidden="true"><b>No game running</b><span>Open a .nup above, or try one of the demos.</span></div></div>
     <div id="trouble" class="row" role="status" hidden><b>Something went wrong?</b><button id="copyreport">Copy report</button>
       <small id="reportnote">The report says what nxweb did (states, counters, its own log lines). It has no game data.</small></div>
-    <details id="reportbox" hidden><summary>the report (one text block: machine states, modules, counters, the adapter, the options key, the last 200 log lines; nothing from guest memory)</summary><textarea id="reporttext" class="mono" readonly aria-label="The report"></textarea></details>
     <dl id="keys" aria-label="Keyboard controls">
       <div><dt>Move</dt><dd><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or <kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd></dd></div>
       <div><dt>Look</dt><dd><kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd></dd></div>
@@ -227,9 +226,10 @@
   <div class="panel" id="capture"><div class="row"><h2 style="margin:0">Frame capture</h2><button id="capturebtn" class="sm">Capture a frame (F9)</button><small>the host stream of one frame as text, and the render targets of each pass</small>
       <span class="grow"></span><details><summary>tests</summary><button id="losedevice">Destroy the GPU device now (the replayer asks for a new one)</button></details></div>
     <div id="captureimages"></div><pre id="capturetext" class="mono"></pre></div>
-  <div class="panel"><div class="row"><h2 style="margin:0">Log</h2><span id="redcount" data-red="0">0 red</span>
+  <div class="panel"><div class="row"><h2 style="margin:0">Log and report</h2><span id="redcount" data-red="0">0 red</span>
       <label><input id="onlyred" type="checkbox"> red lines only</label><input id="logfilter" type="text" placeholder="filter the log (text)" aria-label="Filter the log">
       <button id="copyreportdev">Copy report</button></div>
+    <details id="reportbox" hidden><summary>the report (one text block: machine states, modules, counters, the adapter, the options key, the last 200 log lines; nothing from guest memory)</summary><textarea id="reporttext" class="mono" readonly aria-label="The report"></textarea></details>
     <pre id="log" tabindex="0" aria-label="Log"></pre></div>
   </div></details>
   <dialog id="ctrlprompt" aria-labelledby="ctrlhead"><h2 id="ctrlhead">Controllers</h2><p id="ctrltext"></p><p><small>Connect controllers and press a button on each (the keyboard is player 1). OK when enough players have joined.</small></p>

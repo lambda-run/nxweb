@@ -65,10 +65,15 @@ const ndve = new URLSearchParams(self.location?.search ?? "").get("ndve") === "b
 const timerPace = new URLSearchParams(self.location?.search ?? "").get("pace") === "timer";
 // (a browser also slows a hidden page's timers: the 16 ms are counted by messages to this Worker itself, which it does not slow)
 const spinChannel = new MessageChannel();
-function spinFor(ms: number): Promise<void> {
-  const until = performance.now() + ms;
-  return new Promise(res => { const tick = () => { if (performance.now() >= until) { spinChannel.port1.onmessage = null; res(); } else spinChannel.port2.postMessage(0); }; spinChannel.port1.onmessage = tick; tick(); });
-}
+// One list of waiting callbacks, looked at on every message while it is not empty (several may wait at once: the frame clock and the run loop)
+const spinWaiting: { at: number; fn: () => void }[] = [];
+spinChannel.port1.onmessage = () => {
+  const now = performance.now();
+  for (let i = spinWaiting.length - 1; i >= 0; i--) if (spinWaiting[i].at <= now) { const w = spinWaiting[i]; spinWaiting.splice(i, 1); w.fn(); }
+  if (spinWaiting.length) spinChannel.port2.postMessage(0);
+};
+function spinTimer(fn: () => void, ms: number): void { spinWaiting.push({ at: performance.now() + ms, fn }); if (spinWaiting.length === 1) spinChannel.port2.postMessage(0); }
+function spinFor(ms: number): Promise<void> { return new Promise(res => spinTimer(res, ms)); }
 // ?canvas=off: nothing is presented to the page's canvas (a hidden page's canvas holds every present back); the frames are still drawn, and a frame
 // capture shows them. For runs nobody watches
 const noCanvas = new URLSearchParams(self.location?.search ?? "").get("canvas") === "off";
@@ -145,7 +150,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
     try { if (!hasMemory64()) throw new Error("this browser has no 64-bit WebAssembly memory"); set = await modules64(); }
     catch (e: any) { log(`[RED] page: this program needs the 64-bit memory mode and it cannot be had here (${e?.message ?? e})`); rt = undefined as any; status(); return; }
   }
-  const me = rt = new Runtime(set, { clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
+  const me = rt = new Runtime(set, { timer: timerPace ? spinTimer : undefined, clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
     layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
   optionsNote = (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
     (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");
@@ -156,6 +161,8 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   gfx = new RtGfx(me, set.gfx!, { device: device ?? undefined, canvas: device && !noCanvas ? canvas : undefined, nextFrame: timerPace ? () => spinFor(16) : () => new Promise(res => (self as any).requestAnimationFrame(res)),
     requestDevice: async () => { device = await requestDevice(); return device; }, profile: game?.gfx, ndve });
   // shaders: a library the user gave first, then translation in the page (stored by key and chain version)
+  // a game's picture has the size the game presents (the demos keep the canvas they ask for)
+  if (game) { gfx.host.fitCanvas = true; gfx.host.onCanvasSize = (width, height) => post({ type: "canvas", width, height }); }
   try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined, onFailed: dumpFailed }); }
   catch (e: any) { log("[RED] page: the shader library was refused: " + (e?.message ?? e)); shaderLookup = new RtShaders(gfx, { translator: shaderTranslator }); }
   // the SDK take-overs, with nn::vi's present side from the graphics glue (vsync events tick at every present). The
@@ -385,7 +392,7 @@ async function handle(ev: MessageEvent): Promise<void> {
       const nup = msg.rom?.nup ?? msg.aoc.find(a => a.image.nup)?.image.nup;
       if (nup) { try { prepWasm ??= new PrepWasm(await WebAssembly.compileStreaming(fetch("wasm/prepare.wasm"))); } catch (e: any) { log(`[RED] page: the prepare module could not be loaded (${e?.message ?? e}): the files of ${nup.name} are read unchecked`); } }
       const from = nup ? `out of ${nup.name} (${(nup.file.size / 2 ** 20).toFixed(1)} MB, read in place)` : "from the folder";
-      try { const st = new OpfsStorage(msg.saveId); await st.preopen(FS_KIND.SAVE); await st.preopen(FS_KIND.DEVICE_SAVE); saves = st; fsNote = `saves in OPFS under ${msg.saveId}, RomFS of ${msg.rom?.sizes.length ?? 0} files ${from}, ${msg.aoc.length} add-on contents`; }
+      try { const st = new OpfsStorage(msg.saveId + (new URLSearchParams(self.location?.search ?? "").get("save") ?? "")); /* ?save=<suffix>: another save folder */ await st.preopen(FS_KIND.SAVE); await st.preopen(FS_KIND.DEVICE_SAVE); saves = st; fsNote = `saves in OPFS under ${msg.saveId}, RomFS of ${msg.rom?.sizes.length ?? 0} files ${from}, ${msg.aoc.length} add-on contents`; }
       catch (e: any) { saves = new MemStorage(); fsNote = `no OPFS here (${e?.message ?? e}): saves are kept in memory`; }
       await load(files, [], undefined, { name: `${msg.name} (${msg.titleId}, ${msg.displayVersion ?? "v" + msg.version})`, game: handoffOptions(msg, { codeBytes: files.reduce((a, f) => a + nsoImageBytes(f.bytes) + 0x1000, 0), mem64: "auto" }), storage: storageFromMessage(msg, saves, { sha256: prepWasm ? b => prepWasm!.sha256(b) : undefined, log: l => log(l) }),
         hooks: me => me.register({ name: "demo_frames", fn: () => 0 }) });

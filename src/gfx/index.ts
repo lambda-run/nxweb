@@ -19,7 +19,7 @@ import { syncFenceOf, syncWaitFence } from "./sync";
 import { hostFlush, hostExecs, hostInit } from "./hostops";
 import { hostSegsLent, cmdInit } from "./cmd";
 import { texLayout, texLevelOffset } from "./texlayout";
-import { texContentInit, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull, setGobSwitch2 } from "./texcontent";
+import { texContentInit, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull, setGobSwitch2, noteFlush } from "./texcontent";
 import { watchInit } from "./texwatch";
 export * from "../kit/exports";
 
@@ -89,6 +89,9 @@ export function gfx_device_losses(): u32 { return deviceLosses(); }
 export function gfx_astc_decode(src: usize, srcPitch: u32, nbx: u32, nby: u32, bw: u32, bh: u32, out: usize, pitch: u32, srgb: i32): void { astcRows(src, srcPitch, nbx, nby, bw, bh, out, pitch, srgb != 0); }
 // Hands what is in the host stream to the replayer now
 export function gfx_flush(): void { hostFlush(); }
+// The host wrote guest memory itself (a decoded movie picture into the game's pool): as a flush of a mapped range, the textures over it are hashed in
+// full at their next use (the sampled hash misses a picture that changes little)
+export function gfx_note_flush(lo: u64, n: u64): void { noteFlush(lo, n); }
 // Introspection for the replayer and the tests
 export function gfx_sampler_table(): usize { return sampTablePtr(); }
 export function gfx_pipeline_state(id: u32): i32 { return pipelineState(id); }

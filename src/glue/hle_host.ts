@@ -95,6 +95,7 @@ export const ARGS_SIZE = 208;
 export interface TextRequest { title: string; sub: string; guide: string; initial: string; maxChars: number; minChars: number; kind: "keyboard" | "inline" }
 // Everything the take-overs need from outside the module
 export interface HleEnv {
+  guestWrote?(ptr: number, size: number): void;              // the module wrote guest memory another part should know of (a movie picture)
   log(line: string): void;                                   // red lines start with "[RED] "
   guestNs(): bigint;                                         // kernel_guest_ns
   monoNs(): bigint;                                          // host monotonic clock
@@ -254,6 +255,7 @@ export class HleHost {
         env.video ? env.video.decode(d >>> 0, gen >>> 0, u64(seq), n ? new Uint8Array(mem(), p, n) : null, eos !== 0) : 0,
       hle_cv_reset: (d: number, gen: number) => env.video?.reset(d >>> 0, gen >>> 0),
       hle_cv_close: (d: number) => env.video?.close(d >>> 0),
+      hle_cv_wrote: (p: number | bigint, n: number | bigint) => env.guestWrote?.(Number(p), Number(n)),
       hle_native_image_blank: (w: number, h: number) => env.nativeImageBlank(w >>> 0, h >>> 0),
       hle_native_image_blank_free: (h: number) => env.nativeImageBlankFree(h >>> 0),
       hle_exit_request: (reason: number, value: bigint, p: number, n: number) =>

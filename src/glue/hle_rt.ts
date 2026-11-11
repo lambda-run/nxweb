@@ -151,6 +151,8 @@ export function attachHle(rt: Runtime, module: WebAssembly.Module, o: HleRtOptio
     for (let i = ticks.length - 1; i >= 0; i--) if (!ticks[i]()) ticks.splice(i, 1);
   });
   if (gfx && "nativeImageOf" in gfx) gfx.nativeImageOf = h => host.nativeImage(h);
+  // a movie picture the codec writes into the game's pool: the recorder treats the range as flushed, so the texture over it takes every picture
+  if (gfx && (gfx as any).x?.gfx_note_flush) host.env.guestWrote = (p, n) => (gfx as any).x.gfx_note_flush(BigInt(p), BigInt(n));
   if (front.vibration) host.haptics({ output: true });
   rt.expectOutsideEvents();   // the front end's reports (focus, operation mode, an answer) signal events the guest waits on
   const st = range("hle static");
