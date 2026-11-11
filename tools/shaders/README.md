@@ -12,12 +12,12 @@ game files ─ shader_split.py (nxnative) ─▶ control section + code area per
 ```
 
 Everything right of `shader_split.py` ran here, offline and inside a page (`npm run shaders:test`, results below).
-**No game shader has been through it**: there are none in this environment. What ran is six Maxwell programs
+**No game shader has been through it**: there are none in this environment. What ran is seven Maxwell programs
 assembled by hand (`maxwell_asm.py`) and 46 GLSL shaders written to look like the translator's output.
 
 | File | What |
 |---|---|
-| `maxwell_asm.py` | Six hand-assembled Maxwell programs (a vertex and five pixel shaders: a texture query of level of detail, the driver's banks among them) wrapped as code area + control section, with their keys. Not GLSLC output. |
+| `maxwell_asm.py` | Seven hand-assembled Maxwell programs (two vertex and five pixel shaders: a texture query of level of detail, the driver's banks, base instance / vertex and infinite / NaN immediates among them) wrapped as code area + control section, with their keys. Not GLSLC output. |
 | `xlate.py` | Code + control → translator job → SPIR-V. nxnative's `job_for`, NVN graphics and compute only. |
 | `src/shaders/spv.ts` | SPIR-V reader / writer and the pass (below). No Node or DOM API. |
 | `src/shaders/convert.ts` | One stage: pass + naga → WGSL + reflection record. |
@@ -124,11 +124,11 @@ naga's SPIR-V reader and WGSL writer refuse the translator's output as it comes.
 | 11 | `ConstExpression ... Literal(Infinity)` / `Literal(NaN)` (232 of the 702 stages of one game) | the translator writes Maxwell's immediates as float constants, `+inf` / NaN among them (FMNMX, FSETP bounds); naga refuses them as constant expressions, and Tint refuses any constant expression it folds to one | `nonFiniteConstants`: each becomes a private `u32` variable holding the bits, loaded and bitcast at the top of each function that reads it (a composite holding one is built there), so the value only exists at run time. |
 | 12 | `Unsupported builtin value: BaseInstance` (309 of 702) | the translator turns NVN's c0 reads at 0x640 / 0x644 / 0x648 into BaseVertex / BaseInstance / DrawIndex (`DrawParametersReplace.cs`; Maxwell's instance ID is `InstanceIndex - BaseInstance`); WGSL's `vertex_index` / `instance_index` include the bases, but WGSL has no builtin for them | `drawParameters`: the loads read `@group(2) @binding(2)` `{ i32 base vertex, base instance, draw index }`, which the host writes per draw at a dynamic offset (reflection `drawParams`; `src/gfx/README.md`). |
 
-Every rewritten module passes `spirv-val` (38 modules in the test).
+Every rewritten module passes `spirv-val` (41 modules in the test).
 
 ### The corpus (`test/shaders/corpus`, 46 GLSL shaders → glslang → pass → naga → Chromium)
 
-Written after reading Ryujinx's `CodeGen/Spirv` for what it emits. **29 convert; 27 of those compile in Chromium.**
+Written after reading Ryujinx's `CodeGen/Spirv` for what it emits. **31 convert; 29 of those compile in Chromium.**
 
 Converts and compiles: uniform arrays with constant and computed indices; `texture`, `textureLod`, `textureGrad`, bias,
 constant and **run-time** offsets (gather), `texelFetch`, `textureSize`, `textureQueryLevels`, `textureGather`,

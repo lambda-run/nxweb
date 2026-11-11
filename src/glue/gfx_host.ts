@@ -220,8 +220,9 @@ export class GfxHost {
       this.context.configure({ device, format: this.canvasFormat, alphaMode: "opaque" });
     }
     device.onuncapturederror = (e: any) => { this.stats.errors++; this.log(`[RED] WebGPU: ${String(e.error?.message ?? e).split("\n")[0]}`); };
-    const gen = this.gen;
-    device.lost?.then?.((info: any) => { if (gen === this.gen) void this.deviceLost(info); });
+    // weakly: a device outlives the replayers made on it (one per process), and its lost promise would keep each one and its memory
+    const gen = this.gen, self = new WeakRef(this);
+    device.lost?.then?.((info: any) => { const h = self.deref(); if (h && gen === h.gen) void h.deviceLost(info); });
   }
   // Every texture and buffer the replayer makes, until it destroys it: what dispose() releases
   private live = new Set<GPU>();
