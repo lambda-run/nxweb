@@ -17,6 +17,7 @@ import { build, glslToSpv } from "../../tools/shaders/build_lib.mts";
 import { load } from "../../tools/shaders/naga_node.mts";
 import { jobFor, keyControl, ctlLens } from "../../src/shaders/job.ts";
 import { convertStage } from "../../src/shaders/convert.ts";
+import { imageVariant, formatClass } from "../../src/shaders/images.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../.."), OUT = join(ROOT, "build/shaders");
 mkdirSync(OUT, { recursive: true });
@@ -310,6 +311,84 @@ void main() { wb.w[gl_GlobalInvocationID.x] = rb.r[gl_GlobalInvocationID.x] + 1u
   eq(slots(fixForWgsl(spv, { mesh: { kind: "ts" }, sbufs: [{ ...sbufs[0], cb_offset: 0x680 / 4 }, { ...sbufs[1], cb_offset: 0x670 / 4 }] })), [[1, 161], [0, 160]], "the task table");
   throws(() => fixForWgsl(spv, { mesh: { kind: "ms" }, sbufs: [sbufs[0], sbufs[1]] }), /c0 \+ 0x330, which is no mesh stage storage buffer slot/, "the compute table in a mesh shader");
   throws(() => fixForWgsl(spv, { sbufs: [sbufs[0], { binding: 6, cb_slot: 0, cb_offset: 0x770 / 4 }] }), /c0 \+ 0x770, which is no compute stage storage buffer slot/, "the mesh table in a compute shader");
+});
+
+await test("SPIR-V pass: a pool texture (the whole pools indexed by a handle of a storage buffer's record table) becomes slots the recorder fills, each read a switch over them", () => {
+  const d = mkdtempSync(join(tmpdir(), "nxpool-"));
+  try {
+    const src = (handle: string) => `#version 450
+layout(location = 0) flat in int light;
+layout(location = 1) in vec3 at;
+layout(location = 0) out vec4 o;
+layout(std430, binding = 6) readonly buffer L { uint data[]; } fp_s1;
+layout(std140, binding = 7) uniform C { vec4 data[4096]; } fp_c3;
+layout(binding = 1) uniform sampler2D fp_t_tcb_8;
+layout(binding = 2) uniform texture2D fp_t2ds_cb0_40000000[1048576];
+layout(binding = 3) uniform samplerShadow fp_s_cb0_40000000[4096];
+void main() {
+  uint h = ${handle};
+  float lit = texture(sampler2DShadow(fp_t2ds_cb0_40000000[min(h & 0xfffffu, 1048575u)], fp_s_cb0_40000000[min(h >> 20, 4095u)]), at);
+  o = texture(fp_t_tcb_8, at.xy) * lit + fp_c3.data[2];
+}
+`;
+    const fix = (handle: string) => { const f = join(d, "pool.frag"); writeFileSync(f, src(handle)); return fixForWgsl(glslToSpv(f), { sbufs: [{ binding: 6, cb_slot: 0, cb_offset: 0x520 / 4 }] }); };
+    const r = fix("fp_s1.data[(light * 96 + 96) >> 2]");
+    const tex = r.bindings.filter(b => b.kind === "tex").map(b => ({ slot: b.reg!, binding: b.binding, handle: b.handle })).sort((x, y) => x.slot - y.slot);
+    eq(tex, [{ slot: 0, binding: 64, handle: undefined }, ...[0, 1, 2, 3].map(j => ({ slot: 1 + j, binding: 66 + 2 * j, handle: { sbuf: 1, offset: 96, stride: 96, index: j, entry: j } }))],
+      "the bound texture keeps slot 0; four pool slots in the next free ones, their handles the first four of storage slot 1's records (96 bytes, the word at 96)");
+    eq(r.bindings.filter(b => b.kind === "drvcb").map(b => [b.bank, b.binding, b.size]), [[2, 208 + 4 + 2, 0x990]], "the c2 block is declared for the table (c2 + 0x980, 16 words)");
+    if (!r.notes.some(n => /pool texture fp_t2ds_cb0_40000000 .*4 slots.*0x60 \+ 96 i of storage slot 1/.test(n))) throw new Error(`no pool note: ${r.notes}`);
+    const wgsl = naga.spvToWgsl(r.spv);
+    if ((wgsl.match(/textureSampleCompare\(fp_t2ds_cb0_40000000_p\d_?,/g) ?? []).length !== 4 || !/switch /.test(wgsl) || /binding_array/.test(wgsl)) throw new Error("the read is not a switch over four slots");
+    eq(fix("fp_s1.data[5]").bindings.filter(b => b.kind === "tex" && b.handle).map(b => b.handle), [0, 1, 2, 3].map(j => ({ sbuf: 1, offset: 20, stride: 0, index: j, entry: j })), "one constant word: stride 0");
+    throws(() => fix("fp_s1.data[light]"), /no record table the recorder can walk/, "a word at a run-time index with no stride");
+    throws(() => fix("uint(light)"), /handle is not a word of a storage buffer/, "a handle from a varying");
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+await test("SPIR-V pass: storage images go to the image slot of their handle word (group 1, binding 256 + stage * 8 + slot) with format, access and dimension; an image without a format is `bound`; image atomics become a load and a store", () => {
+  const d = mkdtempSync(join(tmpdir(), "nximg-"));
+  const spvOf = (name: string, src: string) => { const f = join(d, name); writeFileSync(f, src); return glslToSpv(f); };
+  try {
+    const spv = spvOf("img.comp", `#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform writeonly image2D cp_i_tcb_4A_;
+layout(binding = 1, r32ui) uniform uimage2D cp_i_tcb_4C_r32ui;
+layout(binding = 2, rgba16f) uniform image2DArray cp_i_tcb_48_rgba16f;
+layout(binding = 3) uniform writeonly image3D cp_i_tcb_56_;
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  vec4 v = imageLoad(cp_i_tcb_48_rgba16f, ivec3(p, 1));
+  uint o = imageAtomicOr(cp_i_tcb_4C_r32ui, p, 5u);
+  if (all(lessThan(p, imageSize(cp_i_tcb_4A_)))) imageStore(cp_i_tcb_4A_, p, v + float(o));
+  imageStore(cp_i_tcb_56_, ivec3(p, 2), v);
+}
+`);
+    const got = convertStage(naga, spv, { bindings: "nxweb" });
+    eq(got.reflection.images, [
+      { slot: 0, format: "rgba16float", access: "read-only", dim: "2d-array", type: "float" },
+      { slot: 1, format: "rgba8unorm", access: "write-only", dim: "2d", type: "float", bound: true },
+      { slot: 2, format: "r32uint", access: "read-write", dim: "2d", type: "uint" },
+      { slot: 7, format: "rgba8unorm", access: "write-only", dim: "3d", type: "float", bound: true }], "slots from c2 0x120 + 8 slot; access from the loads and stores");
+    eq(got.reflection.extra, [], "no binding left for the host to refuse");
+    const decl = (b: number) => new RegExp(`@group\\(1\\) @binding\\(${b}\\)\\s*var \\w+: (texture_storage_\\w+<\\w+,\\s*\\w+>);`).exec(got.wgsl)?.[1].replace(/\s/g, "");
+    eq([272, 273, 274, 279].map(decl), ["texture_storage_2d_array<rgba16float,read>", "texture_storage_2d<rgba8unorm,write>", "texture_storage_2d<r32uint,read_write>", "texture_storage_3d<rgba8unorm,write>"], "the WGSL declarations");
+    if (!got.reflection.notes.some(n => /1 image atomic operation done as a load and a store/.test(n)) || !/textureStore\(cp_i_tcb_4C_r32ui, \w+, vec4\(\(\w+\.x \| 5u\)\)\)/.test(got.wgsl)) throw new Error("the atomic OR is not a load, an OR and a store:\n" + got.wgsl);
+    if (got.reflection.notes.filter(n => /names no format: declared rgba8unorm/.test(n)).length !== 2) throw new Error("a note for each image without a format: " + got.reflection.notes.join(" | "));
+    // the host's variant for the texture bound (src/shaders/images.ts): the format in that declaration alone
+    const v = imageVariant(got.wgsl, 1, 273, "rg11b10ufloat")!;
+    eq([v.length - got.wgsl.length, /@binding\(273\)\s*var \w+: texture_storage_2d<rg11b10ufloat,\s*write>;/.test(v), /@binding\(279\)\s*var \w+: texture_storage_3d<rgba8unorm,\s*write>;/.test(v)], [3, true, true], "one declaration changed");
+    eq([imageVariant(got.wgsl, 1, 275, "r32float"), imageVariant(got.wgsl, 0, 273, "r32float")], [undefined, undefined], "no such declaration: no variant");
+    eq(["rgba8unorm", "rg11b10ufloat", "rgba8snorm", "r32uint", "rgba16sint", "bgra8unorm-srgb"].map(formatClass), ["float", "float", "float", "uint", "sint", "float"], "format classes");
+    // refused by name
+    throws(() => fixForWgsl(spvOf("a.comp", `#version 450\nlayout(local_size_x = 1) in;\nlayout(binding = 0) uniform writeonly image2D cp_i_tcb_5A_;\nvoid main() { imageStore(cp_i_tcb_5A_, ivec2(0), vec4(1)); }\n`)), /handle word at c2 \+ 0x168 is not one of the 8 image slots/, "a word past the image table");
+    throws(() => fixForWgsl(spvOf("b.comp", `#version 450\nlayout(local_size_x = 1) in;\nlayout(binding = 0) uniform writeonly image2D cp_i_cb3_0_;\nvoid main() { imageStore(cp_i_cb3_0_, ivec2(0), vec4(1)); }\n`)), /a bindless image \(its handle is in uniform bank 3/, "a handle in the game's uniform data");
+    throws(() => fixForWgsl(spvOf("c.comp", `#version 450\nlayout(local_size_x = 1) in;\nlayout(binding = 0, r32i) uniform iimage2D cp_i_tcb_48_r32i;\nvoid main() { imageAtomicMax(cp_i_tcb_48_r32i, ivec2(0), 1); }\n`)), /image atomic instruction 238 .*not lowered/, "an atomic maximum");
+    throws(() => fixForWgsl(spvOf("d.comp", `#version 450\nlayout(local_size_x = 1) in;\nlayout(binding = 0) uniform writeonly imageCube cp_i_tcb_48_;\nvoid main() { imageStore(cp_i_tcb_48_, ivec3(0), vec4(1)); }\n`)), /dimension cube has no WGSL storage texture type/, "a cube image");
+    // a hand-written shader with the nxweb numbers in its layout ("keep"): the slot from the binding
+    const keep = convertStage(naga, spvOf("k.frag", `#version 450\nlayout(set = 1, binding = 267, r32ui) uniform uimage2D i0;\nlayout(location = 0) out vec4 o;\nvoid main() { o = vec4(imageLoad(i0, ivec2(gl_FragCoord.xy)).x); }\n`), { bindings: "keep" });
+    eq(keep.reflection.images, [{ slot: 3, format: "r32uint", access: "read-only", dim: "2d", type: "uint" }], "fragment stage: 256 + 8 + 3");
+  } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
 await test("SPIR-V pass: banks the host supplies (c1, the driver segments c0 and c2, the NVN2 push constants c[24]) go to group 0 binding 208 + stage * 4 + k; another bank is refused", () => {

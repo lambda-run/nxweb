@@ -4,6 +4,7 @@
 // Record layouts: src/gfx/hostops.ts. Pipeline key: src/gfx/pipeline.ts. Texture description: nvn_texdesc (obj.ts).
 // Browser code (WebGPU types are left loose: the tree has no @webgpu/types).
 import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
+import { imageVariant, formatClass } from "../shaders/images.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
 import { FrameLedger } from "./gfx_ledger.ts";
@@ -57,7 +58,7 @@ export interface ShaderInfo {
   // `handle`: a bindless slot. The shader samples the binding of `slot`; which texture and sampler that is stands in the game's uniform data, read at each draw:
   // the u32 at byte `offset` of this stage's uniform slot `ubo` (texture ID in the low 20 bits, sampler ID in the high 12). `sampler`: another word ORed into
   // it (the texture in one, the sampler in the other), or the sampler ID as a constant of the shader. A slot with a handle ignores nvnCommandBufferBindTexture
-  textures?: { slot: number; dim?: "2d" | "2d-array" | "cube" | "3d" | "cube-array"; depth?: boolean; sampleType?: "float" | "unfilterable-float" | "sint" | "uint"; handle?: TextureHandle }[];
+  textures?: { slot: number; dim?: "2d" | "2d-array" | "cube" | "3d" | "cube-array"; depth?: boolean; sampleType?: "float" | "unfilterable-float" | "sint" | "uint"; handle?: TextureHandle | PoolTextureHandle }[];
   attributes?: number[];   // vertex: locations read
   attributeTypes?: Record<string, VinClass>;   // vertex: the class each input is declared with
   // vertex: the module to use when the bound attribute formats have other classes than declared. Either texts by
@@ -69,15 +70,25 @@ export interface ShaderInfo {
   outputs?: number[];      // fragment: colour outputs written
   support?: boolean;       // reads the support buffer; also taken from `extra` (kind "support")
   storage?: { slot: number; write?: boolean }[];
-  images?: { slot: number; format: string; access?: "write-only" | "read-only" | "read-write"; dim?: "2d" | "2d-array" | "3d" }[];
+  // memory read through addresses the shader loads (src/shaders/library.ts Reflection.gmem): the recorder sends the ranges as storage slots 32 + j (in `storage`)
+  // and their table as the "gmem" block of `extra`
+  gmem?: { buffers: number; pointers: { slot: number; word: number }[] };
+  // storage images. `format`: the texel format the WGSL declares. A texture of another format of the same class (`type`; default: the format's) is bound through
+  // a variant of the module and the pipeline made for that format (imagePipe); `bound`: the shader names no format, `format` is a stand-in (src/shaders/spv.ts placeImage)
+  images?: { slot: number; format: string; access?: "write-only" | "read-only" | "read-write"; dim?: "2d" | "2d-array" | "3d"; type?: "float" | "sint" | "uint"; bound?: boolean }[];
   extra?: { kind: string; group: number; binding: number; size?: number; bank?: number; data?: string }[];   // the chain's other bindings: "support", "c1" (data: its bytes in hex), "drvcb" (bank 0 or 2), "push"
   hostBlocks?: { k: number; size: number }[];   // from `extra` at registration: the blocks at 208 + stage * 4 + k
   c1Data?: Uint8Array;
 }
 // The extra bindings the replayer supplies (src/shaders/library.ts HOST_EXTRA) and their k in 208 + stage * 4 + k
-const HOST_BLOCK = (e: { kind: string; bank?: number }) => e.kind === "c1" ? 0 : e.kind === "drvcb" ? (e.bank === 0 ? 1 : e.bank === 2 ? 2 : -1) : e.kind === "push" ? 3 : -1;
-const uboKey = (st: number, i: number) => i < 16 ? st * 16 + i : 256 + st * 4 + i - 16;
+const HOST_BLOCK = (e: { kind: string; bank?: number }) => e.kind === "c1" ? 0 : e.kind === "drvcb" ? (e.bank === 0 ? 1 : e.bank === 2 ? 2 : -1) : e.kind === "push" ? 3 : e.kind === "gmem" ? 4 : -1;
+// The binding of host block k of stage st: 208 + st * 4 + k, and for k = 4 (the ranges of memory read through loaded addresses, "gmem") 224 + st
+const hostBinding = (st: number, k: number) => k < 4 ? 208 + st * 4 + k : 220 + k + st;
+const uboKey = (st: number, i: number) => i < 16 ? st * 16 + i : 256 + st * 8 + i - 16;
 export interface TextureHandle { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } }
+// A slot of a pool texture (src/shaders/pool.ts): the recorder gives it the `index`-th distinct live handle among the words at byte `offset` + `stride` * i of the
+// range bound at storage slot `sbuf` of the stage, and writes the handle it gave into word `entry` of the table in the c2 block (src/gfx/lower.ts poolHandle)
+export interface PoolTextureHandle { sbuf: number; offset: number; stride: number; index: number; entry: number }
 export interface GfxHostOptions {
   canvas?: any;
   log?: (line: string) => void;
@@ -107,11 +118,13 @@ const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8,
 const DIMS = ["2d", "2d-array", "cube", "3d", "cube-array"], CLASSES: VinClass[] = ["float", "sint", "uint"];
 
 interface Tex { serial: number; target: number; format: number; flags: number; samples: number; width: number; height: number; depth: number; levels: number; swz: number;
-  gpu?: GPU; snap?: GPU; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
+  gpu?: GPU; snap?: GPU; imgScratch?: GPU; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
 interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo" | "host"; dyn: boolean; write: boolean; size?: number; info?: ShaderInfo }
 interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
   mesh?: boolean; dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU;
-  drawParams?: boolean; vsFixup?: boolean; last2?: { fix: GPU | null; buf: GPU; group: GPU } }
+  drawParams?: boolean; vsFixup?: boolean; last2?: { fix: GPU | null; buf: GPU; group: GPU };
+  img?: Map<string, { gpu: GPU; l1: GPU } | null>; imgOn?: boolean }   // the pipeline for storage images of other formats than declared (imagePipe); imgOn: one is set on the pass
+interface ImageFormatVar { sid: number; st: number; slot: number; format: string }   // image slot `slot` of shader `sid` (stage index st) has a texture of `format` bound
 interface Chunk { buf: GPU; staging: Uint8Array; used: number }
 interface UaSlot { c: Chunk; off: number; size: number }
 interface GpuRange { addr: number; size: number; buf: GPU; hash: number; pending: number }
@@ -152,7 +165,7 @@ export class GfxHost {
   ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0,
-    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0 };
+    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
   caps = 0;
   // Hooks for the embedder (the kernel's waits): a fence completed (everything submitted before it is done on the GPU
@@ -358,11 +371,12 @@ export class GfxHost {
     const support = info.support || (info.extra ?? []).some(e => e.kind === "support"), st = info.stage === "vertex" ? 0 : info.stage === "fragment" ? 1 : info.stage === "task" ? 3 : info.stage === "mesh" ? 4 : 2;
     const hostBlocks = (info.extra ?? []).filter(e => HOST_BLOCK(e) >= 0).map(e => ({ k: HOST_BLOCK(e), size: e.size ?? 0 })).sort((a, b) => a.k - b.k);
     const c1 = info.extra?.find(e => e.kind === "c1")?.data, c1Data = c1 ? Uint8Array.from(c1.match(/../g) ?? [], h => parseInt(h, 16)) : undefined;
-    new Uint8Array(this.memory.buffer, r, 400).fill(0);
+    new Uint8Array(this.memory.buffer, r, 424).fill(0);
     let depth = 0, bindless = 0;
     for (const t of info.textures ?? []) {
       const h = t.handle;
       if (!h) continue;
+      if ("sbuf" in h) { if (!this.poolSlot(dv, r, t.slot, h, keyHex)) return -1; bindless |= 1 << t.slot; continue; }
       // the record's entry of the slot (src/gfx/shader.ts RF_blh): kind, uniform slot, byte offset; the sampler's uniform slot and offset, or its ID
       const word = (w: { ubo: number; offset: number }) => Number.isInteger(w.ubo) && w.ubo >= 0 && w.ubo < 14 && Number.isInteger(w.offset) && w.offset >= 0 && w.offset < 65536 && w.offset % 4 === 0;
       const sm: any = h.sampler, id = sm && "id" in sm;
@@ -378,7 +392,12 @@ export class GfxHost {
     for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? "2d"))); if (t.depth) depth |= 1 << t.slot; }
     dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0) | (bit(hostBlocks.map(b => b.k)) << 16)) >>> 0, true); dv.setUint32(r + 8, bit((info.textures ?? []).map(t => t.slot)), true);
     dv.setUint32(r + 12, bit(st === 0 ? info.attributes : info.outputs), true); dv.setUint32(r + 16, depth >>> 0, true);
-    dv.setUint32(r + 20, bit((info.storage ?? []).map(b => b.slot)), true); dv.setUint32(r + 24, bit((info.storage ?? []).filter(b => b.write).map(b => b.slot)), true);
+    const bound = (info.storage ?? []).filter(b => b.slot < 32);   // slots 32 + j are the recorder's own (RF_gmem)
+    dv.setUint32(r + 20, bit(bound.map(b => b.slot)), true); dv.setUint32(r + 24, bit(bound.filter(b => b.write).map(b => b.slot)), true);
+    if (info.gmem) {
+      dv.setUint32(r + 400, (Math.min(8, info.gmem.pointers.length) | info.gmem.buffers << 8) >>> 0, true);
+      info.gmem.pointers.slice(0, 8).forEach((q, k) => { dv.setUint8(r + 404 + k * 2, q.slot); dv.setUint8(r + 405 + k * 2, q.word); });
+    }
     dv.setUint32(r + 28, (bit((info.images ?? []).map(b => b.slot)) | bit((info.images ?? []).filter(b => (b.access ?? "write-only") !== "read-only").map(b => b.slot)) << 8) >>> 0, true);
     for (const [slot, size] of Object.entries(info.uboSize ?? {})) if (+slot < 14) dv.setUint32(r + 64 + +slot * 4, size, true);
     if (st === 0 && info.attributeTypes) {
@@ -411,6 +430,16 @@ export class GfxHost {
   // WebGPU wants a vertex output and the fragment input at the same location to name the same interpolation; the translator puts flat / linear on
   // the fragment input only (as the game's two stages have it). The vertex module for this fragment shader: its outputs take the fragment inputs'
   // interpolation. null when the shader's own module already agrees
+  // The record's entry of a pool slot (src/gfx/shader.ts RF_blh, kind BL_POOL = 4): storage slot, byte offset, index | entry << 4, stride
+  private poolSlot(dv: DataView, r: number, slot: number, h: PoolTextureHandle, keyHex: string): boolean {
+    const int = (v: number, below: number) => Number.isInteger(v) && v >= 0 && v < below;
+    if (!int(slot, 32) || !int(h.sbuf, 16) || !int(h.offset, 65536) || h.offset % 4 || !int(h.stride, 65536) || h.stride % 4 || !int(h.index, 16) || !int(h.entry, 16)) {
+      this.log(`[RED] shader ${keyHex}: texture slot ${slot} is a pool slot the replayer cannot read (${JSON.stringify(h)}; storage slots 0..15, offset and stride in words below 65536, 16 slots): not registered`); return false;
+    }
+    const e = r + 144 + slot * 8;
+    dv.setUint8(e, 4); dv.setUint8(e + 1, h.sbuf); dv.setUint16(e + 2, h.offset, true); dv.setUint8(e + 4, h.index | h.entry << 4); dv.setUint16(e + 6, h.stride, true);
+    return true;
+  }
   private interpModule(vsId: number, fsId: number): GPU | null {
     const v = this.shaders[vsId], fw: string = this.shaders[fsId].info.wgsl ?? "", vw: string = v.info.wgsl ?? "";
     const params = /@fragment\s*fn\s+\w+\(((?:[^()]|\([^()]*\))*)\)/.exec(fw)?.[1];
@@ -427,6 +456,42 @@ export class GfxHost {
     let mod = v.interp.get(sig);
     if (mod === undefined) { mod = this.device.createShaderModule({ code: vw.slice(0, out.index) + body + vw.slice(out.index + out[0].length) }); v.interp.set(sig, mod); }
     return mod;
+  }
+  // Storage images bound with a texture of another format than the shader declares (ShaderInfo.images; a translated shader that names no format declares a
+  // stand-in): WebGPU wants the format in the WGSL, in the bind group layout and in the view to be one. The pipeline for the formats bound: each such shader's
+  // text with those formats in its declarations (src/shaders/images.ts), group 1's layout with them, everything else the pipeline's own. Kept with the pipeline
+  // by the formats; built at the first dispatch or draw that needs it, synchronously. null: it cannot be made (red), the dispatch or draw is skipped
+  private imagePipe(c: Pipe, vars: ImageFormatVar[]): { gpu: GPU; l1: GPU } | null {
+    const sig = vars.map(v => `${v.st}.${v.slot}=${v.format}`).join(",");
+    let p = (c.img ??= new Map()).get(sig);
+    if (p !== undefined) return p;
+    p = null;
+    const desc: any = { ...c.desc }, stages: { info: ShaderInfo; st: number }[] = [];
+    let ok = !!c.desc;
+    for (const sid of c.stages) {
+      const s = this.shaders[sid], info = s.info, st = info.stage === "vertex" ? 0 : info.stage === "fragment" ? 1 : 2, mine = vars.filter(v => v.sid === sid);
+      if (!mine.length) { stages.push({ info, st }); continue; }
+      stages.push({ st, info: { ...info, images: info.images!.map(m => ({ ...m, format: mine.find(v => v.slot === m.slot)?.format ?? m.format })) } });
+      const msig = "img:" + mine.map(v => `${v.slot}=${v.format}`).join(",");
+      let mod = (s.variants ??= new Map()).get(msig);
+      if (mod === undefined) {
+        let wgsl: string | undefined = c.compute || st === 1 ? info.wgsl : undefined;   // a vertex stage's module may be a variant already (attribute classes, interpolation): not combined
+        for (const v of mine) wgsl = wgsl === undefined ? undefined : imageVariant(wgsl, 1, 256 + st * 8 + v.slot, v.format);
+        mod = wgsl === undefined ? null : this.device.createShaderModule({ code: wgsl });
+        s.variants.set(msig, mod);
+        if (!mod) this.log(`[RED] shader ${s.key} has storage images bound with other formats than it declares (${msig.slice(4)}), and its text cannot be made over for them${c.compute || st === 1 ? " (no such texture_storage declaration in its WGSL)" : " (a vertex stage)"}: its dispatches or draws with these formats are skipped`);
+      }
+      if (!mod) { ok = false; continue; }
+      const k = c.compute ? "compute" : st === 0 ? "vertex" : "fragment";
+      desc[k] = { ...desc[k], module: mod };
+    }
+    if (ok) {
+      const all = [...c.layouts]; all[1] = this.groupLayouts(stages, !!c.vsFixup, !!c.drawParams).layouts[1];
+      desc.layout = this.device.createPipelineLayout({ bindGroupLayouts: all });
+      p = { gpu: c.compute ? this.device.createComputePipeline(desc) : this.device.createRenderPipeline(desc), l1: all[1] }; this.stats.pipelinesSync++;
+    }
+    c.img!.set(sig, p);
+    return p;
   }
   // The module of a vertex shader for attribute classes other than it declares; null when there is none (red: the request)
   private variantModule(id: number, classes: Record<number, VinClass>): GPU | null {
@@ -851,8 +916,8 @@ export class GfxHost {
         g0.push({ binding: st * 16 + i, st, i, kind: "ubo", dyn, write: false });
       }
       for (const b of s.hostBlocks ?? []) {
-        e0.push({ binding: 208 + st * 4 + b.k, visibility, buffer: { type: "uniform" } });
-        g0.push({ binding: 208 + st * 4 + b.k, st, i: 16 + b.k, kind: "host", dyn: false, write: false, size: b.size, info: s });
+        e0.push({ binding: hostBinding(st, b.k), visibility, buffer: { type: "uniform" } });
+        g0.push({ binding: hostBinding(st, b.k), st, i: 16 + b.k, kind: "host", dyn: false, write: false, size: b.size, info: s });
       }
       for (const b of s.storage ?? []) {
         e0.push({ binding: 128 + st * 16 + b.slot, visibility, buffer: { type: b.write ? "storage" : "read-only-storage" } });
@@ -1043,7 +1108,9 @@ export class GfxHost {
   }
   // The bind groups of the current pipeline (render or compute) from what the stream bound
   private bind() {
+    this.imgBlits.length = 0;
     const c = this.cur!, layouts = c.layouts, e0: any[] = [], offs: number[] = [], g1: any[] = [];
+    const wbufs = new Set<GPU>(), robind: number[] = [];
     for (const b of c.g0) {
       if (b.kind === "ubo" || b.kind === "host") {
         if (b.kind === "host") this.hostBlock(b);
@@ -1051,12 +1118,36 @@ export class GfxHost {
         if (b.dyn) { e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: 0, size: r.size } }); offs.push(r.off); }
         else e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: r.off, size: r.size } });
       } else {
-        const s = this.ssbo.get(b.st * 16 + b.i), r = s && this.storageBuffer(s.addr, s.size, b.write);
+        const s = this.ssbo.get(b.st * 64 + b.i);
+        // slots 32 + j: the ranges of memory read through loaded addresses (lower.ts emitGmem). One the recorder left empty is one the shader's table does not name
+        if (b.i >= 32 && !(s && s.addr && s.size)) { e0.push({ binding: b.binding, resource: { buffer: this.scratchStorage(), offset: 0, size: 65536 } }); continue; }
+        const r = s && this.storageBuffer(s.addr, s.size, b.write);
         if (!r) { this.red("nossbo", "a draw or dispatch uses a storage buffer slot with nothing (or nothing valid) bound: a zeroed buffer is bound"); e0.push({ binding: b.binding, resource: { buffer: this.scratchStorage(), offset: 0, size: 65536 } }); continue; }
         if (r.off % 256) this.red("ssboalign", "a storage range inside memory a compute pass wrote is not aligned to 256 bytes: WebGPU cannot bind it at that offset");
+        if (b.write) wbufs.add(r.buf); else robind.push(e0.length);
         e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: r.off, size: r.size } });
       }
     }
+    // WebGPU refuses a buffer that one dispatch or draw has as writable storage and as anything else (the whole command buffer is then invalid). A
+    // game's compute stage may read one range and write another of memory that lives in one GPU buffer here: what it only reads is bound as a copy
+    // made just before (in a compute pass the pass is closed for the copy and opened again)
+    if (wbufs.size && robind.some(i => wbufs.has(e0[i].resource.buffer))) {
+      if (!this.computePass) this.red("ssboalias", "a draw reads and writes storage in one GPU buffer: WebGPU refuses it, and no copy is made inside a render pass");
+      else {
+        this.pass.end();
+        for (const i of robind) {
+          const res = e0[i].resource;
+          if (!wbufs.has(res.buffer)) continue;
+          const n = Math.max(4, down4(res.size + 3)), copy = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(n))));
+          this.encoder().copyBufferToBuffer(res.buffer, res.offset, copy, 0, n);
+          this.inUse.push(copy); this.stats.ssboCopies++;
+          e0[i] = { binding: e0[i].binding, resource: { buffer: copy, offset: 0, size: res.size } };
+        }
+        this.pass = this.encoder().beginComputePass(); this.computePass = true;
+        this.pass.setPipeline(c.gpu);
+      }
+    }
+    let ivar: ImageFormatVar[] | undefined;   // storage images bound with another format than their shader declares
     for (const sid of c.stages) {
       const s = this.shaders[sid].info, st = s.stage === "vertex" ? 0 : s.stage === "fragment" ? 1 : 2;
       for (const t of s.textures ?? []) {
@@ -1067,10 +1158,26 @@ export class GfxHost {
       }
       for (const m of s.images ?? []) {
         const b = this.img.get(st * 8 + m.slot), tx = b && b.serial ? this.texture(b.serial) : undefined;
-        if (!tx || !(tx.gpu.usage & 0x08)) { this.red(`noimg${m.slot}`, `a dispatch stores to image slot ${m.slot}, where ${tx ? `a ${tx.fmt.tex} texture is bound, which WebGPU cannot bind as a storage image` : "no live texture is bound"}: the dispatch is skipped`); return false; }
+        // WebGPU has no rgb10a2unorm storage images: the dispatch writes an rgba16float stand-in, which is drawn into the texture after it (imgFlush)
+        if (tx && !(tx.gpu.usage & 0x08) && tx.fmt.tex === "rgb10a2unorm" && this.computePass && (m.type ?? formatClass(m.format)) === "float" && tx.gpu.dimension !== "3d" && tx.gpu.depthOrArrayLayers === 1) {
+          tx.imgScratch ??= this.device.createTexture({ size: { width: tx.gpu.width, height: tx.gpu.height }, format: "rgba16float", usage: 0x08 | 0x04 });
+          if (m.format !== "rgba16float") (ivar ??= []).push({ sid, st, slot: m.slot, format: "rgba16float" });
+          g1.push({ binding: 256 + st * 8 + m.slot, resource: tx.imgScratch.createView() });
+          if (!this.imgBlits.includes(tx)) this.imgBlits.push(tx);
+          continue;
+        }
+        if (!tx || !(tx.gpu.usage & 0x08)) { this.red(`noimg${m.slot}${tx?.fmt.tex ?? ""}`, `a dispatch or draw uses image slot ${m.slot}, where ${tx ? `a ${tx.fmt.tex} texture is bound, which WebGPU cannot bind as a storage image${SRGB_TWIN[tx.fmt.tex!] && STORAGE_FORMATS.has(SRGB_TWIN[tx.fmt.tex!]) ? ` (an sRGB format: the texture would have to be created as ${SRGB_TWIN[tx.fmt.tex!]} and viewed as sRGB everywhere else)` : ""}` : "no live texture is bound"}: it is skipped`); return false; }
+        const f = tx.fmt.tex!;
+        if (f !== m.format) {
+          if (formatClass(f) !== (m.type ?? formatClass(m.format))) { this.red(`imgclass${m.slot}${f}`, `a dispatch or draw uses image slot ${m.slot} as a ${m.type ?? formatClass(m.format)} image (the shader ${this.shaders[sid].key} declares ${m.bound ? "no format" : m.format}), and a ${f} texture is bound: the shader would have to be translated again for ${formatClass(f)} texels; it is skipped`); return false; }
+          (ivar ??= []).push({ sid, st, slot: m.slot, format: f });
+        }
         g1.push({ binding: 256 + st * 8 + m.slot, resource: this.view(tx, tx.gpu, b!.view, m.dim ?? (tx.gpu.dimension === "3d" ? "3d" : "2d"), true) });
       }
     }
+    const iv = ivar ? this.imagePipe(c, ivar) : null;
+    if (ivar && !iv) return false;
+    if (iv) { this.pass.setPipeline(iv.gpu); c.imgOn = true; } else if (c.imgOn) { this.pass.setPipeline(c.gpu); c.imgOn = false; }
     // With every buffer of group 0 at a dynamic offset the group changes only when the arena moves to another chunk:
     // the last one is kept with the pipeline and compared, no key is built
     let g0: GPU | undefined;
@@ -1080,7 +1187,7 @@ export class GfxHost {
       if (!g0) { g0 = this.group(layouts[0], e0); c.last0 = { bufs: e0.map(x => x.resource.buffer), sizes: e0.map(x => x.resource.size), group: g0 }; }
     } else g0 = this.group(layouts[0], e0);
     this.pass.setBindGroup(0, g0, offs);
-    this.pass.setBindGroup(1, g1.length ? this.group(layouts[1], g1) : (c.empty1 ??= this.group(layouts[1], g1)));
+    this.pass.setBindGroup(1, g1.length ? this.group(iv?.l1 ?? layouts[1], g1) : (c.empty1 ??= this.group(layouts[1], g1)));
     this.drawSet = null;
     if (layouts[2] && !c.mesh && !c.compute && !c.drawParams) {
       const key = this.fix.join(",");
@@ -1103,6 +1210,7 @@ export class GfxHost {
     if (pos >= 0 && nd.saw(pos, ran, tex)) this.ndveStandIn(img(NDVE_OUTPUT_IMAGE), push());
     if (!ran) return;
     this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
+    this.imgFlush();
     this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
   }
   // H_DISPATCH_SKIPPED: a watched key's dispatch the recorder could not run, with the compute stage's bindings (hostops.ts)
@@ -1218,6 +1326,7 @@ ${planes ? `  // NV12 to RGB as BT.709 limited range (the stand-in's assumption;
     if (!this.usePipeline(dv.getUint32(p + 8, true))) return;
     if (!this.bind()) return;
     this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
+    this.imgFlush();
     this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
   }
 
@@ -1409,6 +1518,16 @@ fn draw(n: u32) { c[9] = n; c[12] = n * c[20]; c[13] = 1u; c[14] = 0u; c[15] = 0
     this.cur = null; this.bindDirty = true;
   }
   // Draws src (a view) over the viewport rectangle of dst, sampling the uv rectangle: present and scaled copies
+  // The stand-ins of storage images whose format WebGPU cannot write (bind) are drawn into their textures; the compute pass is opened again
+  private imgBlits: Tex[] = [];
+  private imgFlush() {
+    if (!this.imgBlits.length) return;
+    this.endPass();
+    for (const t of this.imgBlits) { this.blit(t.imgScratch.createView(), [0, 0, 1, 1], this.attachView(t, 0, 0), t.fmt.tex!, null, false); this.stats.imageStandIns++; }
+    this.imgBlits.length = 0;
+    this.endPass();
+    this.pass = this.encoder().beginComputePass(); this.computePass = true; this.cur = null;
+  }
   private blit(srcView: GPU, uv: number[], dstView: GPU, dstFmt: string, vp: number[] | null, linear: boolean) {
     const key = `blit|${dstFmt}`;
     let pl = this.helpers.get(key);
@@ -1658,7 +1777,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.DISPATCH: this.dispatch(dv, p); break;
         case H.DISPATCH_SKIPPED: this.dispatchSkipped(dv, p); break;
         case H.SKIP: break;
-        case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (dv.getUint32(p + 28, true) & 1) !== 0 }); this.bindDirty = true; break;
+        case H.SSBO: this.ssbo.set(dv.getUint32(p + 8, true) * 64 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), write: (dv.getUint32(p + 28, true) & 1) !== 0 }); this.bindDirty = true; break;
         case H.IMG: { const flags = dv.getUint32(p + 24, true); this.img.set(dv.getUint32(p + 8, true) * 8 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null }); this.bindDirty = true; break; }
         case H.MESH_BEGIN: this.meshBegin(dv, p); break;
         case H.MESH_TASK: this.meshTaskRun(dv.getUint32(p + 8, true)); break;

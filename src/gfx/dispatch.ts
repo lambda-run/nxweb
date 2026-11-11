@@ -18,6 +18,7 @@ import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY, 
 import { contentInit, noteFlush, regionCopy, writeTexels } from "./texcontent";
 import { profileHas, P_RENDER_COND } from "./profile";
 import { nsFromTicks } from "./report";
+import { gmemBufInit, gmemBufDrop } from "./gmem";
 
 // Device properties: values measured on Tegra X1 (nxnative g_devinfo). Items 0 and 1 are the API version (apiMajor /
 // apiMinor), 0x2E and 0x30 the GPU code version the shader chain translates (1.16)
@@ -263,11 +264,13 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnBufferInitialize: {
       const buf = P(a, 0), b = P(a, 1), pool = <usize>load<u64>(b, O.BB_pool);
       if (!pool || !load<u64>(pool, O.POOL_mem)) { L.redLine("BufferInitialize: pool has no storage"); return 0; }
+      if (load<u32>(buf) == O.MAGIC_BUF) gmemBufDrop(buf);
       memory.fill(buf, 0, O.BUF_SIZE);
+      gmemBufInit(buf);
       store<u32>(buf, O.MAGIC_BUF); store<u64>(buf, pool, O.BUF_pool); store<u64>(buf, load<u64>(b, O.BB_off), O.BUF_off); store<u64>(buf, load<u64>(b, O.BB_size), O.BUF_size);
       return 1;
     }
-    case F.nvnBufferFinalize: store<u32>(P(a, 0), 0); return 0;
+    case F.nvnBufferFinalize: gmemBufDrop(P(a, 0)); store<u32>(P(a, 0), 0); return 0;
     case F.nvnBufferSetDebugLabel: return 0;
     case F.nvnBufferMap: { const b = P(a, 0), pool = <usize>load<u64>(b, O.BUF_pool); return load<u32>(pool, O.POOL_flags) & O.POOLF_CPU_NO_ACCESS ? 0 : load<u64>(pool, O.POOL_mem) + load<u64>(b, O.BUF_off); }
     case F.nvnBufferGetAddress: { const b = P(a, 0); return load<u64>(<usize>load<u64>(b, O.BUF_pool), O.POOL_mem) + load<u64>(b, O.BUF_off); }

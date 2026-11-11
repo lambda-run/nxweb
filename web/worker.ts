@@ -105,6 +105,7 @@ async function init() {
 }
 const ready = init().catch(e => log("[RED] page: " + (e?.message ?? e)));
 
+let lastVideo = 0;
 let shaderTranslator: ShaderTranslator | undefined, shaderLookup: RtShaders | undefined, hle: HleHost | undefined, fsys: RtFs | undefined, cacheNote = "", fsNote = "";
 let modRows: ModuleRow[] = [], tk: TakeoverSummary | null = null, optionsNote = "", title = "";
 // Where a program's saves live in the Origin Private File System: by program. The program id is in files this page
@@ -289,10 +290,12 @@ function status() {
     if (last && now.t > last.t && rt.state === "Running") {
       const dt = (now.t - last.t) / 1000, df = now.frames - last.frames;
       m.fps = df / dt; m.ups = (now.units - last.units) / dt;
+      const vp = hle?.videoPictures ?? 0; m.video = (vp - lastVideo) / dt; lastVideo = vp;   // movie pictures a second (0: no movie is playing)
       if (ratio !== undefined) { m.ips = m.ups * ratio; m.ratio = ratio; }
       if (df > 0) {
         const loop = (now.loop - last.loop) / df, host = (now.host - last.host) / df, exec = (now.exec - last.exec) / df;
         m.split = `translated code ${(loop - host).toFixed(2)} ms, host calls ${(host - exec).toFixed(2)} ms, WebGPU ${exec.toFixed(2)} ms, idle ${Math.max(0, dt * 1000 / df - loop).toFixed(2)} ms`;
+        m.ms = { code: loop - host, host: host - exec, gpu: exec, idle: Math.max(0, dt * 1000 / df - loop) };   // the same, as numbers for the overlay
       }
     }
     last = now;

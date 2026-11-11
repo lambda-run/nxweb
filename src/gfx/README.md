@@ -370,7 +370,8 @@ second vertex entry point. WebGPU has no negative viewport, so the split here is
   | `textures: [{ slot, dim, depth, sampleType? }]` | texture `@group(1) @binding(st*64 + 2*slot)`, sampler `+1` | `dim` 2d, 2d-array, cube, 3d, cube-array; `depth` → `texture_depth_*` with a comparison sampler (the game's compare function, LEQUAL when it set none); `sampleType` sint / uint / unfilterable-float → a non-filtering sampler |
   | `textures: [{ slot, …, handle: { ubo, offset, sampler? } }]` | the same binding of `slot` | a **bindless** slot: the recorder reads the handle from uniform data at each draw ("Bindless textures"); `BindTexture` on that slot is ignored |
   | `storage: [{ slot, write }]` | `@group(0) @binding(128 + st*16 + slot)`, `var<storage, read>` or `read_write` | the range of `nvnCommandBufferBindStorageBuffer`; written ranges are read back (above) |
-  | `images: [{ slot, format, access, dim }]` | `@group(1) @binding(256 + st*8 + slot)`, `texture_storage_*` | the texture of `nvnCommandBufferBindImage`, one level; the texture becomes GPU-owned when written |
+  | `gmem: { buffers, pointers: [{ slot, word }] }`, with `storage` slots 32 + j and `extra` kind `gmem` | ranges `@group(0) @binding(128 + st*16 + 32 + j)`, `var<storage, read>`; their table `@group(0) @binding(224 + st)`, `array<vec4<u32>, buffers>` of { start low, start high, bytes, 0 } | memory the shader reads through 64-bit addresses it loads (`src/shaders/spv.ts` `globalMemory`): the recorder reads each address at word `word` of the range bound at storage slot `slot`, finds the live NVN buffer it lies in (`gmem.ts`) and sends up to `buffers` distinct buffers as the ranges and the table (`lower.ts` `emitGmem`). An address in no range reads 0; the ranges count against `maxStorageBuffersPerShaderStage` |
+  | `images: [{ slot, format, access, dim }]` | `@group(1) @binding(256 + st*8 + slot)`, `texture_storage_*` | the texture of `nvnCommandBufferBindImage`, one level; the texture becomes GPU-owned when written (`access` other than read-only). `format` is what the WGSL declares; when the bound texture has another format of the same class (`type`: float, sint, uint) the replayer makes the module and the pipeline again for that format (`imagePipe`; a translated shader that names no format, `bound: true`, always goes this way unless the texture is `rgba8unorm`). Another class, or a texture WebGPU cannot bind as a storage texture (an sRGB format), skips the dispatch with a red line |
   | `attributes: [l]`, `attributeTypes: { l: float \| sint \| uint }`, `variants` / `variant()` | `@location(l)` = NVN attribute `l` | see "Vertex input classes" |
   | `outputs: [i]` (fragment) | `@location(i)` = colour target `i` | targets the shader does not write get write mask 0 |
   | `fixup: true` (vertex) | `struct NxFix { fix: vec4f }` at `@group(2) @binding(0)` | last thing before returning the position: `pos.y *= nx.fix.y; pos.z = pos.z * nx.fix.z + pos.w * nx.fix.w` |
@@ -460,11 +461,24 @@ as it is, and is what is ported:
 - A uniform slot that is not bound, or bound shorter than the word, gives handle 0: no texture (the slot reads
   transparent black), red once.
 
+**Pool textures** (`src/shaders/pool.ts`, `lower.ts` `poolWalk` / `poolHandle` / `poolTable`). A handle the translator
+can trace to no word makes it declare the game's whole pools as arrays (`fp_t2ds_cb0_40000000[2^20]`,
+`fp_s_cb0_40000000[2^12]`) indexed by the handle's IDs; nxnative binds the pools (`tex_pool` / `samp_pool`). WebGPU
+cannot, so the pass gives each pool up to 4 ordinary texture slots (fewer when the bound textures leave less than
+that of the 16 a stage has) and turns each read into a switch over them. It accepts one source of the handle: a word
+of a record table in a storage buffer, `offset + stride * i` for a run-time `i` (a light list with each light's
+shadow map). The slot's reflection is `handle: { sbuf, offset, stride, index, entry }` (`RF_blh` kind `BL_POOL`). At
+each draw the recorder walks the table in guest memory, gives the slots the first distinct handles that name a live
+texture, emits them as ordinary `H_TEX` binds, and writes which handle each slot got into the c2 block at 0x980 + 4
+`entry` (0xffffffff: none), where the shader looks its handle up. A handle in no slot reads 0; a table with more live
+textures than slots is red once. A table a compute shader wrote in the same submission is read as it was before.
+
 **Not supported** (each is refused by the shader chain by name, so its key reads as missing; nothing is faked):
 
 - **Arrays of handles indexed at run time** (`tex_htab` / `samp_htab`: element k = the handle at `off + 8k` of a
   uniform slot; `tex_c2a`: a run of the driver table) and **whole pools indexed by ID** (`tex_pool` / `samp_pool`,
-  what nxnative's `pool_arrays` builds for a handle the translator could trace to no word). Both need an array of
+  what nxnative's `pool_arrays` builds for a handle the translator could trace to no word) when the handle is not a
+  word of a storage buffer's record table (above). Both need an array of
   textures behind one binding with an index only the GPU knows. WebGPU's core has no binding arrays; with them the
   size would still be bounded by the per-stage texture limit (16 by default) where nxnative's tables hold hundreds.
 - A bindless texture whose sampler is a separate sampler of the driver table (type 1 with the sampler word in

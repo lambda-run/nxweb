@@ -19,6 +19,7 @@ export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions 
   let wgsl = sg + (f.stage === "fragment" ? "diagnostic(off, derivative_uniformity);\n" : "") + naga.spvToWgsl(f.spv);
   if (opts.mesh) wgsl = wrapStage(wgsl, opts.mesh);
   const cb = f.bindings.filter(b => b.kind === "cbuf"), tex = f.bindings.filter(b => b.kind === "tex"), sb = f.bindings.filter(b => b.kind === "storage");
+  const img = f.bindings.filter(b => b.kind === "image");
   for (const t of tex) if (t.sampleType === "sint" || t.sampleType === "uint") f.notes.push(`texture slot ${t.reg} is sampled as ${t.sampleType}: src/gfx declares every texture float or depth`);
   const reflection: Reflection = {
     stage: opts.mesh ? (opts.mesh.kind === "ts" ? "task" : "mesh") : f.stage, entry: "main",
@@ -28,8 +29,10 @@ export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions 
     fixup: f.bindings.some(b => b.kind === "fixup"),
     ...(f.bindings.some(b => b.kind === "draw") ? { drawParams: true } : {}),
     ...(sb.length ? { storage: sb.map(b => ({ slot: b.reg!, write: !!b.write, ...(b.ubo === undefined ? {} : { ubo: b.ubo }) })).sort((a, b) => a.slot - b.slot) } : {}),
+    ...(img.length ? { images: img.map(b => ({ slot: b.reg!, format: b.format!, access: b.access!, dim: b.dim as "2d" | "2d-array" | "3d", type: b.sampleType as "float" | "sint" | "uint", ...(b.bound ? { bound: true } : {}) })).sort((a, b) => a.slot - b.slot) } : {}),
+    ...(f.gmem ? { gmem: f.gmem } : {}),
     uboSize: Object.fromEntries(cb.map(b => [b.reg, b.size ?? 0])),
-    extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup", "storage", "draw"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank, ...(b.kind === "c1" ? { data: opts.c1 ?? "" } : {}) })),
+    extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup", "storage", "draw", "image"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank, ...(b.kind === "c1" ? { data: opts.c1 ?? "" } : {}) })),
     notes: f.notes,
   };
   if (f.stage === "vertex") { reflection.attributes = f.inputs.map(i => i.location); reflection.attributeTypes = Object.fromEntries(f.inputs.map(i => [i.location, i.type])); }

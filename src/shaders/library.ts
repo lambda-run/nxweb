@@ -24,12 +24,19 @@ export interface Reflection {
   ubos: number[];                                                        // game uniform slots read
   // `handle`: a bindless texture. `slot` is then only where its binding is; the host reads the handle (texture ID | sampler ID << 20) from the word at byte
   // `offset` of game uniform slot `ubo` at each draw; `sampler`: a second word ORed in, or a constant sampler ID (src/gfx/README.md "Bindless textures")
-  textures: { slot: number; dim: "2d" | "2d-array" | "cube" | "3d" | "cube-array"; depth: boolean; handle?: { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } } }[];
+  textures: { slot: number; dim: "2d" | "2d-array" | "cube" | "3d" | "cube-array"; depth: boolean; handle?: { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } } | { sbuf: number; offset: number; stride: number; index: number; entry: number } }[];   // the second form: a slot of a pool texture (pool.ts)
   attributes?: number[];                                                 // vertex: locations read
   outputs?: number[];                                                    // fragment: colour targets written
   fixup: boolean;                                                        // vertex: reads the position fix-up at @group(2) @binding(0)
   drawParams?: boolean;                                                  // vertex: reads the draw's base vertex, base instance, draw index at @group(2) @binding(2)
+  // global memory read through addresses the shader loads (src/shaders/spv.ts globalMemory): the 64-bit addresses are at 32-bit word `word` of the range bound at
+  // storage slot `slot` (16 + r: uniform slot r); the recorder binds the live buffers they lie in, `buffers` at most, read-only at storage slots 32 + j (listed in
+  // `storage`) and their { start low, start high, bytes, 0 } as the uniform block of `extra` kind "gmem" (group 0, binding 224 + stage)
+  gmem?: { buffers: number; pointers: { slot: number; word: number }[] };
   storage?: { slot: number; write?: boolean; ubo?: number }[];           // storage buffer slots, at @group(0) @binding(128 + stage * 16 + slot); `ubo` (compute, slot 16 + ubo): the range bound to that uniform slot instead
+  // storage images, at @group(1) @binding(256 + stage * 8 + slot): `format` is the texel format the WGSL declares, `type` its component class. The host declares the
+  // bound texture's format instead when that differs and has the same class (src/shaders/images.ts imageVariant); `bound`: the shader names no format, `format` is a stand-in
+  images?: { slot: number; format: string; access: "write-only" | "read-only" | "read-write"; dim: "2d" | "2d-array" | "3d"; type: "float" | "sint" | "uint"; bound?: boolean }[];
   // more than src/gfx reads today (tools/shaders/README.md, "What src/gfx must change"):
   uboSize: Record<string, number>;                                       // slot -> bytes the WGSL type covers: the host binds at least this, zero-filled past what the game bound
   attributeTypes?: Record<string, "float" | "sint" | "uint">;            // vertex: the class each input is declared with
@@ -122,5 +129,5 @@ export class ShaderLibrary {
 }
 
 // The extra bindings src/gfx supplies (gfx_host.ts): the support buffer, the shader's c1, the driver segments c0 and c2, the NVN2 push constants
-export const HOST_EXTRA = ["support", "c1", "drvcb", "push"];
+export const HOST_EXTRA = ["support", "c1", "drvcb", "push", "gmem"];
 export function unsupportedExtra(r: Pick<Reflection, "extra">): string[] { return (r.extra ?? []).filter(x => !HOST_EXTRA.includes(x.kind)).map(x => x.kind); }

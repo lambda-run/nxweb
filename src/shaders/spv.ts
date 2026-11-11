@@ -9,13 +9,14 @@
 //   6. appends the position fix-up to a vertex shader (origin and depth mode are run-time state, lower.ts H_FIXUP).
 // Every loss is a note; a construct that has no place yet is an error, so a library never holds a shader that silently differs.
 import { subgroups, type SubgroupPath } from "./spv_subgroups.ts";
+import { poolTextures, type PoolHandle } from "./pool.ts";
 
 export const Op = { Name: 5, MemberName: 6, Extension: 10, ExtInstImport: 11, EntryPoint: 15, ExecutionMode: 16, Capability: 17, TypeVoid: 19, TypeBool: 20, TypeInt: 21, TypeFloat: 22,
   TypeVector: 23, TypeImage: 25, TypeSampler: 26, TypeSampledImage: 27, TypeArray: 28, TypeRuntimeArray: 29, TypeStruct: 30, TypePointer: 32, TypeFunction: 33,
   Constant: 43, ConstantComposite: 44, Function: 54, FunctionEnd: 56, Variable: 59, Load: 61, Store: 62, AccessChain: 65, InBoundsAccessChain: 66, Decorate: 71, MemberDecorate: 72,
   CompositeConstruct: 80, CompositeExtract: 81, SampledImage: 86, FAdd: 129, FMul: 133, Label: 248, Return: 253,
   BeginInvocationInterlockEXT: 5364, EndInvocationInterlockEXT: 5365 } as const;
-export const Dec = { Block: 2, BufferBlock: 3, ArrayStride: 6, BuiltIn: 11, NonWritable: 24, Location: 30, Binding: 33, DescriptorSet: 34, Offset: 35 };
+export const Dec = { Block: 2, BufferBlock: 3, ArrayStride: 6, BuiltIn: 11, NonWritable: 24, NonReadable: 25, Location: 30, Binding: 33, DescriptorSet: 34, Offset: 35 };
 export const SC = { UniformConstant: 0, Input: 1, Uniform: 2, Output: 3, Private: 6, StorageBuffer: 12 };
 
 export interface Inst { op: number; w: number[] }   // w: the operand words, without the first (length and opcode)
@@ -57,18 +58,24 @@ function strWords(s: string): number[] {
 // ---- what the pass reports ----
 // kind: the names of nxnative's dmsh_abi.h where they mean the same thing
 export interface Binding {
-  kind: "cbuf" | "support" | "c1" | "drvcb" | "push" | "tex" | "samp_tex" | "fixup" | "storage" | "draw";
+  kind: "cbuf" | "support" | "c1" | "drvcb" | "push" | "gmem" | "tex" | "samp_tex" | "fixup" | "storage" | "draw" | "image";
   group: number; binding: number;
-  reg?: number;        // cbuf: uniform slot; tex / samp_tex: texture slot
+  reg?: number;        // cbuf: uniform slot; tex / samp_tex: texture slot; image: image slot
   bank?: number;       // drvcb: 0 or 2; push: 24
   write?: boolean;     // storage: the shader may write it
+  gmem?: boolean;      // storage: not a bound range but one the recorder finds from an address the shader loads (reg is GMEM_SLOT0 + j; FixResult.gmem)
   ubo?: number;        // storage, compute: not a storage buffer slot's range but the range bound to this uniform slot of the stage (reg is then UBO_PTR_SLOT0 + ubo)
   size?: number;       // buffers: bytes the WGSL type covers = the least the host may bind
   dim?: "2d" | "2d-array" | "cube" | "cube-array" | "3d";
   sampleType?: "float" | "depth" | "sint" | "uint";
+  // image (a storage image, group 1 binding IMAGE_BINDING + stage * 8 + slot): the WebGPU texel format the module declares, and what the shader does with the image.
+  // `bound`: the shader names no format (the translator's Unknown) and `format` is a stand-in of the right class (sampleType): the host declares the format of the
+  // texture bound at the dispatch or draw instead (src/shaders/images.ts imageVariant)
+  format?: string; access?: "write-only" | "read-only" | "read-write"; bound?: boolean;
   // tex: a bindless texture. The handle is not a bound slot's: it is the 32-bit word at byte `offset` of game uniform slot `ubo` (texture ID in the low 20 bits,
   // sampler ID in the high 12), read by the host at each draw; `sampler`: a second word ORed into it, or the sampler ID as a constant (nxnative tex_ubo / samp_ubo)
-  handle?: { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } };
+  // or a slot of a pool texture (pool.ts): one of the first distinct handles of a record table in a storage buffer, found by the recorder at each draw
+  handle?: { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } } | PoolHandle;
   name: string;        // the translator's name of the variable, for the reader
 }
 export interface FixResult {
@@ -79,7 +86,11 @@ export interface FixResult {
   outputs: { location: number; type: "float" | "sint" | "uint" }[];
   notes: string[];     // what was lost or assumed, in words
   subgroups?: SubgroupPath;   // how its warp operations were made (none: it has none)
+  gmem?: GmemInfo;     // global memory read through addresses the shader loads (globalMemory)
 }
+// `pointers`: where the shader takes the 64-bit addresses it reads global memory through: 32-bit word `word` (and word + 1) of the range bound at storage slot `slot`
+// of its stage (16 + r: compute uniform slot r). `buffers`: how many read-only ranges the module declares for them (storage slots GMEM_SLOT0 + j)
+export interface GmemInfo { buffers: number; pointers: { slot: number; word: number }[] }
 export interface FixOptions {
   // "nxweb": the translator's names decide (step 5). "keep": descriptor sets and bindings stay as they are; a sampler split off a texture at (set, b) goes to (set, b + 1)
   // and the caller keeps b + 1 free (test shaders written in GLSL with the nxweb numbers already in their layout qualifiers)
@@ -89,16 +100,18 @@ export interface FixOptions {
   // the translator's storage buffers (its <key>.res.json "sbufs"): SPIR-V binding -> where the shader reads the buffer's address
   sbufs?: { binding: number; cb_slot: number; cb_offset: number; flags?: number }[];
   // a task or mesh shader the translator read as compute (job.ts): its storage buffer table in c0 is its own stage's
-  mesh?: { kind: "ts" | "ms" };
+  mesh?: { kind: "ts" | "ms"; task?: boolean };
   // warp operations (spv_subgroups.ts): "native" when the device has WebGPU's subgroups feature, else "single" (the default: one-invocation subgroups)
   subgroups?: SubgroupPath;
 }
 
 // The nxweb binding convention (src/gfx/README.md), with the three things a translated shader has and a hand-written one has not:
 //   group 0, binding 128 + 2 * 16 + 16 + r: compute uniform slot r read through its address (a storage buffer; reflection storage { slot: 16 + r, ubo: r })
+//   group 0, binding 128 + stage * 16 + 32 + j and binding 224 + stage: memory read through loaded addresses and the table of its ranges (globalMemory)
 //   group 0, binding stage * 16 + 14: the translator's support buffer (only when the shader reads it)
 //   group 0, binding 208 + stage * 4 + 0: the shader's own constants c1;  + 1: driver segment c0;  + 2: driver segment c2;  + 3: NVN2 push constants (c[24])
 //   group 2, binding 0: the position fix-up (one vec4f), vertex shaders
+// and storage images where hand-written shaders have them: group 1, binding 256 + stage * 8 + image slot
 export const STAGE_INDEX = { vertex: 0, fragment: 1, compute: 2 } as const;
 export const SUPPORT_SLOT = 14, CBSIZE_BANK = 25;
 const C2_TEX = 0x20, C2_SEPTEX = 0x168;   // nxnative dmsh_abi.h: combined texture slot r's handle word is at c2 byte 0x20 + 8 r, up to the separate texture table
@@ -170,7 +183,8 @@ function dropUnused(c: Ctx) {
   if (f64) throw new Error("64-bit floats: WGSL has none (nxnative retranslates with softfloat64; do the same before this pass)");
   if (bufferImage) throw new Error("a buffer texture: WGSL has none (nxnative's host binds them as 2D rows; needs the same decision here)");
   if (interlock) c.notes.push("pixel interlock dropped: WebGPU has no fragment shader interlock, so read-modify-write of images or storage in this pixel shader is not ordered");
-  const gone = new Set([CAP.Float64, CAP.SampledBuffer, CAP.ImageBuffer, CAP.FragmentShaderPixelInterlockEXT, ...(drawParams ? [] : [CAP.DrawParameters])]);
+  // 55, 56: StorageImageReadWithoutFormat / WriteWithoutFormat (naga knows neither): every image leaves the pass with a format (placeImage)
+  const gone = new Set([CAP.Float64, CAP.SampledBuffer, CAP.ImageBuffer, 55, 56, CAP.FragmentShaderPixelInterlockEXT, ...(drawParams ? [] : [CAP.DrawParameters])]);
   c.m.insts = c.m.insts.filter(i => !(i.op === Op.Capability && gone.has(i.w[0])) && !(i.op === Op.Extension && str(i.w, 0) === "SPV_EXT_fragment_shader_interlock") &&
     i.op !== Op.BeginInvocationInterlockEXT && i.op !== Op.EndInvocationInterlockEXT && !(i.op === Op.ExecutionMode && i.w[1] >= 5366 && i.w[1] <= 5371));
 }
@@ -315,7 +329,7 @@ function nonFiniteConstants(c: Ctx) {
     if (prologue === -1 && i.op !== Op.Function && i.op !== 55 /* FunctionParameter */ && i.op !== Op.Label && i.op !== Op.Variable) prologue = body.length;
     if (prologue !== -1) for (const k of idOperands(i)) if (bad.has(i.w[k])) i.w[k] = value(i.w[k]);
     body.push(i);
-    if (i.op === Op.FunctionEnd) { out.push(...body); body = null; }
+    if (i.op === Op.FunctionEnd) { for (const b of body) out.push(b); body = null; }   // not push(...body): a long function's instructions as arguments overflow a worker's stack
   }
   c.m.insts = out.filter(i => !(bad.has(resultId(i)) && (i.op === Op.Constant || i.op === Op.ConstantComposite)) && !((i.op === Op.Name || i.op === Op.Decorate) && bad.has(i.w[0])));
 }
@@ -629,7 +643,7 @@ function imageInfo(c: Ctx, image: number): { dim: Binding["dim"]; sampleType: Bi
 //     (the same bank when that is 0). Type 3: the sampler is the constant ID (HANDLE >> 14) & 0x3fff.
 //     Such a texture is given a texture slot no bound texture of the shader uses (the lowest free ones, in the order of the variables), and the binding of that slot
 const TEX_NAME = /^[a-z]+_t\w*?_(?:cb(\d+)|tcb)_([0-9A-F]+)$/;
-function bindlessHandle(name: string, slots: number, h: number): NonNullable<Binding["handle"]> {
+function bindlessHandle(name: string, slots: number, h: number): Exclude<NonNullable<Binding["handle"]>, PoolHandle> {
   const tb = slots & 0xffff, sb = slots >>> 16 ? (slots >>> 16) - 1 : tb, o0 = (h & 0x3fff) * 4, o1 = ((h >>> 14) & 0x3fff) * 4, type = h >>> 28;
   if (tb < 3 || tb > 16) throw new Error(`texture ${name}: its handle is in uniform bank ${tb}, which is not one of the game's uniform slots: not placed`);
   if (type === 0) return { ubo: tb - 3, offset: o0 };
@@ -646,7 +660,7 @@ function bindlessHandle(name: string, slots: number, h: number): NonNullable<Bin
 const C0_SSBO = { vertex: 0x110, fragment: 0x510, compute: 0x310, ts: 0x670, ms: 0x770 } as const, C0_ROW = 0x10, C0_SSBO_SLOTS = 16, GMEM_MAP_CB_SLOT = 0xff;
 const C0_CS_UBO = 0x210, C0_CS_UBO_SLOTS = 16;
 export const UBO_PTR_SLOT0 = 16;
-function storageSlot(binding: number | undefined, name: string, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>, mesh?: "ts" | "ms"): number {
+export function storageSlot(binding: number | undefined, name: string, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>, mesh?: "ts" | "ms"): number {
   const b = sbufs.find(s => s.binding === binding);
   if (!b) throw new Error(`storage buffer ${name}: the translator listed no storage buffer at binding ${binding}`);
   if (b.cb_slot === GMEM_MAP_CB_SLOT) throw new Error(`storage buffer ${name}: global memory traced to no storage buffer (nxnative binds its pool table or write log): not placed yet`);
@@ -657,6 +671,179 @@ function storageSlot(binding: number | undefined, name: string, stage: FixResult
   const r = (off - C0_SSBO[mesh ?? stage]) / C0_ROW;
   if (!Number.isInteger(r) || r < 0 || r >= C0_SSBO_SLOTS) throw new Error(`storage buffer ${name}: its address is at c0 + 0x${off.toString(16)}, which is no ${mesh === "ts" ? "task" : mesh === "ms" ? "mesh" : stage} stage storage buffer slot: not placed yet`);
   return r;
+}
+
+// 5a. Global memory at addresses the shader loaded from memory (nxnative docs/reference/shaders.md, "Global memory at an address loaded from memory"). The translator
+// traces such an access to no storage buffer and writes a helper per kind of access: it finds the host's memory pool holding the 64-bit address in a table (a storage
+// buffer under the sentinel slot GMEM_MAP_CB_SLOT), moves the address by the pool's delta and reads through a physical storage buffer pointer. WGSL has no pointers
+// from integers and WebGPU binds no table of every pool. Here instead:
+//   - where the addresses come from is found in the module: each call's address words are followed back (through the translator's register variables, without
+//     regard to order) to everything they can come from. An address is a 64-bit word pair of a bound storage buffer at a constant place (high word w + 1 among the
+//     sources of the call's high word, low word w among those of its low word) plus an offset computed at run time; only copies, sums, differences and choices are
+//     followed, so a word that went through a product, a shift or a mask (an offset's) is no address. A call with
+//     no such pair is an error. The pairs are FixResult.gmem.pointers. An address that in truth comes from elsewhere (one loaded through another address, which
+//     this cannot tell from an offset) falls in no range at run time and reads 0, as an address in no pool does in nxnative;
+//   - the recorder reads those words at each draw or dispatch, finds the live buffer each address lies in (src/gfx/lower.ts emitGmem) and binds up to `buffers`
+//     distinct ranges read-only at storage slots GMEM_SLOT0 + j, with their { start low, start high, bytes, 0 } in a uniform table (group 0, binding
+//     GMEM_MAP_BINDING + stage);
+//   - each load helper's body becomes: for each table entry, if the address lies in it, read word (address - start) / 4 of that entry's buffer and finish as the
+//     translator's own code after its load did (a copy of it for each entry); else the translator's own miss path (0).
+// Loads only: a store or an atomic through such an address (the translator's write log) is an error. The pool table variable becomes the first range's buffer.
+// WebGPU devices give a stage 8 or 10 storage buffers: `buffers` is the number of addresses, or fewer when the stage's own buffers leave less of GMEM_STORAGE_BUDGET
+// (addresses in one live buffer share a range, so fewer ranges than addresses may do; the recorder says so in red when they do not)
+export const GMEM_SLOT0 = 32, GMEM_MAP_BINDING = 224, GMEM_MAX_POINTERS = 8, GMEM_STORAGE_BUDGET = 10;
+interface GmemPlaced extends GmemInfo { vars: number[]; map: number }
+const NO_RESULT = new Set([0, 8, 317, 56, 62, 63, 64, 99, 218, 219, 220, 221, 224, 225, 228, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 5364, 5365]);
+function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>, mesh?: { kind: "ts" | "ms"; task?: boolean }): GmemPlaced | undefined {
+  const ent = sbufs.filter(s => s.cb_slot === GMEM_MAP_CB_SLOT);
+  if (!ent.length) return undefined;
+  const svars = c.m.insts.filter(v => v.op === Op.Variable && (v.w[2] === SC.StorageBuffer || (v.w[2] === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))));
+  const byBinding = (b?: number) => b === undefined ? undefined : svars.find(v => c.decoration(v.w[1], Dec.Binding) === b);
+  if (ent.some(s => s.cb_offset !== 0 && byBinding(s.binding))) throw new Error("global memory written through an address the shader loaded (the translator's write log, nxnative DMSH_GMEM_LOG): not placed yet");
+  const gv = byBinding(ent.find(s => s.cb_offset === 0)?.binding);
+  if (!gv) return undefined;
+  const gid = gv.w[1], gname = c.names.get(gid) ?? `${gid}`, f0 = c.firstFunction();
+  const fns: Inst[][] = [];
+  for (let k = f0; k < c.m.insts.length; k++) { const i = c.m.insts[k]; if (i.op === Op.Function) fns.push([]); fns[fns.length - 1].push(i); }
+  const helpers = new Set(fns.filter(f => f.some(i => i.op === 120 /* OpConvertUToPtr */)).map(f => f[0].w[1]));
+  if (!helpers.size) throw new Error(`storage buffer ${gname}: global memory traced to no storage buffer (nxnative's pool table), and the module has no raw load helper that reads it: not placed`);
+  for (const f of fns) if (!helpers.has(f[0].w[1]) && f.some(i => idOperands(i).some(k => i.w[k] === gid))) throw new Error(`storage buffer ${gname}: the pool table of global memory is read outside the raw load helpers: not placed`);
+  const gst = c.def.get(c.def.get(gv.w[0])!.w[2])!, garr = c.def.get(gst.w[1])!, gel = c.def.get(garr.w[1])!;
+  if (gst.w.length !== 2 || garr.op !== Op.TypeRuntimeArray || gel.op !== Op.TypeInt || gel.w[1] !== 32 || gel.w[2] !== 0) throw new Error(`storage buffer ${gname}: the pool table of global memory is not an array of 32-bit words`);
+
+  // Where the addresses come from. leaves(id): the storage buffer words ("s:<variable>:<word>") and the other sources (in words) a value can come from
+  const sets = new Map<number, Set<string>>(), users = new Map<number, number[]>(), work: number[] = [], bdef = new Map<number, Inst>();
+  const seed = (id: number, leaf: string) => { let s = sets.get(id); if (!s) sets.set(id, s = new Set()); if (!s.has(leaf)) { s.add(leaf); work.push(id); } };
+  const edge = (to: number, from: number) => push(users, from, to);
+  const header = new Set(svars.filter(v => v !== gv).map(v => v.w[1]));
+  const local = (id: number) => { const d = c.def.get(id); return !!d && d.op === Op.Variable && (d.w[2] === 7 /* Function */ || d.w[2] === SC.Private); };
+  const isBool = (t: number) => { let d = c.def.get(t); if (d && d.op === Op.TypeVector) d = c.def.get(d.w[1]); return !!d && d.op === Op.TypeBool; };
+  for (const f of fns) for (const i of f) if (!NO_RESULT.has(i.op) && i.op !== Op.Function) bdef.set(i.w[1], i);
+  const calls: Inst[] = [];
+  for (const f of fns) {
+    const inHelper = helpers.has(f[0].w[1]);
+    for (const i of f) {
+      if (inHelper) { if (i.op === Op.Store && !(c.def.get(i.w[0])?.op === Op.Variable && c.def.get(i.w[0])!.w[2] === 7)) { let p = i.w[0]; while (bdef.get(p)?.op === Op.AccessChain) p = bdef.get(p)!.w[2]; seed(p, "a value read through a loaded address"); } continue; }
+      if (i.op === Op.Store) { edge(i.w[0], i.w[1]); continue; }
+      if (i.op === 55 /* OpFunctionParameter */) { seed(i.w[1], "a function's parameter"); continue; }
+      if (NO_RESULT.has(i.op) || i.op === Op.Function || i.op === Op.Variable) continue;
+      const r = i.w[1];
+      if (i.op === 57 /* OpFunctionCall */) {
+        if (helpers.has(i.w[2])) { seed(r, "a value read through a loaded address"); calls.push(i); }
+        else { seed(r, "a function's result"); for (const a of i.w.slice(3)) seed(a, "a variable a function was handed"); }
+        continue;
+      }
+      if (isBool(i.w[0])) continue;                          // a comparison: the carry of an address's low word, not an address
+      if (i.op === Op.AccessChain || i.op === Op.InBoundsAccessChain) {
+        const base = i.w[2];
+        if (header.has(base)) { const word = i.w.length === 5 && c.constU32(i.w[3]) === 0 ? c.constU32(i.w[4]) : undefined; seed(r, word === undefined ? `a word of storage buffer ${c.names.get(base) ?? base} at an offset computed at run time` : `s:${base}:${word}`); }
+        else if (local(base) || bdef.has(base)) { edge(r, base); edge(base, r); }
+        else seed(r, `${c.names.get(base) || "a variable"} (no storage buffer)`);
+        continue;
+      }
+      if (i.op === Op.Load) { const p = i.w[2]; if (c.def.get(p)?.op === Op.Variable && !local(p)) seed(r, `${c.names.get(p) || "a variable"} (no storage buffer)`); else edge(r, p); continue; }
+      if (i.op === Op.CompositeExtract && i.w[3] === 1 && (bdef.get(i.w[2])?.op === 149 || bdef.get(i.w[2])?.op === 150)) continue;   // the carry of OpIAddCarry / OpISubBorrow
+      // an address stays one only through copies, sums and differences (its base plus an offset) and choices: a product, a shift or a mask of it is an offset's word
+      if (i.op === 169 /* OpSelect */) { edge(r, i.w[3]); edge(r, i.w[4]); }
+      else if (i.op === 83 /* OpCopyObject */ || i.op === 124 /* OpBitcast */ || i.op === 128 /* OpIAdd */ || i.op === 130 /* OpISub */ || i.op === 149 || i.op === 150 || i.op === 245 /* OpPhi */ || i.op === Op.CompositeExtract)
+        for (const k of idOperands(i)) edge(r, i.w[k]);
+    }
+  }
+  while (work.length) {
+    const id = work.pop()!, s = sets.get(id)!;
+    for (const u of users.get(id) ?? []) { let t = sets.get(u); if (!t) sets.set(u, t = new Set()); let grew = false; for (const l of s) if (!t.has(l)) { t.add(l); grew = true; } if (grew) work.push(u); }
+  }
+  const found = new Map<string, { variable: number; word: number }>();
+  for (const call of calls) {
+    const hi = sets.get(call.w[4]) ?? new Set<string>(), lo = sets.get(call.w[3]) ?? new Set<string>();
+    // The high word is the address's own plus the offset's (a 64-bit product's high word, a carry): the address is the pair of constant buffer words among its sources
+    let n = 0;
+    for (const l of hi) {
+      const m = /^s:(\d+):(\d+)$/.exec(l);
+      if (!m || +m[2] < 1 || !lo.has(`s:${m[1]}:${+m[2] - 1}`)) continue;
+      found.set(`${m[1]}:${+m[2] - 1}`, { variable: +m[1], word: +m[2] - 1 }); n++;
+    }
+    if (!n) throw new Error(`global memory at an address that comes from no constant pair of words of a bound storage buffer (its high word comes from ${[...hi].map(l => l.replace(/^s:(\d+):/, (_, v) => `${c.names.get(+v) ?? v} word `)).join("; ") || "constants"}): not placed yet`);
+  }
+  if (!found.size) throw new Error(`storage buffer ${gname}: global memory traced to no storage buffer, and no call of a raw load helper: not placed`);
+  const pointers = [...found.values()].map(p => ({ slot: storageSlot(c.decoration(p.variable, Dec.Binding), c.names.get(p.variable) ?? "", stage, sbufs, mesh?.kind), word: p.word })).sort((a, b) => a.slot - b.slot || a.word - b.word);
+  if (pointers.length > GMEM_MAX_POINTERS || pointers.some(p => p.word > 255)) throw new Error(`global memory through ${pointers.length} loaded addresses (${pointers.map(p => `${p.slot}:${p.word}`).join(", ")}; at most ${GMEM_MAX_POINTERS}, in the first 256 words of their buffers): not placed yet`);
+  const own = svars.length - 1 + (mesh ? (mesh.kind === "ms" && mesh.task ? 3 : 2) : 0), N = Math.min(pointers.length, GMEM_STORAGE_BUDGET - own);
+  if (N < 1) throw new Error(`global memory through loaded addresses in a stage that has ${own} storage buffers already: WebGPU devices allow ${GMEM_STORAGE_BUDGET} a stage at most, none is left for the memory read`);
+
+  // The table, the buffers and what the helpers need, at the end of the globals
+  const st = STAGE_INDEX[stage];
+  let at = f0, r;
+  const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
+  const fresh = (op: number, ...w: number[]) => { const id = c.id(); c.m.insts.splice(at++, 0, { op, w: op === Op.Variable ? [w[0], id, ...w.slice(1)] : [id, ...w] }); return id; };
+  const u32 = gel.w[0], bool = add(Op.TypeBool, [], false), v4 = add(Op.TypeVector, [u32, 4], false), pu = add(Op.TypePointer, [gv.w[2], u32], false), pv4 = add(Op.TypePointer, [SC.Uniform, v4], false);
+  const kc = new Map<number, number>(), k = (n: number) => { let id = kc.get(n); if (id === undefined) kc.set(n, id = add(Op.Constant, [u32, n], true)); return id; };
+  for (let n = 0; n < Math.max(4, N + 1); n++) k(n);
+  const tarr = fresh(Op.TypeArray, v4, k(N)), tst = fresh(Op.TypeStruct, tarr), map = fresh(Op.Variable, fresh(Op.TypePointer, SC.Uniform, tst), SC.Uniform);
+  const vars = [gid]; while (vars.length < N) vars.push(fresh(Op.Variable, gv.w[0], gv.w[2]));
+  c.addDecoration(tarr, Dec.ArrayStride, 16); c.addDecoration(tst, Dec.Block); c.m.insts.splice(c.firstType(), 0, { op: Op.MemberDecorate, w: [tst, 0, Dec.Offset, 0] });
+  c.setDecoration(map, Dec.DescriptorSet, 0); c.setDecoration(map, Dec.Binding, GMEM_MAP_BINDING + st);
+  vars.forEach((v, j) => { c.setDecoration(v, Dec.DescriptorSet, 0); c.setDecoration(v, Dec.Binding, 128 + st * 16 + GMEM_SLOT0 + j); if (!c.has(v, Dec.NonWritable)) c.addDecoration(v, Dec.NonWritable); });
+  c.m.insts = c.m.insts.filter(i => !(i.op === Op.Name && i.w[0] === gid));
+  const nameAt = c.m.insts.findIndex(i => i.op === Op.Name || i.op === Op.Decorate);
+  c.m.insts.splice(nameAt, 0, { op: Op.Name, w: [map, ...strWords("nx_gmem_map")] }, ...vars.map((v, j) => ({ op: Op.Name, w: [v, ...strWords(`nx_gmem${j}`)] })));
+
+  // The helpers
+  const globals = new Set<number>();
+  for (const i of c.m.insts) { if (i.op === Op.Function) break; const id = resultId(i); if (id) globals.add(id); }
+  const hasResult = (i: Inst) => !NO_RESULT.has(i.op);
+  const rewrite = (f: Inst[]): Inst[] => {
+    const fn = f[0], params = f.filter(i => i.op === 55), convs = f.filter(i => i.op === 120), ci = f.indexOf(convs[0]), ld = f[ci + 1];
+    if (convs.length !== 1 || params.length !== 2 || !ld || ld.op !== Op.Load || ld.w[2] !== convs[0].w[1] || c.def.get(fn.w[0])?.op === Op.TypeVoid)
+      throw new Error("global memory written through an address the shader loaded (a store or an atomic; nxnative's write log): not placed yet");
+    const lt = c.def.get(ld.w[0])!, n = lt.op === Op.TypeVector ? lt.w[2] : 1;
+    if ((lt.op === Op.TypeVector ? lt.w[1] : lt.w[0]) !== u32) throw new Error("a raw global memory load of something other than 32-bit words: not placed");
+    let re = ci + 2; while (re < f.length && f[re].op !== 254 /* OpReturnValue */) re++;
+    let li = f.length - 1; while (li > 0 && f[li].op !== Op.Label) li--;
+    const tail = f.slice(ci + 2, re + 1), miss = f.slice(li + 1, f.length - 1), first = f.findIndex(i => i.op === Op.Label);
+    const flat = (seg: Inst[]) => seg.length > 0 && seg[seg.length - 1].op === 254 && seg.every(i => i.op !== 120 && !(i.op >= 245 && i.op <= 253));
+    if (li <= re || !flat(tail) || !flat(miss)) throw new Error("a raw global memory load helper of a shape this pass does not know: not placed");
+    const locals = f.slice(first + 1).filter(i => i.op === Op.Variable), localIds = new Set(locals.map(v => v.w[1])), used = new Set<number>();
+    const check = (seg: Inst[], defined: Set<number>) => {
+      for (const i of seg) {
+        for (const q of idOperands(i)) { const id = i.w[q]; if (localIds.has(id)) used.add(id); else if (!globals.has(id) && !defined.has(id) && !params.some(p => p.w[1] === id)) throw new Error("a raw global memory load helper whose end uses a value of its pool search: not placed"); }
+        if (hasResult(i)) defined.add(i.w[1]);
+      }
+    };
+    check(tail, new Set([ld.w[1]])); check(miss, new Set());
+    const out: Inst[] = [fn, ...params, f[first], ...locals.filter(v => used.has(v.w[1]))];
+    const e = (op: number, t: number, ...ops: number[]) => { const id = c.id(); out.push({ op, w: [t, id, ...ops] }); return id; };
+    const word = (p: Inst) => { const t = c.def.get(p.w[0])!.w[2], v = e(Op.Load, t, p.w[1]); return t === u32 ? v : e(124 /* Bitcast */, u32, v); };
+    const alo = word(params[0]), ahi = word(params[1]);
+    for (let j = 0; j < N; j++) {
+      const S = e(Op.Load, v4, e(Op.AccessChain, pv4, map, k(0), k(j))), slo = e(Op.CompositeExtract, u32, S, 0), shi = e(Op.CompositeExtract, u32, S, 1), size = e(Op.CompositeExtract, u32, S, 2);
+      const dlo = e(130 /* ISub */, u32, alo, slo), borrow = e(169 /* Select */, u32, e(176 /* ULessThan */, bool, alo, slo), k(1), k(0)), dhi = e(130, u32, e(130, u32, ahi, shi), borrow);
+      const hit = e(167 /* LogicalAnd */, bool, e(170 /* IEqual */, bool, dhi, k(0)), e(176, bool, dlo, size)), T = c.id(), M = c.id();
+      out.push({ op: 247 /* OpSelectionMerge */, w: [M, 0] }, { op: 250 /* OpBranchConditional */, w: [hit, T, M] }, { op: Op.Label, w: [T] });
+      const idx = e(194 /* ShiftRightLogical */, u32, dlo, k(2)), words: number[] = [];
+      for (let q = 0; q < n; q++) words.push(e(Op.Load, u32, e(Op.AccessChain, pu, vars[j], k(0), q ? e(128 /* IAdd */, u32, idx, k(q)) : idx)));
+      const ren = new Map<number, number>([[ld.w[1], n === 1 ? words[0] : e(Op.CompositeConstruct, lt.w[0], ...words)]]);
+      for (const i of tail) {
+        const w = i.w.slice();
+        for (const q of idOperands(i)) if (ren.has(w[q])) w[q] = ren.get(w[q])!;
+        if (hasResult(i)) { const id = c.id(); ren.set(i.w[1], id); w[1] = id; }
+        out.push({ op: i.op, w });
+      }
+      out.push({ op: Op.Label, w: [M] });
+    }
+    out.push(...miss, f[f.length - 1]);
+    return out;
+  };
+  c.m.insts = [...c.m.insts.slice(0, c.firstFunction()), ...fns.flatMap(f => helpers.has(f[0].w[1]) ? rewrite(f) : f)];
+  // No physical pointers are left: logical addressing, and the 64-bit integer type when the address was its one use
+  const phys = new Set(c.m.insts.filter(i => i.op === Op.TypePointer && i.w[1] === 5349 /* PhysicalStorageBuffer */).map(i => i.w[0]));
+  const refs = (id: number) => c.m.insts.some(i => i.op !== Op.Name && i.op !== Op.Decorate && resultId(i) !== id && i.w.includes(id) && !(i.op === Op.Constant && i.w[0] !== id) && !(i.op === Op.TypePointer && phys.has(i.w[0])));
+  const i64 = c.m.insts.filter(i => i.op === Op.TypeInt && i.w[1] === 64), i64gone = new Set(i64.filter(t => !refs(t.w[0])).map(t => t.w[0]));
+  c.m.insts = c.m.insts.filter(i => !(i.op === Op.TypePointer && phys.has(i.w[0])) && !(i.op === Op.TypeInt && i64gone.has(i.w[0])) && !((i.op === Op.Name || i.op === Op.Decorate) && (phys.has(i.w[0]) || i64gone.has(i.w[0]))) &&
+    !(i.op === Op.Capability && (i.w[0] === 5347 /* PhysicalStorageBufferAddresses */ || (i.w[0] === 11 /* Int64 */ && i64.length > 0 && i64gone.size === i64.length))) && !(i.op === Op.Extension && str(i.w, 0) === "SPV_KHR_physical_storage_buffer"));
+  for (const i of c.m.insts) if (i.op === 14 /* OpMemoryModel */) i.w[0] = 0;   // Logical
+  c.notes.push(`global memory through ${pointers.length} loaded address${pointers.length === 1 ? "" : "es"} (${pointers.map(p => `storage slot ${p.slot} word ${p.word}`).join(", ")}): read from ${N} read-only range${N === 1 ? "" : "s"} the host finds at each draw or dispatch (storage slots ${GMEM_SLOT0}..${GMEM_SLOT0 + N - 1}, their table at binding ${GMEM_MAP_BINDING + st}); an address outside them reads 0`);
+  return { buffers: N, pointers, vars, map };
 }
 
 // The constant banks the host supplies itself (src/gfx/README.md): group 0, binding HOST_BANK_BINDING + stage * 4 + k, k = 0 the shader's c1, 1 and 2 the NVN driver
@@ -681,7 +868,124 @@ function storageWritten(c: Ctx, variable: number): boolean {
   }
   return false;
 }
-function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep", sbufs: NonNullable<FixOptions["sbufs"]> = [], mesh?: "ts" | "ms"): Binding[] {
+// 5b. Storage images (the translator's <p>_i_tcb_<WORD>_<format>: the handle is word WORD of the driver's c2, image slot (WORD * 4 - 0x120) / 8, nxnative
+// dmsh_abi.h DMSH_C2_IMG; nvnCommandBufferBindImage). WGSL wants what Metal and SPIR-V do not:
+//   the texel format in the type. The translator knows it only when the shader's instruction carries one (a typed load, an atomic); a plain store has none and
+//     the variable's format is Unknown. Such an image is declared with a stand-in format of its component class and reported `bound`: the host replaces the format
+//     by that of the texture bound (src/shaders/images.ts), which the WGSL allows for a store (the value is vec4<f32> for every float and normalized format);
+//   the access: write, read or read_write, from what the module does with the image (NonReadable / NonWritable are set to match; naga reads those). A size
+//     query alone is "write-only", the one access every storage format has in WebGPU.
+// Image atomics (OpImageTexelPointer and an atomic instruction; WGSL has no texture atomics) are rewritten before this as a load and a store (imageAtomics)
+const C2_IMG = 0x120, C2_IMG_SLOTS = 8;
+export const IMAGE_BINDING = 256;
+const IMG_NAME = /^[a-z]+_i_(?:cb(\d+)|tcb)_([0-9A-F]+)_(\w*)$/;
+const SPV_IMAGE_FORMAT: Record<number, string> = { 1: "rgba32float", 2: "rgba16float", 3: "r32float", 4: "rgba8unorm", 5: "rgba8snorm", 6: "rg32float", 7: "rg16float", 8: "rg11b10ufloat",
+  9: "r16float", 10: "rgba16unorm", 11: "rgb10a2unorm", 12: "rg16unorm", 13: "rg8unorm", 14: "r16unorm", 15: "r8unorm", 16: "rgba16snorm", 17: "rg16snorm", 18: "rg8snorm", 19: "r16snorm",
+  20: "r8snorm", 21: "rgba32sint", 22: "rgba16sint", 23: "rgba8sint", 24: "r32sint", 25: "rg32sint", 26: "rg16sint", 27: "rg8sint", 28: "r16sint", 29: "r8sint", 30: "rgba32uint",
+  31: "rgba16uint", 32: "rgba8uint", 33: "r32uint", 34: "rgb10a2uint", 35: "rg32uint", 36: "rg16uint", 37: "rg8uint", 38: "r16uint", 39: "r8uint" };
+const STAND_IN = { float: [4, 2, 1, 3], sint: [23, 22, 21, 24], uint: [32, 31, 30, 33] };   // rgba8, rgba16, rgba32, r32 of the class
+function storageImageType(c: Ctx, v: Inst): Inst | undefined {
+  const t = c.def.get(c.def.get(v.w[0])?.w[2] ?? -1);
+  return t && t.op === Op.TypeImage && t.w[6] === 2 ? t : undefined;
+}
+// The ids the image is loaded into, and what is done with them
+function imageUses(c: Ctx, variable: number, name: string): { read: boolean; write: boolean } {
+  const loads = new Set<number>();
+  let read = false, write = false, inBody = false;
+  for (const i of c.m.insts) {
+    if (i.op === Op.Function) inBody = true;
+    if (!inBody) continue;
+    if (i.op === Op.Load && i.w[2] === variable) { loads.add(i.w[1]); continue; }
+    if (i.op === 98 /* OpImageRead */ && loads.has(i.w[2])) read = true;
+    else if (i.op === 99 /* OpImageWrite */ && loads.has(i.w[0])) write = true;
+    else if (i.op === 104 /* OpImageQuerySize */ && loads.has(i.w[2])) continue;
+    else if (idOperands(i).some(n => i.w[n] === variable || loads.has(i.w[n]))) throw new Error(`image ${name}: used by instruction ${i.op}, which is no image load, store or size query: not placed yet`);
+  }
+  return { read, write };
+}
+function placeImage(c: Ctx, v: Inst, t: Inst, stage: FixResult["stage"], mode: "nxweb" | "keep", taken: Binding[]): Binding {
+  const st = STAGE_INDEX[stage], id = v.w[1], name = c.names.get(id) ?? `${id}`;
+  const comp = c.def.get(t.w[1])!, sampleType = comp.op === Op.TypeFloat ? "float" as const : comp.w[2] ? "sint" as const : "uint" as const;
+  if (t.w[5]) throw new Error(`image ${name}: a multisampled image: not placed yet`);
+  const dim = t.w[2] === 1 ? (t.w[4] ? "2d-array" as const : "2d" as const) : t.w[2] === 2 && !t.w[4] ? "3d" as const : undefined;
+  if (!dim) throw new Error(`image ${name}: dimension ${["1D", "2D", "3D", "cube", "rect", "buffer"][t.w[2]] ?? t.w[2]}${t.w[4] ? " array" : ""} has no WGSL storage texture type: not placed yet`);
+  let slot: number;
+  if (mode === "keep") {
+    const set = c.decoration(id, Dec.DescriptorSet) ?? 0, b = c.decoration(id, Dec.Binding) ?? 0;
+    slot = b - IMAGE_BINDING - st * 8;
+    if (set !== 1 || !(slot >= 0 && slot < C2_IMG_SLOTS)) throw new Error(`image ${name}: at set ${set} binding ${b}, not one of the ${stage} stage's image bindings (group 1, ${IMAGE_BINDING} + ${st * 8} + slot): not placed yet`);
+  } else {
+    const m = IMG_NAME.exec(name);
+    if (!m) throw new Error(`image ${name}: not a name the translator gives`);
+    if (m[1] !== undefined) throw new Error(`image ${name}: a bindless image (its handle is in uniform bank ${+m[1] & 0xffff}; nxnative img_ubo): not placed yet`);
+    const byte = (parseInt(m[2], 16) & 0x3fff) * 4;
+    slot = (byte - C2_IMG) / 8;
+    if (!Number.isInteger(slot) || slot < 0 || slot >= C2_IMG_SLOTS) throw new Error(`image ${name}: handle word at c2 + 0x${byte.toString(16)} is not one of the ${C2_IMG_SLOTS} image slots: not placed yet`);
+  }
+  if (taken.some(b => b.kind === "image" && b.reg === slot)) throw new Error(`image ${name}: a second image of the shader at image slot ${slot}: not placed yet`);
+  const { read, write } = imageUses(c, id, name);
+  const access = read && write ? "read-write" as const : read ? "read-only" as const : "write-only" as const;
+  if (stage === "vertex" && access !== "read-only") throw new Error(`image ${name}: ${access} in a vertex stage, where WebGPU allows read-only storage textures alone`);
+  c.m.insts = c.m.insts.filter(i => !(i.op === Op.Decorate && i.w[0] === id && (i.w[1] === Dec.NonWritable || i.w[1] === Dec.NonReadable)));
+  c.deco.set(id, (c.deco.get(id) ?? []).filter(i => i.w[1] !== Dec.NonWritable && i.w[1] !== Dec.NonReadable));
+  if (access === "write-only") c.addDecoration(id, Dec.NonReadable); else if (access === "read-only") c.addDecoration(id, Dec.NonWritable);
+  // the format: the shader's own, or a stand-in no other image type of the module has (the type is the translator's one type of every image without a format)
+  let bound = false;
+  if (t.w[7] === 0) {
+    const same = (f: number) => c.m.insts.some(i => i.op === Op.TypeImage && i !== t && i.w.slice(1, 7).every((w, k) => w === t.w[1 + k]) && i.w[7] === f && i.w.length === t.w.length);
+    const f = STAND_IN[sampleType].find(f => !same(f));
+    if (f === undefined) throw new Error(`image ${name}: no stand-in format left for an image without one`);
+    t.w[7] = f; (t as any).standIn = true;
+  }
+  if ((t as any).standIn) bound = true;
+  const format = SPV_IMAGE_FORMAT[t.w[7]];
+  if (!format) throw new Error(`image ${name}: SPIR-V image format ${t.w[7]} has no WebGPU storage format`);
+  const binding = IMAGE_BINDING + st * 8 + slot;
+  if (mode === "nxweb") { c.setDecoration(id, Dec.DescriptorSet, 1); c.setDecoration(id, Dec.Binding, binding); }
+  if (bound) c.notes.push(`image slot ${slot} (${name}) names no format: declared ${format}, the host declares the format of the texture bound to the slot instead`);
+  return { kind: "image", reg: slot, group: 1, binding, dim, sampleType, format, access, ...(bound ? { bound } : {}), name };
+}
+
+// 5c. Image atomics. The translator writes Maxwell's SUATOM as OpImageTexelPointer and an atomic instruction; WGSL has atomics on storage buffers only (and naga
+// reads no texel pointer). Each becomes a load of the texel, the operation, and a store of the result: correct for one invocation, but two invocations that
+// hit one texel at once can lose an update, which the note says. The image becomes read_write (r32uint / r32sint, which WebGPU's core allows)
+const ATOMIC_BINOP: Record<number, number> = { 234: 128 /* IAdd */, 235: 130 /* ISub */, 240: 199 /* BitwiseAnd */, 241: 197 /* BitwiseOr */, 242: 198 /* BitwiseXor */ };
+function imageAtomics(c: Ctx) {
+  const ptrs = new Map<number, Inst>();   // texel pointer id -> its instruction
+  for (const i of c.m.insts) if (i.op === 60 /* OpImageTexelPointer */) ptrs.set(i.w[1], i);
+  if (!ptrs.size) return;
+  const types = new Map<number, { image: number; v4: number; scalar: number }>();   // image variable -> the types its loads need
+  for (const p of ptrs.values()) {
+    const v = c.def.get(p.w[2]), t = v && v.op === Op.Variable ? storageImageType(c, v) : undefined;
+    if (!t) throw new Error("an image atomic on something that is not a storage image variable");
+    if (t.w[5]) throw new Error("an image atomic on a multisampled image");
+    if (!types.has(p.w[2])) types.set(p.w[2], { image: t.w[0], scalar: t.w[1], v4: c.intern(Op.TypeVector, [t.w[1], 4], c.firstFunction(), false).id });
+  }
+  const out: Inst[] = [];
+  let n = 0;
+  for (const i of c.m.insts) {
+    if (i.op === 60) continue;
+    const at = i.op === 228 ? 0 : i.op >= 227 && i.op <= 242 ? 2 : -1, p = at < 0 ? undefined : ptrs.get(i.w[at]);
+    if (!p) {
+      if (i.op !== Op.Name && i.op !== Op.Decorate && idOperands(i).some(k => ptrs.has(i.w[k]))) throw new Error(`an image texel pointer used by instruction ${i.op}: not lowered`);
+      out.push(i); continue;
+    }
+    n++;
+    const ty = types.get(p.w[2])!, e = (op: number, t: number, ...ops: number[]) => { const x = c.id(); out.push({ op, w: [t, x, ...ops] }); return x; };
+    const store = (value: number) => out.push({ op: 99 /* OpImageWrite */, w: [e(Op.Load, ty.image, p.w[2]), p.w[3], e(Op.CompositeConstruct, ty.v4, value, value, value, value)] });
+    if (i.op === 228) { store(i.w[3]); continue; }                                         // OpAtomicStore: pointer, scope, semantics, value
+    const old4 = e(98 /* OpImageRead */, ty.v4, e(Op.Load, ty.image, p.w[2]), p.w[3]);
+    out.push({ op: Op.CompositeExtract, w: [i.w[0], i.w[1], old4, 0] });               // the instruction's result: the value before
+    if (i.op === 227) continue;                                                            // OpAtomicLoad
+    if (i.op === 229) store(i.w[5]);                                                       // OpAtomicExchange: type, result, pointer, scope, semantics, value
+    else if (ATOMIC_BINOP[i.op]) store(e(ATOMIC_BINOP[i.op], ty.scalar, i.w[1], i.w[5]));
+    else throw new Error(`image atomic instruction ${i.op} (compare-exchange, increment, minimum or maximum): not lowered`);
+  }
+  c.m.insts = out.filter(i => !(i.op === Op.TypePointer && i.w[1] === 11));   // the texel pointers' types (storage class Image), which naga does not read
+  c.notes.push(`${n} image atomic operation${n === 1 ? "" : "s"} done as a load and a store: WGSL has no texture atomics, so two invocations on one texel at once can lose an update`);
+}
+
+function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>, sizes: Map<number, number>, mode: "nxweb" | "keep", sbufs: NonNullable<FixOptions["sbufs"]> = [], mesh?: "ts" | "ms", gm?: GmemPlaced, pools?: Map<number, PoolHandle>): Binding[] {
   const st = STAGE_INDEX[stage], out: Binding[] = [];
   const set = (id: number, group: number, binding: number) => { if (mode === "nxweb") { c.setDecoration(id, Dec.DescriptorSet, group); c.setDecoration(id, Dec.Binding, binding); } };
   const where = (id: number, group: number, binding: number) => mode === "nxweb" ? { group, binding } : { group: c.decoration(id, Dec.DescriptorSet) ?? 0, binding: c.decoration(id, Dec.Binding) ?? 0 };
@@ -694,6 +998,8 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
   const freeSlot = (name: string) => { for (let s = 0; s < 32; s++) if (!taken.has(s)) { taken.add(s); return s; } throw new Error(`texture ${name}: bindless, and the shader's 32 texture slots are all taken`); };
   for (const v of c.m.insts.filter(i => i.op === Op.Variable)) {
     const id = v.w[1], sc = v.w[2], name = c.names.get(id) ?? "";
+    if (gm && id === gm.map) { out.push({ kind: "gmem", group: 0, binding: GMEM_MAP_BINDING + st, size: 16 * gm.buffers, name }); continue; }
+    if (gm && gm.vars.includes(id)) { const j = gm.vars.indexOf(id); out.push({ kind: "storage", reg: GMEM_SLOT0 + j, write: false, gmem: true, group: 0, binding: 128 + st * 16 + GMEM_SLOT0 + j, name }); continue; }
     if (sc === SC.StorageBuffer || (sc === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))) {
       const slot = mode === "keep" ? (c.decoration(id, Dec.Binding) ?? 0) - 128 - st * 16 : storageSlot(c.decoration(id, Dec.Binding), name, stage, sbufs, mesh);
       const ubo = mode === "nxweb" && slot >= UBO_PTR_SLOT0 ? slot - UBO_PTR_SLOT0 : undefined;
@@ -731,14 +1037,15 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
         const info = imageInfo(c, (v as any).image), sv = samplerOf.get(id)!;
         let slot: number, handle: Binding["handle"];
         if (mode === "keep") slot = ((c.decoration(id, Dec.Binding) ?? 0) - st * 64) >> 1;
+        else if (pools?.has(id)) { handle = pools.get(id)!; slot = freeSlot(name); }   // the pass's own slot of a pool texture (pool.ts, which notes it)
         else {
           const m = TEX_NAME.exec(name);
           if (!m) throw new Error(`texture ${name || id}: not a name the translator gives`);
           const h = parseInt(m[2], 16), byte = (h & 0x3fff) * 4, type = h >>> 28;
           if (m[1] !== undefined && (+m[1] & 0xffff) !== 2) {
-            handle = bindlessHandle(name, +m[1], h); slot = freeSlot(name);
-            const sm: any = handle.sampler;
-            c.notes.push(`texture ${name} is bindless: slot ${slot} takes its handle from uniform slot ${handle.ubo} + 0x${handle.offset.toString(16)}${sm ? ("id" in sm ? `, sampler ID ${sm.id}` : `, its sampler from uniform slot ${sm.ubo} + 0x${sm.offset.toString(16)}`) : ""} at each draw`);
+            const bh = bindlessHandle(name, +m[1], h); handle = bh; slot = freeSlot(name);
+            const sm: any = bh.sampler;
+            c.notes.push(`texture ${name} is bindless: slot ${slot} takes its handle from uniform slot ${bh.ubo} + 0x${bh.offset.toString(16)}${sm ? ("id" in sm ? `, sampler ID ${sm.id}` : `, its sampler from uniform slot ${sm.ubo} + 0x${sm.offset.toString(16)}`) : ""} at each draw`);
           } else if (type !== 0) throw new Error(`texture ${name}: a separate texture and sampler (handle type ${type}), not placed yet`);
           else if (byte < C2_TEX || byte >= C2_SEPTEX || (byte - C2_TEX) % 8) throw new Error(`texture ${name}: handle word at c2 + 0x${byte.toString(16)} is not a combined texture slot`);
           else slot = (byte - C2_TEX) / 8;
@@ -750,7 +1057,11 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
         const s = { kind: "samp_tex" as const, reg: slot, ...where(sv, 1, st * 64 + slot * 2 + 1), sampleType: info.sampleType, name: c.names.get(sv)! };
         set(sv, s.group, s.binding); out.push(s);
       } else if ([...samplerOf.values()].includes(id)) continue;
-      else throw new Error(`${name || id}: an image or a separate texture / sampler, not placed yet`);
+      else {
+        const t = storageImageType(c, v);
+        if (!t) throw new Error(`${name || id}: a separate texture / sampler, not placed yet`);
+        out.push(placeImage(c, v, t, stage, mode, out));
+      }
     }
   }
   return out;
@@ -817,16 +1128,19 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   helperInvocation(c); c.index();
   arrayedFetchTypes(c); c.index();
   const posVar = perVertex(c); c.index();
+  const pools = (opts.bindings ?? "nxweb") === "nxweb" ? poolTextures(c, stage, opts.sbufs ?? [], opts.mesh?.kind) : undefined; c.index();
   const samplerOf = splitSamplers(c); c.index();
   queryLod(c, stage); c.index();
+  imageAtomics(c); c.index();
   const sizes = opts.shrinkUniforms === false ? new Map<number, number>(c.m.insts.filter(i => i.op === Op.Variable && i.w[2] === SC.Uniform).map(v => [v.w[1], structSize(c, c.def.get(c.def.get(v.w[0])!.w[2])!)])) : shrinkUniforms(c);
-  const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs, opts.mesh?.kind); c.index();
+  const gm = (opts.bindings ?? "nxweb") === "nxweb" && opts.sbufs ? globalMemory(c, stage, opts.sbufs, opts.mesh) : undefined; c.index();
+  const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs, opts.mesh?.kind, gm, pools); c.index();
   if (stage === "vertex" && opts.fixup !== false) {
     if (!posVar) throw new Error("a vertex shader that never writes gl_Position");
     bindings.push(fixup(c, posVar)); c.index();
   }
   const draw = drawParameters(c); c.index();
   if (draw) bindings.push(draw);
-  for (const i of c.m.insts) delete (i as any).image, delete (i as any).sampler;
-  return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, ...(sg ? { subgroups: sg } : {}) };
+  for (const i of c.m.insts) delete (i as any).image, delete (i as any).sampler, delete (i as any).standIn;
+  return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, ...(sg ? { subgroups: sg } : {}), ...(gm ? { gmem: { buffers: gm.buffers, pointers: gm.pointers } } : {}) };
 }

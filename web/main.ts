@@ -69,13 +69,15 @@ $("fullscreen").onclick = async () => {
 document.addEventListener("fullscreenchange", () => { $("fullscreen").textContent = document.fullscreenElement ? "Leave fullscreen" : "Fullscreen"; });
 // The readout on the picture's top right corner: frames per second while a program runs, and the process state when
 // it is not Running (Ready, Paused). The button in the control row and F3 hide it; the choice is remembered.
-let hudOn = true, hudFps = "–", hudState = "Empty";
+let feedReport = "";   // ?logto=: the address the next report goes to (not to the clipboard)
+let hudOn = true, hudFps = "–", hudState = "Empty", hudMore = "";
 try { hudOn = localStorage.getItem("nxweb-fps") !== "0"; } catch { /* no storage here: shown */ }
 function drawHud(): void {
   const live = hudState === "Running" || hudState === "Paused" || hudState === "Ready", run = hudState === "Running";
   $("hud").hidden = !(hudOn && live);
   if ($("hudnum").textContent !== hudFps) $("hudnum").textContent = hudFps;
   $("hudfps").hidden = !run;
+  $("hudmore").hidden = !run; if ($("hudmore").textContent !== hudMore) $("hudmore").textContent = hudMore;
   $("hudstate").hidden = run;
   if ($("hudstate").textContent !== hudState) $("hudstate").textContent = hudState;
   $("fpstoggle").setAttribute("aria-pressed", hudOn ? "true" : "false");
@@ -103,7 +105,13 @@ worker.onmessage = ev => {
     ($("resume") as HTMLButtonElement).disabled = m.state !== "Paused";
     ($("stop") as HTMLButtonElement).disabled = !["Ready", "Running", "Paused"].includes(m.state);
     $("fps").textContent = m.fps === undefined ? "–" : m.fps.toFixed(1);
-    hudFps = m.fps === undefined ? "–" : m.fps.toFixed(1); hudState = m.state; drawHud();
+    hudFps = m.fps === undefined ? "–" : m.fps.toFixed(1); hudState = m.state;
+    // under the number: what the number is and where a frame's time goes. "game" is frames the game presents a second; "video" is movie pictures a
+    // second while a movie plays (a movie can be slower than the game's frames); then one frame's milliseconds in translated game code, in nxweb's
+    // own host calls, in WebGPU calls, and waiting
+    hudMore = m.fps === undefined ? "" : `game frames ${m.fps.toFixed(0)}/s${m.video > 0.5 ? ` · video ${m.video.toFixed(0)}/s` : ""}` +
+      (m.ms ? `\ncode ${m.ms.code.toFixed(1)} · host ${m.ms.host.toFixed(1)} · gpu ${m.ms.gpu.toFixed(1)} · idle ${m.ms.idle.toFixed(1)} ms` : "");
+    drawHud();
     $("ups").textContent = m.ups === undefined ? "–" : fmt(m.ups);
     $("ips").textContent = m.ips === undefined ? "– (not measured for this module: see budget units)" : `${fmt(m.ips)} (budget units × ${m.ratio.toFixed(2)}, the ratio measured for the demo at build time)`;
     $("frames").textContent = `${m.frames}, ${m.nvnCalls}`;
@@ -166,7 +174,7 @@ worker.onmessage = ev => {
   else if (m.type === "player") players.set(m.source, m.player);
   else if (m.type === "vibration") rumble(m.source, m.low, m.high);
   else if (m.type === "capture") showCapture(m);
-  else if (m.type === "report") void showReport(m.text);
+  else if (m.type === "report") { if (feedReport) { const to = feedReport; feedReport = ""; void fetch(`${to}/live.report.txt`, { method: "POST", body: m.text }).catch(() => {}); } else void showReport(m.text); }
 };
 ($("demo") as HTMLButtonElement).onclick = () => worker.postMessage({ type: "demo", which: "cube" });
 ($("demotone") as HTMLButtonElement).onclick = () => worker.postMessage({ type: "demo", which: "tone" });
@@ -368,6 +376,23 @@ function rumble(source: number, low: number, high: number) {
 (window as any).nxwebTest = { audio, rumbling };
 if (new URLSearchParams(location.search).has("demo")) worker.postMessage({ type: "demo", which: "cube" });
 
+// ?logto=<url>: a development feed. Every 10 s the log lines added since the last time are POSTed to <url>/append/live.log and the status line to
+// <url>/live.status.json, so whoever develops beside the player reads a session without a pasted report. Off by default; nothing leaves the page without it
+{ const to = new URLSearchParams(location.search).get("logto");
+  if (to) {
+    let sent: Node | null = null;
+    let feedTicks = 0;
+    setInterval(() => {
+      const fresh: string[] = [];
+      for (let n = sent ? sent.nextSibling : log.firstChild; n; n = n.nextSibling) { fresh.push(n.textContent ?? ""); sent = n; }
+      if (sent && !sent.isConnected) sent = null;   // (the page keeps the last 2000 lines: after a burst the feed goes on from what is there)
+      if (fresh.length) void fetch(`${to}/append/live.log`, { method: "POST", body: fresh.join("") }).catch(() => {});
+      const st = { when: new Date().toISOString(), state: $("state").textContent, why: $("why").textContent, fps: $("fps").textContent, frames: $("frames").textContent, red: $("redcount").textContent, split: $("split").textContent, hud: hudMore, ups: $("ups").textContent, more: $("more").textContent, build: $("build").textContent };
+      void fetch(`${to}/live.status.json`, { method: "POST", body: JSON.stringify(st) }).catch(() => {});
+      // and the whole report every third time (30 s): the per-frame draw accounting and the shader keys a frame needed
+      if (++feedTicks % 3 === 0 && $("state").textContent === "Running") { feedReport = to; worker.postMessage({ type: "report", userAgent: navigator.userAgent }); }
+    }, 10000);
+  } }
 // ?driver=<url>: a debugging driver (a module that exports run(options)) is imported into the page and started with ?run=<JSON options>.
 // Off by default; the driver of the development loop (it opens the remembered game, presses keys, captures frames and posts the report)
 { const q = new URLSearchParams(location.search), u = q.get("driver");

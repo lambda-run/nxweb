@@ -20,7 +20,8 @@ import { GFX_PASS, GfxPassE, GfxPassS } from "../kit/gen/tables";
 import * as O from "./obj";
 import * as H from "./hostops";
 import { dpoolBase, texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
-import { progShader, progMissingKey, progMissingKeys, libKey, watched, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID } from "./shader";
+import { progShader, progMissingKey, progMissingKeys, libKey, watched, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID, BL_POOL, C2_POOL, RF_gmem, RF_gmem_ptr } from "./shader";
+import { gmemFind, gmemStart, gmemSize, GMEM_MAX_BYTES } from "./gmem";
 import { fmtClass, fmtCanon, fmtTwin } from "./fmt";
 import * as PK from "./pipeline";
 import { syncFence } from "./sync";
@@ -268,6 +269,7 @@ function uboWord(st: u32, reg: u32, off: u32): u32 {
 function slotHandle(st: u32, rf: usize, slot: u32): u64 {
   if (!((load<u32>(rf, RF_bl) >> slot) & 1)) return texHandle(st, slot);
   const e = rf + RF_blh + (<usize>slot << 3), kind = load<u8>(e);
+  if (kind == BL_POOL) return poolHandle(st, e, false);
   let h = uboWord(st, load<u8>(e, 1), load<u16>(e, 2));
   if (kind == BL_OR) h |= uboWord(st, load<u8>(e, 4), load<u16>(e, 6));
   let tid = <u64>(h & 0xfffff), sid = <u64>(h >> 20);
@@ -281,6 +283,56 @@ function handleSerial(h: u64): u64 {
   if (!e) return 0;
   const s = load<u64>(e);
   return texEntry(s) ? s : 0;
+}
+// Pool textures (src/shaders/pool.ts; nxnative binds the game's whole pools, tex_pool / samp_pool). The shader reads a texture through a handle it loads from a
+// record table in a storage buffer (a light list: one record a light, its shadow map's handle in it) and has a few slots for all of them. The table is walked
+// when the draw is lowered: guest memory then holds what the GPU would read, as for bindless handles. The distinct handles that name a live texture take the
+// slots in the order they are met, and the shader is told which handle each slot got (poolTable). A table a compute shader writes in the same submission is
+// read as it was before; a table with more live textures than the shader has slots leaves the later ones reading 0 (red, once)
+const POOLH: usize = memory.data(64);        // the handles of the last table walked, as the game wrote them
+let poolN: u32 = 0, poolMore = false, poolAddr: u64 = 0, poolSize: u64 = 0, poolKey: u64 = 0, poolStamp: u32 = 0xffffffff, poolTexBase: i32 = 0;
+function poolWalk(st: u32, reg: u32, off: u32, stride: u32): u32 {
+  if (reg >= 16) return 0;
+  const b = SSBO + (<usize>(st * 16 + reg) << 4), addr = load<u64>(b), size = load<u64>(b, 8);
+  const key = <u64>off | <u64>stride << 16 | <u64>reg << 32 | <u64>st << 40, stamp = nDraws + nSkipped + nDispatches;   // one walk a draw: each ends by counting itself
+  if (stamp == poolStamp && key == poolKey && addr == poolAddr && size == poolSize && texBase == poolTexBase) return poolN;
+  poolStamp = stamp; poolKey = key; poolAddr = addr; poolSize = size; poolTexBase = texBase; poolN = 0; poolMore = false;
+  if (!addr) return 0;
+  for (let o: u64 = off, i = 0; o + 4 <= size && i < 65536; o += stride, i++) {
+    const h = load<u32>(<usize>addr + <usize>o), tid = h & 0xfffff;
+    if (tid && handleSerial(<u64>tid + <u64>texBase)) {
+      let j: u32 = 0;
+      while (j < poolN && load<u32>(POOLH + (<usize>j << 2)) != h) j++;
+      if (j == poolN) { if (poolN < 16) { store<u32>(POOLH + (<usize>j << 2), h); poolN++; } else { poolMore = true; break; } }
+    }
+    if (!stride) break;
+  }
+  return poolN;
+}
+// The handle of a pool slot (its RF_blh entry e): with the pools' bases added, as slotHandle gives it, or raw as the shader compares it (0xffffffff: the slot is empty)
+function poolHandle(st: u32, e: usize, raw: bool): u64 {
+  const j = <u32>load<u8>(e, 4) & 15, n = poolWalk(st, load<u8>(e, 1), load<u16>(e, 2), load<u16>(e, 6));
+  if (j >= n) return raw ? 0xffffffff : 0;
+  const h = load<u32>(POOLH + (<usize>j << 2));
+  if (raw) return h;
+  let tid = <u64>(h & 0xfffff), sid = <u64>(h >> 20);
+  tid += <u64>texBase; if (sid) sid += <u64>sampBase;
+  return tid | sid << 20;
+}
+// A shader that may have pool slots: bindless slots and the c2 block
+function hasPool(id: i32): bool { return id >= 0 && load<u32>(libRefl(id), RF_bl) != 0 && ((load<u32>(libRefl(id), RF_ubo) >> 18) & 1) != 0; }
+// The table of a shader's pool slots in its c2 block d: word (sreg >> 4) = the handle that slot holds
+function poolTable(st: u32, rf: usize, d: usize): void {
+  let m = load<u32>(rf, RF_bl), slots: u32 = 0;
+  for (let i: usize = 0; i < 16; i++) store<u32>(d + C2_POOL + (i << 2), 0xffffffff);
+  for (let slot: u32 = 0; m; slot++, m >>= 1) {
+    if (!(m & 1)) continue;
+    const e = rf + RF_blh + (<usize>slot << 3);
+    if (load<u8>(e) != BL_POOL) continue;
+    store<u32>(d + C2_POOL + (<usize>(load<u8>(e, 4) >> 4) << 2), <u32>poolHandle(st, e, true)); slots++;
+  }
+  // every pool of a shader has as many slots, and one pool is what games have: the last table walked is then this shader's
+  if (slots && (poolMore || poolN > slots) && once(48)) { L.red("a pool texture's table names "); L.u(poolN); L.str(poolMore ? " or more" : ""); L.str(" live textures and its shader has "); L.u(slots); L.str(" slots for them: the others read 0"); L.end(); }
 }
 function isTarget(serial: u64): bool {
   for (let i = 0; i < 9; i++) if (load<u64>(RT + <usize>i * RT_E) == serial) return true;
@@ -399,6 +451,7 @@ function emitState(): void {
       store<u32>(r, s, 8); store<u32>(r, <u32>load<u64>(VBUF + (<usize>s << 4), 8), 12); store<u64>(r, load<u64>(VBUF + (<usize>s << 4)), 16);
     }
   }
+  if ((dirty & D_TEX) && ((!meshMode && hasPool(curVs)) || hasPool(curFs))) dirty |= D_UBO;     // which handle a pool slot holds is told to the shader in its c2 block
   if (dirty & D_UBO) { if (!meshMode) { emitUbos(0, curVs); emitStorage(0, curVs); } emitUbos(1, curFs); emitStorage(1, curFs); }
   if ((dirty & D_UBO) && ((!meshMode && hasBindless(curVs)) || hasBindless(curFs))) dirty |= D_TEX;      // the handles are uniform data
   if (dirty & D_TEX) { if (!meshMode) emitTexs(0, curVs); emitTexs(1, curFs); }
@@ -417,7 +470,7 @@ function emitUbos(st: u32, id: i32, from: u32 = 0xff): void {
   let m = load<u32>(rf, RF_ubo) & 0x7fff;
   const ex = load<u32>(rf, RF_ubo) >> 16;
   if (ex & 2) emitDriver(st, from, 0);
-  if (ex & 4) emitDriver(st, from, 2);
+  if (ex & 4) { const d = emitDriver(st, from, 2); if (load<u32>(rf, RF_bl)) poolTable(from, rf, d); }
   if (ex & 8) emitPush(st, from);
   for (let i: u32 = 0; m; i++, m >>= 1) {
     if (!(m & 1)) continue;
@@ -452,7 +505,7 @@ function emitPush(st: u32, from: u32): void {
 // The driver's constant segments as nxnative fills them (nvn_mtl.m, dmsh_abi.h DMSH_C0_* / DMSH_C2_*). c0: the stage's storage buffer table (address 64 bits,
 // size 32 bits a row); graphics: the largest point size at 0x610 and the draw's base instance at 0x644; compute: the work group counts at 0x200 (and at 4, NVN2's
 // place) and the uniform slot table at 0x210. c2: the bound texture handles at 0x20 + 8 r and image handles at 0x120 + 8 r
-function emitDriver(st: u32, from: u32, bank: u32): void {
+function emitDriver(st: u32, from: u32, bank: u32): usize {
   const r = H.hostRec(H.H_UBO_DATA, 24 + DRV_SIZE), d = r + 24;
   store<u32>(r, st, 8); store<u32>(r, bank ? 18 : 17, 12); store<u32>(r, <u32>DRV_SIZE, 16);
   if (bank == 0) {
@@ -466,6 +519,7 @@ function emitDriver(st: u32, from: u32, bank: u32): void {
     for (let i: usize = 0; i < 32; i++) store<u32>(d + 0x20 + (i << 3), <u32>load<u64>(TEXH + ((<usize>from * 32 + i) << 3)));
     for (let i: usize = 0; i < 8; i++) store<u32>(d + 0x120 + (i << 3), <u32>load<u64>(IMGH + ((<usize>from * 8 + i) << 3)));
   }
+  return d;
 }
 function readsDriver0(id: i32): bool { return id >= 0 && ((load<u32>(libRefl(id), RF_ubo) >> 17) & 1) != 0; }
 // ClearTexture(i/ui): outside a render pass, on the texture's level and layers of the view, the region's rectangle
@@ -490,12 +544,56 @@ function emitTexs(st: u32, id: i32, from: u32 = 0xff): void {
     const h = slotHandle(from, rf, slot), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h);
     if (serial) contentNeed(serial);       // may upload it now
     const r = H.hostRec(H.H_TEX, 48);
-    if (!serial && once(7)) { L.red("a draw samples texture ID "); L.u(h & 0xfffff); L.str(" (stage "); L.u(st); L.str(" slot "); L.u(slot); L.str("), which names no live texture: it reads as empty"); L.end(); }
+    if (!serial && load<u8>(rf + RF_blh + (<usize>slot << 3)) != BL_POOL && once(7)) { L.red("a draw samples texture ID "); L.u(h & 0xfffff); L.str(" (stage "); L.u(st); L.str(" slot "); L.u(slot); L.str("), which names no live texture: it reads as empty"); L.end(); }
     store<u32>(r, st, 8); store<u32>(r, slot, 12); store<u64>(r, serial, 16);
     const hasView = serial != 0 && load<u8>(e, TDE_has_view) != 0;
     store<u32>(r, (st < 2 && snapped(serial) ? 1 : 0) | (hasView ? 2 : 0), 24); store<u32>(r, <u32>(h >> 20) & 0xfff, 28);
     if (hasView) memory.copy(r + 32, e + TDE_view, O.VIEW_SIZE);
   }
+}
+// Memory a stage reads through addresses it loads (src/shaders/spv.ts globalMemory; nxnative binds its table of every memory pool instead). The 64-bit addresses
+// stand in storage ranges bound to the stage, at words the shader's record names: each is read from guest memory here, the live buffer it lies in becomes one of
+// the stage's ranges (storage slots 32 + j, read-only; addresses in one buffer share a range) and the ranges' { start low, start high, bytes, 0 } go to the
+// replayer as the uniform block the module searches (uniform index 20: group 0 binding 224 + stage). A null address takes no range. What cannot be served reads
+// 0 in the shader, with a red line once: an address in no live buffer, and more buffers than the module declares ranges (WebGPU's storage buffers a stage).
+// DEPARTS: the words are read from guest memory. When a compute pass of this submission wrote them (a range whose read-back has not landed) they are stale
+const GM: usize = memory.data(128);           // { u64 start, u64 bytes } x 8
+const GMH: usize = memory.data(64);           // the buffer object each of the 8 addresses was found in last
+function emitGmem(st: u32, rf: usize, from: u32): void {
+  const g = load<u32>(rf, RF_gmem), K = g & 0xff, N = (g >> 8) & 0xff;
+  let n: u32 = 0;
+  for (let k: u32 = 0; k < K && k < 8; k++) {
+    const e = rf + RF_gmem_ptr + (<usize>k << 1), slot = <u32>load<u8>(e), word = <u32>load<u8>(e, 1);
+    const b = slot < 16 ? SSBO + (<usize>(from * 16 + slot) << 4) : UBO + (<usize>(from * 16 + slot - 16) << 4), addr = load<u64>(b), size = load<u64>(b, 8);
+    if (!addr || <u64>(word * 4 + 8) > size) {
+      if (once(42)) { L.red("a shader reads memory through an address kept at word "); L.u(word); L.str(" of storage slot "); L.u(slot); L.str(", where nothing that long is bound: that memory reads 0"); L.end(); }
+      continue;
+    }
+    const p = load<u64>(<usize>addr + (<usize>word << 2));
+    if (!p) continue;
+    let j: u32 = 0;
+    while (j < n && p - load<u64>(GM + (<usize>j << 4)) >= load<u64>(GM + (<usize>j << 4), 8)) j++;
+    if (j < n) continue;
+    const buf = gmemFind(p, load<usize>(GMH + (<usize>k << 3)));
+    store<usize>(GMH + (<usize>k << 3), buf);
+    if (!buf || gmemSize > GMEM_MAX_BYTES) {
+      if (once(43)) { L.red("a shader reads memory through address 0x"); L.hex(p); L.str(" (word "); L.u(word); L.str(" of storage slot "); L.u(slot); L.str(buf ? "), in a buffer of more than 128 MiB, which is not bound: it reads 0" : "), which lies in no live buffer: it reads 0"); L.end(); }
+      continue;
+    }
+    if (n == N) {
+      if (once(44)) { L.red("a shader reads memory through addresses in more buffers than the "); L.u(N); L.str(" ranges its module has room for (WebGPU's storage buffers a stage): the others read 0"); L.end(); }
+      continue;
+    }
+    store<u64>(GM + (<usize>n << 4), gmemStart); store<u64>(GM + (<usize>n << 4), gmemSize, 8); n++;
+  }
+  for (let j: u32 = 0; j < N; j++) {
+    const r = H.hostRec(H.H_SSBO, 32);
+    store<u32>(r, st, 8); store<u32>(r, 32 + j, 12);
+    if (j < n) { store<u64>(r, load<u64>(GM + (<usize>j << 4)), 16); store<u32>(r, <u32>load<u64>(GM + (<usize>j << 4), 8), 24); }
+  }
+  const t = H.hostRec(H.H_UBO_DATA, 24 + (<usize>N << 4));
+  store<u32>(t, st, 8); store<u32>(t, 20, 12); store<u32>(t, N << 4, 16);
+  for (let j: u32 = 0; j < n; j++) { store<u64>(t + 24 + (<usize>j << 4), load<u64>(GM + (<usize>j << 4))); store<u32>(t + 24 + (<usize>j << 4), <u32>load<u64>(GM + (<usize>j << 4), 8), 8); }
 }
 // Storage buffers and images of a draw's or dispatch's stage. A written range is noted for the read-back at the end of the pass
 function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
@@ -519,6 +617,7 @@ function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
     const b = UBO + (<usize>(from * 16 + r) << 4), addr = load<u64>(b), size = load<u64>(b, 8), rec = H.hostRec(H.H_SSBO, 32);
     store<u32>(rec, st, 8); store<u32>(rec, 16 + r, 12); store<u64>(rec, addr, 16); store<u32>(rec, <u32>size, 24); store<u32>(rec, (wm >> (16 + r)) & 1, 28);
   }
+  if (load<u32>(rf, RF_gmem)) emitGmem(st, rf, from);
   const im = load<u32>(rf, RF_img);
   for (let i: u32 = 0; i < 8; i++) {
     if (!((im >> i) & 1)) continue;

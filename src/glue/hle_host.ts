@@ -267,7 +267,9 @@ export class HleHost {
     x.hle_init();
   }
   // A packet's completion from HleEnv.video: its picture (copied here) or null for none
+  videoPictures = 0;   // movie pictures handed to the guest (the page shows how many a second)
   videoPicture(dec: number, gen: number, seq: bigint, pic: VideoPicture | null): void {
+    if (pic) this.videoPictures++;
     const id = pic ? this.x.hle_cv_pic_alloc(pic.w, pic.h) >>> 0 : 0;
     if (pic && id) {
       const at = this.x.hle_cv_pic_ptr(id), b = new Uint8Array(this.memory.buffer), w = pic.w, h = pic.h, cw = (w + 1) >> 1, ch = (h + 1) >> 1;
