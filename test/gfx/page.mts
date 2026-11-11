@@ -45,6 +45,10 @@ async function main() {
     console.log = log;
     if (e) { const h = new Uint8Array(e.g.memory.buffer, e.g.x.kit_hits_ptr(), e.g.x.kit_hits_size()); if (!hits.length) hits = Array.from(h); else h.forEach((v, i) => { if (v) hits[i] = 1; }); }
     results.push({ name: s.name, error, notes, files: t.files, checks: t.checks, ms: Math.round(performance.now() - t0), calls: e?.g.calls ?? 0, logs: error ? e?.g.logs.slice(-12) : undefined, stats: e?.host.stats });
+    // the scene's replayers go as a process's do (GfxHost.dispose), then a GC: each 64-bit guest memory reserves 16 GB of address space, which V8 gives back only
+    // when it collects the memory, and the page's small heap rarely asks for a collection (memory64 ran out of address space at the 60th scene)
+    for (const x of Env.live.splice(0)) x.host?.dispose();
+    e = undefined; (globalThis as any).gc?.();
   }
   return { results, hits, adapter: adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "", features: want, limits };
 }
