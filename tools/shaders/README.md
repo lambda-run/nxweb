@@ -25,9 +25,79 @@ assembled by hand (`maxwell_asm.py`) and 46 GLSL shaders written to look like th
 | `src/shaders/library.ts` | The library format, writer and loader. |
 | `build_lib.mts` | Directory of SPIR-V (or GLSL, for tests) → library + report. |
 | `xlate_wasm.csproj`, `build_xlate_wasm.sh` | The translator published for `browser-wasm`. |
-| `test/shaders/` | `run.mts` (Node + headless Chromium), `page.mts` (raw WebGPU), `corpus/` (GLSL + expectations), `e2e/`. |
+| `test/shaders/` | `run.mts` (Node + headless Chromium), `page.mts` (raw WebGPU), `corpus/` (GLSL + expectations), `e2e/`, `sweep.mts` (the sweep on a synthetic game). |
+| `sweep.mts`, `sweep_worker.mts` | `npm run shaders:sweep`: every stage of a game through the page's chain, in worker processes (below). |
 
-npm: `shaders:naga` (build the wasm), `shaders:asm`, `shaders:xlate`, `shaders:lib`, `shaders:xlate-wasm`, `shaders:test`.
+npm: `shaders:naga` (build the wasm), `shaders:asm`, `shaders:xlate`, `shaders:lib`, `shaders:xlate-wasm`, `shaders:test`,
+`shaders:sweep`, `shaders:sweep:setup`, `shaders:sweep:test`.
+
+## Sweep: every shader of a game through the page's chain (`npm run shaders:sweep`)
+
+```sh
+npm run shaders:sweep -- <game.nup | game folder> [--out DIR] [--jobs N] [--timeout S] [--only KEY,...]
+                         [--version N] [--keep-binaries] [--fresh]
+```
+
+Runs on your own machine, against your own game; nothing is uploaded. What it does, step by step:
+
+1. Opens the game where it lies: a `.nup` through `src/prepare/host/nup.ts` + `nup_node.ts` (the TOC, then one file at a
+   time by positional reads: a 24 GB package is never read whole), a folder through `tree_node.ts`. The layout is read
+   by `detect.ts` as the Prepare page reads it; the newest update is taken unless `--version N` says otherwise.
+2. Scans the files the Prepare page's Shaders stage scans (`exefs/main` as a module, the version's RomFS, every add-on
+   RomFS) with the same code (`shader_prewarm.ts` `threadSource` → `shader_scan.ts` `scanFile`): BNSH, GLSLC outputs,
+   SARC, Yaz0, zstd, NVN2 (Ampere) control sections, `NDSR` and `NDVE` (nn::ndve) packs. Files over 512 MB are listed as
+   not read, as on the page. Each key is swept once; `seen` counts the other places it was found.
+3. Sends each stage to one of `--jobs` worker processes (`sweep_worker.mts`: default the core count less one, at most 8).
+   A worker is the page's chain in Node: `jobFor`, the browser-WASM translator `build/shaders/xlate_wasm` (the very
+   files the page's shader worker loads, run by Node instead of a page), `convertStage` (`fixForWgsl`, then naga).
+   A stage that takes more than `--timeout` seconds (default 60) has its worker killed and is a `timeout`; a worker
+   that dies is a `crash`; a worker whose translator runtime threw is replaced. The sweep goes on in every case.
+   `--fresh` starts a new process for every stage (slower, the strictest isolation).
+4. Writes, in `DIR` (default `./shader-sweep`):
+   - `results.json`: one record per stage: `key`, `stage`, `where` (file inside the game + container offsets), `seen`,
+     `status` (`ok` / `failed` / `crash` / `timeout`), `phase` (`translate` / `fix` / `naga`), `error` (first line,
+     long hexadecimal runs masked), `category` (the error with keys, numbers and file names taken out),
+     `translateMs`, `fixMs`, `nagaMs`, `runtime` (an `ok` stage the runtime would still refuse: compute, or a binding
+     `src/gfx` lacks), the control and code sizes; and the scan's counts, unreadable places and files not read.
+     It is rewritten every 10 s, so a stopped sweep leaves what it had (`"finished": false`).
+   - `summary.md`: counts by status and stage, errors by category with example keys, the runtime's refusals, the 20
+     slowest stages, the places not scanned.
+   - `records/<key>.<stage>.{ctl,code,spv,wgsl}`: **only with `--keep-binaries`**. These are the game's shader bytes
+     (and what was made from them): keep them on your machine.
+
+   Without `--keep-binaries`, `DIR` holds no byte of the game (keys, paths, sizes, timings and messages only), so
+   `results.json` and `summary.md` can be shared. Nothing is printed but counts and the two paths.
+   `--only KEY,KEY` sweeps those keys only (for example the examples of one category, again with `--keep-binaries`).
+   The exit code is 0 when the sweep finished, whatever the stages did; 2 on a usage or setup error.
+
+### Setup on a Mac (Apple silicon or Intel)
+
+```sh
+brew install node@24 rustup && brew install --cask dotnet-sdk   # Node 24, Rust, the .NET 10 SDK
+export PATH="$(brew --prefix node@24)/bin:$PATH"                # node@24 is keg-only; any Node 22.18+ runs the .ts files
+rustup default stable && rustup target add wasm32-unknown-unknown
+git clone https://github.com/lambda-run/nxweb && cd nxweb && npm ci
+git clone https://github.com/seedds/nxnative ../nxnative && git -C ../nxnative checkout "$(cat NXNATIVE_REF)"
+NXNATIVE="$PWD/../nxnative" npm run shaders:sweep:setup   # build/prepare/prepare.wasm, build/shaders/nx_naga.wasm, build/shaders/xlate_wasm/
+npm run shaders:sweep -- ~/Games/zelda.nup --out ~/zelda-sweep
+```
+
+`dotnet --version` must say 10.x; otherwise install the .NET 10 SDK from
+https://dotnet.microsoft.com/download (no workload is needed: the translator is published for `browser-wasm`
+with the plain SDK). Python is not needed for the sweep (only `npm run shaders:sweep:test` and `shaders:asm`, which
+assemble the synthetic programs, use `python3`, which macOS has with the Xcode command line tools). The build artifacts
+are made once.
+
+### Test (`npm run shaders:sweep:test`)
+
+`test/shaders/sweep.mts` builds a synthetic game from the hand-assembled programs (`maxwell_asm.py`'s six in a BNSH and
+a Yaz0 SARC, `ampere_asm.py`'s three NVN2 stages in an `NDSR` pack and an `NDVE` file, the same pack again), plus a stage
+the translator refuses and two the worker is told to hang on and to die on (`SWEEP_SIMULATE`, a test hook), and
+sweeps it as a folder and as a `.nup`: the same twelve results from both, the hang a `timeout`, the abort a `crash`, the
+refusal `failed` with its category, no stage byte in `DIR` (every 32-byte window of every section searched for),
+`records/` with `--keep-binaries`, `--only`. It runs under `tools/modes.mjs` and checks that `NX_MEM=32`, `64` and `64hi`
+give the same results: the sweep's chain (the prepare module, the translator, naga) is 32-bit WebAssembly in every mode,
+so the mode changes nothing in it, and the test shows that.
 
 ## 1. nxnative's chain, stage by stage
 
