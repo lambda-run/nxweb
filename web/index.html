@@ -6,20 +6,27 @@
 <style>
   :root { color-scheme: dark; --bg: #11151c; --panel: #1a202b; --line: #2b3444; --text: #d7dde8; --dim: #8b96a8; --red: #ff6b6b; --acc: #6cb6ff; }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  body { margin: 0; min-height: 100vh; background: radial-gradient(1200px 600px at 50% -200px, #1b2740 0%, var(--bg) 70%) fixed; color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
   main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
-  h1 { font-size: 18px; margin: 0; font-weight: 600; }
-  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-  header span { color: var(--dim); }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: .2px; display: flex; align-items: center; gap: 8px; }
+  h1::before { content: ""; width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, #e60012 0 50%, #00c3e3 50% 100%); box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 2px; }
+  header span { color: var(--dim); font-size: 13px; }
+  #build { margin-left: auto; font: 12px ui-monospace, monospace; color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+  .panel .panel { box-shadow: none; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  button, label.file { background: #263044; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button, label.file { transition: border-color .12s, background-color .12s; background: #263044; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
   button:hover:not(:disabled), label.file:hover { border-color: var(--acc); }
   button:disabled { opacity: .45; cursor: default; }
   input[type=file] { display: none; }
   #drop { border: 1px dashed var(--line); border-radius: 8px; padding: 10px 12px; color: var(--dim); flex: 1 1 260px; min-width: 0; }
   #drop.over { border-color: var(--acc); color: var(--text); }
-  #state { font-weight: 600; padding: 2px 10px; border-radius: 999px; background: #263044; }
+  #state { font-weight: 600; padding: 3px 12px 3px 10px; border-radius: 999px; background: #263044; display: inline-flex; align-items: center; gap: 6px; }
+  #state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  #state[data-state=Running]::before { background: #4cc38a; box-shadow: 0 0 8px #4cc38a; } #state[data-state=Paused]::before { background: #e3b341; }
+  #state[data-fault="1"]::before { background: var(--red); }
+  #why { color: var(--dim); font-size: 13px; }
   #state[data-state=Running] { background: #1f4d2e; } #state[data-state=Paused] { background: #57471c; }
   #state[data-state=Stopped] { background: #3a2530; } #state[data-fault="1"] { background: #6b1f25; }
   #doomnote { flex-basis: 100%; } #doomnote.ask { color: var(--acc); }
@@ -58,15 +65,20 @@
   .demos { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--dim); border-top: 1px solid var(--line); padding-top: 10px; }
   .demos button { padding: 4px 10px; font-size: 13px; }
   #player { display: grid; gap: 10px; }
-  #screen { position: relative; justify-self: center; width: min(100%, calc((100vh - 150px) * 16 / 9)); min-width: min(100%, 320px); background: #000; border-radius: 8px; overflow: hidden; }
+  #screen { position: relative; justify-self: center; width: min(100%, calc((100vh - 150px) * 16 / 9)); min-width: min(100%, 320px); background: #000; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1px var(--line), 0 12px 32px rgba(0,0,0,.45); }
+  #emptyhint { position: absolute; inset: 0; display: none; place-content: center; text-align: center; gap: 6px; color: var(--dim); font-size: 13px; pointer-events: none; padding: 12px;
+    background: repeating-linear-gradient(45deg, #0b0e13 0 12px, #0e121a 12px 24px); }
+  #emptyhint b { color: var(--text); font-size: 15px; font-weight: 600; }
+  #player[data-idle="1"] #emptyhint { display: grid; }
   #player[data-idle="1"] #screen { width: min(100%, 480px); }
   #screen canvas { border-radius: 0; outline-offset: -2px; }
   #screen:fullscreen { width: 100vw; height: 100vh; border-radius: 0; display: flex; align-items: center; justify-content: center; }
   #screen:fullscreen canvas { width: min(100vw, calc(100vh * 16 / 9)); height: auto; }
   #focushint { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); background: rgba(0, 0, 0, .72); color: #fff; padding: 4px 12px; border-radius: 999px; font-size: 13px; pointer-events: none; white-space: nowrap; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; }
   #trouble { border: 1px solid #6b1f25; background: #2a1215; border-radius: 8px; padding: 8px 10px; }
-  #keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 14px; margin: 0; font-size: 13px; }
-  #keys > div { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; } #keys dt { color: var(--dim); min-width: 5.5em; } #keys dd { margin: 0; display: flex; gap: 3px; flex-wrap: wrap; align-items: center; }
+  #keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin: 0; font-size: 13px; }
+  #keys > div { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: #151a23; border: 1px solid var(--line); border-radius: 8px; }
+  #keys dt { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; } #keys dd { margin: 0; display: flex; gap: 3px; flex-wrap: wrap; align-items: center; color: var(--dim); }
   kbd { font: 12px/1 ui-monospace, monospace; background: #263044; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 3px 5px; min-width: 1.6em; text-align: center; }
   #dev > summary { font-size: 15px; font-weight: 600; color: var(--text); padding: 4px 0; }
   #dev[open] > summary { margin-bottom: 12px; }
@@ -75,7 +87,7 @@
   @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
 </style>
 <main>
-  <header><h1>nxweb</h1><span>Play Switch games you own in this browser tab. Nothing is uploaded; nothing from any game is here.</span><code id="build" title="the build: commit, build time (UTC), md5 of the built files" style="margin-left:auto;font-size:12px;color:var(--muted,#8a94a8);white-space:nowrap">build …</code></header>
+  <header><h1>nxweb</h1><span>Play Switch games you own in this browser tab. Nothing is uploaded; nothing from any game is here.</span><code id="build" title="the build: commit, build time (UTC), md5 of the built files">build …</code></header>
   <section class="panel" id="open">
     <h2>Open a game</h2>
     <iframe id="prepare" src="prepare.html" title="Open a game: drop a .nup file or a game folder, or choose one"></iframe>
@@ -94,7 +106,8 @@
       <button id="pause" disabled>Pause</button><button id="resume" disabled>Resume</button><button id="stop" disabled>Stop</button><button id="fullscreen">Fullscreen</button>
     </div>
     <div id="screen"><canvas id="canvas" width="480" height="270" tabindex="0" aria-label="The game's picture. Click it to use the keyboard."></canvas>
-      <div id="focushint" hidden>Click the picture to use the keyboard</div></div>
+      <div id="focushint" hidden>Click the picture to use the keyboard</div>
+      <div id="emptyhint" aria-hidden="true"><b>No game running</b><span>Open a .nup above, or try one of the demos.</span></div></div>
     <div id="trouble" class="row" role="status" hidden><b>Something went wrong?</b><button id="copyreport">Copy report</button>
       <small id="reportnote">The report says what nxweb did (states, counters, its own log lines). It has no game data.</small></div>
     <details id="reportbox" hidden><summary>the report (one text block: machine states, modules, counters, the adapter, the options key, the last 200 log lines; nothing from guest memory)</summary><textarea id="reporttext" class="mono" readonly></textarea></details>

@@ -43,6 +43,7 @@ export type VinClass = "float" | "sint" | "uint";
 //   @group(1) @binding(stage * 64 + slot * 2)   texture slot, and + 1 its sampler
 //   @group(1) @binding(256 + stage * 8 + i)     storage image i
 //   @group(2) @binding(0)                       the position fix-up (vertex, `fixup`)
+//   @group(2) @binding(2)                       the draw's base vertex, base instance, draw index: i32 each (vertex, `drawParams`)
 //   vertex inputs @location(l) = NVN attribute l, fragment outputs @location(i) = colour target i
 export interface ShaderInfo {
   stage: "vertex" | "fragment" | "compute" | "task" | "mesh";   // task, mesh: compute WGSL wrapped by src/shaders/meshstage.ts, drawn by "mesh draws" below
@@ -62,6 +63,7 @@ export interface ShaderInfo {
   variants?: Record<string, string>;
   variant?: (classes: Record<number, VinClass>) => string | undefined;
   fixup?: boolean;         // vertex: declares `@group(2) @binding(0) var<uniform>` of one vec4f, the position fix-up (README)
+  drawParams?: boolean;    // vertex: declares `@group(2) @binding(2) var<uniform>` of three i32, set per draw (setDrawParams)
   outputs?: number[];      // fragment: colour outputs written
   support?: boolean;       // reads the support buffer; also taken from `extra` (kind "support")
   storage?: { slot: number; write?: boolean }[];
@@ -106,7 +108,8 @@ interface Tex { serial: number; target: number; format: number; flags: number; s
   gpu?: GPU; snap?: GPU; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
 interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo" | "host"; dyn: boolean; write: boolean; size?: number; info?: ShaderInfo }
 interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
-  mesh?: boolean; dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU }
+  mesh?: boolean; dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU;
+  drawParams?: boolean; vsFixup?: boolean; last2?: { fix: GPU | null; buf: GPU; group: GPU } }
 interface Chunk { buf: GPU; staging: Uint8Array; used: number }
 interface UaSlot { c: Chunk; off: number; size: number }
 interface GpuRange { addr: number; size: number; buf: GPU; hash: number; pending: number }
@@ -218,13 +221,10 @@ export class GfxHost {
       this.context.configure({ device, format: this.canvasFormat, alphaMode: "opaque" });
     }
     device.onuncapturederror = (e: any) => { this.stats.errors++; this.log(`[RED] WebGPU: ${String(e.error?.message ?? e).split("\n")[0]}`); };
-    // the device outlives a disposed replayer: its lost promise holds the replayer through a link dispose() cuts, so the replayer (and the guest memory
-    // it holds) can go
-    const gen = this.gen, link = { host: this as GfxHost | null };
-    this.lostLinks.push(link);
-    device.lost?.then?.((info: any) => { const h = link.host; if (h && gen === h.gen) void h.deviceLost(info); });
+    // weakly: a device outlives the replayers made on it (one per process), and its lost promise would keep each one and its memory
+    const gen = this.gen, self = new WeakRef(this);
+    device.lost?.then?.((info: any) => { const h = self.deref(); if (h && gen === h.gen) void h.deviceLost(info); });
   }
-  private lostLinks: { host: GfxHost | null }[] = [];
   // Every texture and buffer the replayer makes, until it destroys it: what dispose() releases
   private live = new Set<GPU>();
   private newBuffer(desc: any): GPU { const o = this.device.createBuffer(desc); this.live.add(o); return o; }
@@ -254,8 +254,6 @@ export class GfxHost {
     for (const w of waiters) w.go();
     this.onFence = this.onImage = this.onDeviceLost = this.onDeviceRestored = null;
     if (this.device.onuncapturederror) this.device.onuncapturederror = null;
-    for (const l of this.lostLinks) l.host = null;
-    this.lostLinks = [];
     return n;
   }
   private limit(name: string, fallback: number): number {
@@ -617,7 +615,7 @@ export class GfxHost {
 
   // ---- encoder and passes ----
   private encoder(): GPU { return (this.enc ??= this.device.createCommandEncoder()); }
-  private endPass() { if (this.pass) { this.pass.end(); this.pass = null; this.computePass = false; } }
+  private endPass() { if (this.pass) { this.pass.end(); this.pass = null; this.computePass = false; } this.drawSet = null; }
   private flush() {
     this.endPass();
     if (this.uniformArena) this.uaWrite();
@@ -794,9 +792,9 @@ export class GfxHost {
   // ---- pipelines ----
   // The bind group layouts of a pipeline from its shaders' reflection, and the order of group 0's buffers. Uniform
   // buffers take dynamic offsets (the uniform arena) up to the device's limit; the ones beyond it are bound at fixed offsets
-  private groupLayouts(stages: { info: ShaderInfo; st: number }[], fixup: boolean): { layouts: GPU[]; g0: Slot[] } {
+  private groupLayouts(stages: { info: ShaderInfo; st: number }[], fixup: boolean, drawParams = false): { layouts: GPU[]; g0: Slot[] } {
     const e0: any[] = [], g1: any[] = [], g0: Slot[] = [];
-    let dynLeft = this.uniformArena ? this.limit("maxDynamicUniformBuffersPerPipelineLayout", 8) : 0;
+    let dynLeft = (this.uniformArena ? this.limit("maxDynamicUniformBuffersPerPipelineLayout", 8) : 0) - (drawParams ? 1 : 0);
     for (const { info: s, st } of stages) {
       const visibility = st === 0 ? 1 : st === 1 ? 2 : 4;
       for (const i of [...(s.ubos ?? []), ...(s.support ? [14] : [])].sort((a, b) => a - b)) {
@@ -821,7 +819,8 @@ export class GfxHost {
     }
     g0.sort((a, b) => a.binding - b.binding);
     const groups = [e0, g1];
-    if (fixup) groups.push([{ binding: 0, visibility: 1, buffer: { type: "uniform" } }]);
+    if (fixup || drawParams) groups.push([...(fixup ? [{ binding: 0, visibility: 1, buffer: { type: "uniform" } }] : []),
+      ...(drawParams ? [{ binding: 2, visibility: 1, buffer: { type: "uniform", hasDynamicOffset: true } }] : [])]);
     return { g0, layouts: groups.map(entries => {
       const key = JSON.stringify(entries);
       let l = this.layouts.get(key);
@@ -831,7 +830,7 @@ export class GfxHost {
   }
   // WebGPU's per-stage limits against what the shaders declare. A pipeline over a limit cannot exist on this device:
   // it fails here with the numbers (its draws are then skipped) instead of as a validation error with none
-  private overLimits(id: number, stages: { info: ShaderInfo; st: number }[], fixup: boolean): boolean {
+  private overLimits(id: number, stages: { info: ShaderInfo; st: number }[], fixup: boolean, drawParams = false): boolean {
     let over = false;
     const red = (who: string, n: number, what: string, max: number, limit: string, per: string) => {
       over = true;
@@ -839,15 +838,15 @@ export class GfxHost {
     };
     for (const { info: s, st } of stages) {
       const counts: [string, number, string, number][] = [
-        ["uniform buffers", (s.ubos?.length ?? 0) + (s.support ? 1 : 0) + (s.hostBlocks?.length ?? 0) + (st === 0 && fixup ? 1 : 0), "maxUniformBuffersPerShaderStage", 12],
+        ["uniform buffers", (s.ubos?.length ?? 0) + (s.support ? 1 : 0) + (s.hostBlocks?.length ?? 0) + (st === 0 && fixup ? 1 : 0) + (st === 0 && drawParams ? 1 : 0), "maxUniformBuffersPerShaderStage", 12],
         ["sampled textures", s.textures?.length ?? 0, "maxSampledTexturesPerShaderStage", 16], ["samplers", s.textures?.length ?? 0, "maxSamplersPerShaderStage", 16],
         ["storage buffers", (s.storage?.length ?? 0) + (s.stage === "mesh" ? (s.mesh?.task ? 3 : 2) : s.stage === "task" ? 2 : 0), "maxStorageBuffersPerShaderStage", 8], ["storage textures", s.images?.length ?? 0, "maxStorageTexturesPerShaderStage", 4]];
       if (st === 0) counts.push(["vertex attributes", s.attributes?.length ?? 0, "maxVertexAttributes", 16]);
       const who = `the ${["vertex", "fragment", "compute"][st]} shader ${this.shaders.find(x => x?.info === s)?.key ?? ""}`;
       for (const [what, n, limit, fallback] of counts) { const max = this.limit(limit, fallback); if (n > max) red(who, n, what, max, limit, " a stage"); }
     }
-    // bind groups: 0 buffers, 1 textures and images, 2 the position fix-up
-    const groups = fixup ? 3 : 2, maxGroups = this.limit("maxBindGroups", 4);
+    // bind groups: 0 buffers, 1 textures and images, 2 the position fix-up and the draw parameters
+    const groups = fixup || drawParams ? 3 : 2, maxGroups = this.limit("maxBindGroups", 4);
     if (groups > maxGroups) red("its layout", groups, "bind groups", maxGroups, "maxBindGroups", "");
     return over;
   }
@@ -899,10 +898,11 @@ export class GfxHost {
       targets.push(t);
     }
     const stages = mesh ? [{ info: fs, st: 1 }] : [{ info: vs, st: 0 }, { info: fs, st: 1 }];
-    const pipe: Pipe = { id, compute: false, desc: null, stages: mesh ? [fsId] : [vsId, fsId], key: k, layouts: [], g0: [], gen, mesh: !!mesh };
+    const drawParams = !mesh && !!vs.drawParams;
+    const pipe: Pipe = { id, compute: false, desc: null, stages: mesh ? [fsId] : [vsId, fsId], key: k, layouts: [], g0: [], gen, mesh: !!mesh, drawParams, vsFixup: !mesh && !!vs.fixup };
     this.pipes.set(id, pipe);
-    if (this.overLimits(id, stages, !mesh && !!vs.fixup)) { this.pipeFailed(id); return; }
-    const { layouts, g0 } = this.groupLayouts(stages, !mesh && !!vs.fixup);
+    if (this.overLimits(id, stages, !mesh && !!vs.fixup, drawParams)) { this.pipeFailed(id); return; }
+    const { layouts, g0 } = this.groupLayouts(stages, !mesh && !!vs.fixup, drawParams);
     if (mesh) layouts.push(this.layoutOf([{ binding: 0, visibility: 1, buffer: { type: "uniform" } }, { binding: 1, visibility: 1, buffer: { type: "read-only-storage" } }]));
     pipe.layouts = layouts; pipe.g0 = g0; pipe.dynOnly = g0.length > 0 && g0.every(s => s.dyn);
     // Vertex inputs of another class than the shader declares (flag 2, decided by the recorder): the module must be a variant
@@ -1033,7 +1033,8 @@ export class GfxHost {
     } else g0 = this.group(layouts[0], e0);
     this.pass.setBindGroup(0, g0, offs);
     this.pass.setBindGroup(1, g1.length ? this.group(layouts[1], g1) : (c.empty1 ??= this.group(layouts[1], g1)));
-    if (layouts[2] && !c.mesh && !c.compute) {
+    this.drawSet = null;
+    if (layouts[2] && !c.mesh && !c.compute && !c.drawParams) {
       const key = this.fix.join(",");
       let g = this.fixGroups.get(key);
       if (!g) { const b = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(b, 0, new Float32Array(this.fix)); g = this.device.createBindGroup({ layout: layouts[2], entries: [{ binding: 0, resource: { buffer: b } }] }); this.fixGroups.set(key, g); }
@@ -1130,6 +1131,30 @@ export class GfxHost {
   private meshHelp: { prep: GPU; fin: GPU; layout: GPU } | null = null;
   private meshSamples: { buf: GPU; n: number; task: boolean; indirect: boolean }[] = [];
   private meshShown = 0; private fixBufs = new Map<string, GPU>();
+  private fixBuffer(): GPU {
+    const key = this.fix.join(",");
+    let fb = this.fixBufs.get(key);
+    if (!fb) { fb = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(fb, 0, new Float32Array(this.fix)); this.fixBufs.set(key, fb); }
+    return fb;
+  }
+  // The draw parameters of a pipeline whose vertex shader reads them (src/shaders/spv.ts drawParameters): base vertex (the first vertex of a non-indexed draw,
+  // as Vulkan's BaseVertex), base instance, draw index (a multi-draw's record number), in 16 bytes of the uniform arena at a dynamic offset of group 2. Unchanged from the last draw: nothing
+  private drawSet: { pipe: Pipe; bv: number; bi: number; di: number } | null = null;
+  private setDrawParams(bv: number, bi: number, di: number) {
+    const c = this.cur!, d = this.drawSet;
+    if (!c.drawParams || (d && d.pipe === c && d.bv === bv && d.bi === bi && d.di === di)) return;
+    let buf: GPU, off = 0;
+    if (this.uniformArena) { const s = this.uaAlloc(16), v = new DataView(s.c.staging.buffer, s.c.staging.byteOffset + s.off, 16); v.setInt32(0, bv, true); v.setInt32(4, bi, true); v.setInt32(8, di, true); buf = s.c.buf; off = s.off; }
+    else { buf = this.alloc(256); this.device.queue.writeBuffer(buf, 0, new Int32Array([bv, bi, di, 0])); this.inUse.push(buf); }
+    const fix = c.vsFixup ? this.fixBuffer() : null, l = c.last2;
+    let group = l && l.fix === fix && l.buf === buf ? l.group : undefined;
+    if (!group) {
+      group = this.device.createBindGroup({ layout: c.layouts[2], entries: [...(fix ? [{ binding: 0, resource: { buffer: fix } }] : []), { binding: 2, resource: { buffer: buf, offset: 0, size: 16 } }] });
+      c.last2 = { fix, buf, group };
+    }
+    this.pass.setBindGroup(2, group, [off]);
+    this.drawSet = { pipe: c, bv, bi, di };
+  }
   private layoutOf(entries: any[]): GPU {
     const key = JSON.stringify(entries);
     let l = this.layouts.get(key);
@@ -1237,10 +1262,7 @@ fn draw(n: u32) { c[9] = n; c[12] = n * c[20]; c[13] = 1u; c[14] = 0u; c[15] = 0
     const mc = this.meshCur, c = this.cur;
     if (!mc || !c || !this.pass) return;
     if (this.bindDirty && !this.bind()) return;
-    const key = this.fix.join(",");
-    let fb = this.fixBufs.get(key);
-    if (!fb) { fb = this.newBuffer({ size: 16, usage: 0x40 | 0x08 }); this.device.queue.writeBuffer(fb, 0, new Float32Array(this.fix)); this.fixBufs.set(key, fb); }
-    this.pass.setBindGroup(2, this.device.createBindGroup({ layout: c.layouts[2], entries: [{ binding: 0, resource: { buffer: fb } }, { binding: 1, resource: { buffer: this.meshOut } }] }));
+    this.pass.setBindGroup(2, this.device.createBindGroup({ layout: c.layouts[2], entries: [{ binding: 0, resource: { buffer: this.fixBuffer() } }, { binding: 1, resource: { buffer: this.meshOut } }] }));
     this.pass.drawIndirect(mc.args, mc.off + 48);
     this.stats.draws++;
   }
@@ -1545,6 +1567,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.DRAW: case H.DRAW_IDX: {
           if (!this.cur || this.computePass) break;
           if (this.bindDirty && !this.bind()) break;
+          if (this.cur.drawParams) this.setDrawParams(op === H.DRAW ? dv.getUint32(p + 8, true) : dv.getInt32(p + 24, true), dv.getUint32(p + 20, true), dv.getUint32(p + (op === H.DRAW ? 28 : 40), true));
           const conv = dv.getUint32(p + (op === H.DRAW ? 24 : 28), true);
           if (conv) { this.drawConverted(dv, p, op === H.DRAW_IDX, conv); this.stats.draws++; break; }
           if (op === H.DRAW) this.pass.draw(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 8, true), dv.getUint32(p + 20, true));

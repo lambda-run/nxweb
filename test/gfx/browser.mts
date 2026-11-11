@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { ROOT, OUT, guest } from "./harness.mts";
 import { readMachines, unexercised } from "../../src/kit/host/reader.mts";
 
-export const CHROMIUM_ARGS = ["--js-flags=--expose-gc", "--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=swiftshader", "--use-vulkan=swiftshader"];
+export const CHROMIUM_ARGS = ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=swiftshader", "--use-vulkan=swiftshader"];
 const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".png": "image/png", ".map": "application/json", ".json": "application/json" };
 
 export function bundle(): void {

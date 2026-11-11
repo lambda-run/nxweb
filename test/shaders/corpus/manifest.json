@@ -24,6 +24,10 @@
   "file": "double.frag"
  },
  {
+  "name": "draw_params",
+  "file": "draw_params.vert"
+ },
+ {
   "name": "dual_source",
   "file": "dual_source.frag"
  },
@@ -86,6 +90,10 @@
  {
   "name": "mul_extended",
   "file": "mul_extended.frag"
+ },
+ {
+  "name": "nonfinite",
+  "file": "nonfinite.frag"
  },
  {
   "name": "point_size_dynamic",

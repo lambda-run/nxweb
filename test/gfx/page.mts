@@ -43,9 +43,6 @@ async function main() {
     console.log = log;
     if (e) { const h = new Uint8Array(e.g.memory.buffer, e.g.x.kit_hits_ptr(), e.g.x.kit_hits_size()); if (!hits.length) hits = Array.from(h); else h.forEach((v, i) => { if (v) hits[i] = 1; }); }
     results.push({ name: s.name, error, notes, files: t.files, checks: t.checks, ms: Math.round(performance.now() - t0), calls: e?.g.calls ?? 0, logs: error ? e?.g.logs.slice(-12) : undefined, stats: e?.host.stats });
-    // each scene's guest memory goes before the next is made: 60 and more 64-bit memories grown above 4 GB (?mem=64hi) are more than V8 gives a page
-    e?.host.dispose(); e = undefined;
-    (globalThis as any).gc?.();
   }
   return { results, hits, adapter: adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "", features: want, limits };
 }
