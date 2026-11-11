@@ -323,6 +323,12 @@ npm run a64:bytes            # a digest of every emitted byte for the corpus, pe
 npm run a64:big              # larger-code check: generated 400k-instruction guest, time / size / memory
     python3 test/a64/fuzz.py --strictnan     # compare NaNs bitwise too
 npm run a64:speed            # per-guest guest-instructions/second and translation time
+npm run a64:bench            # real-world-shaped C (test/a64/bench: zstd 1.5.6 with a trained 64 KB dictionary; a game
+                             #         loader's string table on ARM optimized-routines' memcmp/strlen/strcmp ...) natively,
+                             #         as wasm (clang --target=wasm32) and translated in the three modes, with and without the
+                             #         C library intrinsics, interleaved, output checked [-- --runs N --mode M --libc on|off|both]
+npm run a64:libc             # the C library intrinsics (libc.ts) against the native libc: every length 0..80 at every
+                             #         alignment pair, in the three modes, translated and as intrinsics
 python3 test/a64/coverage.py # corpus instruction words the translator rejects, by mnemonic
 npm run a64:scan -- <path>   # the static scan of an NSO module, an exefs folder or a flat image (see above)
 ```

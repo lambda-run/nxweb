@@ -819,3 +819,4 @@ export function rariths(op: i32, a: f32, b: f32): f32 {
 // where this module's static data lives in the shared memory (asc --memoryBase)
 export function staticBase(): usize { return <usize>ASC_MEMORY_BASE; }
 export function staticEnd(): usize { return __heap_base; }
+export { libc, libcStat, libcGuard } from "./libc";

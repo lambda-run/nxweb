@@ -2,7 +2,7 @@
 // loop, host-function dispatch and fault capture. No Node APIs: the same file runs under Node and in a browser Worker.
 // Policy lives in the AssemblyScript modules (scheduling and waits: src/kernel; lifecycle, clock arithmetic, fault
 // report: src/runtime); this file moves control between them. See src/runtime/README.md.
-import { A64Host, makeMemory64, MEM64_MAX_PAGES, type A64CacheStore, type Memory64 } from "./a64_host.ts";
+import { A64Host, LIBC_OPS, makeMemory64, MEM64_MAX_PAGES, type A64CacheStore, type Memory64 } from "./a64_host.ts";
 import { instantiate, addrBits } from "./wasm_abi.ts";
 import { svcLine, placeOf, frameLines, SVC_REC, type CodeRange } from "./fault_lines.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
@@ -36,6 +36,9 @@ export interface RuntimeOptions {
   // of reading or corrupting it. Default true (GUARD_DEFAULT): measured alone it costs 1 to 3 % of run time on the
   // corpus (one subtraction per access; README "Memory safety"), under the 5 % set for a default. false: for a measurement.
   guard?: boolean;
+  // translator: each module's own definitions of memcpy, memmove, memset, memcmp, memchr, strlen, strnlen, strcmp and
+  // strncmp run as wasm (src/a64/libc.ts) instead of as translated SDK code. Default true; false: for a measurement.
+  libcIntrinsics?: boolean;
   preciseFaults?: 0 | 1 | 2;          // translator: 2 makes the register dump of a trap exact too (about twice the run time)
   cache?: A64CacheStore;              // translation cache: cacheLoad() before run(), cacheSave() after
   // The process's address space and kernel settings, chosen per game from its profile (rt_process.ts layoutFor /
@@ -319,6 +322,8 @@ export class Runtime {
   // whole value (an address beyond the memory traps or is refused where it is used)
   addr(v: bigint): number { return this.mem64 ? Number(BigInt.asUintN(64, v)) : Number(v & M32); }
 
+  // calls of the C library intrinsics so far (A64Host.setLibcIntrinsics), by function, and the bytes they covered
+  get libcStats(): { name: string; calls: number; bytes: number }[] { return this.a64.libcStats(); }
   get guarded(): boolean { return this.opts.guard ?? GUARD_DEFAULT; }
   // ---- memory ----
   u8(): Uint8Array { return new Uint8Array(this.memory.buffer); }
@@ -433,6 +438,14 @@ export class Runtime {
     const st = range("file staging"), out = Math.ceil(this.nextFile / 4) * 4;
     const entries = this.ld.codeEntries(m.handle, out, Math.floor((st.hi - out) / 4));
     this.a64.addCode(m.base, m.imageSize, { text: { lo: m.text.addr, hi: m.text.addr + m.text.size }, entries });
+    if (this.opts.libcIntrinsics ?? true) {
+      const defs = LIBC_OPS.slice(1).flatMap(name => {
+        const pc = this.ld.lookupIn(m.handle, name);
+        return pc !== undefined && this.ld.stubId(pc) < 0 && pc >= m.text.addr && pc < m.text.addr + m.text.size ? [{ pc, name }] : [];
+      });
+      const took = defs.length ? this.a64.setLibcIntrinsics(defs) : [];
+      if (took.length) this.log(`runtime: ${m.name}: C library intrinsics for ${took.join(" ")} (its definitions run as wasm: src/a64/libc.ts; the report's "libc intrinsic calls" counts them)`);
+    }
     this.text.push({ lo: m.text.addr, hi: m.text.addr + m.text.size, handle: m.handle });
     const cuts = this.opts.cutsKey?.[m.name];
     this.codeIds.push({ key: `${toHex(m.buildId)}${cuts ? "+cuts" + cuts : ""}@${m.base.toString(16)}`, lo: m.base, size: m.imageSize });

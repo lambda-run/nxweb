@@ -6,12 +6,14 @@ import { A64, HOST_END } from "../../src/glue/rt_layout.ts";
 export interface GuestOpts { budget: number; maxInsns: number; maxFuncs: number; fma: boolean; nanFix: boolean; tailCalls: boolean; depthLimit: number; chunk: number; rmodeArith: boolean;
   shared: boolean; cntYield: boolean; preciseFaults: 0 | 1 | 2; guardBase?: number;
   mem64?: boolean;   // a 64-bit memory and the wasm64 translator (the caller passes translator64 / helpers64)
+  libc?: { pc: number; name: string }[];   // C library definitions to translate as intrinsics (A64Host.setLibcIntrinsics)
   cacheIn?: Uint8Array | null; wantCache?: boolean }
 export const defaultOpts: GuestOpts = { budget: 1 << 30, maxInsns: 1500, maxFuncs: 1024, fma: true, nanFix: true, tailCalls: true, depthLimit: 160, chunk: 65536, rmodeArith: true,
   shared: false, cntYield: false, preciseFaults: 0 };
 export interface Result {
   name: string; ok: boolean; why: string; insns: number; runMs: number; trMs: number; trOnlyMs: number; trInsns: number;
   funcs: number; bytes: number; slices: number; tableLen: number; modules?: number; maxModule?: number; trMem?: number;
+  libcTook?: string[]; libcCalls?: number;
   faultPc?: number; cacheHits?: number; cacheBlob?: Uint8Array; pcMapBytes?: number; optionsKey?: string; yields?: number;
 }
 
@@ -78,6 +80,7 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
   new Uint8Array(memory.buffer).set(image, base);
   host.keepBytes = !!o.wantCache;
   host.addCode(base, image.length);
+  const libcTook = o.libc ? host.setLibcIntrinsics(o.libc) : [];
   if (o.cacheIn) host.importCache(o.cacheIn);
   const c = host.core as any;
   c.sp.value = BigInt(stackTop);
@@ -115,7 +118,7 @@ export function runGuest(translator: BufferSource | WebAssembly.Module, helpers:
   return { name, ok: why === "", why, insns: side.insn_count ?? 0, runMs: total - trMs, trMs, trOnlyMs: host.translatorNs / 1e6,
            trInsns: host.translatedInsns, funcs: host.translatedFuncs, bytes: host.moduleBytes, slices, tableLen: host.table.length, modules: host.modules, maxModule: host.maxModuleBytes, trMem: host.translatorMemoryBytes,
            faultPc, cacheHits: host.cacheHits, cacheBlob: o.wantCache ? host.exportCache(base, image.length) : undefined,
-           pcMapBytes: host.pcMapBytes, optionsKey: host.optionsKey(), yields };
+           pcMapBytes: host.pcMapBytes, optionsKey: host.optionsKey(), yields, libcTook, libcCalls: host.libcStats().reduce((a, x) => a + x.calls, 0) };
 }
 
 // a cache key for a test guest: the image's identity (a real embedder uses the module's build id), its load
