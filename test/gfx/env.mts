@@ -136,11 +136,8 @@ export class Env {
   private made = new Map<string, Shader>();
   quad = 0; quadIdx = 0;
 
-  // every Env made since the scene runner last disposed them (test/gfx/page.mts: each scene's, siblings too)
-  static live: Env[] = [];
   static async create(device: any, wasm: WebAssembly.Module, opts: { canvas?: any; w?: number; h?: number; cmdBytes?: number; glConventions?: boolean; host?: GfxHostOptions } = {}): Promise<Env> {
     const e = new Env();
-    Env.live.push(e);
     e.wasm = wasm;
     let host!: GfxHost;
     e.g = await Guest.create(wasm, { gfx_exec: (p, n) => host.exec(p, n) });
