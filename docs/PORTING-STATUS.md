@@ -31,7 +31,7 @@ as the first workload of some size that nobody here wrote. With the shareware da
 
 | | State |
 |---|---|
-| ARM64 → WebAssembly translator (`src/a64`, 4,096 lines of AssemblyScript) | Ported (new): the user-mode instruction set of the Cortex-A57 level, 169 instruction classes fuzzed against Unicorn (338,000 cases), 75 guest images in Node and Chromium |
+| ARM64 → WebAssembly translator (`src/a64`, 4,947 lines of AssemblyScript) | Ported (new): the user-mode instruction set of the Cortex-A57 level, 191 instruction classes fuzzed against Unicorn (382,000 cases), 86 guest images in Node and Chromium |
 | Not on the Switch CPU, reported if executed | Cut: LSE atomics, half-precision arithmetic, SVE, pointer authentication forms |
 | FPSR cumulative flags, FPCR.FZ / DN | Open (ignored) |
 | Threads on Workers (shared memory) | Open: the translator has shared builds; the runtime uses one Worker |
