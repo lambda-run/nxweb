@@ -10,6 +10,7 @@
 // No DOM or Node API: the page's scan Worker (web/prepare_shader_worker.ts) and the tests run it.
 import { decompress } from "fzstd";
 import type { PrepWasm } from "./wasm.ts";
+import { isNvn2, keyControl, nvn2Stage } from "../../shaders/job.ts";
 
 export const SCAN_FORMAT = 1;
 export type ShaderStage = "vs" | "hs" | "ds" | "gs" | "ps" | "cs";
@@ -38,7 +39,6 @@ export const NOT_READ: { kind: string; head?: Uint8Array; off?: number; inside?:
   { kind: "Unity bundles", head: ascii("UnityFS\0") },
   { kind: "NARC (Camelot)", head: ascii("NARC") },
   { kind: "CRA (Camelot)", head: ascii("CRA.") },
-  { kind: "NDSR / NDVE", head: ascii("NDSR") }, { kind: "NDSR / NDVE", head: ascii("NDVE") },
   { kind: "KTGL RDB (G2S)", head: ascii("IDRK0000") }, { kind: "KTGL RDB (G2S)", head: ascii("PDRK0000") },
   { kind: "KTGL shader packages (SPKG)", head: ascii("SPKG") },
   { kind: "RE Engine PAK (SDF)", head: ascii("KPKA") },
@@ -138,10 +138,55 @@ export function check(st: ShaderStage, ctl: Uint8Array, code: Uint8Array): strin
   if (u32(ctl, 0x704) !== code.length) return "control +0x704 does not match the code area length";
   return null;
 }
+// NVN2: the first 0x48 control bytes with +0x30 as zero (job.ts keyControl, the runtime's key)
 export function stageKey(w: PrepWasm, ctl: Uint8Array, code: Uint8Array): string {
-  const n = ctlLen(ctl), b = new Uint8Array(n + code.length);
-  b.set(ctl.subarray(0, n)); b.set(code, n);
+  const k = isNvn2(ctl) ? keyControl(ctl) : ctl.subarray(0, ctlLen(ctl)), b = new Uint8Array(k.length + code.length);
+  b.set(k); b.set(code, k.length);
   return w.sha256(b).slice(0, 16);
+}
+
+// ---- agl's NDSR pack and nn::ndve's movie enhancement file (shader_split.py ndsr_shaders / ndve_shaders), NVN2 stages ----
+const NDSR = ascii("NDSR"), NDVE = ascii("NDVE");
+function nvn2Raw(d: Uint8Array, where: string, c: number, nctl: number, k: number): Raw | null {
+  const control = d.subarray(c, c + nctl), n = u32(control, 0x44), code = d.subarray(k, k + n);
+  const stage = nvn2Stage(control, code);   // a task or mesh shader is not one of the scan's stages: the runtime translates it on demand
+  return stage && stage !== "ts" && stage !== "ms" && code.length === n && n > 0 ? { where, stage: stage as ShaderStage, control, code } : null;
+}
+// 'NDSR', then 16-byte records from +0x10 (+0x14 in Splatoon Raiders' pack: the start whose first records name control sections) up to a zero one:
+// control offset, control length << 4 | type, code offset, code length / 16 << 8 | type. Entries are 8 bytes, a shader two of them, so a record
+// that names no control section moves the next by 8 (constant data; the second network of Ocarina of Time's NDVE file)
+export function ndsrShaders(d: Uint8Array, label: string): Raw[] {
+  if (!at(d, NDSR) || d.length < 0x20) return [];
+  const isCtl = (c: number) => c + 0x48 <= d.length && isNvn2(d.subarray(c, c + 0x48));
+  const named = (o: number) => { let n = 0; for (let i = 0; i < 16 && o + 16 * i + 16 <= d.length; i++) if (isCtl(u32(d, o + 16 * i))) n++; return n; };
+  const out: Raw[] = [];
+  let o = named(0x14) > named(0x10) ? 0x14 : 0x10;
+  while (o + 16 <= d.length) {
+    const c = u32(d, o), cl = u32(d, o + 4), k = u32(d, o + 8), x = u32(d, o + 12);
+    if (!(c | cl | k | x)) break;
+    if (!isCtl(c)) { o += 8; continue; }
+    o += 16;
+    const s = nvn2Raw(d, `${label}#NDSR@0x${c.toString(16)}`, c, Math.max(cl >>> 4, 0x48), k);
+    if (s) out.push(s);
+  }
+  return out;
+}
+// 'NDVE', +0xc the NDSR pack's length, +0x14 the count of 8-byte model records, the pack, then the networks: each control section with its code area
+// right behind it (+0x30 the section's own length, +0x44 the code's). Ocarina of Time's Movie/Ndve/Ndve-Nvn2-vid_seq5.dat (shaders.md, "nn::ndve's
+// movie enhancement file")
+export function ndveShaders(d: Uint8Array, label: string): Raw[] {
+  if (!at(d, NDVE) || d.length < 0x18) return [];
+  const pack = 0x18 + 8 * u32(d, 0x14), nets = pack + u32(d, 0xc);
+  if (pack > d.length || nets > d.length) return [];
+  const out = ndsrShaders(d.subarray(pack, nets), label).map(s => ({ ...s, where: s.where.replace("#NDSR@", "#NDVE#NDSR@") }));
+  for (let c = (nets + 3) & ~3; c + 0x48 <= d.length; c += 4) {
+    if (u32(d, c) !== CTL_MAGIC || !isNvn2(d.subarray(c, c + 0x48))) continue;
+    const own = u32(d, c + 0x30);
+    if (own < 0x48 || c + own > d.length) continue;
+    const s = nvn2Raw(d, `${label}#NDVE@0x${c.toString(16)}`, c, own, c + own);
+    if (s) out.push(s);
+  }
+  return out;
 }
 
 // ---- GLSLC outputs (shader_split.py glslc_layout / glslc_section / glslc_program / glslc_shaders) ----
@@ -242,6 +287,7 @@ function blob(w: PrepWasm, d: Uint8Array, label: string, out: Raw[], r: FileScan
     }
   } catch (e) { r.unreadable.push({ reason: `${e instanceof Error ? e.message : e}`.replace(/0x[0-9a-f]+/g, "…"), where: label }); return; }
   const before = out.length;
+  if (at(d, NDVE) || at(d, NDSR)) { out.push(...(at(d, NDVE) ? ndveShaders(d, label) : ndsrShaders(d, label))); return; }
   if (find(d, BNSH) >= 0) {
     const b = w.bnsh(d);
     r.containers.bnsh += b.containers;

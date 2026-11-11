@@ -475,7 +475,9 @@ before and does nothing.
   file paths and exit codes taken out so equal causes group; a stage the runtime would refuse, compute or a binding
   `src/gfx` lacks, counts as failed with that reason), unreadable records (damaged wrappers, BNSH records that fail
   the checks, NVN2 control sections) and the kinds **not read**, by name, with example files.
-- **Not read** (detected by magic and named; shader_split.py reads them): BAHS, Unity bundles, MSHD, NDSR/NDVE,
+- **NDSR / NDVE** (agl's NDSR pack, nn::ndve's movie network file `Movie/Ndve/Ndve-Nvn2-vid_seq5.dat`; shader_split.py
+  `ndsr_shaders` / `ndve_shaders`): read; their NVN2 compute stages are found under the runtime's NVN2 keys (`job.ts` `keyControl`).
+- **Not read** (detected by magic and named; shader_split.py reads them): BAHS, Unity bundles, MSHD,
   KTGL RDB (G2S) and SPKG, RE Engine PAK (SDF), Snowdrop SDF, Trinity packs, MT Framework ARC, Bezel Engine (BEA),
   MonoGame XNB and MGFX, FromSoftware dvdbnd, Criterion Bundle 2, PlatinumGames PKZ, CRA and NARC (Camelot), phx
   PDAT, CRI CPK, zip, Retro Studios RFRM, Game Freak GFPAK, Monolith (HCPS / xbc1 / DRSM), Next Level Games HNSH,
