@@ -98,7 +98,29 @@ def rnd_f32(rng):
     return rng.getrandbits(32)
 
 
+H_SPECIAL = [0, 0x8000, 0x7C00, 0xFC00, 0x7E00, 0xFE00, 0x7C01, 0xFD55, 0x7E12, 1, 0x8001, 0x3FF, 0x83FF, 0x400, 0x8400,
+             0x7BFF, 0xFBFF, 0x3C00, 0xBC00, 0x3800, 0xB800, 0x3E00, 0x4000, 0x4100, 0x4200, 0xC100, 0x3BFF, 0x3C01, 0x6800,
+             0x6801, 0x7800, 0x0200, 0x5BFF, 0x5C00, 0x7A00, 0xFA00, 0x77FF, 0x1400, 0x0100]
+
+
+def rnd_f16(rng):
+    k = rng.random()
+    if k < 0.25:
+        return rng.choice(H_SPECIAL)
+    if k < 0.45:       # small integers and halves: rounding ties, exact results
+        v = rng.randrange(-2048, 2049) * rng.choice((1, 0.5, 0.25, 0.125))
+        return struct.unpack("<H", struct.pack("<e", v))[0] if abs(v) < 65504 else 0x7BFF
+    if k < 0.85:
+        return (rng.getrandbits(1) << 15) | (rng.randrange(1, 31) << 10) | rng.getrandbits(10)
+    return rng.getrandbits(16)
+
+
 def rnd_v(rng, fp):
+    if fp == 16:
+        v = 0
+        for i in range(8):
+            v |= rnd_f16(rng) << (16 * i)
+        return v
     if fp == 64:
         return rnd_f64(rng) | (rnd_f64(rng) << 64)
     if fp == 32:

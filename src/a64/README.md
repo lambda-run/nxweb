@@ -18,7 +18,7 @@ instantiates modules, owns the function table and the pc map and provides the im
 | `unit.ts` | function discovery, per-function assembly, register write-back/reload analysis, unit module builder, core module builder, `decode` (the one decoder), `probe` |
 | `scan.ts` | the static scan: `probe` over a module's text, a memo of distinct words, names for what is rejected (`classify`) |
 | `index.ts` | exports: `init, setOpt, setOptAddr, addRange, removeRange, setEntry, entryBuf, translate, outPtr, metaBuf, sideBuf, buildCore, probe, staticBase, staticEnd, addrBits`, and the scan's `scan*` |
-| `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding; `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `sf{s,d}`: scalar FP arithmetic under a non-default FPCR) |
+| `helpers.ts` | separate AssemblyScript module (`build/a64/helpers.wasm`), imported by translated code as `hlp`: pure functions for the table-driven and rare instructions (`vop`: estimates, AES, SHA-1/SHA-256, PMUL/PMULL, SQDMULL family, saturating register shifts, SUQADD/USQADD, half-precision vectors, lanewise directed rounding, FP16 arithmetic lane by lane under FPCR (`hlanes`); `nan1/2/3{s,d}`: ARM NaN selection; `rnd`: directed int<->float / float<->float conversions, half precision; `sf{s,d}`: scalar FP arithmetic under a non-default FPCR) |
 | `softfp.ts` | part of the helper module: bit-exact ARM FP (FPUnpack / FPProcessNaNs / FPRound) on raw bits for half, single and double, honouring FPCR.RMode, FZ and DN: add, sub, mul, div, sqrt, max/min(nm), fused multiply-add, FMULX, FRECPS/FRSQRTS, FABD, FRINT*, FCVT between formats, the FZ input flush |
 
 **Core module** (`buildCore()`, bytes produced by the same encoder). Imports `env.memory`,
@@ -254,7 +254,7 @@ honour FZ and DN (and FRECPE's RMode-dependent overflow); FCMP/FCCMP, the vector
 float-to-int conversions flush their inputs under FZ. SCVTF/UCVTF (int to float never makes a
 denormal) test only RMode, as before. With `rmodeArith` off the translator emits round-to-nearest code
 and ignores FZ and DN, except for FRINTI/FRINTX, SCVTF/UCVTF and FCVT d->s, which still test RMode.
-AHP is ignored.
+AHP is ignored. The FP16 instructions (below) always read RMode, FZ16, FZ and DN, whatever `rmodeArith`.
 
 **System.** NOP/hints, barriers, CLREX, MRS/MSR for TPIDR_EL0, TPIDRRO_EL0 (read), FPCR, FPSR, NZCV,
 CNTPCT_EL0/CNTVCT_EL0 (import `cntpct`), CNTFRQ_EL0 (19200000), DCZID_EL0 (4), CTR_EL0 (0x8444C004),
@@ -316,7 +316,7 @@ npm run a64:extra            # feature tests: fault pcs, code ranges, cntpct yie
 npm run a64:fuzz             # Gate 1: differential fuzz against Unicorn (python3 test/a64/fuzz.py), then 30,000
                              #         cases in memory64 and 30,000 with code and memory window above 4 GB
     python3 test/a64/fuzz.py --cases 2000 --only 'simd_' --show 4 [--nofma] [--seed N] [--mem64 | --hi] [--total N]
-npm run a64:fuzz:mem64       # the full 382,000 cases in memory64, and again above 4 GB
+npm run a64:fuzz:mem64       # the full 658,000 cases in memory64, and again above 4 GB
 npm run a64:guests           # Gate 2: every guest in test/guests/out and test/a64/guests/out, then again with
                              #         budget=50, without wasm tail calls, on a shared memory; in memory64; in
                              #         memory64 with the images linked at 0x1_8000_0000 (test/a64/guests/out_hi,
@@ -373,7 +373,10 @@ the Cortex-A57 model as before. LSE: CAS and CASP cases run after a load of the 
 happens) or of one half of it; every base is 16-byte aligned, so the classes also run with `--shared`. Unicorn 2.1
 (QEMU 5.0) compares LDSMAX/LDSMIN of 8, 16 and 32 bits as 64-bit numbers (the zero-extended memory value against the
 whole register), which is not the architecture (`SInt(data) > SInt(value)` at the access size): for those cases
-the expected memory is computed by the class (`_smaxmin_post`), the rest of the state is Unicorn's. Pointer authentication is compared bit for bit: with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB
+the expected memory is computed by the class (`_smaxmin_post`), the rest of the state is Unicorn's. FP16
+(`test/a64/fuzz_classes_fp16.py`, compared bit for bit, NaNs too): the same QEMU writes a scalar fixed-point
+FCVTZS/FCVTZU of a half as a sign-extended 32-bit lane; the class keeps the 16-bit element (`_h_only`), as the
+architecture does. Pointer authentication is compared bit for bit: with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB
 clear, which is the model's reset state, QEMU's PACIx/AUTIx/PACDx/AUTDx, the hint forms, the authenticating branches,
 returns and loads are the identity too. XPACI/XPACD/XPACLRI strip whatever the enable bits say, so they are given
 canonical pointers (the only ones an identity signer produces). PACGA traps in the model (it has no EL3 to enable
@@ -443,6 +446,20 @@ state still coming from Unicorn.
   such CASPs never interleave, so a pair is never half exchanged (the loads are done once before the lock is taken,
   so an address that traps does so without holding it). LDAPR/LDAPUR/STLUR are atomic loads / stores like LDAR/STLR.
   As for the exclusives, an atomic access on a shared memory traps when its address is not aligned to its size.
+- Half-precision floating point (FP16, ARMv8.2; `fp16.ts`): on H registers FADD/FSUB/FMUL/FDIV/FNMUL/FMAX/FMIN/
+  FMAXNM/FMINNM, FMADD/FMSUB/FNMADD/FNMSUB, FABS/FNEG/FSQRT/FMOV, FRINT{N,P,M,Z,A,X,I}, FCMP/FCMPE (and #0.0),
+  FCCMP/FCCMPE, FCSEL, FMOV #imm, FMOV to and from W/X, FCVT{N,P,M,Z,A}{S,U} to W/X, SCVTF/UCVTF from W/X, both
+  also fixed-point; vector .4H/.8H and scalar H: the FP16 three-same group (FADD/FSUB/FMUL/FDIV/FABD/FMULX/FMLA/
+  FMLS/FMAX/FMIN/FMAXNM/FMINNM and their pairwise forms, FRECPS/FRSQRTS, FCMEQ/FCMGE/FCMGT/FACGE/FACGT), the
+  two-register group (FRINT*, FCVT*, SCVTF/UCVTF, FCM*#0, FABS/FNEG/FSQRT, FRECPE/FRSQRTE, FRECPX), FMAXV/FMINV/
+  FMAXNMV/FMINNMV, scalar FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP, FMLA/FMLS/FMUL/FMULX by element, fixed-point
+  SCVTF/UCVTF/FCVTZS/FCVTZU; FHM: FMLAL/FMLSL/FMLAL2/FMLSL2, vector and by element (half products added to single
+  lanes, fused, rounded by FPCR.RMode). Each instruction is one call of `hlp.vop` (cases 64..71) with FPCR.RMode, FZ16,
+  FZ and DN read at run time;
+  the helper computes in f64 exactly (add, sub, mul, conversions), with innocuous double rounding (div, sqrt) or
+  rounded to odd (the fused forms) and rounds once to half, with ARM's NaN rules: bit-exact against Unicorn,
+  NaNs included. DN gives the default NaN; FZ16 flushes half inputs and results below 2^-14 (and FRECPE of
+  |x| >= 2^14), FZ flushes FMLAL/FMLSL's single addend and result; AHP is ignored, FPSR flags are not set (as for S and D).
 - DotProd (ARMv8.2): SDOT/UDOT, vector (`Vd.2S/4S, Vn.8B/16B, Vm.8B/16B`) and by element (`Vm.4B[0..3]`, Vm in
   v0..v31): two widening byte multiplies (`i16x8.extmul_low/high_i8x16_s/u`, the products fit 16 bits), pairwise
   widening adds to 32 bits, an even/odd lane shuffle and an add into Vd; the 2S forms clear the upper half. Other
@@ -451,13 +468,14 @@ state still coming from Unicorn.
 ## Known gaps
 
 Not translated (compile to `unimpl`, reported only if executed):
-- Half-precision arithmetic (fp16 is not on the Switch CPU), FCVTXN, vector FCVT*/SCVTF on halves.
+- FCVTXN.
 - ERETAA/ERETAB (EL1), LSE128,
   MSR PSTATE (DAIF/SPSel), LDTR/STTR, BC.cond, SVE/SME, any system register not
   listed above.
 
 Behavioural differences:
-- FPCR.AHP (alternative half precision) is ignored; FPCR.FZ16 does not apply (no fp16 arithmetic).
+- FPCR.AHP (alternative half precision) is ignored. FP16 arithmetic honours RMode, DN and FZ16 (input and output
+  flush of halves); FMLAL/FMLSL also FZ (the single addend and result). FZ16 does not apply to FCVT, as in ARM.
   FPSR cumulative flags (including FZ's input-denormal and FRINTX's inexact) and QC are never set.
 - Under the default FPCR, FMADD/FMLA/FRECPS/FRSQRTS are exact only when the engine's relaxed-simd
   madd is fused (x64 with FMA3, arm64); with `fma` off the translator emits unfused code. The
@@ -484,6 +502,13 @@ Behavioural differences:
 
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
+- Gate 1 (FP16 with FPCR #24 merged; the 110 `fpcr_` classes include 34 FP16/FHM ones that vary RMode, FZ16, FZ
+  and DN and add half and single denormals): 329 classes x 2000 cases = 658000 cases, 0 failures; memory64 and above
+  4 GB 30268 cases each, 0 failures.
+- Gate 1 (FP16, crypto and DotProd together): 225 classes x 2000 cases = 450000 cases, 0 failures; memory64 and above 4 GB
+  30150 cases each, 0 failures.
+- Gate 1 (FP16 branch): 216 classes x 2000 cases = 432000 cases, 0 failures (the 34 FP16 and FHM classes, 68000 cases, also with
+  `--strictnan --shared --seed 5`, `--mem64`, `--hi` and `--nonan --nofma --seed 9`: 0 failures).
 - C library intrinsics (`a64:bench`, 15 interleaved runs, medians, output checked, Node 24): str_bench (string table on
   optimized-routines) memory32 75.0 -> 68.7 ms (-8%), memory64 76.1 -> 71.3 (-6%), memory64-high 76.2 -> 70.7 (-7%);
   zstd_bench 86.0 -> 85.1 / 88.8 -> 87.9 / 88.8 -> 88.9 ms (within noise: its libc calls are few and short). Translated
@@ -492,6 +517,8 @@ Behavioural differences:
 - Crypto extensions and FJCVTZS (#17): Gate 1 189 classes x 2000 = 378000 cases, 0 failures in memory32, memory64
   and above 4 GB; the 7 new classes x 30000 cases, 0 failures in each of the three; `--strictnan --shared --seed 5`
   x 5000, 0 failures.
+- Gate 2 (Node, with FP16): 88 guest images (61 shared, 27 own, `a64_fp16` among them), 88 pass in each of
+  default, `--budget 50`, `--notail`, `--shared`, `--mem64` and the four above-4 GB runs.
 - Gate 2 (Node): 86 guest images, 86 pass in each of: default, `--budget 50`, `--notail`, `--shared`; also with
   `--precise 2`, `--cntyield` and warm from the translation cache (75 images, earlier run). Feature tests: 23 of 23.
 - Gate 2 (Chromium, Worker): 86 pass in default, budget 50, no tail calls, shared memory, cache cold and warm
