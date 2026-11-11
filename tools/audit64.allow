@@ -1399,6 +1399,7 @@ src/glue/hle_host.ts	B	1	this.x.hle_cv_picture(dec >>> 0, gen >>> 0, BigInt.asUi
 src/glue/hle_rt.ts	B	1	const name = /\(([^)]+)\)$/.exec(d.toString())?.[1]?.split(" ").map(w => w[0]).join("") ?? " ";
 src/glue/hle_rt.ts	B	1	eventDupReadable: h => rt.k.kernel_event_dup_readable(h) >>> 0,
 src/glue/hle_rt.ts	V	1	eventNew: () => { const p = o.scratch ?? (rt.r.rt_scratch_ptr() + 3080); const r = rt.k.kernel_event_new(p) >>> 0; return { r, w: new DataView(rt.memory.buffer)
+src/glue/hle_rt.ts	B	1	nativeImageOf?: ((handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null) | null;
 src/glue/rt_audio.ts	B	1	const n = this.o.arenaBytes ?? 16 << 20, base = this.rt.hostAlloc(n);
 src/glue/rt_audio.ts	V	1	const p = rt.r.rt_scratch_ptr() + 3088, r = rt.k.kernel_event_new(p) >>> 0, w = rt.dv().getUint32(p, true);
 src/glue/rt_audio.ts	V	1	const rt = this.rt, q = this.req, dv = cpu.dv(), kind = dv.getUint32(q, true);
@@ -1411,11 +1412,16 @@ src/glue/rt_gfx.ts	B	1	const abi = this.abi[id] ?? 0, floats = abi & 15, retF = 
 src/glue/rt_gfx.ts	B	1	const done = this.host.fence(x.gfx_finish_fence() >>> 0);
 src/glue/rt_gfx.ts	B	1	const hasCode = data !== 0 && ncode !== 0 && ncode < (1 << 24) && data + ncode <= mem.length;
 src/glue/rt_gfx.ts	B	1	const interval = Math.max(1, this.x.gfx_present_interval(Number(cpu.x(0))) | 0);
+src/glue/rt_gfx.ts	V	1	const le = (n: bigint | number, bytes: number) => { const b = new Uint8Array(bytes), dv = new DataView(b.buffer); if (bytes === 8) dv.setBigUint64(0, BigInt.asU
 src/glue/rt_gfx.ts	B	1	const n = cpu.w(1) | 0, sd = Number(cpu.x(2));
+src/glue/rt_gfx.ts	B	1	const ok = nvn(" ", t, tb) & 0xffn;
 src/glue/rt_gfx.ts	B	1	const res = this.call(id, k.args), fence = x.gfx_wait_fence() >>> 0;
+src/glue/rt_gfx.ts	V	1	const u32 = (cpu: HostCpu, a: bigint) => new DataView(cpu.read(a, 4).buffer).getUint32(0, true);
 src/glue/rt_gfx.ts	B	1	const win = Number(cpu.x(1)), index = cpu.w(2) | 0;
 src/glue/rt_gfx.ts	B	1	for (let f = this.heldTo + 1, last = this.x.gfx_fence_last() >>> 0; f <= last; f++) { this.host.signalFence(f); this.heldTo = f; }
+src/glue/rt_gfx.ts	B	1	if (!(nvn(" ", i + 0x20n, pb) & 0xffn)) { cpu.log(" "); return 0n; }
 src/glue/rt_gfx.ts	B	1	if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
+src/glue/rt_gfx.ts	B	1	nativeImageOf: ((handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null) | null = null;
 src/glue/rt_gfx.ts	B	1	private stageOf(sd: number): { key: string; blob: () => ShaderBlob } | null {
 src/glue/rt_gfx.ts	B	1	this.shownAt[n & 255] = BigInt(Math.round(performance.now() * 1e6));
 src/glue/rt_gfx.ts	B	1	viLayerCrop: { x: number; y: number; w: number; h: number } | null = null;

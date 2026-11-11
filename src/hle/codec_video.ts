@@ -18,7 +18,7 @@
 // the readers convert them as md_nv12 / md_rgba do. A pool a native image handle was asked for also gets each
 // picture as RGBA in the game's pool memory (16 KB aligned, 64-byte stride), where nvnTextureInitializeFromNativeImage
 // makes its linear texture.
-import { X, W, P, X8, stackArg, guestSym, guestCall1, guestCall2, hostAlloc, zero, ls, ps, pz, pu, px, le, red } from "./base";
+import { X, W, P, X8, stackArg, guestSym, guestCall1, guestCall2, hostAlloc, zero, ls, ps, pz, pu, px, le, red, log } from "./base";
 import { seBind, seSignal, seClear } from "./sysevent";
 
 // The embedder's decoder (HleEnv.video). codec: 0 VP8, 1 VP9, 2 H.264, 3 AV1. Writes its name (at most cap bytes)
@@ -93,7 +93,7 @@ export function cvInit(): void {
   zero(HELD, <usize>(NDEC * CV_HOLD) * 16); zero(INFL, <usize>(NDEC * CV_HOLD) * 16); zero(POOLS, <usize>NPOOL * 40); zero(POOLPICS, <usize>(NPOOL * POOL_IMGS) * 4);
   zero(PICS, <usize>NPIC * 40); zero(SPT, <usize>NSPT * 8);
   poolLogs = 0; nativeLogs = 0; rgbaRegionRed = false; nv12RegionRed = false; hdrRed = false; encRed = false; syncRed = false; sptFullRed = false; picFullRed = false;
-  nativeWrites = 0; genCounter = 0; fnDestroy = 0; fnTryWait = 0; fnHolder = 0;
+  nativeWrites = 0; genCounter = 0; initLogged = false; fnDestroy = 0; fnTryWait = 0; fnHolder = 0;
 }
 function sdkFns(): void {   // looked up until found
   if (!fnDestroy) fnDestroy = guestSym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
@@ -224,7 +224,9 @@ function pref(a: usize): u64 {
 export function h_cv_pref(a: usize): u64 { return pref(a); }
 export function h_cv_pref22(a: usize): u64 { return pref(a); }
 export function h_cv_pref19(a: usize): u64 { return pref(a); }
-export function h_cv_init(a: usize): u64 { return 0; }
+let initLogged = false;
+// The first sign of the movie path in a run's log: the game reached nn::codec's video decoders
+export function h_cv_init(a: usize): u64 { if (!initLogged) { initLogged = true; log("[codec] nn::codec::video::Initialize: the video decoders are the host's (src/hle/codec_video.ts)"); } return 0; }
 export function h_cv_fin(a: usize): u64 { return 0; }
 // CalculateDecoderImagePoolBuffer(size*, align*, pref, n): room for RGBA pictures (a native image's texture is made over it)
 export function h_cv_poolsize(a: usize): u64 {
