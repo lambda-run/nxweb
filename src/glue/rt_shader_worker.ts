@@ -37,7 +37,7 @@ async function translate(key: string, control: Uint8Array, code: Uint8Array) {
   let res: { sbufs?: FixOptions["sbufs"] } = {};
   try { res = JSON.parse(FS.readFile(`${out}/${key}.res.json`, { encoding: "utf8" })); } catch { /* not written: no storage buffers to place */ }
   for (const f of [`/w/${key}.bin`, `/w/jobs${n}.json`, `${out}/${key}.spv`, `${out}/${key}.res.json`]) { try { FS.unlink(f); } catch { /* not written */ } }
-  const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh });
+  const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh, c1: job.c1 });
   return { wgsl: c.wgsl, reflection: c.reflection };
 }
 // Requests do not come as messages to the Worker itself: the .NET runtime, started in a Worker, never finishes its

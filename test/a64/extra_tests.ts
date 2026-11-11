@@ -165,6 +165,43 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     });
     return `${acc.length} accesses: past the end and wrapping trap with pc, x1 and x9 exact; 256 bytes before the end they work`;
   });
+  test("memargFold recognises a trap only the folded offset makes: base below the guard or wrapping, base + offset valid", () => {
+    const G = DATA + 0x1000;
+    const t = mk(m, { preciseFaults: 2, guardBase: G });
+    const end = t.memory.buffer.byteLength, top = M64 ? 0xFFFFFFFFFFFFFFFFn : 0xFFFFFFFFn;
+    // ldr x1, [x5, #0x20]; ldp x1, x2, [x5, #16]; ldur w1, [x5, #3]; str q0, [x5, #32]; ldr x1, [x5, #-8]! (pre-index: not folded)
+    const acc = [0xF94010A1, 0xA94108A1, 0xB84030A1, 0x3D8008A0, 0xF85F8CA1];
+    acc.forEach((a, i) => t.put(BASE + i * 0x40, [a, RET]));
+    t.host.addCode(BASE, acc.length * 0x40);
+    const trap = (i: number, x5: bigint) => {
+      let err: unknown;
+      t.c.x5.value = x5;
+      try { t.call(BASE + i * 0x40); } catch (e) { err = e; }
+      if (!err) throw new Error(`access ${i} with x5 = 0x${x5.toString(16)}: no trap`);
+      eq(`access ${i} pc`, t.host.faultFromError(err)?.pc, BASE + i * 0x40);
+      return t.host.memargFold(acc[i], BigInt.asUintN(64, t.c.x5.value));
+    };
+    // the base just below the guard, base + offset at or above it
+    eq("ldr below the guard", trap(0, BigInt(G - 0x10))?.addr, BigInt(G + 0x10));
+    eq("ldp below the guard", trap(1, BigInt(G - 8))?.imm, 16);
+    eq("ldur below the guard", trap(2, BigInt(G - 2))?.addr, BigInt(G + 1));
+    eq("str q below the guard", trap(3, BigInt(G - 0x10))?.addr, BigInt(G + 0x10));
+    // base + offset beyond the end, or below the guard: a trap on hardware too
+    eq("ldr beyond the end", trap(0, BigInt(end - 0x20)), undefined);
+    eq("ldr far below the guard", trap(0, BigInt(G - 0x100)), undefined);
+    // a "negative" base wrapping onto a valid address (without the guard, so low memory is valid)
+    const u = mk(m, { preciseFaults: 2 });
+    u.put(BASE, [0xF94010A1, RET]); u.host.addCode(BASE, 0x40);
+    let err: unknown;
+    u.c.x5.value = top - 0xFn;
+    try { u.call(BASE); } catch (e) { err = e; }
+    if (!err) throw new Error("wrapping base: no trap");
+    eq("ldr through a wrapping base", u.host.memargFold(0xF94010A1, BigInt.asUintN(64, u.c.x5.value))?.addr, 0x10n);
+    // not folded forms, never
+    eq("pre-index", t.host.memargFold(acc[4], BigInt(G - 0x10)), undefined);
+    eq("prfm", t.host.memargFold(0xF98010A0, BigInt(G - 0x10)), undefined);
+    return "below the guard (ldr, ldp, ldur, str q) and a wrapping base recognised; beyond the end, far below the guard, pre-index, prfm not";
+  });
   test("budget exit at a back edge writes back only what the loop head needs: a register written before it is read stays as it was", () => {
     // mov x0, #0; mov x2, #100; loop: add x3, x0, #1; add x0, x3, #2; subs x2, x2, #1; b.ne loop; ret
     const code = [0xD2800000, 0xD2800C82, 0x91000403, 0x91000860, 0xF1000442, 0x54FFFFA1, RET];

@@ -466,6 +466,34 @@ export class A64Host {
     return { pc, unit, funcPc, offset };
   }
 
+  // A trap the memarg-offset fold made: `insn` is a load / store whose non-negative immediate offset the translator
+  // carries in the wasm memory operand (LDR / STR unsigned offset, LDUR / STUR, LDP / STP signed offset, integer or
+  // SIMD), base + offset wrapped as on hardware is a valid address (at or above the guard, inside the memory), and the
+  // folded access (no wrap, the guard checking the base) is not. undefined for anything else.
+  memargFold(insn: number, base: bigint): { imm: number; addr: bigint } | undefined {
+    insn >>>= 0;
+    const V = (insn >>> 26) & 1, size = insn >>> 30, opc = (insn >>> 22) & 3;
+    let imm = 0, bytes = 0;
+    if ((insn & 0x3A000000) === 0x38000000) {
+      if (!V && size === 3 && opc === 2) return undefined;   // PRFM
+      const sc = V && (opc & 2) ? 4 : size;
+      if (insn & (1 << 24)) imm = ((insn >>> 10) & 0xFFF) * (1 << sc);
+      else if (!(insn & (1 << 21)) && ((insn >>> 10) & 3) === 0 && !(insn & (1 << 20))) imm = (insn >>> 12) & 0x1FF;
+      bytes = 1 << sc;
+    } else if ((insn & 0x3A000000) === 0x28000000 && ((insn >>> 23) & 3) === 2) {
+      const sz = V ? 2 + size : size === 2 ? 3 : 2, i7 = (insn >>> 15) & 0x7F;
+      if (!(i7 & 0x40)) imm = i7 << sz;
+      bytes = 2 << sz;
+    }
+    if (imm <= 0) return undefined;
+    const mask = this.mem64 ? 0xFFFF_FFFF_FFFF_FFFFn : 0xFFFF_FFFFn;
+    const g = BigInt(this.opts.guardBase ?? 0), end = BigInt(this.memory.buffer.byteLength), off = BigInt(imm), n = BigInt(bytes);
+    const b = base & mask, addr = (b + off) & mask;
+    if (addr < g || addr + n > end) return undefined;          // a trap on hardware too
+    if (((b - g) & mask) + g + off + n <= end) return undefined; // the folded access is in bounds: not this
+    return { imm, addr };
+  }
+
   // ---- translation cache ----
   // every unit whose functions lie in [lo, lo + size), serialized (needs keepBytes = true before translating)
   exportCache(lo: number, size: number): Uint8Array {

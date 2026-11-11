@@ -105,8 +105,10 @@ g.translateInPage = async (frameworkUrl: string, nagaUrl: string, base: string, 
   FS.mkdir("/w");
   const jobs = [];
   for (const r of corpus) {
-    FS.writeFile(`/w/${r.key}.bin`, (await fetchBytes(`${base}/${r.code}`)).subarray(0x30));
-    jobs.push({ key: r.key, stage: r.stage, code: `/w/${r.key}.bin`, tex: {}, img: {}, attr: {}, fout: {}, c1: "", debug: true, reduced: true, ...r.facts });
+    const code = await fetchBytes(`${base}/${r.code}`), ctl = new DataView((await fetchBytes(`${base}/${r.control}`)).buffer);
+    const c1 = Array.from(code.subarray(ctl.getUint32(0x700, true), ctl.getUint32(0x704, true)), b => b.toString(16).padStart(2, "0")).join("");   // xlate.py job_for
+    FS.writeFile(`/w/${r.key}.bin`, code.subarray(0x30));
+    jobs.push({ key: r.key, stage: r.stage, code: `/w/${r.key}.bin`, tex: {}, img: {}, attr: {}, fout: {}, c1, debug: true, reduced: true, ...r.facts });
   }
   FS.writeFile("/w/jobs.json", JSON.stringify(jobs));
   const t2 = performance.now(), rc = await rt.runMain("xlate_wasm", ["/w/jobs.json", "/w/out"]), t3 = performance.now();
@@ -114,7 +116,7 @@ g.translateInPage = async (frameworkUrl: string, nagaUrl: string, base: string, 
   const naga = await instantiate(await fetchBytes(nagaUrl)), out: any = {};
   for (const r of corpus) {
     let spv; try { spv = FS.readFile(`/w/out/${r.key}.spv`); } catch { throw new Error(`the translator wrote no ${r.key}.spv (exit ${rc}): ${lines.join(" | ")}`); }
-    const c = convertStage(naga, spv, { bindings: "nxweb" }); out[r.key] = { wgsl: c.wgsl, reflection: c.reflection };
+    const c = convertStage(naga, spv, { bindings: "nxweb", c1: jobs.find(j => j.key === r.key)!.c1 }); out[r.key] = { wgsl: c.wgsl, reflection: c.reflection };
   }
   return { rc, startMs: t1 - t0, firstMs: t3 - t2, warmMs: t4 - again, convertMs: performance.now() - t4, out };
 };
@@ -135,7 +137,7 @@ g.translateJobsInPage = async (frameworkUrl: string, nagaUrl: string, base: stri
   const naga = await instantiate(await fetchBytes(nagaUrl)), out: any = {};
   for (const r of corpus) {
     let spv; try { spv = FS.readFile(`/w/out/${r.key}.spv`); } catch { throw new Error(`the translator wrote no ${r.key}.spv (exit ${rc}): ${lines.join(" | ")}`); }
-    const c = convertStage(naga, spv, { bindings: "nxweb" }); out[r.key] = { wgsl: c.wgsl, reflection: c.reflection };
+    const c = convertStage(naga, spv, { bindings: "nxweb", c1: jobs.find(j => j.key === r.key)!.c1 }); out[r.key] = { wgsl: c.wgsl, reflection: c.reflection };
   }
   return { rc, jobs, out };
 };

@@ -117,7 +117,8 @@ by `mem`, `vmem`, `moff`) instead of an `i64.add`; LDP / STP's second word is th
 effective address does not wrap, so an access whose address would wrap past 4 GB (memory32) or 2^64 traps where it
 used to wrap around to low memory. With the guard the check is on the base, not base + offset: a base below
 `guardBase` traps even when base + offset is above it (the runtime's guard sits below HLE static data, which no
-guest pointer is formed against).
+guest pointer is formed against). Should one trap that way, the runtime's fault line names it (`A64Host.memargFold`:
+base + offset, its value, "the memarg-offset fold").
 
 **Call summaries** (not with `preciseFaults`). A unit's functions are translated callees first (a post-order of the
 BLs found by discovery; `calleesFirst` in `unit.ts`), and each translated function gets a summary: R, the registers

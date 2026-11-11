@@ -12,12 +12,12 @@ game files ─ shader_split.py (nxnative) ─▶ control section + code area per
 ```
 
 Everything right of `shader_split.py` ran here, offline and inside a page (`npm run shaders:test`, results below).
-**No game shader has been through it**: there are none in this environment. What ran is four Maxwell programs
-assembled by hand (`maxwell_asm.py`) and 43 GLSL shaders written to look like the translator's output.
+**No game shader has been through it**: there are none in this environment. What ran is six Maxwell programs
+assembled by hand (`maxwell_asm.py`) and 46 GLSL shaders written to look like the translator's output.
 
 | File | What |
 |---|---|
-| `maxwell_asm.py` | Three hand-assembled Maxwell programs (a vertex and two pixel shaders) wrapped as code area + control section, with their keys. Not GLSLC output. |
+| `maxwell_asm.py` | Six hand-assembled Maxwell programs (a vertex and five pixel shaders: a texture query of level of detail, the driver's banks among them) wrapped as code area + control section, with their keys. Not GLSLC output. |
 | `xlate.py` | Code + control → translator job → SPIR-V. nxnative's `job_for`, NVN graphics and compute only. |
 | `src/shaders/spv.ts` | SPIR-V reader / writer and the pass (below). No Node or DOM API. |
 | `src/shaders/convert.ts` | One stage: pass + naga → WGSL + reflection record. |
@@ -117,15 +117,16 @@ naga's SPIR-V reader and WGSL writer refuse the translator's output as it comes.
 | 4 | `Unsupported builtin value: PointSize` on every vertex shader | Ryujinx writes `gl_PointSize = 1` in every vertex shader; WGSL has no point size | Stores to point size, clip and cull distances removed (naga then omits the members). Non-constant point size and any clip distance: a note (a loss). |
 | 5 | `invalid id` on every combined sampler | naga has no combined image samplers; WGSL neither | **Splitting rule**: the variable keeps its id, name and decorations and becomes the texture; a sampler variable `<name>_samp` is added; each `OpLoad` of the pair becomes load texture, load sampler, `OpSampledImage`. **Numbering**: combined slot `s` of stage `st` → texture `@group(1) @binding(st*64 + 2s)`, sampler `+1`. Depth images give `texture_depth_*` + `sampler_comparison` (naga infers it from the comparison instructions). |
 | 6 | 64 KB uniform blocks | `vec4 data[4096]` whatever is read; WebGPU requires the bound range to cover the type, and 65,536 is exactly the default `maxUniformBufferBindingSize` | Bound-size table (`c25`) → private constant of all ones; unused uniforms removed; each block cut after the last vector read at a constant index (a computed index keeps 4096). The reflection carries `uboSize`. |
-| 7 | Bindings | Set 0 with running numbers | From the names: `<p>_c<3+r>` → `@group(0) @binding(st*16 + r)`; `support_buffer` → `st*16 + 14`; `c1` → `@group(3) @binding(st*16)`, `c0` / `c2` → `+1` / `+2`; textures as in 5. A bindless texture (`<p>_t…_cb<bank>_<handle>`, bank 3..16) takes a free texture slot and a `handle` in the record. Separate, image, storage, array-of-sampler variables are errors ("not placed yet"). |
+| 7 | Bindings | Set 0 with running numbers | From the names: `<p>_c<3+r>` → `@group(0) @binding(st*16 + r)`; `support_buffer` → `st*16 + 14`; `c1`, the driver's `c0` / `c2` and the push constants `c24` → host blocks `@group(0) @binding(208 + st*4 + k)` (k: c1 0, c0 1, c2 2, c24 3; the host fills c1 from the job's c1 segment, c0 / c2 with the driver words, c24 with what `nvnCommandBufferPush*Constants` pushed); textures as in 5. A bindless texture (`<p>_t…_cb<bank>_<handle>`, bank 3..16) takes a free texture slot and a `handle` in the record. Separate, image, storage, array-of-sampler variables are errors ("not placed yet"). |
 | 8 | Origin and depth | run-time state in NVN | Vertex: `@group(2) @binding(0)` one `vec4f`; before every return of the entry point `pos.y *= fix.y; pos.z = pos.z*fix.z + pos.w*fix.w` (`src/gfx/README.md` item 4). |
 | 9 | `'textureSample' must only be called from uniform control flow` (Chromium, not naga) | WGSL's derivative uniformity analysis; Maxwell samples under predicates | `diagnostic(off, derivative_uniformity);` at the top of every fragment module. Derivatives there are then undefined, as on the hardware. |
-| 10 | `ConstExpression ... Literal(Infinity)` / `Literal(NaN)` (232 of the 702 stages of one game) | the translator writes Maxwell's immediates as float constants, `+inf` / NaN among them (FMNMX, FSETP bounds); naga refuses them as constant expressions, and Tint refuses any constant expression it folds to one | `nonFiniteConstants`: each becomes a private `u32` variable holding the bits, loaded and bitcast at the top of each function that reads it (a composite holding one is built there), so the value only exists at run time. |
-| 11 | `Unsupported builtin value: BaseInstance` (309 of 702) | the translator turns NVN's c0 reads at 0x640 / 0x644 / 0x648 into BaseVertex / BaseInstance / DrawIndex (`DrawParametersReplace.cs`; Maxwell's instance ID is `InstanceIndex - BaseInstance`); WGSL's `vertex_index` / `instance_index` include the bases, but WGSL has no builtin for them | `drawParameters`: the loads read `@group(2) @binding(2)` `{ i32 base vertex, base instance, draw index }`, which the host writes per draw at a dynamic offset (reflection `drawParams`; `src/gfx/README.md`). |
+| 10 | `unsupported instruction ImageQueryLod` | Maxwell `TMML`; WGSL has no `textureQueryLod` | Pixel stage: from the coordinate's derivatives, scaled by the level-0 size (`textureDimensions`), λ = ½·log2(max(\|dx\|², \|dy\|²)), clamped to the view's levels; a cube by the major axis. The sampler's bias and LOD clamps are left out (noted). Other stages have no derivatives: 0, noted. |
+| 11 | `ConstExpression ... Literal(Infinity)` / `Literal(NaN)` (232 of the 702 stages of one game) | the translator writes Maxwell's immediates as float constants, `+inf` / NaN among them (FMNMX, FSETP bounds); naga refuses them as constant expressions, and Tint refuses any constant expression it folds to one | `nonFiniteConstants`: each becomes a private `u32` variable holding the bits, loaded and bitcast at the top of each function that reads it (a composite holding one is built there), so the value only exists at run time. |
+| 12 | `Unsupported builtin value: BaseInstance` (309 of 702) | the translator turns NVN's c0 reads at 0x640 / 0x644 / 0x648 into BaseVertex / BaseInstance / DrawIndex (`DrawParametersReplace.cs`; Maxwell's instance ID is `InstanceIndex - BaseInstance`); WGSL's `vertex_index` / `instance_index` include the bases, but WGSL has no builtin for them | `drawParameters`: the loads read `@group(2) @binding(2)` `{ i32 base vertex, base instance, draw index }`, which the host writes per draw at a dynamic offset (reflection `drawParams`; `src/gfx/README.md`). |
 
 Every rewritten module passes `spirv-val` (38 modules in the test).
 
-### The corpus (`test/shaders/corpus`, 45 GLSL shaders → glslang → pass → naga → Chromium)
+### The corpus (`test/shaders/corpus`, 46 GLSL shaders → glslang → pass → naga → Chromium)
 
 Written after reading Ryujinx's `CodeGen/Spirv` for what it emits. **29 convert; 27 of those compile in Chromium.**
 
@@ -143,7 +144,6 @@ Fails, **and Ryujinx emits it** (so real shaders will hit it):
 
 | Construct | Where it fails | Needs |
 |---|---|---|
-| `OpImageQueryLod` (Maxwell `TMML`) | naga reader | No WGSL equivalent. Compute from derivatives in the pass, or accept a loss. |
 | Storage buffers, `imageLoad` / `imageStore`, image atomics | the pass (not placed) | Bindings in `src/gfx` first. WebGPU: no storage images of most formats, no image atomics at all, fragment-stage storage writes need care; atomics exist only on `atomic<u32/i32>` in storage buffers. |
 | Buffer textures, 1D textures | the pass | The 2D-rows treatment nxnative gives buffer textures (`tbuf_as_2d`), in the pass and the host. |
 | Multisampled textures | the pass | A binding kind (`texture_multisampled_2d`), small. |

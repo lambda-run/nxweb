@@ -7,8 +7,9 @@ import { wrapStage, type MeshStage } from "./meshstage.ts";
 export interface Converter { spvToWgsl(spv: Uint8Array, flags?: number): string }
 export interface Converted { wgsl: string; reflection: Reflection; bindings: Binding[]; fixedSpv: Uint8Array }
 
-// opts.mesh: a task or mesh shader the translator read as compute (job.ts): its entry is wrapped (meshstage.ts) and the reflection names its stage
-export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions & { mesh?: MeshStage } = {}): Converted {
+// opts.mesh: a task or mesh shader the translator read as compute (job.ts): its entry is wrapped (meshstage.ts) and the reflection names its stage.
+// opts.c1: the shader's own constant segment (job.ts c1, hex), the data of its c1 binding when it reads one
+export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions & { mesh?: MeshStage; c1?: string } = {}): Converted {
   const f = fixForWgsl(spv, opts);
   if (opts.mesh && f.stage !== "compute") throw new Error(`a ${opts.mesh.kind} shader that is not compute after the translator`);
   // WGSL refuses an implicit-derivative sample (textureSample, dpdx) under control flow that differs between pixels; Maxwell code does it freely (a TEX after a
@@ -26,7 +27,7 @@ export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions 
     ...(f.bindings.some(b => b.kind === "draw") ? { drawParams: true } : {}),
     ...(sb.length ? { storage: sb.map(b => ({ slot: b.reg!, write: !!b.write })).sort((a, b) => a.slot - b.slot) } : {}),
     uboSize: Object.fromEntries(cb.map(b => [b.reg, b.size ?? 0])),
-    extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup", "storage", "draw"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank })),
+    extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup", "storage", "draw"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank, ...(b.kind === "c1" ? { data: opts.c1 ?? "" } : {}) })),
     notes: f.notes,
   };
   if (f.stage === "vertex") { reflection.attributes = f.inputs.map(i => i.location); reflection.attributeTypes = Object.fromEntries(f.inputs.map(i => [i.location, i.type])); }
