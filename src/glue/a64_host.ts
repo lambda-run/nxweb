@@ -89,7 +89,9 @@ const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
 const num = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;   // a wasm64 export's usize result
-export const A64_CACHE_VERSION = 9;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+export const A64_CACHE_VERSION = 10;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+// the C library functions src/a64/libc.ts implements, by op number (index 0 unused)
+export const LIBC_OPS = ["", "memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp"];
 const PAIR_LOCK_BYTES = 16;           // the end of the helpers' range: the lock word of 16-byte CASPs on a shared memory (src/a64/int.ts casp)
 
 export class A64Host {
@@ -121,6 +123,8 @@ export class A64Host {
   private leafFree: number[] = [];
   private leafExtra = 0;   // leaves from opts.leafAlloc
   private ranges: { lo: number; hi: number }[] = [];
+  private hlp: any;
+  private libcNamed = new Map<number, string>();        // pc -> C library function translated as an intrinsic
   private byFunc = new Map<number, A64Unit>();         // function pc -> unit (for fault lookup)
   private cache = new Map<number, CachedUnit>();        // function pc -> cached unit not yet instantiated
 
@@ -134,6 +138,7 @@ export class A64Host {
     const hmod = helpersWasm instanceof WebAssembly.Module ? helpersWasm : new WebAssembly.Module(helpersWasm);
     if (this.memory.buffer.byteLength < lay.pcmapEnd) throw new Error("a64: the memory does not reach the end of the a64 layout");
     const hlp = new WebAssembly.Instance(hmod, { env }).exports as any;
+    this.hlp = hlp;
     this.tr = new WebAssembly.Instance(mod, { env }).exports;
     const bits = this.tr.addrBits?.() ?? 32;
     if (bits !== (m64 ? 64 : 32))
@@ -173,7 +178,7 @@ export class A64Host {
     }).exports as unknown as CoreExports;
     // the wasm64 core takes the context pointer as an i64: `core` keeps taking a number
     this.core = !m64 ? coreX : { ...coreX, save_ctx: (p: number) => (coreX.save_ctx as any)(BigInt(p)), load_ctx: (p: number) => (coreX.load_ctx as any)(BigInt(p)) };
-    const { staticBase: _b, staticEnd: _e, memory: _m, ...hfuncs } = hlp;
+    const { staticBase: _b, staticEnd: _e, memory: _m, libcStat: _s, libcGuard: _g, ...hfuncs } = hlp;
     this.unitImports = { cpu: coreX as any, hlp: hfuncs, env: { memory: this.memory, table: this.table, ...opts.imports } };
     (this.core.excl_addr as WebAssembly.Global).value = -1n;
   }
@@ -198,7 +203,7 @@ export class A64Host {
     if (o.shared !== undefined) t.setOpt(OPT.shared, o.shared ? 1 : 0);
     if (o.cntYield !== undefined) t.setOpt(OPT.cntYield, o.cntYield ? 1 : 0);
     if (o.preciseFaults !== undefined) t.setOpt(OPT.precise, o.preciseFaults);
-    if (o.guardBase !== undefined) this.setAddr(OPT.guard, o.guardBase);
+    if (o.guardBase !== undefined) { this.setAddr(OPT.guard, o.guardBase); this.hlp?.libcGuard(BigInt(o.guardBase)); }
     Object.assign(this.opts, o);
   }
 
@@ -207,7 +212,27 @@ export class A64Host {
     const o = this.opts, l = this.lay;
     return [A64_CACHE_VERSION, l.pcmapBase, o.maxInsns ?? "", o.maxFuncs ?? "", o.chunk ?? "", o.fma ?? "", o.tailCalls ?? "", o.nanFix ?? "",
             o.rmodeArith ?? "", o.depthLimit ?? "", o.shared ?? "", o.cntYield ?? "", o.preciseFaults ?? "", o.guardBase ?? "",
-            this.mem64 ? `m64.${this.span / LEAF}.${o.shared ? o.memoryMaxPages ?? MEM64_MAX_PAGES : ""}` : "m32"].join(".");
+            this.mem64 ? `m64.${this.span / LEAF}.${o.shared ? o.memoryMaxPages ?? MEM64_MAX_PAGES : ""}` : "m32",
+            ...(this.libcNamed.size ? ["libc", ...[...this.libcNamed].map(([pc, n]) => pc.toString(16) + "=" + LIBC_OPS.indexOf(n))] : [])].join(".");
+  }
+
+  // ---- C library intrinsics (src/a64/libc.ts) ----
+  // Name a module's definitions of the C library's memory and string functions (pc -> name, a name of LIBC_OPS):
+  // each is translated as one call of the helpers' wasm version and a return. Call before anything at those pcs is
+  // translated (after loading, before cacheLoad: the names are part of optionsKey). Returns the names taken.
+  setLibcIntrinsics(defs: Iterable<{ pc: number; name: string }>): string[] {
+    const took: string[] = [];
+    for (const { pc, name } of defs) {
+      const op = LIBC_OPS.indexOf(name);
+      if (op <= 0 || pc % 4 || this.byFunc.has(pc)) continue;
+      if (this.tr.setIntrinsic(BigInt(pc), op) < 0) break;
+      this.libcNamed.set(pc, name); took.push(name);
+    }
+    return took;
+  }
+  // calls and bytes of each named function so far (all of them, named or not, share the helpers' counters)
+  libcStats(): { name: string; calls: number; bytes: number }[] {
+    return LIBC_OPS.slice(1).map((name, i) => ({ name, calls: Number(this.hlp.libcStat(i + 1, 0)), bytes: Number(this.hlp.libcStat(i + 1, 1)) }));
   }
 
   // ---- pc map (two levels: 64 KB leaves, allocated on demand) ----

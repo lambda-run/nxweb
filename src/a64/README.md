@@ -334,6 +334,12 @@ npm run a64:bytes            # a digest of every emitted byte for the corpus, pe
 npm run a64:big              # larger-code check: generated 400k-instruction guest, time / size / memory
     python3 test/a64/fuzz.py --strictnan     # compare NaNs bitwise too
 npm run a64:speed            # per-guest guest-instructions/second and translation time
+npm run a64:bench            # real-world-shaped C (test/a64/bench: zstd 1.5.6 with a trained 64 KB dictionary; a game
+                             #         loader's string table on ARM optimized-routines' memcmp/strlen/strcmp ...) natively,
+                             #         as wasm (clang --target=wasm32) and translated in the three modes, with and without the
+                             #         C library intrinsics, interleaved, output checked [-- --runs N --mode M --libc on|off|both]
+npm run a64:libc             # the C library intrinsics (libc.ts) against the native libc: every length 0..80 at every
+                             #         alignment pair, in the three modes, translated and as intrinsics
 python3 test/a64/coverage.py # corpus instruction words the translator rejects, by mnemonic
 npm run a64:scan -- <path>   # the static scan of an NSO module, an exefs folder or a flat image (see above)
 ```
@@ -478,6 +484,10 @@ Behavioural differences:
 
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
+- C library intrinsics (`a64:bench`, 15 interleaved runs, medians, output checked, Node 24): str_bench (string table on
+  optimized-routines) memory32 75.0 -> 68.7 ms (-8%), memory64 76.1 -> 71.3 (-6%), memory64-high 76.2 -> 70.7 (-7%);
+  zstd_bench 86.0 -> 85.1 / 88.8 -> 87.9 / 88.8 -> 88.9 ms (within noise: its libc calls are few and short). Translated
+  zstd stays 1.84-1.92x wasm-native and 2.7-2.9x native; str_bench 1.46-1.51x / 2.5-2.6x. `a64:libc` 6 of 6 ok.
 - Gate 1: 191 classes x 2000 cases = 382000 cases, 0 failures; again with `--strictnan --shared --seed 5`, 0 failures.
 - Crypto extensions and FJCVTZS (#17): Gate 1 189 classes x 2000 = 378000 cases, 0 failures in memory32, memory64
   and above 4 GB; the 7 new classes x 30000 cases, 0 failures in each of the three; `--strictnan --shared --seed 5`

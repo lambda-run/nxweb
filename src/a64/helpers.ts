@@ -763,3 +763,4 @@ export function sfd(op: i32, a: f64, b: f64, c: f64): f64 {
 // where this module's static data lives in the shared memory (asc --memoryBase)
 export function staticBase(): usize { return <usize>ASC_MEMORY_BASE; }
 export function staticEnd(): usize { return __heap_base; }
+export { libc, libcStat, libcGuard } from "./libc";

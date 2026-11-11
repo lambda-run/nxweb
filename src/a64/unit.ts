@@ -4,7 +4,7 @@ import {
   b, leb, i32c, i64c, lget, lset, ltee, gget, gset, simd, P, setP,
   optPcmapBase, optMaxInsns, optMaxFuncs, optTail, optShared, optPrecise, pcmapLookup, writeback,
   inCode, inWin, setWin, WINDOW, insnAt, markAt, findRange, noRange, curLo, curHi, isEntry, isDone, M_VIS, M_LEAD,
-  NREG, G_PC, G_BUDGET, G_TBASE, G_DEPTH, NGLOB, NIMPF, F_UNIMPL, T_I32, T_I64, T_V128, optDepth, L_DEPTH,
+  NREG, G_PC, G_BUDGET, G_TBASE, G_DEPTH, NGLOB, NIMPF, F_UNIMPL, F_LIBC, T_I32, T_I64, T_V128, optDepth, L_DEPTH,
   locTy, nLoc, regLocalRaw, resetLocals, newLocal, L_STATE, L_BUD,
   EV_R, EV_W, EV_WB, EV_RELOAD, evBuf, nEv, insPos, insKind, insMI, insMV, nIns, fbBase, overflow,
   rollback, blkPc, succ0, succ1, nBlk, setNBlk, setCurBlk, term, setTerm, gotoPc, emitTrap,
@@ -283,6 +283,35 @@ function emitLocals(first: u32): void {
   }
 }
 
+// Library functions the host named (setIntrinsic: a module's definition of memcpy, strlen, ...): a function at one of
+// these pcs is translated as one call of the helpers' libc(op, x0, x1, x2) into x0 and a return to x30 (libc.ts)
+const INTR_CAP = 64;
+const intrPc = mk<u64>(INTR_CAP);
+const intrOp = mk<i32>(INTR_CAP);
+let nIntr: i32 = 0;
+// op 0 forgets the pc; returns the number of named pcs, -1 when the table is full
+export function setIntrinsic(pc: u64, op: i32): i32 {
+  for (let i = 0; i < nIntr; i++) {
+    if (intrPc[i] != pc) continue;
+    if (op) intrOp[i] = op; else { nIntr--; intrPc[i] = intrPc[nIntr]; intrOp[i] = intrOp[nIntr]; }
+    return nIntr;
+  }
+  if (!op) return nIntr;
+  if (nIntr == INTR_CAP) return -1;
+  intrPc[nIntr] = pc; intrOp[nIntr] = op; nIntr++;
+  return nIntr;
+}
+function intrinsicAt(pc: u64): i32 { for (let i = 0; i < nIntr; i++) if (intrPc[i] == pc) return intrOp[i]; return 0; }
+function intrinsicFunction(op: i32): void {
+  let start = csP; setP(csP + 5);
+  b(0);
+  i32c(op); gget(0); gget(1); gget(2); b(0x10); leb(F_LIBC); gset(0);
+  gget(30); gset(G_PC);
+  b(0x0B);
+  patch5(start, <u32>(P - start - 5));
+  csP = P;
+}
+
 function stubFunction(entry: u64): void {
   let start = csP; setP(csP + 5);
   b(0);
@@ -401,6 +430,8 @@ export function translate(nEntries: i32): u32 {
   }
   csP = csBase + HDR_MAX; unitInsns = 0; nSide = 0;
   for (let f = 0; f < nFn; f++) {
+    let op = intrinsicAt(fnPc[f]);
+    if (op) { intrinsicFunction(op); store<u8>(metaPtr + 16 + 4096 * 8 + f, 0); unitInsns++; continue; }
     let ok = translateFunction(fnPc[f]);
     store<u8>(metaPtr + 16 + 4096 * 8 + f, ok ? 0 : 1);
     if (!ok) stubFunction(fnPc[f]);
@@ -426,7 +457,7 @@ export function translate(nEntries: i32): u32 {
   setP(hdrTmp);
   b(0); b(0x61); b(0x73); b(0x6D); b(1); b(0); b(0); b(0);
   let s = secBegin(1);
-  leb(15);
+  leb(16);
   b(0x60); b(0); b(0);
   b(0x60); b(1); b(T_I32); b(0);
   b(0x60); b(2); b(T_I64); b(T_I32); b(0);
@@ -442,6 +473,7 @@ export function translate(nEntries: i32): u32 {
   b(0x60); b(2); b(T_I32); b(T_I64); b(1); b(T_I64);
   b(0x60); b(4); b(T_I32); b(0x7D); b(0x7D); b(0x7D); b(1); b(0x7D);
   b(0x60); b(4); b(T_I32); b(0x7C); b(0x7C); b(0x7C); b(1); b(0x7C);
+  b(0x60); b(4); b(T_I32); b(T_I64); b(T_I64); b(T_I64); b(1); b(T_I64);
   secEnd(s);
   s = secBegin(2);
   leb(2 + NGLOB + NIMPF);
@@ -466,6 +498,7 @@ export function translate(nEntries: i32): u32 {
   name("hlp"); name("rnd"); b(0); b(12);
   name("hlp"); name("sfs"); b(0); b(13);
   name("hlp"); name("sfd"); b(0); b(14);
+  name("hlp"); name("libc"); b(0); b(15);
   secEnd(s);
   s = secBegin(3);
   leb(nFn); for (let f = 0; f < nFn; f++) b(0);
