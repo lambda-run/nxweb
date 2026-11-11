@@ -472,6 +472,10 @@ Behavioural differences:
 
 ## Status (last full run, Node 22.23 and headless Chromium 153 full build, x64 with FMA3)
 
+- C library intrinsics (`a64:bench`, 15 interleaved runs, medians, output checked, Node 24): str_bench (string table on
+  optimized-routines) memory32 75.0 -> 68.7 ms (-8%), memory64 76.1 -> 71.3 (-6%), memory64-high 76.2 -> 70.7 (-7%);
+  zstd_bench 86.0 -> 85.1 / 88.8 -> 87.9 / 88.8 -> 88.9 ms (within noise: its libc calls are few and short). Translated
+  zstd stays 1.84-1.92x wasm-native and 2.7-2.9x native; str_bench 1.46-1.51x / 2.5-2.6x. `a64:libc` 6 of 6 ok.
 - Gate 1: 191 classes x 2000 cases = 382000 cases, 0 failures; again with `--strictnan --shared --seed 5`, 0 failures.
 - Crypto extensions and FJCVTZS (#17): Gate 1 189 classes x 2000 = 378000 cases, 0 failures in memory32, memory64
   and above 4 GB; the 7 new classes x 30000 cases, 0 failures in each of the three; `--strictnan --shared --seed 5`
