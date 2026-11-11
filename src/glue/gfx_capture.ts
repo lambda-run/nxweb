@@ -11,7 +11,7 @@ export interface CaptureCtx { shaderKey(id: number): string; texture(serial: num
 const OPS: Record<number, string> = { 1: "TEX_CREATE", 2: "TEX_DESTROY", 3: "BEGIN_PASS", 4: "END_PASS", 5: "VIEWPORT", 6: "SCISSOR", 7: "PIPELINE_CREATE", 8: "PIPELINE", 9: "VBUF", 10: "UBO", 11: "TEX",
   12: "BLEND_COLOR", 13: "STENCIL_REF", 14: "DRAW", 15: "DRAW_IDX", 16: "CLEAR_RECT", 17: "COPY_B2T", 18: "COPY_T2T", 19: "SNAPSHOT", 20: "PRESENT", 21: "FENCE", 22: "FLUSH", 23: "MEM_DIRTY", 24: "TEX_DATA",
   25: "COPY_T2B", 26: "FIXUP", 27: "UBO_DATA", 28: "SSBO", 29: "IMG", 30: "BEGIN_COMPUTE", 31: "DISPATCH", 32: "BUF_READBACK",
-  35: "MESH_BEGIN", 36: "MESH_TASK", 37: "MESH_RUN", 38: "MESH_DRAW", 39: "CLEAR_TEX", 40: "DISPATCH_SKIPPED" };
+  35: "MESH_BEGIN", 36: "MESH_TASK", 37: "MESH_RUN", 38: "MESH_DRAW", 39: "CLEAR_TEX", 40: "DISPATCH_SKIPPED", 41: "SKIP" };
 const STAGE = ["vs", "fs", "cs"], PRIMS = ["points", "lines", "line loop", "line strip", "triangles", "triangle strip", "triangle fan", "quads", "quad strip", "polygon"];
 const hex = (v: number) => "0x" + v.toString(16);
 const u64 = (dv: DataView, p: number) => dv.getUint32(p, true) + dv.getUint32(p + 4, true) * 4294967296;
@@ -104,6 +104,12 @@ export function describeRecord(op: number, dv: DataView, p: number, ctx: Capture
     case 29: { const f = dv.getUint32(p + 24, true); return `    image ${STAGE[dv.getUint32(p + 8, true)]}[${dv.getUint32(p + 12, true)}] ${u64(dv, p + 16) ? tex(16) : "none"}${f & 1 ? " written" : ""}${f & 2 ? view(dv, p + 32) : ""}`; }
     case 30: state.inPass = 0; return `P ${++state.pass} begin compute`;
     case 31: state.inPass++; return `  D dispatch pipeline ${dv.getUint32(p + 8, true)} groups ${i32s(dv, p + 12, 3)}`;
+    case 41: {
+      const kind = ["draw", "dispatch", "mesh draw"][dv.getUint8(p + 12)] ?? "draw", reason = ["shader", "program lacks the stage", "pipeline failed", "unsupported state", "render condition false"][dv.getUint32(p + 8, true)] ?? "?";
+      const keys: string[] = [];
+      for (let i = 0; i < 3; i++) if (dv.getUint32(p + 16 + i * 8, true) || dv.getUint32(p + 20 + i * 8, true)) { let k = ""; for (let b = 0; b < 8; b++) k += dv.getUint8(p + 16 + i * 8 + b).toString(16).padStart(2, "0"); keys.push(`${k} ${["unknown", "pending", "failed"][dv.getUint8(p + 13 + i)] ?? "?"}`); }
+      return `  X ${kind} skipped: ${reason}${keys.length ? ` (${keys.join(", ")})` : ""}`;
+    }
     case 32: return `B read back storage ${hex(u64(dv, p + 8))}+${dv.getUint32(p + 16, true)} into guest memory`;
   }
   if (op === 35) { const f = dv.getUint32(p + 8, true); state.inPass = 0; return `P ${++state.pass} begin compute: mesh draw, mesh shader #${dv.getUint32(p + 32, true)}${f & 2 ? ` after task shader #${dv.getInt32(p + 36, true)}` : ""}, ${f & 1 ? `indirect {count, first} at ${hex(u64(dv, p + 24))}` : `${dv.getUint32(p + 16, true)} workgroups from ${dv.getUint32(p + 12, true)}`}`; }

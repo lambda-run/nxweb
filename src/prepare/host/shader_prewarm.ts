@@ -27,7 +27,7 @@ export interface PrewarmOut {
   cached: number;                                  // already in the store (an earlier run, or the game's)
   failed: number;
   untranslated: number;                            // found, not translated: no translator in this build
-  failures: Reason[];                              // the translator's reasons (and the runtime's refusals), examples are keys
+  failures: Reason[];                              // the translator's reasons (and the runtime's refusals), every key (in the order they failed)
   unreadable: Reason[];                            // stage records or wrappers that do not pass the checks, examples are places
   notRead: Reason[];                               // container kinds this scan does not read, examples are files
   containers: FileScan["containers"];
@@ -35,11 +35,11 @@ export interface PrewarmOut {
 export interface PrewarmProgress { filesDone: number; bytesDone: number; found: number; translated: number; failed: number }
 
 const EXAMPLES = 3;
-function add(m: Map<string, Reason>, reason: string, example: string): void {
+function add(m: Map<string, Reason>, reason: string, example: string, cap = EXAMPLES): void {
   let r = m.get(reason);
   if (!r) m.set(reason, r = { reason, count: 0, examples: [] });
   r.count++;
-  if (r.examples.length < EXAMPLES) r.examples.push(example);
+  if (r.examples.length < cap) r.examples.push(example);
 }
 const sorted = (m: Map<string, Reason>) => [...m.values()].sort((a, b) => b.count - a.count || (a.reason < b.reason ? -1 : 1));
 // a translator's message without what differs from stage to stage (keys, numbers in parentheses, paths of its files)
@@ -78,12 +78,12 @@ export async function prewarm(p: ShaderPrewarm, files: ScanFile[], o: { cancelle
     if (t) out.cached++;
     else {
       try { t = await tr.translate({ key: s.key, control: s.control, code: s.code }); }
-      catch (e) { if (!stop) { out.failed++; add(failures, reasonOf(e instanceof Error ? e.message : String(e)), s.key); } return; }
+      catch (e) { if (!stop) { out.failed++; add(failures, reasonOf(e instanceof Error ? e.message : String(e)), s.key, Infinity); } return; }
       try { await p.store?.put(id, t); } catch (e) { o.log?.(`shader ${s.key}: the translation could not be stored (${e instanceof Error ? e.message : e})`); }
       out.translated++;
     }
     const why = refused(t);
-    if (why) { out.failed++; add(failures, why, s.key); }
+    if (why) { out.failed++; add(failures, why, s.key, Infinity); }
   };
   const pump = () => {
     while (!stop && idle.length && queue.length) {

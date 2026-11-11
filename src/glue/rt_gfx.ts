@@ -69,7 +69,7 @@ export class RtGfx implements HleGfx {
       abort: () => { throw new Error("abort in the gfx module"); },
       gfx_exec: (p: number, n: number) => {
         if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
-        else if (!this.opts.holdFences?.()) this.releaseFences();   // null replayer: the "GPU" is done at once
+        else { this.host.account(p, n >>> 0); if (!this.opts.holdFences?.()) this.releaseFences(); }   // null replayer: the "GPU" is done at once
       },
       // the command memory callback: guest code run to completion on the calling thread
       gfx_guest_call: (fn: bigint, a0: bigint, a1: bigint, a2: bigint, a3: bigint) => rt.guestCall(BigInt.asUintN(64, fn), [a0, a1, a2, a3]),

@@ -53,6 +53,11 @@ export const H_CLEAR_TEX: u32 = 39;        // +8 u64 serial, +16 u32 level, +20 
 export const H_DISPATCH_SKIPPED: u32 = 40; // a watched key's dispatch that cannot run (gfx_watch_key): +8 u64 key, +16 u32 x, y, z work groups, +32 u64 serial[32] of the
                                            // compute stage's texture slots, +288 u64 serial[8] of its image slots (0 = none), +352 its push constants (256 bytes)
 export const H_DISPATCH_SKIPPED_SIZE: usize = 608;
+export const H_SKIP: u32 = 41;             // a draw or dispatch the recorder skipped (lower.ts skipRec): +8 u32 reason (SKIP_*), +12 u8 kind (0 draw, 1 dispatch,
+                                           // 2 mesh draw), +13 u8[3] the state of each key (0 unknown, 1 pending, 2 failed), +16 u64 key[3] (0 = none): the program's
+                                           // stages that are not in the library. Nothing to run: the replayer only counts it (gfx_ledger.ts)
+export const H_SKIP_SIZE: usize = 40;
+export const SKIP_SHADER: u32 = 0, SKIP_NO_STAGE: u32 = 1, SKIP_PIPELINE: u32 = 2, SKIP_STATE: u32 = 3, SKIP_RENDER_COND: u32 = 4;
 const CAP: usize = 1 << 20;
 let BUF: usize = 0;
 export function hostInit(): void { BUF = arenaAlloc(CAP); }

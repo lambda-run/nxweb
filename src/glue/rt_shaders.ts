@@ -34,6 +34,22 @@ export class RtShaders {
     this.gfx = gfx; this.o = o;
     this.library = !o.library ? null : o.library instanceof ShaderLibrary ? o.library : new ShaderLibrary(o.library);
     gfx.shaders = this;
+    gfx.host.shaderStateOf = k => this.state.get(k);
+  }
+  private why = new Map<string, string>();   // a failed key's reason
+  // The report's key lines: the keys that skipped work in first-use order (gfx_ledger.ts), then the keys that are not
+  // ready but have not been needed by a draw or dispatch yet, in the order programs were given them; every key, one
+  // line per state and failure reason
+  reportLines(): string[] {
+    const led = this.gfx.host.ledger, used = new Set(led.keyUses().map(u => u.key));
+    const out = led.keyLines(k => this.why.get(k), k => this.state.get(k)), rest = new Map<string, string[]>();
+    for (const [k, st] of this.state) {
+      if (st === "ready" || used.has(k)) continue;
+      const label = st === "failed" && this.why.has(k) ? `failed: ${this.why.get(k)}` : st;
+      let g = rest.get(label); if (!g) rest.set(label, g = []); g.push(k);
+    }
+    for (const [label, ks] of rest) out.push(`${label}, no draw or dispatch skipped for it yet (${ks.length}): ${ks.join(", ")}`);
+    return out;
   }
   private ndveSeen = 0;
   private log(line: string): void { this.gfx.rt.log(line); }
@@ -89,7 +105,7 @@ export class RtShaders {
   }
   // one red line a key
   private fail(key: string, why: string): false {
-    this.state.set(key, "failed"); this.stats.failed++;
+    this.state.set(key, "failed"); this.stats.failed++; this.why.set(key, why);
     this.gfx.host.shaderPending(key, "failed");   // this line is the report: the recorder adds none of its own
     const ndve = ndveRole(key);
     this.log(`[RED] shader ${key}: ${why}; its draws are skipped${ndve ? ` (${ndve}: the movie's picture is not drawn)` : ""}`);

@@ -10,6 +10,7 @@ import type { HleFront } from "../../src/glue/hle_rt.ts";
 import type { ShaderInfo } from "../../src/glue/gfx_host.ts";
 import type { Env, CaseResult } from "./cases.ts";
 import { RtShaders, type ShaderOptions } from "../../src/glue/rt_shaders.ts";
+import { reportText } from "../../src/glue/rt_report.ts";
 
 // Hand-written WGSL standing in for the translation of the guests' shader "binaries" (binding convention and the
 // position fix-up: src/gfx/README.md, "what the shader chain must emit")
@@ -112,6 +113,33 @@ export function gfxCases(env: Env, gpu: Gpu | undefined, shots: Shot[]): GfxCase
     eq(fingerprint(again), fingerprint(p), "slices/SVCs/units/guest ns/NVN calls of a second run");
     return [`${s.nvnCalls} NVN calls through host stubs, ${p.rt.stats.hostCalls} host calls in all, ${s.syncWaits} SyncWait (${s.syncParked} parked), guest clock at the end ${(Number(p.rt.guestNs()) / 1e6).toFixed(2)} ms`,
       `identical on a second run: slices/SVCs/units/guest ns/NVN calls = ${fingerprint(p)}`];
+  });
+  // The page report's graphics sections (gfx_ledger.ts, RtShaders.reportLines, rt_report.ts): the cube with its shaders,
+  // then with none (no library, no translator): every draw skipped, its keys listed by first use
+  test(`gfx frame ledger (${where}): draws issued and skipped per frame, the presented image's first writer, the keys that skipped work; the report's lines`, async () => {
+    const good = await run("cube", { frames: 3 }), gl = good.gfx.host.ledger;
+    eq(gl.framesSeen, 3, "frames the ledger saw");
+    // frame 1 is the clear colour (cube.c), the frames after it draw the triangle or the cube
+    ok(/^frame 1 \(t [\d.]+ s\): draws 0 issued, 0 skipped; dispatches 0 issued, 0 skipped; presented tex#\d+, first non-clear write: none$/.test(gl.frames[0]), gl.frames[0]);
+    ok(/^frames? 2(-3)? \(t [\d.-]+ s\): draws 1 issued, 0 skipped; dispatches 0 issued, 0 skipped; presented tex#\d+, first non-clear write: draw #1 \(pass 1\) -> tex#\d+$/.test(gl.frames[1]), gl.frames.join(" | "));
+    ok(/^frame 2 \(t [\d.]+ s\): draw #1 \(pass 1\) -> tex#\d+$/.test(gl.firstDrawn), gl.firstDrawn);
+    const p = await bootGfx(env, [{ name: "cube", bytes: env.nso("cube") }], { gpu, frames: 3, shaders: {}, noDemoShaders: true });
+    const r = await p.rt.runAsync();
+    eq([r.state, r.stop?.kind], ["Stopped", "exit"], "the cube runs to its end without its shaders");
+    const led = p.gfx.host.ledger, keys = p.shaders!.reportLines();
+    eq(led.frames.length, 3, "frame lines (the window's two images take turns, so no two frames are the same): " + led.frames.join(" | "));
+    for (const l of led.frames.slice(1)) ok(/^frame [23] \(t [\d.]+ s\): draws 0 issued, 1 skipped \(shader unknown 1\); dispatches 0 issued, 0 skipped; presented tex#\d+, first non-clear write: none$/.test(l), l);
+    eq(led.firstDrawn, "", "no frame drew");
+    eq(keys.length, 1, "one line: every key is unknown");
+    // frame 2 draws the triangle (vs_color + fs_color), frame 3 the cube (vs_cube + fs_tex): four keys, in that order
+    const entry = (f: number) => `[0-9a-f]{16} \\(frame ${f}, t [\\d.]+ s, draw #1; skipped 1 draws, 0 dispatches\\)`;
+    ok(new RegExp(`^unknown \\(4\\): ${[2, 2, 3, 3].map(entry).join(", ")}$`).test(keys[0]), keys[0]);
+    ok(p.rt.red.length > 0 && p.rt.red.every(l => l.startsWith("[RED] ")), "red lines: " + p.rt.red.join(" | "));
+    const text = reportText({ title: "cube", when: "-", userAgent: "-", adapter: "-", optionsKey: "-", options: "-", state: "Stopped", stop: "", fault: [], modules: [], takeovers: null, machines: [], counters: {}, log: [], redTotal: 0,
+      frames: led.frames, firstDrawn: led.firstDrawn, shaderKeys: keys });
+    const section = text.split("\n").filter(l => /^graphics, per frame|^shader keys that|^  (first frame|frames? \d|unknown|pending|failed)/.test(l));
+    eq(section.length, 7, "the report's sections:\n" + section.join("\n"));
+    return section;
   });
   // Frame pacing, on the guest clock: stress_gfx presents as fast as it can and asks for present interval 1, 2 and 3
   // for 100 frames each. What holds it is the acquire (rt_gfx.ts), for the interval the recorder answers

@@ -151,6 +151,22 @@ export function progMissingKey(prog: usize): u64 {
   }
   return 0;
 }
+// The keys of up to 3 of a program's stages that are not in the library into out (u64 each) and their states into
+// states (u8 each: 0 unknown, 1 pending, 2 failed); how many there are (a skipped draw's H_SKIP record)
+export function progMissingKeys(prog: usize, out: usize, states: usize): u32 {
+  const e = progEntry(load<u64>(prog, PROG_serial));
+  if (!e) return 0;
+  const n = min<u32>(load<u32>(prog, PROG_nstage), 6), ok = <u32>load<u8>(e, PE_ok);
+  let got: u32 = 0;
+  for (let i: u32 = 0; i < n && got < 3; i++) {
+    if (!((ok >> i) & 1)) continue;
+    const k = load<u64>(e + PE_key + (<usize>i << 3));
+    if (libFind(k) >= 0) continue;
+    const st = shaderKeyState(k);
+    store<u64>(out + (<usize>got << 3), k); store<u8>(states + <usize>got, <u8>(st == GfxShaderS.Pending ? 1 : st == GfxShaderS.Failed ? 2 : 0)); got++;
+  }
+  return got;
+}
 // Keys whose dispatches the embedder is told of when they cannot run (gfx_watch_key; GfxHost's NDVE stand-in)
 const WATCH_N: u32 = 16, WATCH: usize = memory.data(16 * 8);
 let nWatch: u32 = 0;
