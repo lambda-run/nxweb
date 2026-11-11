@@ -170,7 +170,7 @@ export function nvn2Items(mem: Uint8Array, m: ModuleInfo): Map<number, number> {
     for (let q = p - 8; q <= p + 8; q++) {
       const at = m.base + q * 4, x = w(at);
       if (((x & 0xFFC0001F) >>> 0) === 0x7100001F) lim = (x >>> 10) & 0xFFF;
-      else if (((x & 0x9F000000) >>> 0) === 0x90000000 && ((w(at + 4) & 0xFFC00000) >>> 0) === 0x91000000) tb = (at & ~0xFFF) + sx21(x) * 4096 + ((w(at + 4) >>> 10) & 0xFFF);
+      else if (((x & 0x9F000000) >>> 0) === 0x90000000 && ((w(at + 4) & 0xFFC00000) >>> 0) === 0x91000000) tb = at - at % 4096 + sx21(x) * 4096 + ((w(at + 4) >>> 10) & 0xFFF);
       else if (((x & 0x9F000000) >>> 0) === 0x10000000) adr = at + sx21(x);
       else if (((x & 0xFFE0FC00) >>> 0) === 0x38606800) ldrb = true;
       else if (((x & 0xFFFFFC1F) >>> 0) === 0xD61F0000) br = true;
