@@ -352,6 +352,7 @@ export class RtGfx implements HleGfx {
         const res = this.call(id, cpu.argsX());
         if (!this.live) { this.host.imageEvent(win, index, 0); this.host.imageEvent(win, index, 1); }   // null replayer: queued and shown at once
         this.lastPresentDone = this.workDone();
+        this.shaders?.waited();
         for (const fn of this.presentHooks) fn(this.stats.frames);
         this.opts.onPresent?.(this.stats.frames);
         return res;

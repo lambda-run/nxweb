@@ -123,6 +123,18 @@ export function progSetKeys(entry: usize, n: i32, sd: usize): void {
   memory.fill(entry + PE_shader, 0, 16);
 }
 
+// Keys a draw or dispatch was skipped for while the embedder has them on their way (pending), since the embedder last
+// asked (gfx_shader_waited): it can hand those to its translator first
+const WAITED: usize = memory.data(256);
+let nWaited: u32 = 0;
+function waited(key: u64): void {
+  if (shaderKeyState(key) != GfxShaderS.Pending) return;
+  for (let i: u32 = 0; i < nWaited; i++) if (load<u64>(WAITED + (<usize>i << 3)) == key) return;
+  if (nWaited < 32) { store<u64>(WAITED + (<usize>nWaited << 3), key); nWaited++; }
+}
+// Copies the waited-on keys to `out` (8 bytes each, at most 32) and forgets them; their number
+export function shaderWaited(out: usize): u32 { const n = nWaited; memory.copy(out, WAITED, <usize>n << 3); nWaited = 0; return n; }
+
 // Keys already reported missing (one red line a key)
 const MISSING: usize = memory.data(512);
 let nMissing: u32 = 0;
@@ -155,7 +167,7 @@ export function progShader(prog: usize, want: u32): i32 {
       id = libFind(load<u64>(e + PE_key + (<usize>i << 3)));
       store<i16>(slot, <i16>(id + 1));
     }
-    if (id < 0) { reportMissing(load<u64>(e + PE_key + (<usize>i << 3))); found = -2; continue; }
+    if (id < 0) { const k = load<u64>(e + PE_key + (<usize>i << 3)); waited(k); reportMissing(k); found = -2; continue; }
     if (load<u32>(libRefl(id), RF_stage) == want && found == -1) found = id;
   }
   store<u32>(e, libVersion, PE_shader + 12);

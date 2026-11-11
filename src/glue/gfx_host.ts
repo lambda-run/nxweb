@@ -366,6 +366,12 @@ export class GfxHost {
     const lo = (b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24) >>> 0, hi = (b[4] | b[5] << 8 | b[6] << 16 | b[7] << 24) >>> 0;
     return this.x.gfx_shader_pending(lo, hi, what === "pending" ? 1 : what === "failed" ? 2 : 0) !== 0;
   }
+  // The pending keys a draw or dispatch was skipped for since the last call (the recorder's, src/gfx/shader.ts waited)
+  shaderWaited(): string[] {
+    const n = this.x.gfx_shader_waited(), at = this.x.gfx_scratch(), u8 = new Uint8Array(this.memory.buffer, at, n * 8), out: string[] = [];
+    for (let i = 0; i < n; i++) out.push(Array.from(u8.subarray(i * 8, i * 8 + 8), b => b.toString(16).padStart(2, "0")).join(""));
+    return out;
+  }
   private module(id: number): GPU { const s = this.shaders[id]; return (s.module ??= this.device.createShaderModule({ code: s.info.wgsl })); }
   // The module of a vertex shader for attribute classes other than it declares; null when there is none (red: the request)
   private variantModule(id: number, classes: Record<number, VinClass>): GPU | null {
