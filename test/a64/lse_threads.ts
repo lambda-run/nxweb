@@ -12,7 +12,7 @@ import { A64, HOST_END } from "../../src/glue/rt_layout.ts";
 
 const BASE = 0x0800_0000, DATA = 0x0900_0000, STACKS = 0x0910_0000, STACK = 0x10000;
 
-interface Job { memory: WebAssembly.Memory; mem64: boolean; core: WebAssembly.Module; helpers: WebAssembly.Module; units: { bytes: Uint8Array; tableBase: number }[]; tableLen: number; tid: number; rounds: number; block: number }
+interface Job { memory: WebAssembly.Memory; mem64: boolean; core: WebAssembly.Module; helpers: WebAssembly.Module; units: { bytes: Uint8Array; tableBase: number }[]; tableLen: number; tid: number; rounds: number; block: number; gate: SharedArrayBuffer; threads: number }
 
 function runThread(j: Job): bigint {
   const table = new WebAssembly.Table({ element: "anyfunc", initial: j.tableLen });
@@ -30,6 +30,10 @@ function runThread(j: Job): bigint {
   core.x0.value = BigInt(j.block); core.x1.value = BigInt(j.rounds); core.x2.value = BigInt(j.tid);
   core.sp.value = BigInt(STACKS + (j.tid + 1) * STACK); core.x30.value = 0xFFFFFFF0n; core.pc.value = BigInt(BASE);
   core.excl_addr.value = -1n;
+  // instantiating takes longer than the rounds on a small machine: every thread waits here until all are ready, so they run together
+  const gate = new Int32Array(j.gate);
+  if (Atomics.add(gate, 0, 1) + 1 === j.threads) { Atomics.store(gate, 1, 1); Atomics.notify(gate, 1); }
+  else Atomics.wait(gate, 1, 0, 30000);
   while (core.pc.value !== 0xFFFFFFF0n) { core.budget.value = 1 << 30; core.run(); }
   return core.x0.value;
 }
@@ -64,9 +68,10 @@ if (!isMainThread) {
   while (c.pc.value !== 0xFFFFFFF0n) { c.budget.value = 1 << 30; c.run(); }
   const units = host.units.map(u => ({ bytes: u.bytes!, tableBase: u.tableBase }));
   init(DATA);
+  const gate = new SharedArrayBuffer(8);
   const t0 = performance.now();
   const results = await Promise.all(Array.from({ length: threads }, (_, tid) => new Promise<{ spins?: bigint; error?: string }>((res) => {
-    const job: Job = { memory, mem64, core: host.coreModule, helpers, units, tableLen: host.table.length, tid, rounds, block: DATA };
+    const job: Job = { memory, mem64, core: host.coreModule, helpers, units, tableLen: host.table.length, tid, rounds, block: DATA, gate, threads };
     const w = new Worker(new URL(import.meta.url), { workerData: job });
     w.once("message", res); w.once("error", e => res({ error: String(e) }));
   })));
