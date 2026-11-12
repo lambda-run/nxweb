@@ -93,6 +93,19 @@ static inline void nx_ret_f64(uint64_t *ctx, double d) { uint8_t *v = (uint8_t *
 extern "C" {
 #endif
 uint64_t nx_guest_calln(uint64_t pc, int n, ...);
+// Waits inside host code are counted as waits (kernel/nx_proc.c nx_w_*: the per-thread time accounting). The system
+// headers come first, so that only the HLE file's own calls take the other names.
+#include <unistd.h>
+#include <time.h>
+#include <pthread.h>
+#include <poll.h>
+int nx_w_usleep(unsigned us); int nx_w_nanosleep(const struct timespec *a, struct timespec *b); int nx_w_cond_wait(pthread_cond_t *c, pthread_mutex_t *m);
+int nx_w_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *t); int nx_w_poll(struct pollfd *f, nfds_t n, int ms);
+#define usleep nx_w_usleep
+#define nanosleep nx_w_nanosleep
+#define pthread_cond_wait nx_w_cond_wait
+#define pthread_cond_timedwait nx_w_cond_timedwait
+#define poll nx_w_poll
 uint64_t nx_guest_x1(void);
 void nx_guest_wrote(const void *p, size_t n);          // kernel/nx_video.c: host code wrote guest memory a texture may lie over (tells nxweb's recorder)
 uint64_t nx_host_entry(void (*fn)(void *));           // kernel/nx_proc.c: a guest address (a stub) for a host function `void fn(void *)`, e.g. as a guest thread's entry                           // x1 of the calling thread's last guest call (a 16-byte struct result)    // kernel/nx_guest.c: run the guest function on the calling guest thread, return its x0

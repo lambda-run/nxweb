@@ -56,19 +56,20 @@ int nx_gfx_release_all(void) {
 void nx_gfx_reacquire(int depth) { if (depth) { nx_gfx_lock(); g_depth = (uint32_t)depth; } }
 
 // code: (NVN function id + 1) | abi << 16 (abi: bits 0..3 how many of d0..d7 it reads, bit 4 a float result)
-void nx_gfx_direct(int code, uint64_t *regs) {
+uint64_t nx_gfx_direct(int code, uint64_t *regs) {   // returns how long the lock was held, ns
     int id = (code & 0xFFFF) - 1, abi = code >> 16;
     uint64_t *a = regs + 0x340 / 8, t0 = nx_now_ns();   // the argument block: x0..x7, d0..d7, then the result
     memcpy(a, regs, 64);
     if (abi & 15) for (int i = 0; i < 8; i++) a[8 + i] = regs[38 + 2 * i];
     nx_gfx_lock();
-    uint64_t t1 = nx_now_ns();
+    uint64_t t1 = nx_now_ns(), t_hold = 0;
     nx_js_gfx_call(id, (double)(uintptr_t)a);
     nx_gfx_unlock();
     if (abi & 16) { regs[38] = a[8]; regs[39] = 0; } else regs[0] = a[16];
     { void nx_acc_add(int, double); uint64_t t2 = nx_now_ns(), fl = t_flush_ns; t_flush_ns = 0;   // (kernel/nx_proc.c: 0 NVN, 9 NVN-lock, 10 flush)
-      nx_acc_add(9, (double)(t1 - t0)); nx_acc_add(10, (double)fl); nx_acc_add(0, (double)(t2 - t1 > fl ? t2 - t1 - fl : 0)); }
+      nx_acc_add(9, (double)(t1 - t0)); nx_acc_add(10, (double)fl); nx_acc_add(0, (double)(t2 - t1 > fl ? t2 - t1 - fl : 0)); t_hold = t2 - t1; }
     atomic_fetch_add_explicit(&g_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_ns, nx_now_ns() - t0, memory_order_relaxed); atomic_fetch_add_explicit(&g_lock_ns, t1 - t0, memory_order_relaxed);
+    return t_hold;
 }
 // The recorder's callback into guest code (gfx_guest_call: the command memory callbacks), on the thread that is in the
 // recorder: blk = the function and four arguments, the result comes back in blk[0]

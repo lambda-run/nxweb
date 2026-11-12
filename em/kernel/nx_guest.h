@@ -62,7 +62,8 @@ int nx_owner_stub_direct(int id);
 double nx_js_cpu_us(void);
 int nx_core_excl(void);
 int nx_fs_enabled(void); void nx_fs_direct(int id, uint64_t *regs);
-int nx_gfx_enabled(void); void nx_gfx_direct(int code, uint64_t *regs); int nx_gfx_release_all(void); void nx_gfx_reacquire(int depth);
+int nx_acc_switch(int cat); void nx_hold_note(uint64_t ns, int stub);
+int nx_gfx_enabled(void); uint64_t nx_gfx_direct(int code, uint64_t *regs); int nx_gfx_release_all(void); void nx_gfx_reacquire(int depth);
 void nx_regs_dump(const uint64_t *regs, const char *what);
 void nx_owner_stub_name(int id, double out, int n);
 

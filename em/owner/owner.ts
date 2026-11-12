@@ -228,16 +228,16 @@ export class Owner {
   // of the thread that holds the lock (that thread is inside the recorder, waiting for gfx_exec). While such a request
   // is served the recorder is the holder's: what the replayer calls of it then needs no lock (`lent`).
   private gl!: Int32Array; private glf!: Float64Array; private glDepth = 0; private glHeld = false; private lent = false;
-  glStats = { locks: 0, spins: 0, served: 0, execMs: 0 };
+  glStats = { locks: 0, spins: 0, served: 0, execMs: 0, heldMs: 0 }; private glAt = 0;   // heldMs: the owner's own holds of the recorder's lock (its handlers, the replayer's calls into the recorder)
   lock(): void {
     if (this.glDepth++ || this.lent) return;
     const g = this.gl; this.glStats.locks++;
     while (Atomics.compareExchange(g, 0, 0, 1) !== 0) { this.glStats.spins++; this.svc(); }
-    this.glHeld = true;
+    this.glHeld = true; this.glAt = performance.now();
   }
   unlock(): void {
     if (--this.glDepth || !this.glHeld) return;
-    this.glHeld = false;
+    this.glHeld = false; this.glStats.heldMs += performance.now() - this.glAt;
     const g = this.gl; Atomics.store(g, 0, 0); if (Atomics.load(g, 1)) Atomics.notify(g, 0, 1);
   }
   // The lock holder's request, if there is one: true when one was served

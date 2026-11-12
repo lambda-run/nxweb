@@ -152,25 +152,42 @@ void nx_svc_counts(char *out, size_t n) {
 }
 
 // ---- where each guest thread is, for the report: the pc at its last slice end, and the host call it is inside
+static char *g_stub_name_of(int id);
 // Where each guest thread's wall-clock time goes (nx_acc_add; the page's status line and the harness print the main
 // thread's and the busiest others' per frame: a sum over threads hides the critical path). Guest code is what is left
 // of the wall clock. The categories from A_WAIT0 on are time the thread did not run: "host cores busy" is the rest.
-enum { A_GFX_CALL, A_HLE, A_SVC, A_TRANSLATE, A_WAIT0, A_SLEEP = A_WAIT0, A_WAITSYNC, A_LOCK, A_CV, A_ADDR, A_GFX_LOCK, A_FLUSH, A_OWNER, A_FS, A_N };
-static const char *const g_acc_name[A_N] = {"NVN", "host", "svc", "translate", "sleep/yield", "wait-sync", "lock", "condvar", "wait-addr", "NVN-lock", "flush", "owner", "fs"};
+enum { A_GFX_CALL, A_HLE, A_SVC, A_TRANSLATE, A_WAIT0, A_SLEEP = A_WAIT0, A_WAITSYNC, A_LOCK, A_CV, A_ADDR, A_GFX_LOCK, A_FLUSH, A_OWNER, A_FS, A_HOSTWAIT, A_N };
+static const char *const g_acc_name[A_N] = {"NVN", "host", "svc", "translate", "sleep/yield", "wait-sync", "lock", "condvar", "wait-addr", "NVN-lock", "flush", "owner", "fs", "host-wait"};
 enum { NTRK = 256 };
-static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32_t handle; _Atomic uint64_t acc[A_N], born; uint64_t seen[2][A_N], seen_at[2], seen_slices[2]; double pend[2]; int pend_cat[2]; _Atomic int cur_cat; _Atomic uint64_t cur_t0; char name[28]; } g_trk[NTRK];
+static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32_t handle; _Atomic uint64_t acc[A_N], born; uint64_t seen[2][A_N], seen_at[2], seen_slices[2]; double pend[2]; int pend_cat[2]; _Atomic int cur_cat; _Atomic uint64_t cur_t0; _Atomic uint64_t hold_max; _Atomic int hold_stub; char name[28]; } g_trk[NTRK];
 static _Atomic int g_ntrk; static __thread int t_trk = -1;
 static int trk(void);
 int thr_name_of(pthread_t pt, char *out, size_t n);
 // An SVC or host call that may wait begins / ends: what it has taken so far counts in the interval it is in, not only
 // when it returns (a thread that waits through a whole interval would otherwise look as if it ran guest code)
-void nx_acc_begin(int cat, uint64_t t0) { int k = trk(); atomic_store_explicit(&g_trk[k].cur_t0, t0, memory_order_relaxed); atomic_store_explicit(&g_trk[k].cur_cat, cat + 1, memory_order_relaxed); }
-void nx_acc_end(void) { atomic_store_explicit(&g_trk[trk()].cur_cat, 0, memory_order_relaxed); }
+// The thread goes from what it was doing to `cat` (-1: guest code): the time since the last switch goes to what it was
+// doing. Returns that, for the switch back. SVCs, host calls and the waits inside host code nest this way.
+int nx_acc_switch(int cat) {
+    int k = trk(), was = atomic_load_explicit(&g_trk[k].cur_cat, memory_order_relaxed) - 1; uint64_t now = nx_now_ns(), t0 = atomic_load_explicit(&g_trk[k].cur_t0, memory_order_relaxed);
+    if (was >= 0 && was < A_N && t0 && now > t0) atomic_fetch_add_explicit(&g_trk[k].acc[was], now - t0, memory_order_relaxed);
+    atomic_store_explicit(&g_trk[k].cur_t0, now, memory_order_relaxed); atomic_store_explicit(&g_trk[k].cur_cat, cat + 1, memory_order_relaxed);
+    return was;
+}
+// Waits inside host code (the HLE files' usleep, nanosleep, condition waits and poll: hle/nx_hle.h names these): not running
+#include <poll.h>
+int nx_w_usleep(unsigned us) { int was = nx_acc_switch(A_HOSTWAIT); int r = usleep(us); nx_acc_switch(was); return r; }
+int nx_w_nanosleep(const struct timespec *a, struct timespec *b) { int was = nx_acc_switch(A_HOSTWAIT); int r = nanosleep(a, b); nx_acc_switch(was); return r; }
+int nx_w_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) { int was = nx_acc_switch(A_HOSTWAIT); int r = pthread_cond_wait(c, m); nx_acc_switch(was); return r; }
+int nx_w_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *t) { int was = nx_acc_switch(A_HOSTWAIT); int r = pthread_cond_timedwait(c, m, t); nx_acc_switch(was); return r; }
+int nx_w_poll(struct pollfd *f, nfds_t n, int ms) { int was = nx_acc_switch(A_HOSTWAIT); int r = poll(f, n, ms); nx_acc_switch(was); return r; }
+// the longest single hold of the recorder's lock by this thread since the last reading, and the entry point it was in
+void nx_hold_note(uint64_t ns, int stub) { int k = trk(); if (ns > atomic_load_explicit(&g_trk[k].hold_max, memory_order_relaxed)) { atomic_store_explicit(&g_trk[k].hold_max, ns, memory_order_relaxed); atomic_store_explicit(&g_trk[k].hold_stub, stub, memory_order_relaxed); } }
 EMSCRIPTEN_KEEPALIVE void nx_acc_add(int cat, double ns) { if (cat >= 0 && cat < A_N && ns > 0) atomic_fetch_add_explicit(&g_trk[trk()].acc[cat], (uint64_t)ns, memory_order_relaxed); }
 // out: one line. frames: presents in the interval (0: per second). Called from one thread at a time (the page's status timer, the harness's progress)
 EMSCRIPTEN_KEEPALIVE double nx_thread_split(double out_, int n, double frames, int who) {   // who: 0 the page's status timer, 1 the progress line (each has its own "since last time")
     char *out = (char *)(uintptr_t)out_; size_t o = 0; uint64_t now = nx_now_ns(); double busy_all = 0, wall_all = 0;
     struct { int i; double busy, wall, d[A_N]; } top[4] = {{-1}, {-1}, {-1}, {-1}};
+    struct { int i; double hold, flush; uint64_t mx; int stub; } hold[5] = {{-1}, {-1}, {-1}, {-1}, {-1}};
     for (int i = 0; i < g_ntrk && i < NTRK; i++) {
         uint64_t born = g_trk[i].born, at = g_trk[i].seen_at[who] ? g_trk[i].seen_at[who] : born; if (!born || now <= at) continue;
         double wall = (double)(now - at), blocked = 0, d[A_N];
@@ -182,6 +199,8 @@ EMSCRIPTEN_KEEPALIVE double nx_thread_split(double out_, int n, double frames, i
         g_trk[i].seen_at[who] = now;
         { uint64_t sl = g_trk[i].slices; double any = 0; for (int c = 0; c < A_N; c++) any += d[c];   // a pool worker without a guest thread (or a thread that has exited) did nothing at all: not counted
           int idle = any == 0 && sl == g_trk[i].seen_slices[who]; g_trk[i].seen_slices[who] = sl; if (idle) continue; }
+        { double h = d[A_GFX_CALL] + d[A_FLUSH]; uint64_t mx = atomic_exchange_explicit(&g_trk[i].hold_max, 0, memory_order_relaxed);   // the recorder's lock is held for exactly the call and its flushes
+          if (h > 0) for (int k = 0; k < 5; k++) if (hold[k].i < 0 || h > hold[k].hold) { for (int j = 4; j > k; j--) hold[j] = hold[j - 1]; hold[k].i = i; hold[k].hold = h; hold[k].flush = d[A_FLUSH]; hold[k].mx = mx; hold[k].stub = g_trk[i].hold_stub; break; } }
         double busy = wall > blocked ? wall - blocked : 0; busy_all += busy; wall_all = wall > wall_all ? wall : wall_all;
         int slot = g_trk[i].handle == 0x1001 ? 0 : -1;
         if (slot < 0) for (int k = 1; k < 4; k++) if (top[k].i < 0 || busy > top[k].busy) { for (int j = 3; j > k; j--) top[j] = top[j - 1]; slot = k; break; }
@@ -194,6 +213,9 @@ EMSCRIPTEN_KEEPALIVE double nx_thread_split(double out_, int n, double frames, i
         o += (size_t)snprintf(out + o, (size_t)n - o, "%s%s: guest %.1f", k ? " | " : "", g_trk[top[k].i].name[0] ? g_trk[top[k].i].name : "?", (top[k].wall > other ? top[k].wall - other : 0) / 1e6 / per);
         for (int c = 0; c < A_N && o + 40 < (size_t)n; c++) if (top[k].d[c] / 1e6 / per >= 0.05) o += (size_t)snprintf(out + o, (size_t)n - o, " %s %.1f", g_acc_name[c], top[k].d[c] / 1e6 / per);
     }
+    for (int k = 0; k < 5 && hold[k].i >= 0 && o + 220 < (size_t)n; k++)
+        o += (size_t)snprintf(out + o, (size_t)n - o, "%s%s %.1f (of it waiting for the owner at a flush %.1f; longest single hold %.1f ms in %s)", k ? "; " : " || recorder lock held by: ", g_trk[hold[k].i].name[0] ? g_trk[hold[k].i].name : "?",
+                              hold[k].hold / 1e6 / per, hold[k].flush / 1e6 / per, hold[k].mx / 1e6, g_stub_name_of(hold[k].stub));
     if (o < (size_t)n) out[o] = 0;
     return wall_all > 0 ? busy_all / wall_all : 0;   // guest threads running at once, on average: host cores busy with them
 }
@@ -384,11 +406,11 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     }
     { void nx_yield_reset(void); nx_yield_reset(); }   // a thread that makes host calls between its yields is working
     int k = trk(); g_trk[k].in_host = (int)id + 1;
-    uint64_t hc0 = nx_now_ns(); int hcat = A_HLE;
+    int hcat = A_HLE, hwas = -2;
     int direct = own > 0 ? g_stub_direct[id] : -1;
     if (!direct) { direct = nx_gfx_enabled() ? nx_owner_stub_direct((int)id) : 0; g_stub_direct[id] = direct = direct ? direct : -1; }
-    if (direct <= 0) nx_acc_begin(own > 0 ? (own >> 24 == 1 ? A_FS : A_OWNER) : A_HLE, hc0);
-    if (direct > 0) { hcat = -1; nx_gfx_direct(direct, regs); }   // (it accounts for itself: the call, the lock, the flush)
+    if (direct <= 0) hwas = nx_acc_switch(own > 0 ? (own >> 24 == 1 ? A_FS : A_OWNER) : A_HLE);
+    if (direct > 0) { hcat = -1; nx_hold_note(nx_gfx_direct(direct, regs), (int)id); }   // (it accounts for itself: the call, the lock, the flush)
     else if (own > 0 && own >> 24 == 1 && nx_fs_enabled()) { hcat = A_FS; owner_serve_start(); nx_core_release(); nx_fs_direct(own & 0xFFFFFF, regs); }
     else if (own > 0) { hcat = own >> 24 == 1 ? A_FS : A_OWNER; if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
                    nx_owner_do(own, regs); }
@@ -396,7 +418,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
                                                e->thunk(regs); }   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;
-    if (hcat >= 0) { nx_acc_end(); atomic_fetch_add_explicit(&g_trk[k].acc[hcat], nx_now_ns() - hc0, memory_order_relaxed); }
+    if (hwas != -2) nx_acc_switch(hwas);
     nx_ring_note(1, (int)id, in, regs[0], in[0] == regs[0] ? regs[30] : regs[30]);
     nx_core_ensure();   // back to guest code
 }
@@ -479,7 +501,7 @@ void nx_progress(void) {
       char cs[64]; if (cores >= 0) snprintf(cs, sizeof cs, "%.2f host cores busy", cores); else snprintf(cs, sizeof cs, "host CPU not known here (a page cannot ask)");
       LOG("since the last line: %s; polling threads parked %llu times, %.1f ms in all (NX_POLL_PARK_US)", cs, (unsigned long long)(a - pp), (b - pn) / 1e6);
       pp = a; pn = b; cpu0 = cpu >= 0 ? (uint64_t)cpu : 0; wall0 = wall; }
-    { static double pres0; char sp[900]; double cores = nx_thread_split((double)(uintptr_t)sp, sizeof sp, os[7] - pres0, 1); pres0 = os[7];
+    { static double pres0; char sp[2400]; double cores = nx_thread_split((double)(uintptr_t)sp, sizeof sp, os[7] - pres0, 1); pres0 = os[7];
       LOG("guest threads: %.2f running at once on average since the last line; ms per frame (per second when none), the main thread then the three busiest: %s", cores, sp); }
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
