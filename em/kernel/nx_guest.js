@@ -77,6 +77,7 @@ addToLibrary({
     // the pairwise and polynomial operations, AES...) wrote their operands to the same 128 bytes, and two threads inside
     // such a helper at once got each other's values. That is the title's NaN transform (2026-11-12).
     if (!hx.setScratch) throw new Error('the a64 helpers have no setScratch: every thread would share one scratch block');
+    if (!(typeof process !== 'undefined' && process.env && process.env.NX_TEST_SHARED_SCRATCH))   // (the test's negative control, Node only: every thread on the one static block, as it was)
     { const sc = Math.ceil(_malloc(128 + 16) / 16) * 16;   /* (not `& ~15`: the address is above 4 GB) */ HEAPU8.fill(0, sc, sc + 128); hx.setScratch(_nx_is64() ? BigInt(sc) : sc); t.scratch = sc; }
     t.hlp = {};
     for (const k in hx) if (!['staticBase', 'staticEnd', 'memory', 'libcStat', 'libcGuard'].includes(k)) t.hlp[k] = hx[k];

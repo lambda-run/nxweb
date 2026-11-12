@@ -122,6 +122,16 @@ int main(int argc, char **argv) {
         printf("%s guest mutex + counter, %d guest threads x %llu rounds: counter %llu (exact), every thread did %llu, %llu contended locks (svcArbitrateLock), %llu SVCs in all, %.0f ms\n", ok ? "ok  " : "FAIL",
                threads, (unsigned long long)mrounds, (unsigned long long)r, (unsigned long long)S->per_thread[threads - 1], (unsigned long long)S->lock_svcs, (unsigned long long)(nx_stat_svcs - s0), ms);
     }
+    // NEON operations that go through the translator helpers' scratch memory, on 1 thread and then on 4, 8 and 16 at once:
+    // every thread's result must be the single thread's (each thread's helpers instance needs scratch blocks of its own)
+    { uint64_t vr = 200000, ref = run(1, vr, 5, &ms);
+      for (int threads = 4; threads <= 16; threads *= 2) {
+          r = run(threads, vr, 5, &ms); int bad = 0;
+          for (int i = 0; i < threads; i++) bad += S->result[i] != ref;
+          CHECK(!bad, "vector helpers: %d of %d threads got a result that is not the single thread's %#llx", bad, threads, (unsigned long long)ref);
+          printf("%s vector helper operations (estimates, FCVTL/FCVTN, SQSHL, PMULL), %d guest threads x %llu rounds: %d results differ from one thread's (%#llx), %.0f ms\n", bad ? "FAIL" : "ok  ",
+                 threads, (unsigned long long)vr, bad, (unsigned long long)ref, ms);
+      } }
     // the same with a condition variable (svcWaitProcessWideKeyAtomic / svcSignalProcessWideKey): 4, 8 and 16 threads through a one-place semaphore
     for (int threads = 4; threads <= 16; threads *= 2) {
         uint64_t s0 = nx_stat_svcs, rounds = mrounds / 4;
