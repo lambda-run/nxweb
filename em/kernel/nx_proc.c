@@ -62,6 +62,9 @@ const char *nx_where(uint64_t pc, char *buf, size_t n) {
     return buf;
 }
 
+int thr_limit_used(void);
+EMSCRIPTEN_KEEPALIVE int nx_live_threads(void) { return thr_limit_used(); }   // live guest threads (the page's runtime label)
+
 // ---- thread-local region (nxnative thread.c guest_thread_init, without the pthread keys: the translated code reads
 // tpidr_el0 / tpidrro_el0 from its core's globals, which kernel/nx_guest.js sets from nx_tls / nx_tlr)
 #define TLS_SIZE 8192
@@ -197,7 +200,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     regs[32] = regs[30];   // return to the caller (the thunk may still redirect)
     int k = trk(); g_trk[k].in_host = (int)id + 1;
     if (own > 0) owner_call(own, regs);
-    else if (e) e->thunk(regs);
+    else if (e && !(e->flags & NX_HLE_HAND)) e->thunk(regs);   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;
 }

@@ -6,14 +6,10 @@
 // Emscripten's `__proxy: 'sync'`) with the calling thread's context block, in arrival order.
 // nxweb's own files are used as they are: src/glue/fs_host.ts (FsHost), the .nup reader and the RomFS device of
 // src/prepare/host, fs_dev_node.ts for the saves under Node.
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { FsHost, FS_RETRY, fsIsPending, fsToken, type FsStorage } from "../../src/glue/fs_host.ts";
-import { NodeStorage } from "../../src/glue/fs_dev_node.ts";
 import { range } from "../../src/glue/rt_layout.ts";
 import { sharedBuild } from "../../src/glue/wasm_shared.ts";
-import { NupTree } from "../../src/prepare/host/nup.ts";
-import { nodeBytes } from "../../src/prepare/host/nup_node.ts";
+import type { PrepTree } from "../../src/prepare/host/tree.ts";
 import { DirRomDevice, PrepStorage, treeSource } from "../../src/prepare/host/romdev.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { RtGfx } from "../../src/glue/rt_gfx.ts";
@@ -25,37 +21,37 @@ export const DONE = 0, PENDING = 1, RETRY = 2;
 const LOW_BASE = 0x1C000000, LOW_END = 0x1FF00000;   // host allocations that must be below 4 GB (test/p4_boot.c stages the module files below this, up to 0x1C00_0000)
 const CELL = 0x3F0;   // in the caller's context block (0x400 bytes, the CPU state ends at 0x330): the word a pending call's completion sets
 
+// What the platform (owner_node.ts, owner_web.ts) gives the owner
 export interface OwnerConfig {
-  nup: string;            // the game container (Node: a path)
-  runtimeDir: string;     // nxweb's built modules: fs64.wasm (build/runtime)
-  prepareWasm: string;    // build/prepare/prepare.wasm
-  saveDir: string;
+  tree: PrepTree;                       // the game: a .nup container as a folder (src/prepare/host/nup.ts NupTree)
+  prep: PrepWasm;                       // nxweb's prepare module: RomFS tables, SHA-256
+  fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
+  gfxModule: WebAssembly.Module;
+  saves: FsStorage;
   programId: bigint;
-  scratch: number;        // 4 KB of the memory nothing else uses while the owner starts
+  scratch: number;                      // 8 KB of the memory nothing else uses
   malloc: (n: number) => number;
   modules: () => { name: string; base: number; imageSize: number; ro: { addr: number; size: number } }[];   // the loaded code modules (kernel/nx_proc.c), once main() has loaded them
   log: (line: string) => void;
+  gfx?: Record<string, unknown>;        // RtGfx options: device, canvas, nextFrame, requestDevice (the page); omitted: the null replayer
 }
 
 // The game's RomFS out of the container without unpacking it: the tables are built once from the listing
 // (src/prepare/romfs_build.ts, as the prepare step's Index stage does), a read is a read of the container.
-export async function romStorage(c: OwnerConfig): Promise<{ storage: FsStorage; files: number; bytes: number; root: string; ms: number }> {
+export async function romStorage(c: OwnerConfig): Promise<{ storage: FsStorage; files: number; bytes: number; root: string; ms: number; exefs: string }> {
   const t0 = performance.now();
-  const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
-  const tree = await NupTree.open(nodeBytes(c.nup), c.nup, { sha256, log: c.log });
-  const l = await tree.list();
-  const roots = [...new Set(l.dirs.filter(d => /^(base|updates\/\d+)\/romfs$/.test(d)).map(d => d + "/"))];
+  const tree = c.tree, l = await tree.list();
   const ver = (r: string) => r.startsWith("updates/") ? Number(r.split("/")[1]) : 0;
-  const root = roots.sort((a, b) => ver(b) - ver(a))[0];   // an update's romfs is the whole patched tree (src/prepare/host/detect.ts)
-  if (!root) throw new Error("owner: no romfs/ in " + c.nup);
+  const pick = (kind: string) => [...new Set(l.dirs.filter(d => new RegExp("^(base|updates/\\d+)/" + kind + "$").test(d)).map(d => d + "/"))].sort((a, b) => ver(b) - ver(a))[0];
+  const root = pick("romfs");   // an update's romfs is the whole patched tree (src/prepare/host/detect.ts)
+  if (!root) throw new Error("owner: no romfs/ in " + tree.name);
   const cut = root.length, files = l.files.filter(f => f.path.startsWith(root));
   const entries = [...l.dirs.filter(d => d.startsWith(root) && d.length > cut).map(d => ({ path: d.slice(cut), size: 0, dir: true })), ...files.map(f => ({ path: f.path.slice(cut), size: f.size }))];
-  const w = new PrepWasm(new WebAssembly.Module(readFileSync(c.prepareWasm)), c.log);
-  const r = w.romTables(entries as any);
+  const r = c.prep.romTables(entries as any);
   if ("error" in r) throw new Error("owner: RomFS tables: " + r.error);
   const sizes = Float64Array.from(files, f => f.size);
   const dev = new DirRomDevice({ tables: r.tables, starts: r.starts, sizes, size: r.size }, treeSource(tree, files.map(f => f.path)));
-  return { storage: new PrepStorage(dev, new Map(), new NodeStorage({ saveDir: c.saveDir })), files: files.length, bytes: sizes.reduce((a, b) => a + b, 0), root, ms: performance.now() - t0 };
+  return { storage: new PrepStorage(dev, new Map(), c.saves), files: files.length, bytes: sizes.reduce((a, b) => a + b, 0), root, ms: performance.now() - t0, exefs: pick("exefs") ?? "" };
 }
 
 type Fn = (cpu: any) => any;
@@ -72,7 +68,7 @@ class RtShim {
   private c: OwnerConfig; private own: Owner; private sdk: any = undefined; private major = -1; private ounce: boolean | null = null;
   constructor(memory: WebAssembly.Memory, memImports: Record<string, unknown>, c: OwnerConfig, own: Owner) {
     this.memory = memory; this.memImports = memImports; this.c = c; this.own = own;
-    this.r = { rt_static_check: () => 0, rt_scratch_ptr: () => c.scratch + 0x1000 };
+    this.r = { rt_static_check: () => 0, rt_scratch_ptr: () => c.scratch };
   }
   log(l: string): void { this.c.log(l); }
   u8(): Uint8Array { return new Uint8Array(this.memory.buffer); }
@@ -89,7 +85,11 @@ class RtShim {
   onDispose(): void {}
   nowNs(): bigint { return nowNs(); }
   guestNs(): bigint { return nowNs(); }
-  sha256Of(parts: Uint8Array[]): Uint8Array { const h = createHash("sha256"); for (const p of parts) h.update(p.slice()); return new Uint8Array(h.digest()); }
+  sha256Of(parts: Uint8Array[]): Uint8Array {
+    const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let at = 0; for (const p of parts) { all.set(p, at); at += p.length; }
+    const hex = this.c.prep.sha256(all), out = new Uint8Array(32); for (let i = 0; i < 32; i++) out[i] = parseInt(hex.substr(2 * i, 2), 16);
+    return out;
+  }
   // A guest function the recorder or the glue wants run. Only host stubs can be served here (the owner runs no guest code)
   guestCall(fn: bigint, args: (bigint | number)[]): bigint {
     const id = (Number(fn) - STUBS.base) / 4, h = this.late.get(id);
@@ -129,8 +129,7 @@ export class Owner {
   constructor(memory: WebAssembly.Memory, storage: FsStorage, c: OwnerConfig) {
     this.memory = memory; this.log = c.log;
     const pages = memory.buffer.byteLength / 65536;
-    const mod = new WebAssembly.Module(sharedBuild(readFileSync(c.runtimeDir + "/fs64.wasm"), pages) as unknown as BufferSource);
-    this.fs = new FsHost(mod, storage, {
+    this.fs = new FsHost(c.fsModule, storage, {
       memory, memEnv: { memory_size: () => pages, memory_grow: (n: number) => n ? -1 : pages }, log: l => c.log(l),
       saveFailed: e => c.log(`[RED] fs: a save could not be written (error ${e})`),
       // more arena has to lie below 4 GB (fs_host.ts): a bump range between the staged files and the process's address space, never freed
@@ -149,8 +148,8 @@ export class Owner {
     x.fs_set_program_id(c.programId);
     const enc = new TextEncoder();
     for (const n of this.fs.names()) {   // every name is looked up as a loader would: the module learns from it what the game imports (src/glue/rt_fs.ts)
-      new Uint8Array(memory.buffer, c.scratch, 4096).set(enc.encode(n.name + "\0"));
-      if (x.fs_lookup(c.scratch) !== n.id) throw new Error(`owner: fs_lookup(${n.name}) does not give ${n.id}`);
+      new Uint8Array(memory.buffer, c.scratch + 0x1000, 4096).set(enc.encode(n.name + "\0"));
+      if (x.fs_lookup(c.scratch + 0x1000) !== n.id) throw new Error(`owner: fs_lookup(${n.name}) does not give ${n.id}`);
       this.fsIds.set(n.name, n.id); this.fsNames.set(n.id, n.name);
     }
     x.fs_set_account_save(-1);
@@ -158,13 +157,14 @@ export class Owner {
   lowAlloc(n: number): number { const a = this.low; if (a + n > LOW_END) return 0; this.low = Math.ceil((a + n) / 0x1000) * 0x1000; return a; }
   // nxweb's NVN recorder (gfx64.wasm) and its glue (src/glue/rt_gfx.ts), with the null replayer: the host stream is
   // counted, and a present is the first-frame mark. `device` / `canvas` make it the real replayer (the page).
-  startGfx(c: OwnerConfig, pages: number, o: { device?: any; canvas?: any } = {}): void {
+  startGfx(c: OwnerConfig, pages: number): void {
+    const o: any = c.gfx ?? {};
     const rt = this.rt = new RtShim(this.memory, { memory_size: () => pages, memory_grow: (n: number) => n ? -1 : pages }, c, this);
-    const mod = new WebAssembly.Module(sharedBuild(readFileSync(c.runtimeDir + "/gfx64.wasm"), pages) as unknown as BufferSource);
     const t0 = performance.now();
-    this.gfx = new RtGfx(rt as any, mod, { ...o, unpaced: true, shaderWait: false, onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
-    const host: any = this.gfx.host, account = host.account.bind(host);
+    this.gfx = new RtGfx(rt as any, c.gfxModule, { unpaced: !o.device, shaderWait: false, ...o, onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
+    const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
     host.account = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
+    host.exec = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return exec(p, n); };
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
   names(): string[] { return [...this.fsIds.keys(), ...(this.rt ? this.rt.byName.keys() : [])]; }
@@ -261,15 +261,12 @@ export class Owner {
   }
 }
 
-// Node: everything from the environment (run_p4.sh)
-export async function startNode(memory: WebAssembly.Memory, malloc: (n: number) => number, log: (line: string) => void, modules: OwnerConfig["modules"]): Promise<Owner> {
-  const e = process.env;
-  const c: OwnerConfig = { nup: e.NX_NUP ?? "/game/zelda-oot.nup", runtimeDir: e.NX_RUNTIME ?? "/mnt/build/runtime", prepareWasm: e.NX_PREPARE ?? "/mnt/build/prepare/prepare.wasm",
-    saveDir: e.NX_SAVES ?? "/ctl/nxweb-em/em/build/saves", programId: BigInt(e.NX_PROGRAM_ID ?? "0x0400486024DEC000"), scratch: 0x1FF00000, malloc, log, modules };
+export async function startOwner(memory: WebAssembly.Memory, c: OwnerConfig): Promise<{ owner: Owner; exefs: string }> {
   const rom = await romStorage(c);
-  log(`owner: RomFS ${rom.root} of ${c.nup}: ${rom.files} files, ${(rom.bytes / 1073741824).toFixed(2)} GB, tables built in ${rom.ms.toFixed(0)} ms`);
+  c.log(`owner: RomFS ${rom.root} of ${c.tree.name}: ${rom.files} files, ${(rom.bytes / 1073741824).toFixed(2)} GB, tables built in ${rom.ms.toFixed(0)} ms`);
   const o = new Owner(memory, rom.storage, c);
-  log(`owner: nxweb's fs module answers ${o.names().length} nn::fs names`);
+  c.log(`owner: nxweb's fs module answers ${o.names().length} nn::fs names`);
   o.startGfx(c, memory.buffer.byteLength / 65536);
-  return o;
+  return { owner: o, exefs: rom.exefs };
 }
+export { sharedBuild };

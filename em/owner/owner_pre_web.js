@@ -1,0 +1,17 @@
+// (appended to the bundled web owner by build.py; a --pre-js) Start the owner realm on the page's main thread before
+// main() runs. Module.nxPage is set by index.html: { file, canvas, root, stage, modulesList }.
+Module.preRun = Module.preRun || [];
+Module.preRun.push(function () {
+  if (typeof ENVIRONMENT_IS_PTHREAD !== 'undefined' && ENVIRONMENT_IS_PTHREAD) return;
+  addRunDependency('nxowner');
+  var mods = function () {
+    var out = [];
+    for (var i = 0; i < _nx_mod_count(); i++) { var f = function (k) { return _nx_mod_field(i, k); };
+      out.push({ name: UTF8ToString(f(5)), base: f(0), imageSize: f(1), ro: { addr: f(0) + f(3), size: f(4) - f(3) } }); }
+    return out;
+  };
+  var page = Object.assign({ writeFile: function (path, bytes) { FS.mkdirTree(path.slice(0, path.lastIndexOf('/'))); FS.writeFile(path, bytes); } }, Module.nxPage);
+  NXOWN.start(wasmMemory, function (n) { return _malloc(n); }, function (l) { err('[owner] ' + l); }, mods, page)
+    .then(function (o) { globalThis.NXOWNER = o; Module.nxLiveThreads = function () { return _nx_live_threads(); }; removeRunDependency('nxowner'); },
+          function (e) { err('[RED] owner: ' + (e && e.stack || e)); Module.nxPage.stage('failed: ' + (e && e.message || e)); });
+});

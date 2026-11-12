@@ -9,7 +9,7 @@ Module.preRun.push(function () {
       out.push({ name: UTF8ToString(f(5)), base: f(0), imageSize: f(1), ro: { addr: f(0) + f(3), size: f(4) - f(3) } }); }
     return out;
   };
-  NXOWN.startNode(wasmMemory, function (n) { return _malloc(n); }, function (l) { err('[owner] ' + l); }, mods)
+  NXOWN.start(wasmMemory, function (n) { return _malloc(n); }, function (l) { err('[owner] ' + l); }, mods)
     .then(function (o) { globalThis.NXOWNER = o; removeRunDependency('nxowner'); },
           function (e) { err('[RED] owner: ' + (e && e.stack || e)); process.exit(4); });
 });

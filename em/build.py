@@ -148,10 +148,29 @@ def p4():
     nxweb_parts(B, 64)
     objs = compile_all(KERNEL_C() + SEAM + [f"{R}/test/p4_boot.c"], 64) + hle()
     # the owner realm: nxweb's fs glue, container reader and RomFS device, bundled as they are (node)
-    sh([f"{W}/node_modules/.bin/esbuild", f"{R}/owner/owner.ts", "--bundle", "--platform=node", "--format=iife", "--global-name=NXOWN", f"--outfile={B}/owner.js", "--log-level=warning"])
+    sh([f"{W}/node_modules/.bin/esbuild", f"{R}/owner/owner_node.ts", "--bundle", "--platform=node", "--format=iife", "--global-name=NXOWN", f"--outfile={B}/owner.js", "--log-level=warning"])
     open(f"{B}/owner_pre.js", "w").write(open(f"{B}/owner.js").read() + open(f"{R}/owner/owner_pre.js").read())
     link(objs, f"{B}/p4.js", 64, ["-sERROR_ON_UNDEFINED_SYMBOLS=0", "--js-library", f"{R}/kernel/nx_guest.js", "--js-library", f"{R}/kernel/nx_owner.js", "--pre-js", f"{B}/a64_host.js", "--pre-js", f"{B}/owner_pre.js", f"-sGLOBAL_BASE={14 << 30}", f"-sINITIAL_MEMORY={16 << 30}",
                                   "-sNODERAWFS=1", "-sENVIRONMENT=node,worker", "-sPTHREAD_POOL_SIZE=8", "-sEXPORTED_FUNCTIONS=_main,_malloc,_free", "-sSTACK_SIZE=1048576"])
+
+def page():
+    """The boot harness as a page (test/p4_boot.c, the web owner): build/web/em, to be copied beside the nxweb page."""
+    B = f"{R}/build/web/em"; os.makedirs(B, exist_ok=True)
+    nxweb_parts(B, 64)
+    objs = compile_all(KERNEL_C() + SEAM + [f"{R}/test/p4_boot.c"], 64) + hle()
+    sh([f"{W}/node_modules/.bin/esbuild", f"{R}/owner/owner_web.ts", "--bundle", "--platform=browser", "--format=iife", "--global-name=NXOWN", f"--outfile={B}/owner.js", "--log-level=warning"])
+    open(f"{B}/owner_pre.js", "w").write(open(f"{B}/owner.js").read() + open(f"{R}/owner/owner_pre_web.js").read())
+    link(objs, f"{B}/em.js", 64, ["-sERROR_ON_UNDEFINED_SYMBOLS=0", "--js-library", f"{R}/kernel/nx_guest.js", "--js-library", f"{R}/kernel/nx_owner.js", "--pre-js", f"{B}/a64_host.js", "--pre-js", f"{B}/owner_pre.js",
+                                  f"-sGLOBAL_BASE={14 << 30}", f"-sINITIAL_MEMORY={16 << 30}", "-sENVIRONMENT=web,worker", "-sPTHREAD_POOL_SIZE=8", "-sFORCE_FILESYSTEM=1",
+                                  "-sEXPORTED_FUNCTIONS=_main,_malloc,_free", "-sEXPORTED_RUNTIME_METHODS=FS", "-sSTACK_SIZE=1048576"])
+    sh(["cp", f"{R}/web/em.html", f"{B}/index.html"])
+    import json, time
+    rev = subprocess.run(["git", "-C", W, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    open(f"{B}/build.json", "w").write(json.dumps({"rev": rev, "built": time.strftime("%Y-%m-%d %H:%M")}))
+    # the page is served by the nxweb page's server, under /em/ (the one directory of the main checkout's build output this track writes)
+    dest = os.environ.get("NXEM_SERVE", "/mnt/build/web/em"); os.makedirs(dest, exist_ok=True)
+    for f in ("index.html", "em.js", "em.wasm", "build.json"): sh(["cp", f"{B}/{f}", f"{dest}/{f}"])
+    print(f"build: page copied to {dest} (http://localhost:8080/em/index.html)")
 
 def p2():
     mem, env, gb = ARGS.mem, ARGS.env, ARGS.gb
@@ -188,5 +207,5 @@ ap = argparse.ArgumentParser()
 ap.add_argument("target"); ap.add_argument("--mem", type=int, default=32); ap.add_argument("--env", default="node"); ap.add_argument("--gb", type=int, default=16); ap.add_argument("-j", type=int, default=3)
 ARGS = ap.parse_args()
 if ARGS.env == "web": ARGS.mem = 64
-{"p1": p1, "p2": p2, "p4": p4, "nxtests": nxtests, "all": lambda: (p1(), p2(), nxtests())}[ARGS.target]()
+{"p1": p1, "p2": p2, "p4": p4, "page": page, "nxtests": nxtests, "all": lambda: (p1(), p2(), nxtests())}[ARGS.target]()
 print("BUILD_DONE")

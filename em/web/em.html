@@ -1,0 +1,62 @@
+<!doctype html><meta charset="utf-8"><title>nxweb · Emscripten runtime</title>
+<style>
+ body { font: 13px/1.4 system-ui, sans-serif; margin: 12px; background: #111; color: #ddd; }
+ #top { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+ #rt { color: #9cf; } #stage { color: #fc6; }
+ #wrap { position: relative; display: inline-block; margin-top: 8px; }
+ canvas { background: #000; max-width: 100%; display: block; }
+ #fps { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.6); padding: 2px 6px; font: 12px monospace; color: #8f8; }
+ #log { white-space: pre-wrap; font: 11px monospace; max-height: 40vh; overflow: auto; background: #000; padding: 6px; margin-top: 8px; }
+ .red { color: #f66; }
+</style>
+<div id="top">
+  <b>nxweb</b> <span id="stamp"></span> <span id="rt"></span>
+  <label>game (.nup): <input type="file" id="fileinput" accept=".nup"></label>
+  <span id="stage">choose the game file</span>
+</div>
+<div id="wrap"><canvas id="screen" width="1280" height="720"></canvas><div id="fps"></div></div>
+<div id="log"></div>
+<script>
+// The Emscripten runtime's page: nxnative's C under real threads, nxweb's translator, file system, recorder and
+// WebGPU replayer. ?secs=N: how long the harness runs before it prints its report (default: a day).
+var RT_KIND = "C/C++ (nxnative) → Emscripten";
+var rtLabel = function (threads) { return "rt " + RT_KIND + " · " + (navigator.gpu ? "WebGPU" : "no WebGPU") + " · " + threads + " real threads"; };
+var $ = function (id) { return document.getElementById(id); }, q = new URLSearchParams(location.search);
+var lines = [], red = 0;
+var say = function (s) {
+  var d = document.createElement("div"); d.textContent = s; if (/\[RED\]/.test(s)) { d.className = "red"; red++; }
+  var l = $("log"); l.appendChild(d); if (l.childNodes.length > 600) l.removeChild(l.firstChild); l.scrollTop = l.scrollHeight;
+  lines.push(s); if (lines.length > 2000) lines.shift();
+  console.log(s);
+};
+window.nxem = { lines: lines, state: "idle", presents: 0, threads: 0, fps: 0, label: rtLabel(0), red: function () { return red; } };
+$("rt").textContent = rtLabel(0);
+fetch("build.json").then(function (r) { return r.json(); }).then(function (b) { $("stamp").textContent = "em " + b.rev + " · " + b.built; }, function () {});
+if (!crossOriginIsolated) say("[RED] page: not cross-origin isolated: no shared memory, the runtime cannot start");
+addEventListener("error", function (e) { say("[RED] page error: " + e.message); });
+addEventListener("unhandledrejection", function (e) { say("[RED] rejection: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason)); });
+var started = false;
+$("fileinput").addEventListener("change", function () {
+  var file = $("fileinput").files[0]; if (!file || started) return; started = true;
+  window.nxem.state = "starting";
+  window.Module = {
+    arguments: ["/exefs", "/rt/translator64.shared.wasm", "/rt/helpers64.shared.wasm", "/rt/loader64.wasm", q.get("secs") || "86400"],
+    print: say, printErr: say,
+    onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; },
+    onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], stage: function (t) { $("stage").textContent = t; window.nxem.state = t; } },
+  };
+  var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s);
+  var last = 0, lastT = performance.now();
+  setInterval(function () {
+    var o = globalThis.NXOWNER; if (!o) return;
+    var now = performance.now(), n = o.presents, threads = 0;
+    try { threads = window.Module.nxLiveThreads ? window.Module.nxLiveThreads() : 0; } catch (e) {}
+    var fps = (n - last) * 1000 / (now - lastT); last = n; lastT = now;
+    window.nxem.presents = n; window.nxem.threads = threads; window.nxem.fps = fps; window.nxem.label = rtLabel(threads);
+    if (n > 0 && window.nxem.state !== "aborted" && window.nxem.state !== "exited") { window.nxem.state = "running"; $("stage").textContent = "running"; }
+    $("rt").textContent = rtLabel(threads);
+    $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads);
+  }, 1000);
+});
+</script>
