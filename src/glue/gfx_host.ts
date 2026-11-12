@@ -122,7 +122,7 @@ const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8,
 const DIMS = ["2d", "2d-array", "cube", "3d", "cube-array"], CLASSES: VinClass[] = ["float", "sint", "uint"];
 
 interface Tex { serial: number; target: number; format: number; flags: number; samples: number; width: number; height: number; depth: number; levels: number; swz: number;
-  gpu?: GPU; snap?: GPU; imgScratch?: Map<string, GPU>; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
+  gpu?: GPU; snap?: GPU; imgScratch?: Map<string, GPU>; shapes?: Map<string, { tex: GPU; at: number; view: GPU }>; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
 interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo" | "host"; dyn: boolean; write: boolean; size?: number; info?: ShaderInfo }
 interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
   mesh?: boolean; dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU;
@@ -325,7 +325,7 @@ export class GfxHost {
     let n = 0;
     for (const o of this.live) { try { o.destroy(); n++; } catch { /* gone already */ } }
     this.live.clear();
-    for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.imgScratch = undefined; t.views.clear(); }
+    for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.imgScratch = undefined; t.shapes = undefined; t.views.clear(); }
     this.textures.clear(); this.shaders = [];
     this.pipes.clear(); this.ndvePipes.clear(); this.ndveScratch.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
     this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
@@ -406,7 +406,7 @@ export class GfxHost {
   restore(device: GPU): number {
     this.gen++;
     this.live.clear();   // they belonged to the device that is gone
-    for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.imgScratch = undefined; t.views.clear(); }
+    for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.imgScratch = undefined; t.shapes = undefined; t.views.clear(); }
     for (const s of this.shaders) if (s) { s.module = undefined; s.variants = undefined; }
     this.pipes.clear(); this.ndvePipes.clear(); this.ndveScratch.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
     this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
@@ -605,6 +605,8 @@ export class GfxHost {
     // a texture the game described with no size (a builder left at 0, or one whose size comes with data the recorder does not read): nothing to create,
     // a blank texture is sampled in its place and a pass has no such target
     if (!t.width || (!t.height && t.target !== 0 && t.target !== 3)) { this.red(`texsize${serial}`, `tex#${serial} (format 0x${t.format.toString(16)}, target ${t.target}) is ${t.width}x${t.height}x${t.depth} with ${t.levels} levels: not created (a blank texture is sampled in its place)`); return undefined; }
+    const maxDim = this.limit(t.target === 2 ? "maxTextureDimension3D" : "maxTextureDimension2D", t.target === 2 ? 2048 : 8192);
+    if (t.width > maxDim || t.height > maxDim) { this.red(`texbig${serial}`, `tex#${serial} (format 0x${t.format.toString(16)}, target ${t.target}) is ${t.width}x${t.height}x${t.depth}: larger than this device's textures (${maxDim}), not created (a blank texture is sampled in its place)`); return undefined; }
     const cube = t.target === 8 || t.target === 9, layers = t.target === 4 || t.target === 6 || t.target === 9 || t.target === 3 ? Math.max(1, t.target === 3 ? t.height : t.depth) : cube ? 6 : 1;
     const is3d = t.target === 2, h = t.target === 0 || t.target === 3 ? 1 : t.height;
     const up = (v: number, b: number) => Math.ceil(v / b) * b;
@@ -678,6 +680,22 @@ export class GfxHost {
     let v = t.views.get(key);
     if (!v) { v = t.gpu.createView({ ...(format ? { format, usage: t.gpu.usage & ~0x08 } : {}), dimension: t.gpu.dimension === "3d" ? "3d" : "2d", baseMipLevel: level, mipLevelCount: 1, ...(t.gpu.dimension === "3d" ? {} : { baseArrayLayer: layer, arrayLayerCount: 1 }) }); t.views.set(key, v); }
     return v;
+  }
+  // A 2D, single-layer colour texture as a 3D texture one slice deep, or as a cube (every face the texture): what a shader that declares that shape samples
+  // when the game binds a plain 2D texture there. The copy is of level 0 and is made again every 60 submissions (the copy is submitted on its own, so it holds
+  // what was drawn before the submission being encoded). null: no such copy (layers, compressed or depth formats, a cube of a texture that is not square)
+  private reshaped(t: Tex, dim: string): GPU | null {
+    const g = t.gpu, cube = dim === "cube" || dim === "cube-array";
+    if (g.dimension !== "2d" || g.depthOrArrayLayers !== 1 || g.sampleCount > 1 || t.fmt.bw > 1 || t.fmt.kind === "depth" || t.fmt.stencil || !(g.usage & 0x01) || !(dim === "3d" || (cube && g.width === g.height))) return null;
+    let e = (t.shapes ??= new Map()).get(dim);
+    if (!e) t.shapes.set(dim, e = { tex: this.newTexture({ size: { width: g.width, height: g.height, depthOrArrayLayers: cube ? 6 : 1 }, dimension: dim === "3d" ? "3d" : "2d", format: g.format, usage: 0x04 | 0x02 }, "a reshaped copy"), at: -1000, view: null });
+    if (this.flushNo - e.at >= 60) {
+      const enc = this.device.createCommandEncoder();
+      for (let z = 0; z < (cube ? 6 : 1); z++) enc.copyTextureToTexture({ texture: g }, { texture: e.tex, origin: { x: 0, y: 0, z } }, { width: g.width, height: g.height, depthOrArrayLayers: 1 });
+      this.device.queue.submit([enc.finish()]);
+      e.at = this.flushNo;
+    }
+    return (e.view ??= e.tex.createView({ dimension: dim }));
   }
   private dummies = new Map<string, GPU>();
   // The blank texture of a slot with nothing (or nothing that fits) bound: of the dimension and the sample type the shader declares
@@ -1037,10 +1055,11 @@ export class GfxHost {
         e0.push({ binding: 128 + st * 16 + b.slot, visibility, buffer: { type: b.write ? "storage" : "read-only-storage" } });
         g0.push({ binding: 128 + st * 16 + b.slot, st, i: b.slot, kind: "ssbo", dyn: false, write: !!b.write });
       }
+      const nf = GfxHost.unfilteredSamplers(s);
       for (const t of s.textures ?? []) {
         const sampleType = t.depth ? "depth" : t.sampleType ?? "float";
         g1.push({ binding: st * 64 + t.slot * 2, visibility, texture: { sampleType, viewDimension: t.dim ?? "2d" } });
-        if (t.sampler === undefined) g1.push({ binding: st * 64 + t.slot * 2 + 1, visibility, sampler: { type: t.depth ? "comparison" : sampleType === "float" ? "filtering" : "non-filtering" } });
+        if (t.sampler === undefined) g1.push({ binding: st * 64 + t.slot * 2 + 1, visibility, sampler: { type: t.depth ? "comparison" : sampleType === "float" && !nf.has(t.slot) ? "filtering" : "non-filtering" } });
       }
       for (const m of s.images ?? []) g1.push({ binding: 256 + st * 8 + m.slot, visibility, storageTexture: { access: m.access ?? "write-only", format: m.format, viewDimension: m.dim ?? "2d" } });
     }
@@ -1076,6 +1095,14 @@ export class GfxHost {
     const groups = fixup || drawParams ? 3 : 2, maxGroups = this.limit("maxBindGroups", 4);
     if (groups > maxGroups) red("its layout", groups, "bind groups", maxGroups, "maxBindGroups", "");
     return over;
+  }
+  // The slots whose sampler binding must be non-filtering: WebGPU refuses a filtering sampler used with an unfilterable-float texture, and a texture may
+  // sample through another slot's sampler (ShaderInfo.textures sampler: a number, spv.ts shareSamplers). Every texture that shares such a sampler is then
+  // sampled unfiltered (nearest): the price of one sampler for several textures when one of them is depth or of a format the device does not filter
+  private static unfilteredSamplers(s: ShaderInfo, also?: (slot: number) => boolean): Set<number> {
+    const nf = new Set<number>();
+    for (const t of s.textures ?? []) if (!t.depth && t.sampler !== false && (t.sampleType === "unfilterable-float" || also?.(t.slot))) nf.add(typeof t.sampler === "number" ? t.sampler : t.slot);
+    return nf;
   }
   private pipeFailed(id: number) { this.stats.pipelinesFailed++; this.x.gfx_pipeline_done(id, 0); }
   private createPipeline(id: number, k: number) {
@@ -1341,6 +1368,7 @@ export class GfxHost {
     const standIns: StandIn[] = [];
     for (const sid of c.stages) {
       const s = this.shaders[sid].info, st = s.stage === "vertex" ? 0 : s.stage === "fragment" ? 1 : 2;
+      const unf = new Set<number>(), samps: { t: NonNullable<ShaderInfo["textures"]>[number]; samp: number; filtering: boolean }[] = [];
       for (const t of s.textures ?? []) {
         const b = this.tex.get(st * 64 + t.slot), tx = b && b.serial ? this.texture(b.serial) : undefined;
         const src = tx && (b!.snap && tx.snap ? tx.snap : tx.gpu), dim = t.dim ?? "2d", want = t.depth ? "depth" : t.sampleType ?? "float";
@@ -1352,12 +1380,17 @@ export class GfxHost {
           if (tx.gpu.sampleCount > 1) why = "is multisampled";
           else if (want === "depth" ? have !== "depth" : want === "sint" || want === "uint" ? have !== want : have !== "float" && have !== "depth") why = `holds ${have} texels`;
           else if (!(v = this.view(tx, src, b!.view, dim, false, true))) why = `is a ${tx.gpu.dimension === "3d" ? "3D texture" : `2D texture of ${tx.gpu.depthOrArrayLayers} layer${tx.gpu.depthOrArrayLayers > 1 ? "s" : ""}`}, which has no ${dim} view`;
-          else if (want === "float" && (have === "depth" || this.unfilterable.has(tx.fmt.tex!))) { (tvar ??= []).push({ sid, st, slot: t.slot }); filtering = false; }
+          else if (want === "float" && (have === "depth" || this.unfilterable.has(tx.fmt.tex!))) { (tvar ??= []).push({ sid, st, slot: t.slot }); filtering = false; unf.add(t.slot); }
+          // a 2D texture on a 3D or cube slot (a game's placeholder texture stands in every slot it leaves unused): sampled through a copy of that shape
+          if (!v && !why.startsWith("holds") && tx.gpu.sampleCount === 1) { v = this.reshaped(tx, dim); if (v) { this.red(`texshape${sid}.${t.slot}`, `texture slot ${t.slot} of the ${s.stage} shader ${this.shaders[sid].key} is declared ${dim}; the texture bound there (tex#${tx.serial} ${tx.fmt.tex} ${tx.gpu.width}x${tx.gpu.height}) is 2D: it is sampled through a ${dim} copy of its first level`); if (want === "float" && this.unfilterable.has(tx.fmt.tex!)) { (tvar ??= []).push({ sid, st, slot: t.slot }); filtering = false; unf.add(t.slot); } } }
           if (!v) this.red(`texfit${sid}.${t.slot}`, `texture slot ${t.slot} of the ${s.stage} shader ${this.shaders[sid].key} is declared ${dim}, ${want}; the texture bound there (tex#${tx.serial} ${tx.fmt.tex} ${tx.gpu.width}x${tx.gpu.height}) ${why}: a blank texture is sampled instead`);
         }
         g1.push({ binding: st * 64 + t.slot * 2, resource: v ?? this.dummyView(dim, want === "depth" || want === "sint" || want === "uint" ? want : "float") });
-        if (t.sampler === undefined) g1.push({ binding: st * 64 + t.slot * 2 + 1, resource: this.sampler(b ? b.samp : 0, !!t.depth, filtering) });
+        if (t.sampler === undefined) samps.push({ t, samp: b ? b.samp : 0, filtering });
       }
+      // a sampler that an unfiltered texture samples through (its own slot's or the one it shares) is a non-filtering one, as the layout has it
+      const nf = GfxHost.unfilteredSamplers(s, slot => unf.has(slot));
+      for (const x of samps) g1.push({ binding: st * 64 + x.t.slot * 2 + 1, resource: this.sampler(x.samp, !!x.t.depth, x.filtering && !nf.has(x.t.slot)) });
       for (const m of s.images ?? []) {
         const b = this.img.get(st * 8 + m.slot), tx = b && b.serial ? this.texture(b.serial) : undefined;
         // A texture WebGPU cannot bind as this storage image (its format is none a device stores to, or not one a shader may read and write): the dispatch
@@ -2030,7 +2063,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
             depth: dv.getUint32(d + 24, true), levels: dv.getUint32(d + 28, true), swz: dv.getUint16(p + 56, true) || 0x0b1a, views: new Map(), fmt: hostFormat(format, this.caps)! });
           break;
         }
-        case H.TEX_DESTROY: { const s = this.u64(dv, p + 8), t = this.textures.get(s); if (t) { this.flush(); this.groups.clear(); this.kill(t.gpu); this.kill(t.snap); for (const sc of t.imgScratch?.values() ?? []) this.kill(sc); this.textures.delete(s); } break; }
+        case H.TEX_DESTROY: { const s = this.u64(dv, p + 8), t = this.textures.get(s); if (t) { this.flush(); this.groups.clear(); this.kill(t.gpu); this.kill(t.snap); for (const sc of t.imgScratch?.values() ?? []) this.kill(sc); for (const sh of t.shapes?.values() ?? []) this.kill(sh.tex); this.textures.delete(s); } break; }
         case H.BEGIN_PASS: this.beginPass(dv, p); break;
         case H.END_PASS: { const targets = !this.computePass && this.pass ? this.passInfo?.targets : undefined; this.endPass(); if (this.cap && targets) this.captureTargets(targets); break; }
         case H.BEGIN_COMPUTE: this.endPass(); this.pass = this.encoder().beginComputePass(); this.computePass = true; this.cur = null; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); this.stats.computePasses++; break;
