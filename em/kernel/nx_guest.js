@@ -182,6 +182,51 @@ addToLibrary({
     try { HEAPU64[args / 8 + 16] = BigInt.asUintN(64, x.nvn_call(id, BigInt(args))); }
     catch (e) { if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e; HEAPU64[args / 8 + 16] = 0n; err('[RED] nvn_call(' + id + ') failed in a guest thread: ' + String(e && e.stack || e).split('\n').slice(0, 5).join(' | ')); }
   },
+  // This thread's instance of nxweb's fs module (kernel/nx_gfx.c nx_fs_direct; owner/owner.ts NXF, FS_MOD). Its storage
+  // imports are the owner's: asked with the arguments as i64 and the caller's context block (a storage call that is
+  // not answered at once is completed by the owner, which then wakes that block's cell).
+  $nxFs__deps: ['$NX'],
+  $nxFs: function() {
+    const F = 0x1FF1F100, MOD = 0x1FFA0000, s = (F + 8) / 4, q = F / 8;
+    const mod = new WebAssembly.Module(HEAPU8.slice(MOD, MOD + HEAPU32[(F + 24) / 4]));
+    const ask = (kind, a) => {
+      for (let i = 0; i < 6; i++) HEAP64[q + 4 + i] = i < a.length ? BigInt(a[i]) : 0n;
+      HEAP64[q + 10] = BigInt(NX.fsCtx); HEAP32[s + 1] = kind;
+      Atomics.store(HEAP32, s, 1); Atomics.notify(HEAP32, s);
+      for (let spin = 0; Atomics.load(HEAP32, s) !== 2; spin++) if (spin > 4000) Atomics.wait(HEAP32, s, 1, 5);
+      const r = HEAP64[q + 2];
+      Atomics.store(HEAP32, s, 0);
+      return r;
+    };
+    const pages = HEAPU8.length / 65536;
+    const env = { memory: wasmMemory, memory_size: () => pages, memory_grow: (n) => n ? -1 : pages, abort: () => { throw new Error('fs: abort'); },
+      log: (p, n) => err('[fs] ' + new TextDecoder().decode(HEAPU8.slice(Number(p), Number(p) + n))) };
+    const fs = {
+      dev_open: (kind, index, token) => Number(ask(0, [kind, index, token])),
+      dev_size: (dev) => ask(1, [dev]),
+      dev_read: (dev, off, ptr, len, token) => Number(ask(2, [dev, off, ptr, len >>> 0, token])),
+      dev_write: (dev, off, ptr, len) => Number(ask(3, [dev, off, ptr, len >>> 0])),
+      dev_flush: (dev, token) => Number(ask(4, [dev, token])),
+      dev_remove: (kind, index, token) => Number(ask(5, [kind, index, token])),
+      save_failed: (e) => { ask(6, [e]); },
+      arena_more: (n) => ask(7, [n]),
+    };
+    return NX.fs = new WebAssembly.Instance(mod, { env, fs }).exports;
+  },
+  // fs_call(id, ctx) in this thread's instance: 0 done (x0 in the block holds the result), 1 pending, 2 retry. The caller holds the module's lock
+  nx_js_fs_call__deps: ['$NX', '$nxFs'],
+  nx_js_fs_call__sig: 'iid',
+  nx_js_fs_call: function(id, ctx) {
+    const x = NX.fs || nxFs();
+    NX.fsCtx = ctx;
+    let r;
+    try { r = x.fs_call(id, BigInt(ctx)); }
+    catch (e) { if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e; err('[RED] fs_call(' + id + ') failed in a guest thread: ' + String(e && e.stack || e).split('\n').slice(0, 5).join(' | ')); r = 0n; }
+    if (r === -0x200000000n) return 2;
+    if ((r >> 32n) === -1n) return 1;
+    HEAPU64[ctx / 8] = BigInt.asUintN(64, r);
+    return 0;
+  },
   nx_js_guest_callv__deps: ['$nxThread'],
   nx_js_guest_callv__sig: 'vpi',
   nx_js_guest_callv: function(a, n) {

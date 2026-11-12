@@ -22,6 +22,8 @@
 <script>
 // The Emscripten runtime's page: nxnative's C under real threads, nxweb's translator, file system, recorder and
 // WebGPU replayer. ?ndve=off: without nxweb's stand-in for the movie upscaler (on by default: ?ndve=bypass is accepted too).
+// ?fsdirect=1: guest threads call the fs module in their own instance and the owner is asked only for the storage itself
+//   (off by default until it has run at game scale once; then the default and ?fsdirect=0 the way back).
 // ?gfxdirect=0: every NVN call goes to the owner thread (default: guest threads call the recorder in their own instance).
 // ?coreexcl=1: two guest threads of one virtual core never run at the same time, the one of higher priority first (as on
 //   the console; kernel/nx_cores.c). For the A/B of the fault on the title.
@@ -95,7 +97,7 @@ function start(file) {
     onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; if (!window.nxem.reason) Module.nxStopped("abort() in host code: " + w); },
     nxStopped: function (why) { if (window.nxem.reason) return; window.nxem.reason = why; $("stage").textContent = "stopped: " + why; $("stage").style.color = "#f66"; },
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
-    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", fsDirect: q.get("fsdirect") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
   };
   var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s);
   // input: the keyboard and the first controller, as the nxweb page maps them (web/main.ts): Z = A, X = B, C = X, V = Y,

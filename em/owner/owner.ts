@@ -6,7 +6,7 @@
 // Emscripten's `__proxy: 'sync'`) with the calling thread's context block, in arrival order.
 // nxweb's own files are used as they are: src/glue/fs_host.ts (FsHost), the .nup reader and the RomFS device of
 // src/prepare/host, fs_dev_node.ts for the saves under Node.
-import { FsHost, FS_RETRY, fsIsPending, fsToken, type FsStorage } from "../../src/glue/fs_host.ts";
+import { FsHost, FS_RETRY, DEV, fsIsPending, fsToken, type FsStorage } from "../../src/glue/fs_host.ts";
 import { range } from "../../src/glue/rt_layout.ts";
 import { sharedBuild } from "../../src/glue/wasm_shared.ts";
 import type { PrepTree } from "../../src/prepare/host/tree.ts";
@@ -27,6 +27,11 @@ const LOW_BASE = 0x1C000000, LOW_END = 0x1FF00000;   // host allocations that mu
 //   +0 the recorder's lock (0 free, 1 the owner, else a thread)   +4 threads waiting for it   +8 the holder's request to
 //   the owner: 0 none, 1 asked, 2 answered   +12 its kind (0 gfx_exec, 1 gfx_proc_address, 2 gfx_arena_more)
 //   +16 +24 f64 arguments   +32 f64 result   +40 bytes at GFX_MOD   +44 1: guest threads call the recorder themselves
+// The fs module shared the same way: its globals at FS_GLOBALS, the build for the other threads at FS_MOD, its words at NXF:
+//   +0 lock   +4 waiters   +8 the holder's request (0, 1 asked, 2 answered)   +12 its kind (0 dev_open, 1 dev_size, 2 dev_read,
+//   3 dev_write, 4 dev_flush, 5 dev_remove, 6 save_failed, 7 arena_more)   +16 i64 result   +24 bytes at FS_MOD
+//   +28 1: guest threads call the module themselves   +32 six i64 arguments   +80 i64 the caller's context block
+export const NXF = 0x1FF1F100, FS_GLOBALS = 0x1FF18000, FS_MOD = 0x1FFA0000, FS_MOD_MAX = 0x20000;
 export const NXG = 0x1FF1F000, GFX_GLOBALS = 0x1FF10000, GFX_MOD = 0x1FF20000, GFX_MOD_MAX = 0x80000;
 const CELL = 0x3F0;   // in the caller's context block (0x400 bytes, the CPU state ends at 0x330): the word a pending call's completion sets
 
@@ -36,6 +41,7 @@ export interface OwnerConfig {
   prep: PrepWasm;                       // nxweb's prepare module: RomFS tables, SHA-256
   fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
   gfxModule: WebAssembly.Module;
+  fsShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };    // the same for fsModule
   gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
   saves: FsStorage;
   programId: bigint;
@@ -141,7 +147,14 @@ export class Owner {
 
   constructor(memory: WebAssembly.Memory, storage: FsStorage, c: OwnerConfig) {
     this.memory = memory; this.log = c.log; this.cfg = c;
-    const pages = memory.buffer.byteLength / 65536;
+    const pages = memory.buffer.byteLength / 65536, fsh = c.fsShare;
+    this.fl = new Int32Array(memory.buffer, NXF, 8); this.fl64 = new BigInt64Array(memory.buffer, NXF, 11);
+    if (fsh) {
+      if (fsh.secondary.length > FS_MOD_MAX) throw new Error("owner: the fs module's build for the guest threads is larger than its room");
+      const u8 = new Uint8Array(memory.buffer);
+      for (const g of fsh.globals) { u8.fill(0, g.addr, g.addr + 16); u8.set(g.init, g.addr); }
+      u8.set(fsh.secondary, FS_MOD); this.fl[6] = fsh.secondary.length;
+    }
     this.fs = new FsHost(c.fsModule, storage, {
       memory, memEnv: { memory_size: () => pages, memory_grow: (n: number) => n ? -1 : pages }, log: l => c.log(l),
       saveFailed: e => c.log(`[RED] fs: a save could not be written (error ${e})`),
@@ -156,6 +169,9 @@ export class Owner {
         Atomics.store(cell, 0, 1); Atomics.notify(cell, 0);
       },
     });
+    { const x0: any = this.fs.x, out: any = {};   // every call into the module under its lock
+      for (const k of Object.keys(x0)) { const fn = x0[k]; out[k] = typeof fn === "function" ? (...a: any[]) => { this.fsLock(); try { return fn(...a); } finally { this.fsUnlock(); } } : fn; }
+      (this.fs as any).x = out; }
     const x = this.fs.x, arena = range("fs arena");
     x.fs_init(arena.lo, arena.hi - arena.lo);
     x.fs_set_program_id(c.programId);
@@ -166,7 +182,48 @@ export class Owner {
       this.fsIds.set(n.name, n.id); this.fsNames.set(n.id, n.name);
     }
     x.fs_set_account_save(-1);
+    if (fsh?.direct) { Atomics.store(this.fl, 7, 1); c.log(`owner: the fs module's ${fsh.globals.length} globals are in the memory at 0x${FS_GLOBALS.toString(16)}: guest threads call it in their own instance under its lock; the owner keeps the storage (the dev_* imports) and the completions`); }
   }
+  // ---- the fs module's lock and its holder's request, as the recorder's below
+  private fl!: Int32Array; private fl64!: BigInt64Array; private flDepth = 0; private flHeld = false; private flLent = false;
+  flStats = { served: 0, ms: 0 };
+  fsLock(): void {
+    if (this.flDepth++ || this.flLent) return;
+    while (Atomics.compareExchange(this.fl, 0, 0, 1) !== 0) this.svc();
+    this.flHeld = true;
+  }
+  fsUnlock(): void {
+    if (--this.flDepth || !this.flHeld) return;
+    this.flHeld = false;
+    Atomics.store(this.fl, 0, 0); if (Atomics.load(this.fl, 1)) Atomics.notify(this.fl, 0, 1);
+  }
+  private fsSvc(): boolean {
+    const g = this.fl;
+    if (!g || Atomics.load(g, 2) !== 1) return false;
+    const a = this.fl64, im = this.fs.imports, N = (i: number) => Number(a[4 + i]), B = (i: number) => a[4 + i], kind = g[3], ctx = Number(a[10]), was = this.flLent, t0 = performance.now();
+    let r: any = 0, tok = 0;
+    this.flLent = true;
+    try {
+      switch (kind) {
+        case 0: r = im.dev_open(N(0), B(1), tok = N(2)); break;
+        case 1: r = im.dev_size(N(0)); break;
+        case 2: r = im.dev_read(N(0), B(1), N(2), N(3), tok = N(4)); break;
+        case 3: r = im.dev_write(N(0), B(1), N(2), N(3)); break;
+        case 4: r = im.dev_flush(N(0), tok = N(1)); break;
+        case 5: r = im.dev_remove(N(0), B(1), tok = N(2)); break;
+        case 6: im.save_failed(N(0)); break;
+        case 7: r = im.arena_more(N(0)); break;
+      }
+      // a storage call in flight: its completion (FsHost.park -> completed) wakes the thread that made the fs call
+      if (r === DEV.PENDING && (kind === 0 || kind === 2 || kind === 4 || kind === 5)) { this.stats.fsPending++; this.waiting.set(tok, ctx); }
+    } catch (e) { this.log(`[RED] owner: the fs module's request ${kind} from a guest thread failed: ${(e as Error).stack ?? e}`); r = DEV.IO; }
+    this.flLent = was; this.flStats.served++; this.flStats.ms += performance.now() - t0;
+    a[2] = BigInt(r ?? 0);
+    Atomics.store(g, 2, 2); Atomics.notify(g, 2);
+    return true;
+  }
+  // the requests of the threads that hold a module's lock (they are inside the module, waiting): true when one was served
+  svc(): boolean { const a = this.gfxSvc(), b = this.fsSvc(); return a || b; }
   // ---- the recorder's lock, owner side. The owner cannot block, so it spins, and while it does it serves the request
   // of the thread that holds the lock (that thread is inside the recorder, waiting for gfx_exec). While such a request
   // is served the recorder is the holder's: what the replayer calls of it then needs no lock (`lent`).
@@ -184,7 +241,7 @@ export class Owner {
     const g = this.gl; Atomics.store(g, 0, 0); if (Atomics.load(g, 1)) Atomics.notify(g, 0, 1);
   }
   // The lock holder's request, if there is one: true when one was served
-  svc(): boolean {
+  private gfxSvc(): boolean {
     const g = this.gl;
     if (!g || Atomics.load(g, 2) !== 1) return false;
     const f = this.glf, env = this.gfx!.env, was = this.lent, t0 = performance.now(); let r = 0;
@@ -379,9 +436,9 @@ export async function startOwner(memory: WebAssembly.Memory, c: OwnerConfig): Pr
   return { owner: o, exefs: rom.exefs };
 }
 export { sharedBuild };
-// gfx64.wasm (already the shared build) as the globals-in-memory build and what goes with it (OwnerConfig.gfxShare)
-export function gfxShared(wasm: Uint8Array, direct: boolean): { wasm: Uint8Array; share: NonNullable<OwnerConfig["gfxShare"]> } {
-  const first = globalsToMemory(wasm, { base: GFX_GLOBALS }), second = globalsToMemory(wasm, { base: GFX_GLOBALS, secondary: true });
-  if (first.size > 0x8000) throw new Error("owner: the recorder has more globals than their block holds");
+// gfx64.wasm / fs64.wasm (already the shared build) as the globals-in-memory build and what goes with it (OwnerConfig.gfxShare, fsShare)
+export function gfxShared(wasm: Uint8Array, direct: boolean, base = GFX_GLOBALS): { wasm: Uint8Array; share: NonNullable<OwnerConfig["gfxShare"]> } {
+  const first = globalsToMemory(wasm, { base }), second = globalsToMemory(wasm, { base, secondary: true });
+  if (first.size > 0x7000) throw new Error("owner: the module has more globals than their block holds");
   return { wasm: first.wasm, share: { globals: first.globals, secondary: second.wasm, direct } };
 }

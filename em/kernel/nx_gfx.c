@@ -74,3 +74,43 @@ EMSCRIPTEN_KEEPALIVE void nx_gfx_guest_call(double blk_) {
 }
 // out: calls answered on the calling thread, their time in ns (lock wait included), times a thread had to sleep for the lock, ns getting the lock
 EMSCRIPTEN_KEEPALIVE void nx_gfx_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)atomic_load(&g_calls); o[1] = (double)atomic_load(&g_ns); o[2] = (double)atomic_load(&g_contended); o[3] = (double)atomic_load(&g_lock_ns); }
+
+// ---- nxweb's fs module the same way (owner/owner.ts NXF): nn::fs calls run in the calling thread's instance under the
+// module's lock; the storage (the dev_* imports) is the owner's, asked through the lock holder's request words, and a
+// call whose storage answer is not there yet waits on its context block's cell, which the owner's completion sets.
+#include <unistd.h>
+#define NXF 0x1FF1F100u
+#define FL_LOCK ((_Atomic uint32_t *)(uintptr_t)NXF)
+#define FL_WAITERS ((_Atomic uint32_t *)(uintptr_t)(NXF + 4))
+#define FL_ON ((_Atomic uint32_t *)(uintptr_t)(NXF + 28))
+static _Atomic uint64_t g_fs_calls, g_fs_ns, g_fs_pending;
+int nx_js_fs_call(int id, double ctx);
+void nx_core_release(void);
+int nx_fs_enabled(void) { return atomic_load(FL_ON) != 0; }
+static void fs_lock(void) {
+    uint32_t m = me();
+    for (int spin = 0;; spin++) {
+        uint32_t z = 0;
+        if (atomic_compare_exchange_weak(FL_LOCK, &z, m)) break;
+        if (spin < 4000) continue;
+        atomic_fetch_add(FL_WAITERS, 1); if (z) emscripten_futex_wait(FL_LOCK, z, 1.0); atomic_fetch_sub(FL_WAITERS, 1);
+    }
+}
+static void fs_unlock(void) { atomic_store(FL_LOCK, 0); if (atomic_load(FL_WAITERS)) emscripten_futex_wake(FL_LOCK, 1); }
+// id: the module's function id; regs: the caller's context block (x0..x7 are the arguments, x0 takes the result)
+void nx_fs_direct(int id, uint64_t *regs) {
+    uint64_t args[8], t0 = nx_now_ns(); memcpy(args, regs, sizeof args);
+    _Atomic uint32_t *cell = (_Atomic uint32_t *)((uint8_t *)regs + 0x3F0);
+    for (;;) {
+        atomic_store(cell, 0);
+        fs_lock();
+        int r = nx_js_fs_call(id, (double)(uintptr_t)regs);   // 0 done, 1 pending, 2 retry (busy with another thread's pending call)
+        fs_unlock();
+        if (r == 0) break;
+        if (r == 1) { atomic_fetch_add_explicit(&g_fs_pending, 1, memory_order_relaxed); nx_core_release(); while (!atomic_load(cell)) emscripten_futex_wait(cell, 0, 1e9); break; }
+        memcpy(regs, args, sizeof args); usleep(200);
+    }
+    atomic_fetch_add_explicit(&g_fs_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_fs_ns, nx_now_ns() - t0, memory_order_relaxed);
+}
+// out: nn::fs calls answered on the calling thread, their time in ns (waits for the storage included), how many waited for the storage
+EMSCRIPTEN_KEEPALIVE void nx_fs_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)atomic_load(&g_fs_calls); o[1] = (double)atomic_load(&g_fs_ns); o[2] = (double)atomic_load(&g_fs_pending); }

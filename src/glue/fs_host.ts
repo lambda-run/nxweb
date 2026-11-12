@@ -75,6 +75,7 @@ export interface FsHostOptions {
 
 export class FsHost {
   readonly x: FsExports;
+  readonly imports: Record<string, (...a: any[]) => any>;   // the storage imports as given (em/: an instance of the module in another thread has the owner run them)
   readonly memory: WebAssembly.Memory;
   private devs = new Map<number, FsDevice>();
   private nextDev = 0x100;
@@ -140,6 +141,7 @@ export class FsHost {
       save_failed: (err: number) => { opts.saveFailed?.(err); },
       arena_more: (n: number): number => opts.arenaMore?.(Number(n)) ?? 0,
     };
+    this.imports = fs;
     this.x = instantiate<FsExports>(module, { env, fs }, { name: "fs.wasm" });
     this.memory = opts.memory ?? this.x.memory;
   }

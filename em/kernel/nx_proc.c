@@ -330,6 +330,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     int direct = own > 0 ? g_stub_direct[id] : -1;
     if (!direct) { direct = nx_gfx_enabled() ? nx_owner_stub_direct((int)id) : 0; g_stub_direct[id] = direct = direct ? direct : -1; }
     if (direct > 0) nx_gfx_direct(direct, regs);
+    else if (own > 0 && own >> 24 == 1 && nx_fs_enabled()) { nx_core_release(); nx_fs_direct(own & 0xFFFFFF, regs); }
     else if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
                    nx_owner_do(own, regs); }
     else if (e && !(e->flags & NX_HLE_HAND)) e->thunk(regs);   // (one that needs a hand-written thunk answers 0 until it has it)
@@ -373,8 +374,26 @@ static void smaps_report(void) {
     fclose(f);
     LOG("memory by mapping: linear memory %ld MB; executable (compiled code) %ld MB; anonymous >= 64 MB: %ld MB in %d; 1..64 MB: %ld MB in %d; < 1 MB: %ld MB in %d; files %ld MB", lin >> 10, exec >> 10, big >> 10, nbig, mid >> 10, nmid, small >> 10, nsmall, file >> 10);
 }
+static void trk_dump(void) {
+    for (int i = 0; i < g_ntrk && i < 64; i++) {
+        char w[64]; int h = g_trk[i].in_host;
+        LOG("  thread %#x: %llu slices of translated code, last slice ended at %s%s%s", g_trk[i].handle, (unsigned long long)g_trk[i].slices, nx_where(g_trk[i].pc, w, sizeof w), h ? "; inside host call " : "", h ? g_stub_name[h - 1] : "");
+    }
+}
+// the host call the calling thread is in ("" when none), for a fault report
+const char *nx_cur_host(void) { int k = trk(), h = g_trk[k].in_host; return h && g_stub_name[h - 1] ? g_stub_name[h - 1] : ""; }
+void svc_thread_dump(void);
 void nx_progress(void) {
     double os[12] = {0}; nx_owner_stats((double)(uintptr_t)os);
+    // The watchdog: no present for 10 s (after the first) is a stall. Every thread's state is printed once per stall, and again every 60 s while it lasts
+    { static double last_presents; static uint64_t since, dumped; uint64_t now = now_ns();
+      if (os[7] != last_presents || !since) { last_presents = os[7]; since = now; dumped = 0; }
+      else if (os[7] > 0 && now - since >= 10000000000ull && (!dumped || now - dumped >= 60000000000ull)) {
+          dumped = now;
+          LOG("[RED] STALL: no present for %.0f s (stopped at present %.0f). Every guest thread: what it waits on (the kernel's list), then where its translated code last was", (now - since) / 1e9, os[7]);
+          svc_thread_dump(); trk_dump();
+          LOG("[RED] STALL: end of the thread list");
+      } }
     struct nx_stats s; nx_get_stats(&s); char w[64] = "?"; uint64_t sl = 0; int h = 0;
     for (int i = 0; i < g_ntrk && i < 64; i++) if (g_trk[i].handle == 0x1001) { nx_where(g_trk[i].pc, w, sizeof w); sl = g_trk[i].slices; h = g_trk[i].in_host; }
     int rss, swp; nx_rss_mb(&rss, &swp);
@@ -425,6 +444,8 @@ void nx_boot_report(const char *why) {
           g_owner_calls ? g_owner_ns / 1e3 / g_owner_calls : 0.0, os[0], os[1], os[2], os[0] ? os[3] / 1e3 / os[0] : 0.0); }
     { void nx_gfx_stats(double); double g[4] = {0}; nx_gfx_stats((double)(uintptr_t)g);
       LOG("recorder on the calling thread: %.0f NVN calls, %.2f us each, of it %.2f us getting the lock; %.0f times a thread slept for the lock%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[0] ? g[3] / 1e3 / g[0] : 0.0, g[2], nx_gfx_enabled() ? "" : " (off: every NVN call goes to the owner)"); }
+    { void nx_fs_stats(double); double g[3] = {0}; nx_fs_stats((double)(uintptr_t)g);
+      LOG("fs module on the calling thread: %.0f nn::fs calls, %.1f us each (the storage's time included), %.0f waited for the storage%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[2], nx_fs_enabled() ? "" : " (off: every nn::fs call goes to the owner)"); }
     LOG("owner slot: %llu requests; waiting for the slot %.1f us each, request to answer %.1f us each (the modules' own time is in the two lines above)", (unsigned long long)g_slot_n,
         g_slot_n ? g_slot_queue_ns / 1e3 / g_slot_n : 0.0, g_slot_n ? g_slot_serve_ns / 1e3 / g_slot_n : 0.0);
     int n = 0;
