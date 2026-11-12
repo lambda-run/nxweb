@@ -19,14 +19,24 @@ uint64_t nx_now_ns(void) { return now_ns(); }
 void nx_native_wait(int entering) { dm_thread_native_wait(entering); }
 
 // ---- SVC entry: regs is the thread's context block (nxweb docs/CONTRACT.md: x0..x30 at +0, sp +0xF8, pc +0x100)
-__attribute__((weak)) int nx_svc_other(int num, uint64_t *regs) { (void)num; (void)regs; return 0; }
 _Atomic uint64_t nx_stat_svcs;
 EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)regs_;
     atomic_fetch_add_explicit(&nx_stat_svcs, 1, memory_order_relaxed);
     thr_svc_enter(regs, regs[32]);
-    if (!svc_thread(num, regs) && !nx_svc_other(num, regs)) die("svc %#x at pc %#llx: not implemented", num, (unsigned long long)regs[32]);
+    if (!svc_thread(num, regs) && !nx_svc_other(num, regs)) {
+        LOG("[RED] svc %#x at pc %#llx (x0=%#llx x1=%#llx x2=%#llx): not implemented", num, (unsigned long long)regs[32], (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2]);
+        nx_boot_report("an SVC that is not implemented"); die("svc %#x", num);
+    }
     thr_svc_leave();
+}
+
+EMSCRIPTEN_KEEPALIVE void nx_guest_fault(double pc, double what_) {
+    const char *what = (const char *)(uintptr_t)what_;
+    module_t *m = module_of((void *)(uintptr_t)pc);
+    LOG("[RED] guest fault at pc %#llx (%s+%#llx): %s", (unsigned long long)pc, m ? m->name : "?", (unsigned long long)(m ? (uint64_t)pc - (uint64_t)(uintptr_t)m->base : 0), what);
+    nx_boot_report("a guest fault");
+    emscripten_force_exit(3);
 }
 
 // ---- thread entry: hle_thread.c's thread_main calls this on the new pthread, after StartThread
@@ -36,6 +46,7 @@ void nx_note_thread(uint64_t entry) { int i = atomic_fetch_add(&nx_nseen, 1); if
 void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp) {
     nx_note_thread(entry);
     uint64_t io[8] = {arg, 0, 0, 0, 0, entry, sp};
+    nx_js_guest_setup((double)sp);
     nx_js_guest_run(io);
     // the entry function returned to the exit pc: the same as ExitThread
     uint64_t regs[100] = {0};

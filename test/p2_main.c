@@ -50,6 +50,7 @@ static uint64_t run(int threads, uint64_t rounds, int mode, double *ms) {
     memset(S, 0, sizeof *S);
     uint64_t io[8] = {DATA, g_self, (uint64_t)threads, rounds, (uint64_t)mode, BASE, STACK_TOP};
     uint64_t t0 = now_ns();
+    nx_js_guest_setup((double)STACK_TOP);
     nx_js_guest_run(io);
     *ms = (now_ns() - t0) / 1e6;
     return io[0];
@@ -94,7 +95,7 @@ int main(int argc, char **argv) {
     uint8_t *g = load(argv[1], &glen), *tr = load(argv[2], &tlen), *hlp = load(argv[3], &hlen);
     memcpy((void *)(uintptr_t)BASE, g, glen);
     uint64_t t0 = now_ns();
-    nx_translator_start(tr, tlen, hlp, hlen, BASE, CODE_SPAN);
+    nx_translator_start(tr, tlen, hlp, hlen, BASE, CODE_SPAN, NULL);
     printf("translator thread ready in %.0f ms (nxweb translator %u bytes, helpers %u bytes, guest image %u bytes)\n", (now_ns() - t0) / 1e6, tlen, hlen, glen);
     g_self = svc_thread_main_init();
     nx_note_thread(BASE);

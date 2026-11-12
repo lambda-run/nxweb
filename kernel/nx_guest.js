@@ -39,10 +39,11 @@ addToLibrary({
     nxSync(t);
     let idx = nxPcMap(pc);
     if (idx <= 1 || t.table.get(idx) === t.tramp) { idx = _nx_translate(pc); nxSync(t); }
+    if (idx <= 1) throw new Error('no translatable code at pc 0x' + pc.toString(16));
     return idx;
   },
 
-  $nxThread__deps: ['$NX', '$nxSync', '$nxTranslate', 'nx_svc', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc'],
+  $nxThread__deps: ['$NX', '$nxSync', '$nxTranslate', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxThread: function() {
     if (NX.t) return NX.t;
     const mem = wasmMemory, t0 = performance.now();
@@ -66,6 +67,21 @@ addToLibrary({
     };
     t.tramp = t.table.get(0);
     t.table.grow(_nx_table_cap() - t.table.length, t.tramp);
+    // slot 2: the one function every host stub's pc maps to (as nxweb's rt_runtime.ts THUNK): it calls host_call
+    const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 0x11, 1, 3, 0x65, 0x6E, 0x76, 9, 0x68, 0x6F, 0x73, 0x74, 0x5F, 0x63, 0x61, 0x6C, 0x6C, 0, 0,
+                                  3, 2, 1, 0, 7, 5, 1, 1, 0x66, 0, 1, 0x0A, 6, 1, 4, 0, 0x10, 0, 0x0B]);
+    t.table.set(2, new WebAssembly.Instance(new WebAssembly.Module(THUNK), { env: { host_call: () => { t.save(t.ctx); _nx_host_call(t.ctx); t.load(t.ctx); } } }).exports.f);
+    // run until pc is `until`; a trap in translated code ends the process with a report (pthread_exit's unwind passes through)
+    t.runTo = (until) => {
+      try { while (core.pc.value !== until) { core.budget.value = 1 << 30; core.run(); } }
+      catch (e) {
+        if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e;
+        const m = String(e && e.message || e), p = _malloc(lengthBytesUTF8(m) + 1); stringToUTF8(m, p, lengthBytesUTF8(m) + 1);
+        err(String(e && e.stack || e).split('\n').slice(0, 6).join(' | '));
+        _nx_guest_fault(Number(BigInt.asUintN(64, core.pc.value)), p);
+        throw e;
+      }
+    };
     NX.t = t;
     nxSync(t);
     t.setupMs = performance.now() - t0;
@@ -77,12 +93,19 @@ addToLibrary({
   nx_js_guest_run__sig: 'vp',
   nx_js_guest_run: function(io) {
     const t = nxThread(), c = t.core, q = io / 8;
-    HEAPU8.fill(0, t.ctx, t.ctx + 0x330); t.load(t.ctx);
     c.x0.value = HEAPU64[q]; c.x1.value = HEAPU64[q + 1]; c.x2.value = HEAPU64[q + 2]; c.x3.value = HEAPU64[q + 3]; c.x4.value = HEAPU64[q + 4];
     c.pc.value = HEAPU64[q + 5]; c.sp.value = HEAPU64[q + 6]; const EXIT = BigInt(0xFFFFFFF0);
-    c.x30.value = EXIT; c.excl_addr.value = BigInt(-1);
-    while (c.pc.value !== EXIT) { c.budget.value = 1 << 30; c.run(); }
+    c.x30.value = EXIT;
+    t.runTo(EXIT);
     HEAPU64[q] = c.x0.value;
+  },
+  // A fresh CPU state for the calling thread: everything zero, then sp and the thread's TLS block / thread-local region
+  nx_js_guest_setup__deps: ['$nxThread', 'nx_tlr', 'nx_tls'],
+  nx_js_guest_setup__sig: 'vd',
+  nx_js_guest_setup: function(sp) {
+    const t = nxThread(), c = t.core;
+    HEAPU8.fill(0, t.ctx, t.ctx + 0x330); t.load(t.ctx);
+    c.sp.value = BigInt(sp); c.tpidr.value = BigInt(_nx_tls()); c.tpidrro.value = BigInt(_nx_tlr()); c.excl_addr.value = BigInt(-1);
   },
 
   // A host call into guest code on the calling guest thread (nested inside whatever that thread was doing, an SVC included).
@@ -93,37 +116,43 @@ addToLibrary({
     t.save(save);
     c.x0.value = a0; c.x1.value = a1; c.x2.value = a2; const RET = BigInt(0xFFFFFFC0);
     c.x30.value = RET; c.pc.value = pc;
-    while (c.pc.value !== RET) { c.budget.value = 1 << 30; c.run(); }
+    t.runTo(RET);
     const r = c.x0.value;
     t.load(save); _free(save);
     return r;
   },
 
   // ---- the translator thread's realm
-  nx_js_tr_init__deps: ['$NX', 'nx_mod_set', 'nx_is64', 'malloc'],
-  nx_js_tr_init__sig: 'vpipidd',
-  nx_js_tr_init: function(tr, trLen, hlp, hlpLen, codeLo, codeSize) {
+  nx_js_tr_init__deps: ['$NX', 'nx_mod_set', 'nx_is64', 'malloc', '$nxLoadGame'],
+  nx_js_tr_init__sig: 'vpipiddp',
+  nx_js_tr_init: function(tr, trLen, hlp, hlpLen, codeLo, codeSize, boot) {
     const stop = (what) => () => { throw new Error('the translator realm does not run guest code (' + what + ')'); };
     const host = new NXA64.A64Host(HEAPU8.slice(tr, tr + trLen), HEAPU8.slice(hlp, hlp + hlpLen), {
       memory: wasmMemory, shared: true, layout: Object.assign({}, NXA64.A64, { codeRegionLo: codeLo }),
       mem64: !!_nx_is64(), memoryMaxPages: wasmMemory.buffer.byteLength / 65536,   // no growth: the maximum is the size
+      leafAlloc: () => _malloc(65536),   // pc-map leaves beyond the fixed arena (64 KB per 64 KB of code that has translations)
       imports: { svc: stop('svc'), unimpl: stop('unimpl'), brk: stop('brk'), cntpct: () => BigInt(0) },
     });
     host.keepBytes = true;
-    host.addCode(codeLo, codeSize);
+    host.table.grow(1);   // slot 2 is the host stubs' thunk in every guest thread's table: no unit may take it
     NX.host = host;
+    if (boot && HEAPF64[boot / 8]) nxLoadGame(host, boot / 8); else host.addCode(codeLo, codeSize);
     const put = (which, b) => { const p = _malloc(b.length); HEAPU8.set(b, p); _nx_mod_set(which, p, b.length); };
     // the core module's bytes: A64Host keeps only the compiled module, so build it once more (same options, same bytes)
     const len = host.tr.buildCore(), out = Number(host.tr.outPtr());
     put(0, HEAPU8.slice(out, out + len));
     put(1, HEAPU8.slice(hlp, hlp + hlpLen));
   },
-  nx_js_tr_translate__deps: ['$NX', 'nx_unit_publish', 'malloc'],
-  nx_js_tr_translate__sig: 'id',
-  nx_js_tr_translate: function(pc) {
+  nx_js_tr_job__deps: ['$NX', 'nx_unit_publish', 'malloc', '$UTF8ToString'],
+  nx_js_tr_job__sig: 'did',
+  nx_js_tr_job: function(kind, pc) {
     const h = NX.host;
+    if (kind === 1) {   // a symbol's address, by name, from the loader's tables (0: none, or it is a host stub)
+      const a = NX.ld ? NX.ld.lookup(UTF8ToString(pc)) : undefined;
+      return a === undefined || NX.ld.stubId(a) >= 0 ? 0 : a;
+    }
     let idx = h.getPcMap(pc);
-    if (idx <= 1) idx = h.translateUnit([BigInt(pc)])[0];
+    try { if (idx <= 1) idx = h.translateUnit([BigInt(pc)])[0]; } catch (e) { err('translator: ' + (e && e.message || e)); return 0; }
     for (; NX.published < h.units.length; NX.published++) {
       const u = h.units[NX.published], p = _malloc(u.bytes.length);
       HEAPU8.set(u.bytes, p);
@@ -205,5 +234,47 @@ addToLibrary({
     NX.cacheBase = base;
     HEAPF64[out / 8] = bytes; HEAPF64[out / 8 + 1] = funcs; HEAPF64[out / 8 + 2] = fetchMs;
     return n;
+  },
+
+  // ---- loading a real game (the translator thread's realm): nxweb's loader module and its glue, as they are.
+  // boot (doubles): [0] loader64.wasm ptr, [1] len, [2] file count, [3 + 3i] name ptr, file ptr, file len, [30] first base;
+  // out: [38] index of nnosInitialize in the start list, [39] nnMain, [40] start list length, [41..] the pcs to call in
+  // order (nxweb rt_runtime.ts sdkStart = nxnative main.c: _init_libc0, nnosInitialize, _init_libc1,
+  // nninitInitializeSdkModule, nninitStartup, _init_libc2, each module's DT_INIT).
+  $nxLoadGame__deps: ['$NX', 'nx_module_add', 'nx_stub_set', 'nx_stub_base_set', 'nx_hle_name_count', 'nx_hle_name_at', 'nx_hle_name_flags', 'malloc', 'free', '$UTF8ToString', '$stringToUTF8', '$lengthBytesUTF8'],
+  $nxLoadGame: function(host, B) {
+    const A = NXA64, D = HEAPF64, pages = wasmMemory.buffer.byteLength / 65536;
+    const cstr = (s) => { const n = lengthBytesUTF8(s) + 1, p = _malloc(n); stringToUTF8(s, p, n); return p; };
+    const env = { memory: wasmMemory, memory_size: () => pages, memory_grow: (n) => n ? -1 : pages, debug_string: () => {}, abort: () => { throw new Error('abort in the loader module'); },
+                  log: (p, n) => err('[loader] ' + new TextDecoder().decode(HEAPU8.slice(p, p + n))) };
+    const lx = A.instantiate(new WebAssembly.Module(A.sharedBuild(HEAPU8.slice(D[B], D[B] + D[B + 1]), pages)), { env }, { mem64: true, name: 'loader64.wasm' });
+    if (!lx.memory) lx.memory = wasmMemory;
+    const arena = A.range('loader arena');
+    const ld = new A.Loader(lx, { arena: arena.lo, arenaLen: arena.hi - arena.lo, stubBase: A.STUBS.base, stubCap: A.STUBS.cap });
+    // the names nxnative's host answers (the generated HLE table, when it is linked): forced ones win over a module's own definition
+    // flags (hle/nx_hle.h): 1 an import's answer, 2 / 4 forced, 16 libc pass-through; NVN names (8) are handed out by the bootstrap loader, not bound
+    let nNames = 0;
+    for (let i = 0, n = _nx_hle_name_count(); i < n; i++) { const f = _nx_hle_name_flags(i); if (f & 23) { ld.hostAdd(UTF8ToString(_nx_hle_name_at(i)), !!(f & 6)); nNames++; } }
+    const files = [];
+    for (let i = 0; i < D[B + 2]; i++) files.push({ name: UTF8ToString(D[B + 3 + 3 * i]), ptr: D[B + 4 + 3 * i], len: D[B + 5 + 3 * i] });
+    let next = D[B + 30];
+    const set = ld.loadSet(files, (size) => { const b = next; next = Math.ceil((b + size + 0x1000) / 0x1000) * 0x1000; return b; }, { verifyHash: false });
+    for (const m of set.modules) {
+      const n = cstr(m.name); _nx_module_add(n, m.base, m.imageSize, m.text.addr + m.text.size - m.base, m.ro.addr - m.base, m.data.addr - m.base); _free(n);
+      host.addCode(m.base, m.imageSize, { text: { lo: m.text.addr, hi: m.text.addr + m.text.size } });
+      ld.pin(m.handle);
+    }
+    _nx_stub_base_set(A.STUBS.base);
+    const hf = ld.hostFunctions();
+    for (const f of hf) { const n = cstr(f.name); _nx_stub_set(f.id, n); _free(n); }
+    host.fillPcMap(A.STUBS.base, A.STUBS.cap, 2);
+    const find = (name) => { for (const m of set.modules) { const a = ld.lookupIn(m.handle, name); if (a !== undefined && ld.stubId(a) < 0) return a; } return 0; };
+    const list = [];
+    for (const n of ['_init_libc0', 'nnosInitialize', '_init_libc1', 'nninitInitializeSdkModule', 'nninitStartup', '_init_libc2']) { const a = find(n); if (a) { if (n === 'nnosInitialize') D[B + 38] = list.length; list.push(a); } }
+    for (const m of set.modules) { if (m.init) list.push(m.init); else list.push(...m.initArray); }
+    D[B + 39] = find('nnMain'); D[B + 40] = list.length;
+    list.forEach((a, i) => { D[B + 41 + i] = a; });
+    NX.ld = ld; NX.mods = set.modules;
+    err('[loader] ' + set.modules.map(m => m.name + ' at 0x' + m.base.toString(16) + ' +0x' + m.imageSize.toString(16)).join(', ') + '; ' + nNames + ' host names registered, ' + hf.filter(f => f.refs).length + ' of ' + hf.length + ' stubs referred to, ' + set.unresolved.length + ' imports nothing answers');
   },
 });
