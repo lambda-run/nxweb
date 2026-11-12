@@ -97,6 +97,8 @@ EMSCRIPTEN_KEEPALIVE double nx_tls(void) { return (double)(uintptr_t)t_tls; }
 // tells a wait for a time by it).
 __attribute__((weak)) void guest_clock_read_wait(void);
 __attribute__((weak)) uint64_t guest_ticks(void);
+// the guest clock in ns for the owner realm (NVN timestamps and counter reports are stamped on it: owner/owner.ts RtShim.guestNs)
+EMSCRIPTEN_KEEPALIVE double nx_guest_ns_d(void) { return (double)guest_ns(); }
 EMSCRIPTEN_KEEPALIVE double nx_cntpct(void) {
     if (guest_clock_read_wait) guest_clock_read_wait();
     return guest_ticks ? (double)guest_ticks() : (double)(guest_ns() / 625 * 12 + guest_ns() % 625 * 12 / 625);
@@ -340,7 +342,8 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     else if (own > 0 && own >> 24 == 1 && nx_fs_enabled()) { owner_serve_start(); nx_core_release(); nx_fs_direct(own & 0xFFFFFF, regs); }
     else if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
                    nx_owner_do(own, regs); }
-    else if (e && !(e->flags & NX_HLE_HAND)) e->thunk(regs);   // (one that needs a hand-written thunk answers 0 until it has it)
+    else if (e && !(e->flags & NX_HLE_HAND)) { if (nx_core_excl()) nx_core_release();   // (host code may wait in ways the kernel does not see: the audio renderer's host call never returns, nnsocketPoll sleeps. Its core is free meanwhile)
+                                               e->thunk(regs); }   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;
     nx_ring_note(1, (int)id, in, regs[0], in[0] == regs[0] ? regs[30] : regs[30]);

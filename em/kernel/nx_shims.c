@@ -22,10 +22,17 @@ __attribute__((weak)) module_t *module_of(const void *p) { (void)p; return NULL;
 // between two reads makes 0/0: the title's transforms came out as NaN now and then, see the fault dumps of 2026-11-12).
 // So: never less than the last value any thread got, plus one counter tick (32 ns at the Switch 2's 31.25 MHz).
 #include <stdatomic.h>
-static _Atomic uint64_t g_mono_last; _Atomic uint64_t nx_mono_bumps;
+// And counted from the first read, not from 1970: in a page Emscripten's monotonic clock is the time origin plus
+// performance.now(), about 1.8e18 ns. The counter goes to the translated code through JavaScript as a double
+// (kernel/nx_proc.c nx_cntpct), and at 5.6e16 ticks a double holds only every 8th: until 7adbaf1 the page's system
+// counter moved in steps of 256 ns whatever the clock said (node's clock starts near 0, so its counter was exact).
+static _Atomic uint64_t g_mono_last, g_mono_base; _Atomic uint64_t nx_mono_bumps;
 uint64_t nx_mono_ns(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint64_t v = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec, l = atomic_load_explicit(&g_mono_last, memory_order_relaxed);
+    uint64_t v = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec, base = atomic_load_explicit(&g_mono_base, memory_order_relaxed);
+    if (!base) { uint64_t z = 0, b = v - 1000000000ull; base = atomic_compare_exchange_strong(&g_mono_base, &z, b) ? b : z; }   // (one second in hand: a thread whose clock is a little behind still gets a positive time)
+    v = v > base ? v - base : 1;
+    uint64_t l = atomic_load_explicit(&g_mono_last, memory_order_relaxed);
     for (;;) {
         if (v <= l) { v = l + 32; atomic_fetch_add_explicit(&nx_mono_bumps, 1, memory_order_relaxed); }
         if (atomic_compare_exchange_weak(&g_mono_last, &l, v)) return v;

@@ -29,11 +29,12 @@
 #include <stdatomic.h>
 #include <emscripten.h>
 
+uint32_t thr_cur_handle(void);
 int nx_thr_sched(int *prio, uint64_t *mask);   // appended to the ported hle_thread.c: the calling guest thread's core, priority and mask; -1 when it is none
 
 enum { NCORE = 8 };
 typedef struct waiter { pthread_cond_t cv; int prio, granted; uint64_t seq; struct waiter *next; } waiter;
-static struct { pthread_mutex_t m; _Atomic int busy; waiter *head; _Atomic int nwait; _Atomic int best; } g_core[NCORE];   // best: the best (lowest) priority waiting, INT32_MAX when none
+static struct { _Atomic uint32_t holder; pthread_mutex_t m; _Atomic int busy; waiter *head; _Atomic int nwait; _Atomic int best; } g_core[NCORE];   // best: the best (lowest) priority waiting, INT32_MAX when none
 static pthread_once_t g_once = PTHREAD_ONCE_INIT; static int g_on;
 static _Atomic uint64_t g_seq, g_waits, g_wait_ns, g_handoffs, g_preempts, g_slices;
 static __thread int t_held = -1, t_prio = 0; static __thread uint64_t t_since;
@@ -63,7 +64,7 @@ void nx_core_ensure(void) {
             int c = (pref + k) & (NCORE - 1), z = 0;
             if (!(mask >> c & 1)) continue;
             if (atomic_load_explicit(&g_core[c].nwait, memory_order_relaxed) && spin) continue;   // (not past the threads that queue for it)
-            if (atomic_compare_exchange_strong(&g_core[c].busy, &z, 1)) { t_held = c; t_since = now_ns(); return; }
+            if (atomic_compare_exchange_strong(&g_core[c].busy, &z, 1)) { t_held = c; t_since = now_ns(); atomic_store_explicit(&g_core[c].holder, thr_cur_handle(), memory_order_relaxed); return; }
         }
         if (atomic_load_explicit(&g_core[pref].best, memory_order_relaxed) <= prio) break;   // others of at least this priority already queue: join them
     }
@@ -74,7 +75,7 @@ void nx_core_ensure(void) {
     if (!w.granted) { w.next = g_core[pref].head; g_core[pref].head = &w; g_core[pref].nwait++; best_set(pref); while (!w.granted) pthread_cond_wait(&w.cv, &g_core[pref].m); }
     pthread_mutex_unlock(&g_core[pref].m);
     pthread_cond_destroy(&w.cv);
-    t_held = pref; t_since = now_ns(); g_waits++; g_wait_ns += now_ns() - t0;
+    t_held = pref; t_since = now_ns(); atomic_store_explicit(&g_core[pref].holder, thr_cur_handle(), memory_order_relaxed); g_waits++; g_wait_ns += now_ns() - t0;
 }
 // A slice end of translated code: a waiting thread of higher priority gets the core (preemption), and the caller queues behind
 // One of EQUAL priority gets it only after the caller has had the core for 10 ms: Horizon does not time-slice equal
@@ -85,6 +86,7 @@ void nx_core_yield(void) {
     int best = atomic_load_explicit(&g_core[t_held].best, memory_order_relaxed);
     if (best < t_prio || (best == t_prio && now_ns() - t_since > 10000000ull)) { if (best < t_prio) g_preempts++; else g_slices++; nx_core_release(); nx_core_ensure(); }
 }
+int nx_core_excl(void) { pthread_once(&g_once, init); return g_on; }
 // for kernel/nx_guest.js: around the compile and instantiation of a unit (tens of milliseconds of host work in the middle of guest code)
 EMSCRIPTEN_KEEPALIVE void nx_core_out(void) { nx_core_release(); }
 EMSCRIPTEN_KEEPALIVE void nx_core_in(void) { nx_core_ensure(); }
@@ -93,7 +95,8 @@ EMSCRIPTEN_KEEPALIVE int nx_slice_budget(void) { pthread_once(&g_once, init); re
 void nx_core_stats(char *out, size_t n) {
     pthread_once(&g_once, init);
     if (!g_on) { snprintf(out, n, "off (NX_COREEXCL=1 turns it on): every guest thread runs whenever the host runs it"); return; }
-    int busy = 0, wait = 0; for (int i = 0; i < NCORE; i++) { busy += g_core[i].busy; wait += g_core[i].nwait; }
-    snprintf(out, n, "%d of %d cores running, %d threads waiting for one; %llu waits for a core so far (%.1f ms each), %llu hand-overs, %llu preemptions at a slice end, %llu turns given to an equal after 10 ms", busy, NCORE, wait,
-             (unsigned long long)g_waits, g_waits ? g_wait_ns / 1e6 / g_waits : 0.0, (unsigned long long)g_handoffs, (unsigned long long)g_preempts, (unsigned long long)g_slices);
+    int busy = 0, wait = 0; char hold[200] = ""; size_t ho = 0;
+    for (int i = 0; i < NCORE; i++) { busy += g_core[i].busy; wait += g_core[i].nwait; if (g_core[i].busy && ho < sizeof hold) ho += (size_t)snprintf(hold + ho, sizeof hold - ho, " core %d: thread %#x (%d waiting)", i, atomic_load(&g_core[i].holder), atomic_load(&g_core[i].nwait)); }
+    snprintf(out, n, "%d of %d cores running, %d threads waiting for one; %llu waits for a core so far (%.1f ms each), %llu hand-overs, %llu preemptions at a slice end, %llu turns given to an equal after 10 ms; holders now:%s", busy, NCORE, wait,
+             (unsigned long long)g_waits, g_waits ? g_wait_ns / 1e6 / g_waits : 0.0, (unsigned long long)g_handoffs, (unsigned long long)g_preempts, (unsigned long long)g_slices, hold[0] ? hold : " none");
 }

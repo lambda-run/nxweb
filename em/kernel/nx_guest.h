@@ -59,6 +59,7 @@ void nx_units_distribute(void);                   // kernel/nx_proc.c: the same,
 void nx_js_stopped(double why);
 int nx_owner_stub(int id);
 int nx_owner_stub_direct(int id);
+int nx_core_excl(void);
 int nx_fs_enabled(void); void nx_fs_direct(int id, uint64_t *regs);
 int nx_gfx_enabled(void); void nx_gfx_direct(int code, uint64_t *regs); int nx_gfx_release_all(void); void nx_gfx_reacquire(int depth);
 void nx_regs_dump(const uint64_t *regs, const char *what);

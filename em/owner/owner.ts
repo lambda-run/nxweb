@@ -102,7 +102,7 @@ class RtShim {
   requestWake(): void {}
   onDispose(): void {}
   nowNs(): bigint { return nowNs(); }
-  guestNs(): bigint { return nowNs(); }
+  guestNs(): bigint { const f = (globalThis as any).NXGUESTNS; return f ? f() : nowNs(); }   // the guest's clock (kernel/nx_proc.c nx_guest_ns_d): what the game's own tick reads count on
   sha256Of(parts: Uint8Array[]): Uint8Array {
     const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let at = 0; for (const p of parts) { all.set(p, at); at += p.length; }
     const hex = this.c.prep.sha256(all), out = new Uint8Array(32); for (let i = 0; i < 32; i++) out[i] = parseInt(hex.substr(2 * i, 2), 16);

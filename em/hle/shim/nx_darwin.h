@@ -9,7 +9,9 @@
 #include <time.h>
 #include <unistd.h>
 
+uint64_t nx_mono_ns(void);   // kernel/nx_shims.c: the one clock guest-visible times are made from
 static inline uint64_t clock_gettime_nsec_np(clockid_t id) {
+    if (id != CLOCK_REALTIME) return nx_mono_ns();   // (the same base as now_ns(): the HLE files compare the two)
     struct timespec t; if (clock_gettime(id, &t)) return 0;
     return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
 }
