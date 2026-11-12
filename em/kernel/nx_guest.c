@@ -73,6 +73,7 @@ EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
     if (num >= 0 && num < 128) atomic_fetch_add_explicit(&nx_svc_by_num[num], 1, memory_order_relaxed);
     yield_or_wake(num, regs);
     if (num == 0x0B || num == 0x0A) nx_core_release();   // a sleep, a yield, the end of the thread: its core is free meanwhile
+    uint64_t in_[3] = {regs[0], regs[1], regs[2]}, lr_ = regs[30];
     thr_svc_enter(regs, regs[32]);
     if (!svc_thread(num, regs) && !nx_svc_other(num, regs)) {
         LOG("[RED] svc %#x at pc %#llx (x0=%#llx x1=%#llx x2=%#llx): not implemented", num, (unsigned long long)regs[32], (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2]);
@@ -80,6 +81,7 @@ EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
         nx_boot_report("an SVC that is not implemented"); die("svc %#x", num);
     }
     thr_svc_leave();
+    { void nx_ring_note(int, int, const uint64_t *, uint64_t, uint64_t); if (num != 0x0B) nx_ring_note(0, num, in_, regs[0], lr_); }   // (yields and sleeps would fill the ring)
     nx_core_ensure();   // back to guest code: on a core again (a yield queues behind whoever waited for it)
 }
 

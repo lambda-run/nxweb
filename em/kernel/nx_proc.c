@@ -156,6 +156,26 @@ uint32_t thr_cur_handle(void);
 static int trk(void) { if (t_trk < 0) { t_trk = atomic_fetch_add(&g_ntrk, 1) & 63; } g_trk[t_trk].handle = thr_cur_handle(); return t_trk; }
 EMSCRIPTEN_KEEPALIVE void nx_note_pc(double pc) { int k = trk(); g_trk[k].pc = (uint64_t)pc; g_trk[k].slices++; nx_core_yield(); }   // a slice end: a waiting thread of this core gets it
 
+// ---- the last SVCs and host calls of each thread (as nxweb's fault report keeps them): dumped for the thread that aborts
+enum { RING = 32 };
+typedef struct { int16_t kind, num; uint64_t a[3], ret, lr; } ring_ent;   // kind 0 SVC (num), 1 host call (num = stub id)
+static __thread ring_ent t_ring[RING]; static __thread unsigned t_ring_n;
+static char *g_stub_name_of(int id);
+void nx_ring_note(int kind, int num, const uint64_t *in, uint64_t ret, uint64_t lr) {
+    ring_ent *e = &t_ring[t_ring_n++ % RING];
+    e->kind = (int16_t)kind; e->num = (int16_t)num; e->a[0] = in[0]; e->a[1] = in[1]; e->a[2] = in[2]; e->ret = ret; e->lr = lr;
+}
+int thr_name_of(pthread_t pt, char *out, size_t n);
+void nx_ring_dump(const char *why) {
+    char nm[96] = "?", w[64]; thr_name_of(pthread_self(), nm, sizeof nm);
+    LOG("[RED] %s on thread %s: its last %u SVCs and host calls, oldest first (arguments x0..x2 as entered, then the result):", why, nm, t_ring_n < RING ? t_ring_n : RING);
+    for (unsigned i = t_ring_n < RING ? 0 : t_ring_n - RING; i < t_ring_n; i++) {
+        ring_ent *e = &t_ring[i % RING];
+        if (e->kind) LOG("  host %s(%#llx, %#llx, %#llx) = %#llx   from %s", g_stub_name_of(e->num), (unsigned long long)e->a[0], (unsigned long long)e->a[1], (unsigned long long)e->a[2], (unsigned long long)e->ret, nx_where(e->lr, w, sizeof w));
+        else LOG("  svc %#x(%#llx, %#llx, %#llx) = %#llx   from %s", e->num, (unsigned long long)e->a[0], (unsigned long long)e->a[1], (unsigned long long)e->a[2], (unsigned long long)e->ret, nx_where(e->lr, w, sizeof w));
+    }
+}
+
 // ---- host calls
 enum { MAX_STUB = 65536 };
 static char *g_stub_name[MAX_STUB]; static const nx_hle_ent *g_stub_ent[MAX_STUB]; static _Atomic uint32_t g_stub_calls[MAX_STUB];
@@ -227,6 +247,7 @@ uint64_t nx_host_entry(void (*fn)(void *)) {
     return g_stub_base + 4ull * (uint64_t)(HOSTFN_BASE + i);
 }
 
+static char *g_stub_name_of(int id) { return id >= 0 && id < MAX_STUB && g_stub_name[id] ? g_stub_name[id] : "?"; }
 EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)ctx_;
     uint64_t id = (regs[32] - g_stub_base) / 4;
@@ -254,6 +275,13 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
                             !e ? ": not ported, answers 0" : e->flags & NX_HLE_HAND ? ": needs a hand-written thunk" : "");
     }
     regs[32] = regs[30];   // return to the caller (the thunk may still redirect)
+    uint64_t in[3] = {regs[0], regs[1], regs[2]};
+    if (strstr(g_stub_name[id], "Abort") || strstr(g_stub_name[id], "abort")) {   // the game gives up: what led to it
+        nx_ring_dump(g_stub_name[id]);
+        LOG("  registers at the abort: x0=%#llx x1=%#llx x2=%#llx x3=%#llx x8=%#llx x19=%#llx x20=%#llx x21=%#llx x22=%#llx x29=%#llx lr=%#llx sp=%#llx", (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2], (unsigned long long)regs[3], (unsigned long long)regs[8],
+            (unsigned long long)regs[19], (unsigned long long)regs[20], (unsigned long long)regs[21], (unsigned long long)regs[22], (unsigned long long)regs[29], (unsigned long long)regs[30], (unsigned long long)regs[31]);
+        { uint64_t fp = regs[29]; char w2[64]; for (int k = 0; k < 10 && fp > 0x8000000 && fp < (16ull << 30) && !(fp & 7); k++) { uint64_t *f = (uint64_t *)(uintptr_t)fp; LOG("  frame %d: return to %s", k, nx_where(f[1], w2, sizeof w2)); if (f[0] <= fp) break; fp = f[0]; } }
+    }
     { void nx_yield_reset(void); nx_yield_reset(); }   // a thread that makes host calls between its yields is working
     int k = trk(); g_trk[k].in_host = (int)id + 1;
     if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
@@ -261,6 +289,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     else if (e && !(e->flags & NX_HLE_HAND)) e->thunk(regs);   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;
+    nx_ring_note(1, (int)id, in, regs[0], in[0] == regs[0] ? regs[30] : regs[30]);
     nx_core_ensure();   // back to guest code
 }
 
