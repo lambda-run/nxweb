@@ -14,7 +14,7 @@ Waiting and the SVC returns "switch"; time comes in through `kernel_tick`.
 | `sched.ts` | The scheduler (the only file that knows cores) |
 | `thread.ts`, `handle.ts`, `clock.ts`, `mem.ts`, `base.ts` | Thread records and contexts, handle table and events, guest clock, memory bookkeeping, results / log / lock |
 
-`npm run kernel:build`, `npm run kernel:test` (69 tests), `npm run kit:test` (the machines' tables).
+`npm run kernel:build`, `npm run kernel:test` (77 tests), `npm run kit:test` (the machines' tables).
 
 ## API for the embedder
 
@@ -111,8 +111,10 @@ the end every thread finishes and nothing leaks.
 ## Departures from nxnative, and why
 
 - **A real scheduler.** nxnative runs every guest thread on its own pthread and approximates per-core priority with
-  handoff waits; its yield back-off, clock-wait prediction, spin gates, short-wait polls, QoS mapping and
-  service-request waits are remedies for that and are not ported.
+  handoff waits; its clock-wait prediction, spin gates, QoS mapping and service-request waits are remedies for that
+  and are not ported. Its yield back-off and short-wait polls are, as an option (next section): they were left out
+  because a spinning thread here takes no host core of its own, but it takes the one host thread all guest threads
+  and the embedder's event loop share.
 - **Priority inheritance for scheduling.** nxnative only lends a QoS class under `DM_QOS_MAP`; with strict priorities a
   low-priority lock owner would otherwise never run (flag 4 turns it off).
 - **GetSystemTick** returns the tick in x0 (Horizon's ABI, the contract) and also in x1, where nxnative puts it (x0 = 0 there).
@@ -126,6 +128,33 @@ the end every thread finishes and nothing leaks.
   too (they are host memory outside nxnative's block); the thread-local region reports state 0xC.
 - **Bad guest pointers** return 0xD401 instead of faulting; a full thread or handle table returns 0xCE01 in red (nxnative dies).
 - **Alias pages** have one state each (Fresh / Mapped / Stale); device-shared and borrowed ranges stay range tables.
+
+## Poll back-off (`kernel_poll_backoff(1)`; off after `kernel_init`)
+
+`backoff.ts`, after nxnative's `yield_backoff_ns`, `thr_yield` and `poll_wait_begin` (`dm/host/hle_thread.c`). On a
+console a thread that polls sits on a core of its own; here every yield is a scheduling point and every short wait a
+round trip through the embedder, on the one host thread that also runs the threads doing the work.
+
+- A **run** is one thread's yields (`SleepThread` 0, -1, -2), or its sleeps and timed waits under 20 us that time out,
+  with no other SVC between them. A run of yields starts again when x19..x28 differ from those of the last two yields
+  (a loop that yields between steps of work; two, for a loop that waits at two yields); a run of short waits when the
+  thread ran more than 20 us between two, used a whole time slice, or a wait was signalled.
+- A yield in a run (never its first) becomes a sleep of an eighth of the run so far, 10 to 250 us, once the run has
+  lasted 2 ms. Without the 2 ms when no thread is ready on another core (what the thread waits for then comes from a
+  timer or the embedder's event loop, which a spin keeps away) and when the pass read the system counter
+  (`GetSystemTick`, `kernel_guest_ticks`: it waits for a time).
+- A short sleep or timed wait in a run (never its first) waits that long instead when that is longer. A signal still
+  ends it at once.
+
+The guest cannot tell but by the clock: a yield and a timeout may take any time, and no result changes. A poller is
+late by at most 250 us and whatever the embedder's timer adds. Not applied inside a guest callback
+(`kernel_preempt_hold`). Not ported: the clock-wait prediction (a learned period) and the spin gates (they need the
+rewriter). The runtime turns it on with the wall clock only (`RuntimeOptions.pollBackoff`, the page's `?backoff=0`
+turns it off): on the deterministic clock a run stays a function of the executed budget.
+
+`kernel_stats_ptr()` / `kernel_stats_stride()`: per thread record, counters the kernel always keeps (`backoff.ts`):
+SVCs by number, each wait SVC by timeout class (zero, under 1 ms, under 5 ms, longer, none) and result (woke, timed
+out, returned at once), and what the back-off did. The runtime's report prints them (`Runtime.exitLines`).
 
 ## Gaps
 

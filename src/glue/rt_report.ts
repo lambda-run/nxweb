@@ -97,6 +97,7 @@ export interface ReportInput {
   fs?: string[];                           // RtFs.lines: the most called nn::fs functions, the last files opened
   idle?: string[];                         // RtRuntime.idleWaitLines: what the threads wait on while none can run
   hot?: string[];                          // RtRuntime.hotCode: where the guest's time goes, by function
+  exits?: string[];                        // Runtime.exitLines: the exits from translated code (SVCs, host calls, slice ends), what one costs, and per guest thread its SVCs, waits and host calls
   helpers?: string[];                      // Runtime.helperLines: what ran on helper Workers (?helpers=N), exits by reason, each guest thread's share and where it ran
   scan?: string[];
   frames?: string[];                       // FrameLedger.frames (gfx_ledger.ts): the last frames' draws and dispatches, issued and skipped, and who wrote the presented image
@@ -126,6 +127,7 @@ export function reportText(r: ReportInput): string {
   if (r.shaderKeys) out.push("shader keys that are not ready (by state; each key with the frame, time and draw or dispatch that first needed it, and what it skipped):",
     ...(r.shaderKeys.length ? r.shaderKeys.map(l => "  " + l) : ["  (none)"]), "");
   if (r.helpers?.length) out.push("helper Workers (guest threads whose translated code ran beside the runtime's Worker):", ...r.helpers.map(l => "  " + l), "");
+  if (r.exits?.length) out.push("exits from translated code (SVCs, host calls, time slices), what they cost and who makes them:", ...r.exits.map(l => "  " + l), "");
   if (r.hot?.length) out.push("where the guest's time goes (the pc each time slice ended at, by function):", ...r.hot.map(l => "  " + l), "");
   if (r.scan) out.push("instructions the translator does not have (static scan of the code modules with its own decoder; opcode classes and offsets, no game data):",
     ...(r.scan.length ? r.scan.map(l => "  " + l) : ["  (no scan: the game was not opened through the prepare step, or its translator binary has no scanner)"]), "");

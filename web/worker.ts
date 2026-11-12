@@ -99,6 +99,8 @@ const sharedAsked = new URLSearchParams(self.location?.search ?? "").get("shared
 const sharedMem = sharedAsked && (self as any).crossOriginIsolated === true && typeof SharedArrayBuffer !== "undefined";
 // ?helpers=N (with ?shared=1): N helper Workers run the translated code of compute-bound guest threads beside this
 // Worker (RuntimeOptions.helpers; src/runtime/README.md, "Helper Workers"). Without the shared mode: one red line.
+// ?backoff=0: without the kernel's poll back-off (RuntimeOptions.pollBackoff; src/kernel/README.md, "Poll back-off"), to compare
+const noBackoff = new URLSearchParams(self.location?.search ?? "").get("backoff") === "0";
 const helpersAsked = Math.max(0, Math.min(16, Number(new URLSearchParams(self.location?.search ?? "").get("helpers") ?? 0) | 0));
 let modsShared: Promise<RuntimeModules> | undefined, modsShared64: Promise<RuntimeModules> | undefined;
 // the shared set: the modules' memory declared shared (wasm_shared.ts), the translator's own shared builds
@@ -194,10 +196,10 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   }
   if (helpersAsked && !shared) log(`[RED] page: ?helpers=${helpersAsked} needs the shared-memory mode (?shared=1 on a cross-origin isolated page): running without helpers`);
   const helpers = shared ? helpersAsked : 0;
-  const me = rt = new Runtime(set, { shared, helpers, helperSpawn: helpers ? k => { const w = new Worker("helper_worker.js", { name: "nx-helper-" + k }); w.onmessage = e => { if (e.data?.t === "fail") log(`[RED] page: helper ${k}: ${e.data.text}`); }; w.onerror = e => log(`[RED] page: helper ${k}: ${e.message ?? "error in the Worker"}`); return w; } : undefined, cores: cores8 ? 8 : 4, wakeHandoff: coresArg !== "8n", timer: timerPace ? spinTimer : noShortTimer ? undefined : shortTimer, clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
+  const me = rt = new Runtime(set, { shared, helpers, helperSpawn: helpers ? k => { const w = new Worker("helper_worker.js", { name: "nx-helper-" + k }); w.onmessage = e => { if (e.data?.t === "fail") log(`[RED] page: helper ${k}: ${e.data.text}`); }; w.onerror = e => log(`[RED] page: helper ${k}: ${e.message ?? "error in the Worker"}`); return w; } : undefined, cores: cores8 ? 8 : 4, wakeHandoff: coresArg !== "8n", pollBackoff: noBackoff ? false : undefined, timer: timerPace ? spinTimer : noShortTimer ? undefined : shortTimer, clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
     layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
   if (me.helperCount) me.helpersReady().then(n => log(`page: ${n} of ${me.helperCount} helper Workers started (?helpers=${helpersAsked})`));
-  optionsNote = (shared ? "shared memory (?shared=1), " : "") + (me.helperCount ? `${me.helperCount} helper Workers (?helpers=${helpersAsked}), ` : "") + (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
+  optionsNote = (shared ? "shared memory (?shared=1), " : "") + (me.helperCount ? `${me.helperCount} helper Workers (?helpers=${helpersAsked}), ` : "") + (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, poll back-off ${me.pollBackoff ? "on" : "off (?backoff=0)"}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
     (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");
   for (const n of game?.notes ?? []) log("page: " + n);
   faultSeen = false;
@@ -364,7 +366,7 @@ function report(userAgent: string): string {
   const live = liveStates();
   return reportText({ title: title || "nxweb report (no program loaded)", build: buildStamp, when: new Date().toISOString(), userAgent, adapter: gpuInfo, optionsKey: rt && !rt.disposed ? rt.a64.optionsKey() : lastOptionsKey || "-", options: optionsNote || "-",
     state: rt ? STATES[rt.r.rt_state()] : "Empty", stop: live.process?.match(/\((.*)\)$/)?.[1] ?? "", fault, modules: modRows, takeovers: tk,
-    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, helpers: rt ? rt.helperLines() : undefined, idle: rt && !rt.disposed ? rt.idleWaitLines() : undefined, fs: fsys ? fsys.lines() : undefined,
+    machines: rt && !rt.disposed ? machineRows(rt.memory, kitParts(), live) : lastMachines, counters: counters(), hot: rt && !rt.disposed ? rt.hotCode() : undefined, helpers: rt ? rt.helperLines() : undefined, exits: rt && !rt.disposed ? rt.exitLines() : undefined, idle: rt && !rt.disposed ? rt.idleWaitLines() : undefined, fs: fsys ? fsys.lines() : undefined,
     frames: gfx && rt && !rt.disposed ? gfx.host.ledger.frames : undefined, firstDrawn: gfx && rt && !rt.disposed ? gfx.host.ledger.firstDrawn : undefined,
     shaderKeys: shaderLookup && rt && !rt.disposed ? shaderLookup.reportLines() : undefined, log: lines.slice(-200), redTotal, scan: scanReport });
 }

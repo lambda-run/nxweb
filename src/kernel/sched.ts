@@ -5,7 +5,7 @@
 // Green threads today: one host thread calls scheduleNext(), which gives the cores turns in rotation. A thread that
 // is Running is its core's current thread; it stays Running while other cores have their turn.
 import { KthreadS, KthreadE } from "../kit/gen/tables";
-import { KThread, thr, MAX_THREADS, MAX_CORES, coreCount, setCoreCount, runCoreOf, WK_LOCK } from "./thread";
+import { KThread, thr, MAX_THREADS, MAX_CORES, threadTop, coreCount, setCoreCount, runCoreOf, WK_LOCK } from "./thread";
 
 const CUR: usize = memory.data(32);      // MAX_CORES * 4. per core: the index of its current thread, -1 none
 const RESCHED: usize = memory.data(8);   // MAX_CORES. per core: its ready set or a priority changed since it last chose
@@ -26,6 +26,7 @@ let seq: u64 = 0;
 let cursor: i32 = 0;
 let effDirty: bool = true;
 let inherit: bool = true;
+let anyPending: bool = false;   // some thread has yieldAny set
 
 // @ts-ignore: decorator
 @inline function cur(c: i32): i32 { return load<i32>(CUR + (<usize>c << 2)); }
@@ -37,7 +38,7 @@ let inherit: bool = true;
 export function schedInit(priorityInheritance: bool, eightCores: bool, wakeHandoff: bool): void {
   for (let c = 0; c < MAX_CORES; c++) { setCur(c, -1); store<u8>(RESCHED + <usize>c, 0); }
   memory.fill(HOLD, 0, <usize>MAX_THREADS * 4); memory.fill(HOLDN, 0, <usize>MAX_THREADS);
-  seq = 0; cursor = 0; effDirty = true; inherit = priorityInheritance;
+  seq = 0; cursor = 0; effDirty = true; inherit = priorityInheritance; anyPending = false;
   ncores = eightCores ? 8 : 4; setCoreCount(ncores); handoff = wakeHandoff; nwoke = 0; holds = 0; outMask = 0;
 }
 // @ts-ignore: decorator
@@ -58,7 +59,7 @@ function held(t: KThread): bool {
 }
 // u blocked, yielded or exited: those that stood back for it go on
 function holdersGo(u: KThread): void {
-  for (let i = 0; i < MAX_THREADS && holds > 0; i++) if (holdOf(i) == u.index + 1) unhold(i);
+  for (let i = 0; i < threadTop && holds > 0; i++) if (holdOf(i) == u.index + 1) unhold(i);
 }
 // An SVC begins: the threads it makes ready are noted for the hand-off
 export function schedSvcBegin(): void { nwoke = 0; }
@@ -74,6 +75,7 @@ export function schedReady(t: KThread): void {
 // t yielded: behind the threads of its priority. any = YieldToAnyThread: lower-priority threads of the core get a turn
 export function schedYield(t: KThread, any: bool): void {
   t.rqSeq = ++seq; t.yieldAny = any;
+  if (any) anyPending = true;
   flag(t.runCore);
   if (holds) holdersGo(t);
 }
@@ -89,11 +91,11 @@ export function schedLeft(t: KThread): void {
 function computeEff(): void {
   if (!effDirty) return;
   effDirty = false;
-  for (let i = 0; i < MAX_THREADS; i++) { const t = thr(i); if (t.used) t.eff = t.prio; }
+  for (let i = 0; i < threadTop; i++) { const t = thr(i); if (t.used) t.eff = t.prio; }
   if (!inherit) return;
   for (let pass = 0; pass < 8; pass++) {
     let changed = false;
-    for (let i = 0; i < MAX_THREADS; i++) {
+    for (let i = 0; i < threadTop; i++) {
       const w = thr(i);
       if (!w.used || w.wowner < 0 || w.waitKind != WK_LOCK) continue;
       const o = thr(w.wowner);
@@ -109,7 +111,7 @@ function computeEff(): void {
 // The thread core c should run among those queued on it. A thread that yielded to any thread stands back once.
 function pickLocal(c: i32): KThread | null {
   let best: KThread | null = null, stoodBack: KThread | null = null;
-  for (let i = 0; i < MAX_THREADS; i++) {
+  for (let i = 0; i < threadTop; i++) {
     const t = thr(i);
     if (!t.used || !t.ready || t.runCore != c) continue;
     if (holds && held(t)) continue;
@@ -121,7 +123,7 @@ function pickLocal(c: i32): KThread | null {
 // An idle core takes a ready thread that its own core keeps waiting, if the thread's mask allows this core
 function steal(c: i32): KThread | null {
   let best: KThread | null = null;
-  for (let i = 0; i < MAX_THREADS; i++) {
+  for (let i = 0; i < threadTop; i++) {
     const t = thr(i);
     if (!t.used || t.state != KthreadS.Runnable || t.runCore == c || !((t.mask >> c) & 1)) continue;
     if (pickLocal(t.runCore) == t) continue;   // its core is about to run it
@@ -144,24 +146,45 @@ export function scheduleCore(c: i32): KThread | null {
   if (t.state == KthreadS.Runnable) t.m.step(KthreadE.Schedule);
   setCur(c, t.index);
   // those that stood back for this turn compete again at the core's next scheduling point
-  for (let i = 0; i < MAX_THREADS; i++) {
-    const u = thr(i);
-    if (u.used && u.yieldAny && u.runCore == c) { u.yieldAny = false; flag(c); }
+  if (anyPending) {
+    anyPending = false;
+    for (let i = 0; i < threadTop; i++) {
+      const u = thr(i);
+      if (!u.used || !u.yieldAny) continue;
+      if (u.runCore == c) { u.yieldAny = false; flag(c); } else anyPending = true;
+    }
   }
   return t;
 }
 // Green threads: the next core in rotation that has a thread to run
 export function scheduleNext(): KThread | null {
+  // One scan says which cores have a ready thread queued or could take one that waits for another core (steal's
+  // test): a core with neither has nothing to choose from, and its scheduling point is only "idle" (what
+  // scheduleCore does when it finds nothing), without its two scans. Not while threads stand back: their holds end
+  // inside the scans.
+  let busy: u32 = 0xFFFFFFFF;
+  computeEff();
+  if (!holds) {
+    busy = 0;
+    for (let i = 0; i < threadTop; i++) {
+      const t = thr(i);
+      if (!t.used) continue;
+      const s = t.state;
+      if (s == KthreadS.Runnable) busy |= <u32>t.mask | (<u32>1 << t.runCore);
+      else if (s == KthreadS.Running) busy |= <u32>1 << t.runCore;
+    }
+  }
   for (let pass = 0; pass < 2; pass++) {
     for (let i = 0; i < ncores; i++) {
       const c = (cursor + i) % ncores;
       if ((outMask >> c) & 1) continue;   // its thread is out on a helper
+      if (!((busy >> c) & 1)) { store<u8>(RESCHED + <usize>c, 0); setCur(c, -1); continue; }
       const t = scheduleCore(c);
       if (t != null) { cursor = (c + 1) % ncores; return t; }
     }
     // nothing to run but threads that stand back (the one they stand back for cannot run either): they go on
     if (!holds || outMask) break;   // (a thread out on a helper still runs: those that stand back for it wait)
-    for (let i = 0; i < MAX_THREADS; i++) unhold(i);
+    for (let i = 0; i < threadTop; i++) unhold(i);
   }
   return null;
 }
@@ -182,9 +205,22 @@ export function schedContended(c: i32): bool {
   const t = thr(i);
   if (!t.used || t.state != KthreadS.Running || holds) return true;
   computeEff();
-  for (let k = 0; k < MAX_THREADS; k++) {
+  for (let k = 0; k < threadTop; k++) {
     const u = thr(k);
     if (u.used && u != t && u.state == KthreadS.Runnable && u.runCore == c && u.eff <= t.eff) return true;
+  }
+  return false;
+}
+export function schedHolding(): bool { return preemptHold != 0; }
+// Is a thread ready on a core other than t's, here (not out on a helper Worker)? On hardware it would run beside t;
+// the poll back-off (backoff.ts) asks before it lets t spin on.
+export function schedOthersReady(t: KThread): bool {
+  const c = t.runCore;
+  for (let i = 0; i < threadTop; i++) {
+    const u = thr(i);
+    if (!u.used || !u.ready || u.runCore == c) continue;
+    if (((outMask >> u.runCore) & 1) && cur(u.runCore) == i) continue;
+    return true;
   }
   return false;
 }
@@ -219,12 +255,12 @@ export function schedMustSwitch(t: KThread): bool {
 // t's time slice ran out: threads of its priority on its core take turns
 export function schedSliceEnded(t: KThread): void {
   if (t.state != KthreadS.Running) return;
-  if (holds) for (let i = 0; i < MAX_THREADS; i++) if (holdOf(i) == t.index + 1) {   // a slice of the thread they stand back for is used
+  if (holds) for (let i = 0; i < threadTop; i++) if (holdOf(i) == t.index + 1) {   // a slice of the thread they stand back for is used
     const n = load<u8>(HOLDN + <usize>i);
     if (n <= 1) unhold(i); else store<u8>(HOLDN + <usize>i, n - 1);
   }
   computeEff();
-  for (let i = 0; i < MAX_THREADS; i++) {
+  for (let i = 0; i < threadTop; i++) {
     const u = thr(i);
     if (u.used && u != t && u.state == KthreadS.Runnable && u.runCore == t.runCore && u.eff == t.eff && !(holds && held(u))) {
       t.m.step(KthreadE.Preempt); t.rqSeq = ++seq; flag(t.runCore);
@@ -235,7 +271,7 @@ export function schedSliceEnded(t: KThread): void {
 export function schedCurrent(c: i32): i32 { return c >= 0 && c < ncores ? cur(c) : -1; }
 // Any thread ready on any core
 export function schedAnyReady(): bool {
-  for (let i = 0; i < MAX_THREADS; i++) if (thr(i).used && thr(i).ready) return true;
+  for (let i = 0; i < threadTop; i++) if (thr(i).used && thr(i).ready) return true;
   return false;
 }
 // t's ideal core or mask changed: a ready thread moves to the core it now belongs on

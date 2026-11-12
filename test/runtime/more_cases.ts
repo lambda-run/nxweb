@@ -2,6 +2,7 @@
 // stopping and restarting processes. Shared by run.mts (Node) and web/worker.ts (browser); no Node APIs.
 import { Runtime, type RuntimeOptions } from "../../src/glue/rt_runtime.ts";
 import { range } from "../../src/glue/rt_layout.ts";
+import { asm, adr, ldr, b, bne, cbnz, movz, svc, dec, load, store, MOV_W0_W1, type Item } from "./a64_asm.ts";
 import { layoutFor, SPACE } from "../../src/glue/rt_process.ts";
 import { makeLargeNso, type LargeNso } from "./large_nso.ts";
 import type { A64CacheStore } from "../../src/glue/a64_host.ts";
@@ -200,6 +201,39 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     const line = rt.red.find(l => l.includes("an atomic access at a misaligned address") && l.includes("guest pc 0x" + at.toString(16)));
     ok(!!line, "shared: a red line that names the misaligned atomic access and its guest pc: " + rt.red.join(" | "));
     return ["shared memory: " + line!.slice(0, 200)];
+  });
+
+  // ---- the poll back-off ----
+  test("poll back-off (RuntimeOptions.pollBackoff): a thread that yields until another has finished; beside a worker that computes the worker gets the turns, beside one that sleeps the poller sleeps too; the poller is at most 250 us late, the result is the same, and without the option nothing changes", async () => {
+    // main: start the worker on core 1; do { yield } until the worker has set the flag; ExitProcess(0)
+    const main: Item[] = [adr(1, "worker"), movz(2, 0), adr(3, "flag"), movz(4, 44), movz(5, 1), svc(0x08), MOV_W0_W1, svc(0x09), adr(20, "flag"),
+      "poll", load(9, 20), cbnz(9, "done"), movz(0, 0), svc(0x0B), b("poll"), "done", movz(0, 0), svc(0x07)];
+    const flagged: Item[] = [adr(20, "flag"), movz(9, 1), store(9, 20), svc(0x0A)];
+    const computes = asm([...main, "worker", ldr(19, "n"), "work", dec(19), bne("work"), ...flagged], { n: 400000n, flag: 0n });   // 400,000 budget units: 40 ms of guest time
+    const sleeps = asm([...main, "worker", ldr(0, "n"), svc(0x0B), ...flagged], { n: 5000000n, flag: 0n });                         // SleepThread(5 ms)
+    const run = (image: Uint8Array, o: RuntimeOptions) => {
+      const rt = new Runtime(env.mods, o), base: number = (rt as any).nextBase;
+      ok(rt.loadFlat(image, { base, entry: base, stack_top: base + 0x20000 }), "load failed");
+      const r = rt.run();
+      eq([r.stop?.kind, r.stop?.code], ["exit", 0], "the stop: " + rt.red.join(" | "));
+      eq(rt.red, [], "red lines");
+      const lines = rt.exitLines(), v = { yields: rt.stats.svcs - 4, slices: rt.stats.slices, ns: Number(BigInt.asUintN(64, rt.k.kernel_guest_ns())), on: rt.pollBackoff, lines };
+      rt.dispose();
+      return v;
+    };
+    const lines: string[] = [];
+    for (const [what, image, budget] of [["computes", computes, 200], ["sleeps", sleeps, 100000]] as [string, Uint8Array, number][]) {
+      const off = run(image, { budget }), on = run(image, { budget, pollBackoff: true }), again = run(image, { budget, pollBackoff: true });
+      ok(!off.on && on.on, "off by default on the deterministic clock, on when asked for");
+      eq([again.yields, again.slices, again.ns], [on.yields, on.slices, on.ns], `${what}: the same run twice`);
+      ok(on.yields * 4 < off.yields, `${what}: ${on.yields} yields with the back-off, ${off.yields} without`);
+      ok(on.ns <= off.ns + 300000, `${what}: the process ended at ${on.ns} ns of guest time with the back-off, at ${off.ns} without`);
+      ok(on.lines.some(l => /poll back-off on: [1-9]\d* yields made sleeps/.test(l)) && on.lines.some(l => /waits: yields \d+ \(\d+ made sleeps\)/.test(l)), `${what}: the report says what the back-off did:\n${on.lines.join("\n")}`);
+      lines.push(`worker ${what}: ${off.yields} yields in ${off.slices} slices, ended at ${(off.ns / 1e6).toFixed(3)} ms of guest time; with the back-off ${on.yields} yields in ${on.slices} slices, ended at ${(on.ns / 1e6).toFixed(3)} ms`);
+    }
+    const wall = (o: RuntimeOptions) => { const rt = new Runtime(env.mods, { clock: "wall", ...o }), on = rt.pollBackoff; rt.dispose(); return on; };
+    ok(wall({}) && !wall({ pollBackoff: false }), "on by default on the wall clock, off when turned off");
+    return lines;
   });
 
   // ---- stop and start again ----

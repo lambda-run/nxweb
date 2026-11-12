@@ -9,6 +9,7 @@ import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, sch
 import { syncInit, expire, nextDeadline, wakeClockWaiters } from "./sync";
 import { clockInit, clockSetNow, clockFreeze, clockReasons, guestNs, guestTicks, hostTimeOf, entropySeed, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
+import { boInit, boSet, boOn, boClockRead, boThreadNew, boScheduled, boWorked, statsPtr, statSvc, statWait, waitSvcOf, waitClass, STAT_STRIDE } from "./backoff";
 import { ringInit, ringClear, ringEnter, ringLeave, ringResume, ringTotal, ringCopy } from "./ring";
 import { svc, procInit, setMainThread, isMainThread, threadExit, stopProcess, stopReason, exitCode, STOP_NONE, STOP_EXIT, STOP_KILL,
   hostEventNew, hostDupReadable, hostEventSignal, hostEventClear, closeHandle, clockWait } from "./svc";
@@ -32,7 +33,7 @@ const F_NO_HANDOFF: u64 = 16;  // ... without the wake hand-off
 export function kernel_init(cfg: usize): i32 {
   kLock();
   const flags: u64 = cfg ? load<u64>(cfg, 112) : 0;
-  handlesInit(); threadsInit(); syncInit(); ringInit();
+  handlesInit(); threadsInit(); syncInit(); ringInit(); boInit();
   schedInit(!(flags & F_NO_INHERIT), (flags & F_CORES8) != 0, (flags & (F_CORES8 | F_NO_HANDOFF)) == F_CORES8);
   clockInit((flags & F_SWITCH2) != 0);
   procInit(cfg ? load<u64>(cfg, 104) : 0, cfg ? load<u64>(cfg, 120) : 0);
@@ -54,7 +55,7 @@ export function kernel_create_main_thread(entry: u64, stackTop: u64): u32 {
   if (t != null) {
     h = hNew(O_THREAD, <u32>t.index);
     t.handle = h; t.setX(1, h);
-    ringClear(t);
+    ringClear(t); boThreadNew(t.index);
     setMainThread(t);
     t.m.step(KthreadE.Start); schedReady(t);
   }
@@ -75,11 +76,14 @@ export function kernel_svc(n: i32, ctx: usize): i32 {
       lineStart("[RED] kernel: svc "); putx(n); puts(" from a context that is not a running thread: "); putx(ctx); lineEnd();
       act = ACT_SWITCH;
     } else {
+      const w = waitSvcOf(n), cls = w >= 0 ? waitClass(<i64>t.x(w ? 3 : 0), w == 0) : 0;
       ringEnter(t, n);
       schedSvcBegin();
       svc(t, n);
       ringLeave(t, t.waitKind != 0, stopReason != STOP_NONE || !t.used || t.exited);
       act = stopReason != STOP_NONE ? ACT_STOP : schedMustSwitch(t) ? ACT_SWITCH : ACT_CONTINUE;
+      statSvc(t.index, n);
+      if (w >= 0 && act != ACT_STOP) statWait(t, w, cls, t.waitKind != 0);
     }
   }
   kUnlock();
@@ -90,7 +94,7 @@ export function kernel_svc(n: i32, ctx: usize): i32 {
 export function kernel_schedule(): usize {
   kLock();
   const t = stopReason == STOP_NONE ? scheduleNext() : null;
-  if (t != null) ringResume(t);
+  if (t != null) { ringResume(t); if (boOn()) boScheduled(t); }
   kUnlock();
   return t != null ? t.ctx : 0;
 }
@@ -98,7 +102,7 @@ export function kernel_schedule(): usize {
 export function kernel_schedule_core(core: i32): usize {
   kLock();
   const t = stopReason == STOP_NONE && core >= 0 && core < coreCount() ? scheduleCore(core) : null;
-  if (t != null) ringResume(t);
+  if (t != null) { ringResume(t); if (boOn()) boScheduled(t); }
   kUnlock();
   return t != null ? t.ctx : 0;
 }
@@ -112,9 +116,17 @@ export function kernel_core_contended(core: i32): i32 { return schedContended(co
 export function kernel_preempt(ctx: usize): void {
   kLock();
   const t = threadOfCtx(ctx);
-  if (t != null) schedSliceEnded(t);
+  if (t != null) { schedSliceEnded(t); if (boOn()) boWorked(t); }
   kUnlock();
 }
+// The poll back-off (backoff.ts; README "Poll back-off"): on != 0, a thread that yields again and again without
+// getting anywhere, or polls with timed waits under 20 us, sleeps up to 250 us at a time instead. Off after
+// kernel_init. For an embedder whose guest threads share one host thread and whose clock is the wall clock.
+export function kernel_poll_backoff(on: i32): void { kLock(); boSet(on != 0); kUnlock(); }
+// Per-thread counters (backoff.ts: SVCs by number, waits by timeout class and result, what the back-off did):
+// kernel_stats_stride() bytes for each thread record, from kernel_stats_ptr()
+export function kernel_stats_ptr(): usize { return statsPtr(); }
+export function kernel_stats_stride(): u32 { return <u32>STAT_STRIDE; }
 // A host function runs guest code on the current thread (on 1, off 0): until off, a running thread is not switched
 // away from at an SVC because a better one became ready; it still blocks (the embedder reports that as a fault)
 export function kernel_preempt_hold(on: i32): void { kLock(); schedPreemptHold(on != 0); kUnlock(); }
@@ -165,7 +177,7 @@ export function kernel_host_time_of(guestDeadline: u64): u64 { return hostTimeOf
 export function kernel_guest_ns(): u64 { kLock(); const v = guestNs(); kUnlock(); return v; }
 // The system counter, for the translator's `mrs cntpct_el0`. While kernel_clock_reasons() has bit 1 (background) a
 // guest read must wait: make the thread yield instead of reading.
-export function kernel_guest_ticks(): u64 { kLock(); const v = guestTicks(); kUnlock(); return v; }
+export function kernel_guest_ticks(): u64 { kLock(); boClockRead(); const v = guestTicks(); kUnlock(); return v; }
 export function kernel_seed_entropy(seed: u64): void { entropySeed(seed); }
 // `mrs cntpct_el0` of the running thread whose context block is at ctx (saved with pc = the instruction itself, the
 // translator's cntYield): while the background freeze holds, the thread waits for the clock and KERNEL_ACT_SWITCH is

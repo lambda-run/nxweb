@@ -4,9 +4,10 @@
 // result is written into the thread's saved context when the wait ends.
 import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { R_TIMEOUT, WAITERS_BIT, FOREVER, ld32, st32, cas32 } from "./base";
-import { KThread, thr, MAX_THREADS, threadFree, threadOfHandle, WK_LOCK, WK_CONDVAR, WK_ADDRESS, WK_SYNC, WK_SLEEP, WK_CLOCK } from "./thread";
+import { KThread, thr, threadTop, threadFree, threadOfHandle, WK_LOCK, WK_CONDVAR, WK_ADDRESS, WK_SYNC, WK_SLEEP, WK_CLOCK } from "./thread";
 import { O_THREAD, O_EVENT_R, hType, hObj, evRetain, evRelease, evSignaled } from "./handle";
-import { schedReady, schedLeft, schedChanged } from "./sched";
+import { schedReady, schedLeft, schedChanged, schedOthersReady, schedHolding } from "./sched";
+import { boOn, boPoll, boWake, statWake, POLL_NS } from "./backoff";
 import { guestNs, guestTicks } from "./clock";
 
 export const PENDING: u64 = u64.MAX_VALUE;   // block(): the thread now waits; its result comes later
@@ -42,6 +43,11 @@ export function syncSignaled(ref: u32): bool {
 // ---- wait primitives ----
 // Suspend t until woken or timed out (ns < 0 forever, 0 = an immediate timeout). PENDING when it now waits.
 export function block(t: KThread, kind: u32, ns: i64): u64 {
+  // the poll back-off (backoff.ts): a short timed wait in a run of them waits longer
+  if (ns > 0 && ns < POLL_NS && boOn() && !schedHolding()) ns = boPoll(t, ns, schedOthersReady(t));
+  return blockFor(t, kind, ns);
+}
+export function blockFor(t: KThread, kind: u32, ns: i64): u64 {
   t.wseq = ++wseq;
   if (ns == 0) return R_TIMEOUT;
   const now = guestNs();
@@ -55,6 +61,8 @@ export function block(t: KThread, kind: u32, ns: i64): u64 {
 // objects go; a wait for the clock (GetSystemTick in the background) reports the tick.
 export function wake(t: KThread, res: u64): void {
   const kind = t.waitKind;
+  statWake(t, res == R_TIMEOUT);
+  if (boOn()) boWake(t, res == R_TIMEOUT);
   if (kind == WK_SYNC) {
     t.setX(0, res); t.setX(1, t.widx >= 0 ? <u64>t.widx : 0);
     const n = t.wn; t.wn = 0;
@@ -70,7 +78,7 @@ export function wake(t: KThread, res: u64): void {
 // WK_LOCK matches by lock address, WK_CONDVAR by key, WK_ADDRESS by address
 export function pick(kind: u32, a: u64): KThread | null {
   let b: KThread | null = null;
-  for (let i = 0; i < MAX_THREADS; i++) {
+  for (let i = 0; i < threadTop; i++) {
     const t = thr(i);
     if (!t.used || t.waitKind != kind || (kind == WK_CONDVAR ? t.wkey : t.waddr) != a) continue;
     if (b == null || t.prio < b.prio || (t.prio == b.prio && t.wseq < b.wseq)) b = t;
@@ -79,7 +87,7 @@ export function pick(kind: u32, a: u64): KThread | null {
 }
 export function waiters(kind: u32, a: u64): i32 {
   let n = 0;
-  for (let i = 0; i < MAX_THREADS; i++) {
+  for (let i = 0; i < threadTop; i++) {
     const t = thr(i);
     if (t.used && t.waitKind == kind && (kind == WK_CONDVAR ? t.wkey : t.waddr) == a) n++;
   }
@@ -93,7 +101,7 @@ export function lockHandoff(addr: u64): void {
   if (w == null) { st32(addr, 0); return; }
   const more = waiters(WK_LOCK, addr) > 1;
   st32(addr, w.wtag | (more ? WAITERS_BIT : 0));
-  for (let i = 0; i < MAX_THREADS; i++) {   // the others now wait for w
+  for (let i = 0; i < threadTop; i++) {   // the others now wait for w
     const t = thr(i);
     if (t.used && t != w && t.waitKind == WK_LOCK && t.waddr == addr) t.wowner = w.index;
   }
@@ -138,7 +146,7 @@ export function addressSignal(addr: u64, count: i32): void {
 export function wakeSyncWaiters(ref: u32): void {
   for (;;) {
     let b: KThread | null = null, bi = 0;
-    for (let i = 0; i < MAX_THREADS; i++) {
+    for (let i = 0; i < threadTop; i++) {
       const t = thr(i);
       if (!t.used || t.waitKind != WK_SYNC || (b != null && t.wseq > b.wseq)) continue;
       for (let k = 0; k < t.wn; k++) if (t.wobj(k) == ref) { b = t; bi = k; break; }
@@ -150,7 +158,7 @@ export function wakeSyncWaiters(ref: u32): void {
 export function wakeClockWaiters(): void {
   for (;;) {
     let b: KThread | null = null;
-    for (let i = 0; i < MAX_THREADS; i++) {
+    for (let i = 0; i < threadTop; i++) {
       const t = thr(i);
       if (t.used && t.waitKind == WK_CLOCK && (b == null || t.wseq < b.wseq)) b = t;
     }
@@ -163,7 +171,7 @@ export function wakeClockWaiters(): void {
 // The earliest deadline of a waiting thread (guest ns), FOREVER when none has one
 export function nextDeadline(): u64 {
   let d = FOREVER;
-  for (let i = 0; i < MAX_THREADS; i++) { const t = thr(i); if (t.used && t.waitKind && t.deadline < d) d = t.deadline; }
+  for (let i = 0; i < threadTop; i++) { const t = thr(i); if (t.used && t.waitKind && t.deadline < d) d = t.deadline; }
   return d;
 }
 // The guest clock moved: end the waits whose deadline has come, earliest deadline first, then in wait order.
@@ -174,7 +182,7 @@ export function expire(): void {
   if (now < minDl) return;   // no deadline has come: nothing to scan
   for (;;) {
     let b: KThread | null = null;
-    for (let i = 0; i < MAX_THREADS; i++) {
+    for (let i = 0; i < threadTop; i++) {
       const t = thr(i);
       if (!t.used || !t.waitKind || t.deadline > now) continue;
       if (b == null || t.deadline < b.deadline || (t.deadline == b.deadline && t.wseq < b.wseq)) b = t;

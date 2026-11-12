@@ -48,9 +48,16 @@ export interface RuntimeOptions {
   // is one red line and the run goes on without helpers. Default 0: nothing of it exists.
   helpers?: number;
   helperSpawn?: HelperSpawn;
+  helperMinMs?: number;               // ... or when its slices average at least this many milliseconds per exit (default 0.25)
   helperMinUnits?: number;            // a thread goes out when its running average of budget units per exit (SVC, host call, slice end) is at least this (default 20000)
   helperSlices?: number;              // slices a helper runs on end before it gives the thread back unasked (default 64)
   helperCheck?: boolean;              // tests: kernel_check() after every exit taken from a helper (a red line when it is not 0)
+  // The kernel's poll back-off (src/kernel/README.md, "Poll back-off"): a guest thread that yields again and again
+  // without getting anywhere, or polls with timed waits under 20 us, sleeps 10 to 250 us at a time instead of taking
+  // this thread's time from the threads that work and from the event loop. Default: on with the wall clock, off with
+  // the deterministic one (there a run is a function of the executed budget alone; true turns it on there as well).
+  // false: off (the page: ?backoff=0).
+  pollBackoff?: boolean;
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
   // Guest loads and stores below GUARD_BASE (the host area but the two ranges the guest is handed pointers into:
@@ -156,6 +163,11 @@ export const FOREVER_NS = FOREVER;
 const PC_YIELD = BigInt(GUEST.pcYield), PC_EXIT = BigInt(GUEST.pcExit), PC_SPECIAL = 0xFFFF_FF00n, PC_SPECIAL_END = 0xFFFF_FFFFn, M32 = 0xFFFF_FFFFn;
 const PC_CALLBACK = 0xFFFF_FFD0n;   // x30 of a guest function a host function calls: its return ends the nested run
 const START_NAME = "<rt.start>";
+const SVC_NAMES: Record<number, string> = { 0x01: "SetHeapSize", 0x04: "MapMemory", 0x05: "UnmapMemory", 0x06: "QueryMemory", 0x08: "CreateThread", 0x09: "StartThread", 0x0A: "ExitThread", 0x0B: "SleepThread",
+  0x0C: "GetThreadPriority", 0x0D: "SetThreadPriority", 0x0E: "GetThreadCoreMask", 0x0F: "SetThreadCoreMask", 0x10: "GetCurrentProcessorNumber", 0x11: "SignalEvent", 0x12: "ClearEvent", 0x16: "CloseHandle",
+  0x17: "ResetSignal", 0x18: "WaitSynchronization", 0x19: "CancelSynchronization", 0x1A: "ArbitrateLock", 0x1B: "ArbitrateUnlock", 0x1C: "WaitProcessWideKeyAtomic", 0x1D: "SignalProcessWideKey",
+  0x1E: "GetSystemTick", 0x25: "GetThreadId", 0x26: "Break", 0x27: "OutputDebugString", 0x29: "GetInfo", 0x2C: "MapPhysicalMemory", 0x2D: "UnmapPhysicalMemory", 0x32: "SetThreadActivity",
+  0x33: "GetThreadContext3", 0x34: "WaitForAddress", 0x35: "SignalToAddress", 0x45: "CreateEvent" };
 // (module (import "env" "host_call" (func)) (func (export "f") call 0)): the table entry every stub pc maps to
 const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0,
   2, 0x11, 1, 3, 0x65, 0x6E, 0x76, 9, 0x68, 0x6F, 0x73, 0x74, 0x5F, 0x63, 0x61, 0x6C, 0x6C, 0, 0,
@@ -300,6 +312,13 @@ export class Runtime {
   private tickHooks: ((now: bigint) => void)[] = [];
   private deadlineFns: ((now: bigint) => bigint)[] = [];
   private hostDepth = 0;             // > 0 while a host function runs (guest calls go to the thread in the core)
+  // For exitLines(): per guest thread (kernel thread record, 256) what ran in its slices; host calls by family
+  // (4 a thread: NVN, nn::, other); and what an exit costs, timed on one exit in 16
+  private xs = { hostN: new Uint32Array(1024), hostMs: new Float64Array(1024), slices: new Uint32Array(256), sliceMs: new Float64Array(256), units: new Float64Array(256), trMs: new Float64Array(256),
+    svcMs: 0, svcN: 0, hostPathMs: 0, hostPathN: 0, betweenMs: 0, betweenN: 0, schedMs: 0, schedN: 0, since: 0 };
+  private famOf: number[] = [];      // by host function id: 0 NVN, 1 nn::, 2 other
+  private cpus: HostCpu[] = [];      // by thread record: the HostCpu its host functions get (it holds no state but the index)
+  private xg: WebAssembly.Global[] = [];   // the core's x0..x30
   times = { hostMs: 0 };               // time inside host functions (ms), for the per-frame breakdown
 
   constructor(mods: RuntimeModules, opts: RuntimeOptions = {}) {
@@ -364,6 +383,9 @@ export class Runtime {
       else if (layout.note) this.log("runtime: " + layout.note);
     } else if (this.k.kernel_init(0) !== 0) throw new Error("runtime: kernel_init refused the default layout");
 
+    this.pollBackoff = this.opts.pollBackoff ?? this.opts.clock === "wall";
+    if (this.pollBackoff) this.k.kernel_poll_backoff(1);
+
     this.a64 = new A64Host(mods.translator, mods.helpers, {
       memory: this.memory, mem64: m64, ...(shared ? { shared: true, memoryMaxPages: m64 ? MEM64_MAX_PAGES : 65536 } : {}),
       // the entry bitmap covers the first 256 MB of the code region, wherever the layout puts it
@@ -380,6 +402,7 @@ export class Runtime {
       },
     });
     this.core = this.a64.core;
+    for (let i = 0; i < 31; i++) this.xg.push(this.core["x" + i]);
     this.a64.keepBytes = !!opts.cache;
     // every stub pc maps to one thunk that calls hostCall(); the stub region is inside the pc map, outside the code window
     const thunkModule = new WebAssembly.Module(THUNK);
@@ -395,6 +418,7 @@ export class Runtime {
     this.argsPtr = this.r.rt_nvn_args(this.r.rt_ctx_scratch());
     if (this.opts.helpers) this.hpStart(thunkModule);
   }
+  readonly pollBackoff: boolean;      // RuntimeOptions.pollBackoff as it took effect
   private regs!: { args_x(ptr: number): void; args_xd(ptr: number): void; set_d0(bits: bigint): void };
   private argsPtr = 0;
   // What every AssemblyScript module on this memory imports as "env" (the memory, the log, and on a 64-bit memory the
@@ -967,7 +991,7 @@ export class Runtime {
   // `svc #n` in translated code: the registers are written back and pc is the instruction after the svc
   private svc(n: number): void {
     const c = this.core, ctx = this.cur;
-    this.stats.svcs++;
+    const timed = (++this.stats.svcs & 15) === 0, t0 = timed ? performance.now() : 0;
     if (this.flat && n === 0x1E) { c.x0.value = this.flatTick; this.flatTick += 1000n; return; }
     c.save_ctx(ctx);
     this.tick();
@@ -978,19 +1002,20 @@ export class Runtime {
     if (closing) for (const fn of this.closeHooks) fn(closing);
     if (act === ACT_CONTINUE) c.load_ctx(ctx);
     else { if (act !== ACT_SWITCH) this.stopFlag = true; c.pc.value = PC_YIELD; }   // translated code unwinds; the context holds the real pc
+    if (timed) { this.xs.svcMs += performance.now() - t0; this.xs.svcN++; }
   }
 
   // ---- host calls ----
-  private cpuApi(): HostCpu {
-    const c = this.core, rt = this, index = this.curIndex;
+  private cpuApi(index: number): HostCpu {
+    const c = this.core, rt = this, xg = this.xg;
     const act = (a: Omit<Action, typeof ACTION> & { kind: "jump" | "block" | "never" }): Action => ({ [ACTION]: a.kind, pc: a.pc, event: a.event, timeout: a.timeout, resume: a.resume });
     return {
       rt, threadIndex: index,
       get thread() { return index >= 0 ? rt.dv().getUint32(rt.threadInfo(index) + 28, true) : 0; },
       get lr() { return BigInt.asUintN(64, c.x30.value as bigint); },
-      x: (i: number) => BigInt.asUintN(64, c["x" + i].value as bigint),   // a wasm i64 global reads as a signed BigInt
-      w: (i: number) => Number((c["x" + i].value as bigint) & M32),
-      setX: (i: number, v: bigint | number) => { c["x" + i].value = BigInt.asUintN(64, BigInt(v)); },
+      x: (i: number) => BigInt.asUintN(64, xg[i].value as bigint),   // a wasm i64 global reads as a signed BigInt
+      w: (i: number) => Number((xg[i].value as bigint) & M32),
+      setX: (i: number, v: bigint | number) => { xg[i].value = BigInt.asUintN(64, BigInt(v)); },
       sp: () => BigInt.asUintN(64, c.sp.value as bigint),
       u8: () => rt.u8(), dv: () => rt.dv(),
       read: (addr, len) => rt.u8().slice(Number(addr), Number(addr) + len),
@@ -1020,20 +1045,41 @@ export class Runtime {
   // The thunk: pc is a stub address, registers are written back, x30 is where the guest wants to continue
   // The last host calls (all threads), for the fault report: which take-over answered what just before a fault
   private static readonly HOST_RING = 24;
-  private hostRing: { id: number; thread: number; x: bigint[]; lr: bigint; out: bigint }[] = [];
+  private ringI = new Int32Array(Runtime.HOST_RING * 2);       // id, thread record
+  private ringX = new BigUint64Array(Runtime.HOST_RING * 6);   // x0..x3 and x30 as the function left them, x0 as the guest got it
+  private ringN = 0;
+  private get hostRing(): { id: number; thread: number; x: bigint[]; lr: bigint; out: bigint }[] {
+    const R = Runtime.HOST_RING, out = [];
+    for (let k = Math.max(0, this.ringN - R); k < this.ringN; k++) { const o = k % R, q = 6 * o; out.push({ id: this.ringI[2 * o], thread: this.ringI[2 * o + 1], x: [0, 1, 2, 3].map(i => this.ringX[q + i]), lr: this.ringX[q + 4], out: this.ringX[q + 5] }); }
+    return out;
+  }
+  private family(id: number): number {
+    let name = "";
+    try { name = this.handlers[id]?.name ?? this.ld.hostFunction(id).name; } catch { /* no such stub */ }
+    return this.famOf[id] = name.startsWith("nvn") ? 0 : name.startsWith("nn") || name.includes("2nn") ? 1 : 2;
+  }
   private hostCall(): void {
     const c = this.core, pc = Number(c.pc.value as bigint), id = (pc - STUBS.base) >>> 2;   // a stub's pc: in the host area
-    this.stats.hostCalls++;
+    const index = this.curIndex, xs = this.xs, xg = this.xg;
+    const timed = (++this.stats.hostCalls & 15) === 0;
     const t0 = performance.now();
-    const cpu = this.cpuApi();
+    const cpu = index >= 0 ? this.cpus[index] ??= this.cpuApi(index) : this.cpuApi(index);
     let res: HostResult;
     this.hostDepth++;
+    const t1 = timed ? performance.now() : 0;
     try { res = this.hostCallBody(cpu, id, pc); } finally { this.hostDepth--; }
-    const rec = { id, thread: this.curIndex, x: [0, 1, 2, 3].map(i => cpu.x(i)), lr: cpu.lr, out: 0n };
+    const t2 = timed ? performance.now() : 0;
+    const a0: bigint = xg[0].value, a1: bigint = xg[1].value, a2: bigint = xg[2].value, a3: bigint = xg[3].value, lr: bigint = xg[30].value;
     if (res !== SKIP) this.finishHostCall(res as HostResult, cpu, pc);
-    rec.out = BigInt.asUintN(64, c.x0.value as bigint);
-    if (this.hostRing.push(rec) > Runtime.HOST_RING) this.hostRing.shift();
-    this.times.hostMs += performance.now() - t0;
+    const o = this.ringN++ % Runtime.HOST_RING, q = 6 * o, rx = this.ringX;
+    this.ringI[2 * o] = id; this.ringI[2 * o + 1] = index;
+    rx[q] = a0; rx[q + 1] = a1; rx[q + 2] = a2; rx[q + 3] = a3; rx[q + 4] = lr; rx[q + 5] = xg[0].value;
+    const dt = performance.now() - t0;
+    this.times.hostMs += dt;
+    const f = ((index & 255) << 2) + (this.famOf[id] ?? this.family(id));
+    xs.hostN[f]++;
+    if (!this.hostDepth) xs.hostMs[f] += dt;   // (a host function called from a guest callback of another: in the outer one's time)
+    if (timed) { xs.hostPathMs += dt - (t2 - t1); xs.hostPathN++; }
   }
   private hostCallBody(cpu: HostCpu, id: number, pc: number): HostResult | typeof SKIP {
     const c = this.core;
@@ -1278,8 +1324,9 @@ export class Runtime {
     if (this.state === "Ready") { r.rt_start(); if (this.opts.clock === "wall") this.wallStart = performance.now(); }
     else if (this.state === "Paused") { r.rt_resume(); this.pauseAsked = false; }
     else if (this.state !== "Running") throw new Error(`runtime: run() in state ${this.state}`);
-    const t0 = performance.now(), wall = this.opts.clock === "wall";
+    const t0 = performance.now(), wall = this.opts.clock === "wall", xs = this.xs;
     let slices = 0;
+    xs.since = 0;
     for (;;) {
       if (this.pauseAsked || (limit.slices !== undefined && slices >= limit.slices) || (limit.ms !== undefined && performance.now() - t0 >= limit.ms)) {
         if (this.hp) this.hpRecallAll();   // a paused process has every thread's context here
@@ -1289,11 +1336,12 @@ export class Runtime {
       if (limit.yieldMs !== undefined && performance.now() - t0 >= limit.yieldMs) { this.stats.runMs += performance.now() - t0; return { state: this.state, yielded: true }; }
       let budget = this.opts.budget;
       // wall clock: time has moved since the last turn whatever happened in between (an idle wait, the event loop)
-      if (wall) this.ticked(r.rt_clock_set(this.wallNs()));
+      const nowW: bigint = wall ? r.rt_clock_set(this.wallNs()) : 0n;   // (read once a turn: each read is a clock call and two BigInts)
+      if (wall) this.ticked(nowW);
       // what attached parts must be ticked at (the audio sinks' next buffer release)
       let dl = FOREVER;
       if (this.deadlineFns.length) {
-        let now: bigint = wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_now(0);
+        let now: bigint = wall ? nowW : r.rt_clock_now(0);
         dl = this.nextDeadline(now);
         if (!wall && dl <= now) { this.ticked(now); dl = this.nextDeadline(now); if (dl <= now) dl = now + BigInt(this.opts.nsPerUnit); }
         if (!wall && dl !== FOREVER) { const room = (dl - now + BigInt(this.opts.nsPerUnit) - 1n) / BigInt(this.opts.nsPerUnit); if (room < BigInt(budget)) budget = Number(room); }
@@ -1301,7 +1349,7 @@ export class Runtime {
       const hasExt = this.exts.length > 0;
       let ext = { next: 0n, overdue: false, nextDone: 0n };
       if (hasExt) {
-        const now: bigint = wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_now(0);
+        const now: bigint = wall ? nowW : r.rt_clock_now(0);
         ext = this.pumpExternals(now);
         if (!wall) {
           // deterministic: guest time does not pass the time of a wait whose outside thing has not happened yet
@@ -1310,7 +1358,9 @@ export class Runtime {
         }
       }
       const hp = this.hp;
+      const timedS = (this.stats.slices & 15) === 0, tk = timedS ? performance.now() : 0;
       const ctx: number = hp === null ? k.kernel_schedule() : this.hpNext();
+      if (!ctx) xs.since = 0;   // an idle turn is not the cost of a switch
       if (hp !== null && !ctx) {
         if (this.hpFault) { this.hpReportFault(); break; }
         if (this.stopFlag || k.kernel_stop_reason()) { this.finish(); break; }
@@ -1365,9 +1415,13 @@ export class Runtime {
       r.rt_clock_slice_begin(budget);
       slices++; this.stats.slices++;
       let trap: unknown;
-      const hx = hp === null ? 0 : this.stats.svcs + this.stats.hostCalls, ht = hp === null ? 0 : performance.now();
+      const hx = hp === null ? 0 : this.stats.svcs + this.stats.hostCalls, si = this.curIndex & 255, tr0 = this.a64.translateNs, ts = performance.now();
+      if (timedS) { xs.schedMs += ts - tk; xs.schedN++; }
+      if (xs.since) { xs.betweenMs += ts - xs.since; xs.betweenN++; }
       try { c.run(); } catch (e) { trap = e ?? new Error("unknown exception"); }
-      if (hp !== null) this.hpNote(this.curIndex, budget - Math.max(0, c.budget.value as number), this.stats.svcs + this.stats.hostCalls - hx, performance.now() - ht);
+      const te = xs.since = performance.now(), used = budget - Math.max(0, c.budget.value as number);
+      xs.slices[si]++; xs.sliceMs[si] += te - ts; xs.units[si] += used; xs.trMs[si] += (this.a64.translateNs - tr0) / 1e6;
+      if (hp !== null) this.hpNote(this.curIndex, used, this.stats.svcs + this.stats.hostCalls - hx, te - ts);
       this.ticked(wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value));
       if (trap === undefined) {
         const p = c.pc.value as bigint;
@@ -1508,9 +1562,10 @@ export class Runtime {
   private hpHold = 0;                             // > 0: no thread goes out (every helper is being called back)
   private hpFault: HelperExit | null = null;      // the first fault a helper reported: run() stops with it
   private hpNo = new Map<number, number>();       // thread index -> handle: target of SetThreadActivity / GetThreadContext3, never out
-  private hpThreads = new Map<number, { handle: number; avg: number; cool: number; tls: number; jobs: number; mainUnits: number; mainMs: number; outUnits: number[]; outMs: number[] }>();
+  private hpThreads = new Map<number, { handle: number; avg: number; avgMs?: number; cool: number; tls: number; jobs: number; mainUnits: number; mainMs: number; outUnits: number[]; outMs: number[] }>();
   private hpExits: number[] = new Array(EXIT_NAMES.length).fill(0);
   private hpMinUnits = 20000;
+  private hpMinMs = 0.25;   // or this many milliseconds per exit on average (RuntimeOptions.helperMinMs)
   private hpMaxSlices = 64;
   private hpSw2: boolean | undefined;
   private hpClockKey = "";
@@ -1529,6 +1584,7 @@ export class Runtime {
     const noRoom = !why && scratch.some(a => !a) ? "helpers.wasm has no setScratch or no room for the helpers' scratch blocks (rebuild: npm run rt:build)" : "";
     if (why || noRoom) { this.log(`[RED] runtime: helpers: ${n} asked for, none started: ${why || noRoom}`); return; }
     if (o.helperMinUnits !== undefined) this.hpMinUnits = o.helperMinUnits;
+    if (o.helperMinMs !== undefined) this.hpMinMs = o.helperMinMs;
     if (o.helperSlices !== undefined) this.hpMaxSlices = Math.max(1, o.helperSlices);
     const hp = this.hp = new HelperPool({ n, spawn: o.helperSpawn!, a64: this.a64, thunkModule, thunk: this.thunk, pcYield: PC_YIELD, scratch });
     this.a64.onUnit = (u, mod) => {
@@ -1559,6 +1615,7 @@ export class Runtime {
   private hpNote(index: number, units: number, exits: number, ms: number): void {
     const st = this.hpStat(index);
     st.avg = st.avg * 0.75 + (units / (exits + 1)) * 0.25;
+    st.avgMs = (st.avgMs ?? 0) * 0.75 + (ms / (exits + 1)) * 0.25;   // budget units count calls and loop turns, not work: a thread in long straight code has few units and much time
     if (st.cool > 0) st.cool--;
     st.mainUnits += units; st.mainMs += ms;
   }
@@ -1567,7 +1624,7 @@ export class Runtime {
   private hpEligible(ctx: number, index: number): boolean {
     if (this.hpHold || this.flat || this.nested) return false;
     const st = this.hpThreads.get(index);
-    if (!st || st.avg < this.hpMinUnits || st.cool > 0) return false;
+    if (!st || (st.avg < this.hpMinUnits && (st.avgMs ?? 0) < this.hpMinMs) || st.cool > 0) return false;
     const info = this.threadInfo(index), dv = this.dv(), handle = dv.getUint32(info + 28, true);
     if (st.handle !== handle) {   // the thread record went to another thread: it earns its own average
       const fresh = st.handle === 0;
@@ -1752,6 +1809,54 @@ export class Runtime {
   }
   // What the helpers did, for the report: totals, each helper, exits by reason, and each guest thread's share of the
   // time spent in translated code with where it ran
+  // What the exits from translated code are and what they cost, for the report: totals, the cost of one exit as
+  // timed here, what the poll back-off did, and per guest thread where its slices' time went, its SVCs by number,
+  // its waits by timeout and result (the kernel's counters, src/kernel/backoff.ts) and its host calls by family.
+  exitLines(max = 12): string[] {
+    if (this.disposed || !this.stats.slices) return [];
+    const xs = this.xs, k = this.k, dv = this.dv(), st = this.stats;
+    const base = Number(k.kernel_stats_ptr()), stride: number = k.kernel_stats_stride();
+    const kc = (i: number, slot: number) => dv.getUint32(base + i * stride + 4 * slot, true);
+    const sec = st.runMs / 1000 || 1, per = (n: number) => (n / sec).toFixed(0), us = (ms: number, n: number) => n ? (1000 * ms / n).toFixed(2) : "-";
+    const svcUs = xs.svcN ? 1000 * xs.svcMs / xs.svcN : 0, hostUs = xs.hostPathN ? 1000 * xs.hostPathMs / xs.hostPathN : 0;
+    const pathMs = (st.svcs * svcUs + st.hostCalls * hostUs) / 1000 + xs.betweenMs;
+    let parks = 0, longer = 0, addedNs = 0n, allMs = 0;
+    for (let i = 0; i < 256; i++) { parks += kc(i, 188); longer += kc(i, 189); addedNs += dv.getBigUint64(base + i * stride + 760, true); allMs += xs.sliceMs[i]; }
+    const libc = this.a64.libcStats().reduce((a, x) => a + x.calls, 0);
+    const out = [
+      `${st.svcs} SVCs (${per(st.svcs)} a second), ${st.hostCalls} host calls (${per(st.hostCalls)} a second), ${st.slices} slices (${per(st.slices)} a second) in ${st.runMs.toFixed(0)} ms of the run loop; ${allMs.toFixed(0)} ms inside slices`,
+      `one exit, timed on 1 in 16: an SVC ${us(xs.svcMs, xs.svcN)} us (save_ctx, clock, kernel_svc, load_ctx); a host call ${us(xs.hostPathMs, xs.hostPathN)} us without the host function's own work; between two slices ${us(xs.betweenMs, xs.betweenN)} us (clock, the attached parts' ticks, of it kernel_schedule and load_ctx ${us(xs.schedMs, xs.schedN)} us)`,
+      `the exit path in all: about ${pathMs.toFixed(0)} ms, ${(100 * pathMs / (st.runMs || 1)).toFixed(1)}% of the run loop's time (SVCs ${(st.svcs * svcUs / 1000).toFixed(0)} ms, host calls ${(st.hostCalls * hostUs / 1000).toFixed(0)} ms, between slices ${xs.betweenMs.toFixed(0)} ms)`,
+      `poll back-off ${this.pollBackoff ? "on" : "off"}: ${parks} yields made sleeps, ${longer} short timed waits made longer, ${(Number(addedNs) / 1e6).toFixed(0)} ms of sleep added in all`,
+      `C library intrinsics (wasm, no exit): ${libc} calls`,
+    ];
+    const rows: { i: number; ms: number }[] = [];
+    for (let i = 0; i < 256; i++) if (xs.slices[i]) rows.push({ i, ms: xs.sliceMs[i] });
+    rows.sort((a, b) => b.ms - a.ms);
+    if (rows.length) out.push("by guest thread (its slices here: host functions' own time + translation without the host-call path + translation + the rest, which is translated code and the exit path):");
+    const FAM = ["NVN", "nn::", "other"], WAITS = ["SleepThread", "WaitSynchronization", "WaitProcessWideKeyAtomic", "WaitForAddress"], CLS = ["zero", "<1 ms", "<5 ms", "longer", "no timeout"];
+    for (const { i, ms } of rows.slice(0, max)) {
+      const c = Number(k.kernel_thread_ctx(i)), tls = c ? Number(dv.getBigUint64(c + 0x120, true)) : this.hotThreads.get(i)?.tls ?? 0, nm = this.threadName(tls);
+      const hN = [0, 1, 2].map(f => xs.hostN[4 * i + f]), hMs = [0, 1, 2].map(f => Math.max(0, xs.hostMs[4 * i + f] - xs.hostN[4 * i + f] * hostUs / 1000)), host = hMs[0] + hMs[1] + hMs[2], rest = Math.max(0, ms - host - xs.trMs[i]);
+      let svcs = 0;
+      const hist: [number, number][] = [];
+      for (let n = 0; n < 128; n++) { const v = kc(i, n); if (v) { svcs += v; hist.push([n, v]); } }
+      hist.sort((a, b) => b[1] - a[1]);
+      const exits = svcs + hN[0] + hN[1] + hN[2];
+      out.push(`${(100 * ms / (allMs || 1)).toFixed(1).padStart(5)}% thread #${i}${nm ? ` "${nm}"` : ""}: ${ms.toFixed(0)} ms in ${xs.slices[i]} slices = host functions ${host.toFixed(0)} ms (${FAM.map((f, j) => `${f} ${hMs[j].toFixed(0)}`).join(", ")}) + translation ${xs.trMs[i].toFixed(0)} ms + ${rest.toFixed(0)} ms; ${xs.units[i].toFixed(0)} budget units (${xs.units[i] ? (1e6 * rest / xs.units[i]).toFixed(0) : "-"} ns a unit, ${(xs.units[i] / (exits + xs.slices[i])).toFixed(0)} units an exit)`);
+      out.push(`         ${exits} exits (${per(exits)} a second): host calls ${FAM.map((f, j) => `${f} ${hN[j]}`).join(", ")}; ${svcs} SVCs${hist.length ? ": " + hist.slice(0, 6).map(([n, v]) => `${SVC_NAMES[n] ?? "svc"} 0x${n.toString(16).padStart(2, "0")} x${v}`).join(", ") : ""}`);
+      const ws: string[] = [];
+      for (let w = 0; w < 4; w++) for (let cl = 0; cl < 5; cl++) {
+        const [woke, timedOut, atOnce] = [0, 1, 2].map(r => kc(i, 128 + (w * 5 + cl) * 3 + r)), n = woke + timedOut + atOnce;
+        if (!n) continue;
+        ws.push(w === 0 && cl === 0 ? `yields ${n}${timedOut ? ` (${timedOut} made sleeps)` : ""}` : `${WAITS[w]} ${CLS[cl]} ${n} (woke ${woke}, timed out ${timedOut}, at once ${atOnce})`);
+      }
+      if (ws.length) out.push(`         waits: ${ws.join("; ")}`);
+      if (kc(i, 188) || kc(i, 189)) out.push(`         back-off: ${kc(i, 188)} yields made sleeps, ${kc(i, 189)} waits made longer, ${(Number(dv.getBigUint64(base + i * stride + 760, true)) / 1e6).toFixed(0)} ms added`);
+    }
+    if (rows.length > max) out.push(`(${rows.length - max} more threads, ${(100 * rows.slice(max).reduce((a, r) => a + r.ms, 0) / (allMs || 1)).toFixed(1)}% of the time in slices; a thread record that went to a new thread keeps counting)`);
+    return out;
+  }
   helperTotals(): { mainMs: number; helperMs: number[]; jobs: number } {
     const helperMs: number[] = [];
     let mainMs = 0;

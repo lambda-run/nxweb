@@ -6,8 +6,9 @@ import { R_OK, R_OUT_OF_RES, R_BAD_MEMORY, R_BAD_HANDLE, R_TIMEOUT, R_CANCELLED,
 import { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION, hNew, hType, hObj, hPeek, hFree, evNew, evRelease, evSignaled, evSet, evRetain } from "./handle";
 import { KThread, thr, MAX_THREADS, coreCount, threadNew, threadFree, threadOfHandle, threadsAlive, C_SP, C_PC, C_NZCV, C_FPCR, C_FPSR, C_TPIDR, C_V,
   WK_LOCK, WK_CONDVAR, WK_ADDRESS, WK_SYNC, WK_SLEEP, WK_CLOCK } from "./thread";
-import { schedReady, schedYield, schedLeft, schedChanged, schedMoved } from "./sched";
-import { PENDING, block, wake, lockHandoff, condSignal, addressWaiters, addressSignal, wakeSyncWaiters, syncOpen, syncClose, syncSignaled,
+import { schedReady, schedYield, schedLeft, schedChanged, schedMoved, schedOthersReady, schedHolding } from "./sched";
+import { boOn, boYield, boClockRead, boThreadNew } from "./backoff";
+import { PENDING, block, blockFor, wake, lockHandoff, condSignal, addressWaiters, addressSignal, wakeSyncWaiters, syncOpen, syncClose, syncSignaled,
   refOfThread, refOfEvent } from "./sync";
 import { guestTicks, clockReasons, entropy64, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
@@ -170,6 +171,7 @@ export function svc(t: KThread, n: i32): void {
     }
     case 0x1E: {  // GetSystemTick. A guest read of the counter waits while the app is in the background
       if (clockReasons() & (1 << REASON_BACKGROUND)) { block(t, WK_CLOCK, -1); return; }
+      boClockRead();
       t.setX(0, guestTicks()); t.setX(1, guestTicks());
       return;
     }
@@ -199,7 +201,7 @@ export function svc(t: KThread, n: i32): void {
         lineStart("[RED] kernel: CreateThread: no free "); puts(nt == null ? "thread slot" : "handle"); lineEnd();
         r = R_OUT_OF_RES; break;
       }
-      nt.handle = h; ringClear(nt);
+      nt.handle = h; ringClear(nt); boThreadNew(nt.index);
       t.setX(1, h);
       break;
     }
@@ -213,6 +215,11 @@ export function svc(t: KThread, n: i32): void {
     case 0x0B: {  // SleepThread(x0 ns); 0, -1, -2 are the yields
       const ns = <i64>x0;
       if (ns > 0) { block(t, WK_SLEEP, ns); return; }
+      // the poll back-off (backoff.ts): a yield in a run of yields that gets nowhere sleeps a little instead
+      if (boOn() && !schedHolding()) {
+        const s = boYield(t, schedOthersReady(t));
+        if (s) { blockFor(t, WK_SLEEP, <i64>s); return; }
+      }
       t.m.step(KthreadE.Yield);
       schedYield(t, ns == -2);
       return;

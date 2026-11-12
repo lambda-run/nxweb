@@ -481,6 +481,35 @@ run():
 - **Pause**: `run({ slices, ms })` or `requestPause()` returns in `Paused` at a slice boundary; `run()` resumes.
 - The glue decides nothing about who runs or who wakes; it only reports what happened to the kernel.
 
+### What an exit from translated code costs, and the poll back-off
+
+Every SVC, host call and slice end leaves translated code for this thread's JavaScript and the kernel. The report's
+section "exits from translated code" (`Runtime.exitLines`) says how many there are, what one costs as timed on one
+exit in 16 (an SVC; a host call without the host function's own work; the turn between two slices, and of it
+`kernel_schedule` with `load_ctx`), and per guest thread: its slices' time as host functions' own time (NVN, nn::,
+other) + translation + the rest (translated code and the exit path), ns per budget unit, its SVCs by number, its
+waits by timeout class and result (the kernel's counters, `src/kernel/backoff.ts`) and its host calls by family.
+The counters cost two stores an SVC and two `performance.now()` a slice.
+
+`node test/runtime/exit_bench.mts` (a flat guest that makes a million exits of one kind; Node 24 in the build VM,
+64-bit memory, ns per exit, deterministic / wall clock):
+
+| exit | before | now | what changed |
+|---|---|---|---|
+| trivial SVC (GetCurrentProcessorNumber) | 116 / 255 | 142 / 279 | nothing (the counters and the 1-in-16 timing are the difference); 2.3 M SVCs in the 336 s run this was measured for: under a second |
+| host call of a function that does nothing | 1342 / 1332 | 341 / 340 | one `HostCpu` per thread instead of one (twenty closures) per call; registers through an array of the core's globals; the last-calls ring in typed arrays |
+| yield of a lone thread (SVC, switch, `kernel_schedule`, `load_ctx`) | 2762 / 3138 | 680 / 939 | the scheduler's and the wait queues' scans end at the highest thread record ever used, a core that has nothing queued and nothing to take is passed by without its two scans, the yield-to-any scan runs only when a thread asked for it; the run loop reads the wall clock once a turn |
+| the same beside 90 sleeping threads | 3297 / 3602 (with the counters) | 880 / 1135 | the same |
+
+Not done, because measured too small to matter: a partial `save_ctx` / `load_ctx` for SVCs that return at once (the
+whole trivial SVC is 0.14 us).
+
+**Poll back-off** (`RuntimeOptions.pollBackoff`; `src/kernel/README.md`, "Poll back-off"): a thread that yields again
+and again without getting anywhere, or polls with sleeps and timed waits under 20 us, sleeps 10 to 250 us at a time
+instead. On by default with the wall clock (the page; `?backoff=0` turns it off), off with the deterministic clock
+unless asked for (there a run stays a function of the executed budget). The report's line "poll back-off on: N yields
+made sleeps, ..." and each thread's "back-off:" line say what it did.
+
 ## Host calls
 
 A stub is `stubBase + 4 * id` in the stub region. The region is **inside the pc map and outside the translator's

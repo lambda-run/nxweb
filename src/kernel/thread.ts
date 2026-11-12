@@ -107,10 +107,13 @@ export function threadOfHandle(h: u32, cur: KThread | null): KThread | null {
 }
 
 let nextId: u64 = 0x51;
+// One past the highest thread record this process has used: the records from here on were never used, so the
+// scheduler's and the wait queues' scans end here (a game has about a hundred threads, the table 256 records)
+export let threadTop: i32 = 0;
 export function threadsInit(): void {
   assert(offsetof<KThread>() <= CTX_OFF);
   memory.fill(POOL, 0, 315392);
-  nextId = 0x51;
+  nextId = 0x51; threadTop = 0;
 }
 export function threadLimit(): i32 { const s = tlsSlots(); return s < <u64>MAX_THREADS ? <i32>s : MAX_THREADS; }
 
@@ -123,6 +126,7 @@ export function threadNew(entry: u64, arg: u64, stackTop: u64, prio: i32, core: 
   if (i == lim || !commit(tlsSlotAddr(<u32>i) + TLS_SLOT)) return null;
   const t = thr(i);
   memory.fill(changetype<usize>(t), 0, STRIDE);
+  if (i >= threadTop) threadTop = i + 1;
   t.used = true; t.index = i;
   t.m.init(KTHREAD, <u32>i);
   t.id = nextId++;

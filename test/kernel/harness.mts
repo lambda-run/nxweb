@@ -65,6 +65,9 @@ export interface KernelExports extends KitExports {
   kernel_check(): number;
   kernel_svc_ring(index: number, out: number, cap: number): number;
   kernel_svc_total(index: number): number;
+  kernel_poll_backoff(on: number): void;
+  kernel_stats_ptr(): number;
+  kernel_stats_stride(): number;
 }
 
 export const defs: MachineDef[] = loadDefs();
