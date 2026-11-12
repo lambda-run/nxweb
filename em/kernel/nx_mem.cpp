@@ -59,6 +59,7 @@ uint64_t nx_mem_main_stack(uint64_t size) {
     g_maps.push_back(Map{kStack, size, 0, 0x0B});
     return kStack + size;
 }
+uint64_t nx_mem_alias_mapped(void) { return (uint64_t)g_alias_mapped.load(); }
 uint64_t nx_mem_heap_size(void) { std::lock_guard<std::mutex> l(g_lock); return g_heap_cur; }
 
 // Returns 1 when num is one of this file's SVCs (regs[0] = result), 0 otherwise

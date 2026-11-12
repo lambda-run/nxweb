@@ -204,10 +204,44 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
 
 // One line of progress (the boot harness prints it every 30 s): is the game still getting on
 extern _Atomic uint64_t nx_stat_svcs;
+// This process's resident and swapped memory in MB (Linux /proc; 0 elsewhere)
+void nx_rss_mb(int *rss, int *swap) {
+    *rss = *swap = 0; FILE *f = fopen("/proc/self/status", "r"); if (!f) return;
+    char l[160]; while (fgets(l, sizeof l, f)) { if (!strncmp(l, "VmRSS:", 6)) *rss = atoi(l + 6) / 1024; else if (!strncmp(l, "VmSwap:", 7)) *swap = atoi(l + 7) / 1024; }
+    fclose(f);
+}
+// Resident MB of the linear memory itself (the largest mapping: guest memory, Emscripten's heap, the registry), from /proc/self/smaps
+static int linear_rss_mb(void) {
+    FILE *f = fopen("/proc/self/smaps", "r"); if (!f) return 0;
+    char l[256]; unsigned long long a, b, best = 0; long rss = 0; int in = 0;
+    while (fgets(l, sizeof l, f)) {
+        if (sscanf(l, "%llx-%llx ", &a, &b) == 2 && strchr(l, '-') < l + 20 && l[0] != 'R') { in = b - a >= (8ull << 30); if (in && b - a > best) best = b - a; }
+        else if (in && !strncmp(l, "Rss:", 4)) rss += atol(l + 4);
+    }
+    fclose(f); return (int)(rss / 1024);
+}
+// Where the process's memory is, by kind of mapping (Linux): executable = compiled code, large = the linear memory, the rest by size class
+static void smaps_report(void) {
+    FILE *f = fopen("/proc/self/smaps", "r"); if (!f) return;
+    char l[256], perm[8] = ""; unsigned long long a, b, size = 0; long kb;
+    long exec = 0, lin = 0, big = 0, mid = 0, small = 0, file = 0; int nbig = 0, nmid = 0, nsmall = 0, isfile = 0;
+    while (fgets(l, sizeof l, f)) {
+        char p4[8]; unsigned long long off; char dev[16]; unsigned long ino;
+        if (sscanf(l, "%llx-%llx %7s %llx %15s %lu", &a, &b, p4, &off, dev, &ino) == 6) { size = b - a; snprintf(perm, sizeof perm, "%s", p4); isfile = ino != 0; }
+        else if (sscanf(l, "Rss: %ld kB", &kb) == 1) {
+            if (isfile) file += kb; else if (perm[2] == 'x') exec += kb; else if (size >= (8ull << 30)) lin += kb;
+            else if (size >= (64ull << 20)) { big += kb; nbig += kb > 0; } else if (size >= (1ull << 20)) { mid += kb; nmid += kb > 0; } else { small += kb; nsmall += kb > 0; }
+        }
+    }
+    fclose(f);
+    LOG("memory by mapping: linear memory %ld MB; executable (compiled code) %ld MB; anonymous >= 64 MB: %ld MB in %d; 1..64 MB: %ld MB in %d; < 1 MB: %ld MB in %d; files %ld MB", lin >> 10, exec >> 10, big >> 10, nbig, mid >> 10, nmid, small >> 10, nsmall, file >> 10);
+}
 void nx_progress(void) {
     double os[12] = {0}; nx_owner_stats((double)(uintptr_t)os);
     struct nx_stats s; nx_get_stats(&s); char w[64] = "?"; uint64_t sl = 0; int h = 0;
     for (int i = 0; i < g_ntrk && i < 64; i++) if (g_trk[i].handle == 0x1001) { nx_where(g_trk[i].pc, w, sizeof w); sl = g_trk[i].slices; h = g_trk[i].in_host; }
+    int rss, swp; nx_rss_mb(&rss, &swp);
+    LOG("memory: process %d MB resident (of it the linear memory %d MB) + %d MB swapped; guest: alias region %llu MB mapped, heap %llu MB set; translated wasm %llu MB", rss, linear_rss_mb(), swp, (unsigned long long)(nx_mem_alias_mapped() >> 20), (unsigned long long)(nx_mem_heap_size() >> 20), (unsigned long long)(s.unit_bytes >> 20));
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }
@@ -216,6 +250,9 @@ void nx_progress(void) {
 void svc_thread_dump(void);
 void nx_boot_report(const char *why) {
     static _Atomic int once; if (atomic_exchange(&once, 1)) return;
+    smaps_report();
+    nx_tr_job(5, 0); { double os[12] = {0}; os[11] = 1; nx_owner_stats((double)(uintptr_t)os); }   // where the JS side's memory is
+    if (getenv("NX_CACHE")) nx_tr_job(4, 0);   // keep what this run translated
     char b[2000]; nx_svc_counts(b, sizeof b);
     struct nx_stats s; nx_get_stats(&s);
     LOG("==== boot report: %s, %.1f s after the start", why, (now_ns() - g_t0_ns) / 1e9);

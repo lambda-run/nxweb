@@ -29,8 +29,13 @@ static uint8_t *load(const char *path, uint32_t *len) {
     fclose(f); *len = (uint32_t)n; return p;
 }
 static int g_secs;
-void nx_progress(void);
-static void *watchdog(void *arg) { (void)arg; for (int t = 0; t < g_secs; t += 30) { sleep(30); nx_progress(); } char w[64]; snprintf(w, sizeof w, "the time given (%d s) is over", g_secs); nx_boot_report(w); emscripten_force_exit(0); return NULL; }
+void nx_progress(void); void nx_rss_mb(int *rss, int *swap);
+static void *watchdog(void *arg) { (void)arg; for (int t = 0; t < g_secs; t += 10) {
+        sleep(10); nx_progress();
+        int rss, swp; nx_rss_mb(&rss, &swp);   // the VM is shared: stop before this process pushes the others into swap
+        int lim = getenv("NX_RSS_LIMIT_MB") ? atoi(getenv("NX_RSS_LIMIT_MB")) : 5200;
+        if (rss + swp > lim) { char w[96]; snprintf(w, sizeof w, "memory limit: %d MB resident + %d MB swapped is over %d MB", rss, swp, lim); nx_boot_report(w); emscripten_force_exit(5); }
+    } char w[64]; snprintf(w, sizeof w, "the time given (%d s) is over", g_secs); nx_boot_report(w); emscripten_force_exit(0); return NULL; }
 
 int main(int argc, char **argv) {
     if (argc < 5) die("usage: p4 <exefs dir> <translator> <helpers> <loader> [seconds]");
@@ -68,7 +73,8 @@ int main(int argc, char **argv) {
         uint64_t pc = (uint64_t)boot[41 + i]; int os = i == (int)boot[38];
         uint64_t c0 = now_ns();
         uint64_t r = nx_guest_call(pc, os ? self : 0, 0, 0);
-        LOG("start %d/%d: %s%s returned %#llx after %.0f ms", i + 1, (int)boot[40], nx_where(pc, w, sizeof w), os ? " (nnosInitialize)" : "", (unsigned long long)r, (now_ns() - c0) / 1e6);
+        int rss, swp; nx_rss_mb(&rss, &swp);
+        LOG("start %d/%d: %s%s returned %#llx after %.0f ms (process %d MB resident)", i + 1, (int)boot[40], nx_where(pc, w, sizeof w), os ? " (nnosInitialize)" : "", (unsigned long long)r, (now_ns() - c0) / 1e6, rss);
     }
     LOG("start: entering nnMain at %s", nx_where((uint64_t)boot[39], w, sizeof w));
     uint64_t io[8] = {0, self, 0, 0, 0, (uint64_t)boot[39], sp};

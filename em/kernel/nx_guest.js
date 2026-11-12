@@ -15,40 +15,51 @@ addToLibrary({
     return HEAPU32[(Number(HEAPU64[lay.pcmapBase / 8 + page]) + (pc % 65536 & 0xFFFC)) / 4];
   },
 
-  // instantiate the units this worker does not have yet
-  $nxSync__deps: ['$NX', 'nx_unit_count', 'nx_unit_bytes', 'nx_unit_len', 'nx_unit_base', 'nx_unit_nfuncs'],
-  $nxSync: function(t) {
-    const n = _nx_unit_count();
-    for (; t.n < n; t.n++) {
-      const p = _nx_unit_bytes(t.n), len = _nx_unit_len(t.n), base = _nx_unit_base(t.n);
-      const t0 = performance.now();
-      const mod = new WebAssembly.Module(HEAPU8.slice(p, p + len));
-      t.compileMs += performance.now() - t0;
-      const end = base + _nx_unit_nfuncs(t.n);   // only the cache stage of the gate publishes beyond the pre-sized table
-      if (end > t.table.length) t.table.grow(Math.max(end - t.table.length, 1 << 18), t.tramp);
-      new WebAssembly.Instance(mod, { cpu: t.core, hlp: t.hlp, env: Object.assign({ table_base: new WebAssembly.Global({ value: 'i32', mutable: false }, base) }, t.unitEnv) });
-      t.syncMs += performance.now() - t0; t.syncBytes += len;
-    }
+  // A worker instantiates a unit when it first calls into it (most guest threads run a small part of the code): every
+  // table slot it has not filled holds the trampoline, which lands in nxTranslate with the pc.
+  $nxUnit__deps: ['$NX', 'nx_unit_bytes', 'nx_unit_len', 'nx_unit_base', 'nx_unit_nfuncs'],
+  $nxUnit: function(t, k) {
+    if (t.have[k]) return;
+    const p = _nx_unit_bytes(k), len = _nx_unit_len(k), base = _nx_unit_base(k);
+    const t0 = performance.now();
+    const mod = new WebAssembly.Module(HEAPU8.slice(p, p + len));
+    t.compileMs += performance.now() - t0;
+    const end = base + _nx_unit_nfuncs(k);
+    if (end > t.table.length) t.table.grow(Math.max(end - t.table.length, 1 << 18), t.tramp);
+    new WebAssembly.Instance(mod, { cpu: t.core, hlp: t.hlp, env: Object.assign({ table_base: new WebAssembly.Global({ value: 'i32', mutable: false }, base) }, t.unitEnv) });
+    t.have[k] = 1; t.n++;
+    t.syncMs += performance.now() - t0; t.syncBytes += len;
   },
+  // the unit that holds table slot idx, instantiated here; false when the registry has none yet
+  $nxNeed__deps: ['$nxUnit', 'nx_unit_count', 'nx_unit_base', 'nx_unit_nfuncs'],
+  $nxNeed: function(t, idx) {
+    for (let k = t.bases.length, n = _nx_unit_count(); k < n; k++) { const b = _nx_unit_base(k); t.bases.push(b); t.ends.push(b + _nx_unit_nfuncs(k)); }
+    for (let k = t.bases.length - 1; k >= 0; k--) if (idx >= t.bases[k] && idx < t.ends[k]) { nxUnit(t, k); return true; }
+    return false;
+  },
+  // every published unit (the gate's measurement)
+  $nxSync__deps: ['$nxUnit', 'nx_unit_count'],
+  $nxSync: function(t) { for (let k = 0, n = _nx_unit_count(); k < n; k++) nxUnit(t, k); },
 
   // the `translate` import of this worker's core: called through table slot 0 when the pc map has no function for pc,
   // or when it names a slot this worker has not filled yet (every empty slot holds the same trampoline)
-  $nxTranslate__deps: ['$nxSync', '$nxPcMap', 'nx_translate'],
+  $nxTranslate__deps: ['$nxNeed', '$nxPcMap', 'nx_translate'],
   $nxTranslate: function(t, pcBig) {
     const pc = Number(BigInt.asUintN(64, pcBig));
-    nxSync(t);
     let idx = nxPcMap(pc);
-    if (idx <= 1 || t.table.get(idx) === t.tramp) { idx = _nx_translate(pc); nxSync(t); }
+    if (idx > 1 && (t.table.get(idx) !== t.tramp || nxNeed(t, idx))) return idx;
+    idx = _nx_translate(pc);   // behind the translator's lock: what it returns is published
     if (idx <= 1) throw new Error('no translatable code at pc 0x' + pc.toString(16));
+    if (!nxNeed(t, idx)) throw new Error('the unit of table slot ' + idx + ' (pc 0x' + pc.toString(16) + ') is not in the registry');
     return idx;
   },
 
-  $nxThread__deps: ['$NX', '$nxSync', '$nxTranslate', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_note_pc', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
+  $nxThread__deps: ['$NX', '$nxTranslate', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_note_pc', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxThread: function() {
     if (NX.t) return NX.t;
     const mem = wasmMemory, t0 = performance.now();
     const bytes = (w) => HEAPU8.slice(_nx_mod_ptr(w), _nx_mod_ptr(w) + _nx_mod_len(w));
-    const t = { n: 0, syncMs: 0, syncBytes: 0, compileMs: 0 };
+    const t = { n: 0, syncMs: 0, syncBytes: 0, compileMs: 0, have: [], bases: [], ends: [] };
     t.table = new WebAssembly.Table({ element: 'anyfunc', initial: 2 });
     t.core = new WebAssembly.Instance(new WebAssembly.Module(bytes(0)), { env: { memory: mem, table: t.table, translate: (pc) => nxTranslate(t, pc) } }).exports;
     const hx = new WebAssembly.Instance(new WebAssembly.Module(bytes(1)), { env: { memory: mem, abort: () => { throw new Error('a64 helpers abort'); } } }).exports;
@@ -86,7 +97,6 @@ addToLibrary({
       }
     };
     NX.t = t;
-    nxSync(t);
     t.setupMs = performance.now() - t0;
     return t;
   },
@@ -160,6 +170,21 @@ addToLibrary({
       const a = m ? NX.ld.lookupIn(m.handle, UTF8ToString(Number(HEAPU64[q]))) : undefined;
       return a === undefined || NX.ld.stubId(a) >= 0 ? 0 : a;
     }
+    if (kind === 4) {   // write the translation cache (when something was translated since it was read): the units of each module
+      if (!NX.cacheDir || !NX.mods || h.translatedInsns === NX.cacheInsns) return 0;
+      const fs = require('fs'); let bytes = 0;
+      try { fs.mkdirSync(NX.cacheDir, { recursive: true });
+        for (const m of NX.mods) { const blob = h.exportCache(m.base, m.imageSize); if (blob.length <= 16) continue; fs.writeFileSync(NX.cacheDir + '/' + NX.cacheKey(m) + '.tmp', blob); fs.renameSync(NX.cacheDir + '/' + NX.cacheKey(m) + '.tmp', NX.cacheDir + '/' + NX.cacheKey(m)); bytes += blob.length; }
+      } catch (e) { err('[RED] translation cache: not written: ' + (e && e.message || e)); return 0; }
+      NX.cacheInsns = h.translatedInsns;
+      err('[loader] translation cache: ' + (bytes / 1048576).toFixed(1) + ' MB written to ' + NX.cacheDir);
+      return bytes;
+    }
+    if (kind === 5) {   // this realm's JS memory, for the report (Node)
+      if (typeof process === 'undefined' || !process.memoryUsage) return 0;
+      const m = process.memoryUsage(); err('[loader] translator realm: JS heap ' + (m.heapUsed >> 20) + ' MB, external ' + (m.external >> 20) + ' MB, array buffers ' + (m.arrayBuffers >> 20) + ' MB; units in its cache not yet used: ' + (h.cache ? new Set(h.cache.values()).size : '?'));
+      return 0;
+    }
     if (kind === 3) {   // dm_game_imports: does a module refer to a host name that starts with the prefix
       const p = UTF8ToString(pc);
       return NX.ld && NX.ld.hostFunctions().some(f => f.refs > 0 && f.name.startsWith(p)) ? 1 : 0;
@@ -170,6 +195,7 @@ addToLibrary({
       const u = h.units[NX.published], p = _malloc(u.bytes.length);
       HEAPU8.set(u.bytes, p);
       _nx_unit_publish(p, u.bytes.length, u.tableBase, u.pcs.length);
+      u.bytes = HEAPU8.subarray(p, p + u.bytes.length);   // one copy: the registry's (exportCache reads it from there)
     }
     return idx;
   },
@@ -288,6 +314,17 @@ addToLibrary({
     D[B + 39] = find('nnMain'); D[B + 40] = list.length;
     list.forEach((a, i) => { D[B + 41 + i] = a; });
     NX.ld = ld; NX.mods = set.modules;
+    // The translation cache (nxweb's: A64Host.exportCache / importCache blobs, one per module, keyed by the module's
+    // build id, its base and the translator's options). Node: files in the directory NX_CACHE names.
+    NX.cacheDir = typeof process !== 'undefined' && process.env && process.env.NX_CACHE || '';
+    NX.cacheKey = (m) => { let h = 5381; for (const ch of host.optionsKey()) h = (h * 33 ^ ch.charCodeAt(0)) >>> 0;
+      return m.name + '-' + Array.from(m.buildId.slice(0, 8), b => b.toString(16).padStart(2, '0')).join('') + '-' + m.base.toString(16) + '-' + h.toString(16) + '.a64cache'; };
+    NX.cacheInsns = 0;
+    if (NX.cacheDir) {
+      const fs = require('fs'); let units = 0, bytes = 0; const t0 = performance.now();
+      for (const m of set.modules) { let b = null; try { b = fs.readFileSync(NX.cacheDir + '/' + NX.cacheKey(m)); } catch (e) { continue; } units += host.importCache(new Uint8Array(b.buffer, b.byteOffset, b.length)); bytes += b.length; }
+      err('[loader] translation cache: ' + (units ? units + ' units, ' + (bytes / 1048576).toFixed(1) + ' MB from ' + NX.cacheDir + ' in ' + (performance.now() - t0).toFixed(0) + ' ms' : 'nothing in ' + NX.cacheDir + ' for these modules and options yet'));
+    }
     err('[loader] ' + set.modules.map(m => m.name + ' at 0x' + m.base.toString(16) + ' +0x' + m.imageSize.toString(16)).join(', ') + '; ' + nNames + ' host names registered, ' + hf.filter(f => f.refs).length + ' of ' + hf.length + ' stubs referred to, ' + set.unresolved.length + ' imports nothing answers');
   },
 });

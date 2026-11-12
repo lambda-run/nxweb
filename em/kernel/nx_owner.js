@@ -48,7 +48,8 @@ addToLibrary({
   },
   nx_owner_stats__proxy: 'sync',
   nx_owner_stats__sig: 'vd',
-  nx_owner_stats: function(out) { const s = globalThis.NXOWNER && globalThis.NXOWNER.stats; if (!s) return; HEAPF64[out / 8] = s.fsCalls; HEAPF64[out / 8 + 1] = s.fsPending; HEAPF64[out / 8 + 2] = s.fsRetry; HEAPF64[out / 8 + 3] = s.fsNs;
+  nx_owner_stats: function(out) { const s = globalThis.NXOWNER && globalThis.NXOWNER.stats; if (!s) return;
+    if (HEAPF64[out / 8 + 11] === 1 && typeof process !== 'undefined') { const m = process.memoryUsage(); err('[owner] main realm: JS heap ' + (m.heapUsed >> 20) + ' MB, external ' + (m.external >> 20) + ' MB, array buffers ' + (m.arrayBuffers >> 20) + ' MB'); } HEAPF64[out / 8] = s.fsCalls; HEAPF64[out / 8 + 1] = s.fsPending; HEAPF64[out / 8 + 2] = s.fsRetry; HEAPF64[out / 8 + 3] = s.fsNs;
     const o = globalThis.NXOWNER; HEAPF64[out / 8 + 4] = o.hostCalls; HEAPF64[out / 8 + 5] = o.hostNs; HEAPF64[out / 8 + 6] = o.hostPending; HEAPF64[out / 8 + 7] = o.presents;
     HEAPF64[out / 8 + 8] = o.hostStream.calls; HEAPF64[out / 8 + 9] = o.hostStream.bytes; HEAPF64[out / 8 + 10] = o.gfx ? o.gfx.stats.nvnCalls : 0; },
 });

@@ -151,7 +151,7 @@ def p4():
     sh([f"{W}/node_modules/.bin/esbuild", f"{R}/owner/owner.ts", "--bundle", "--platform=node", "--format=iife", "--global-name=NXOWN", f"--outfile={B}/owner.js", "--log-level=warning"])
     open(f"{B}/owner_pre.js", "w").write(open(f"{B}/owner.js").read() + open(f"{R}/owner/owner_pre.js").read())
     link(objs, f"{B}/p4.js", 64, ["-sERROR_ON_UNDEFINED_SYMBOLS=0", "--js-library", f"{R}/kernel/nx_guest.js", "--js-library", f"{R}/kernel/nx_owner.js", "--pre-js", f"{B}/a64_host.js", "--pre-js", f"{B}/owner_pre.js", f"-sGLOBAL_BASE={14 << 30}", f"-sINITIAL_MEMORY={16 << 30}",
-                                  "-sNODERAWFS=1", "-sENVIRONMENT=node,worker", "-sPTHREAD_POOL_SIZE=24", "-sEXPORTED_FUNCTIONS=_main,_malloc,_free", "-sSTACK_SIZE=1048576"])
+                                  "-sNODERAWFS=1", "-sENVIRONMENT=node,worker", "-sPTHREAD_POOL_SIZE=8", "-sEXPORTED_FUNCTIONS=_main,_malloc,_free", "-sSTACK_SIZE=1048576"])
 
 def p2():
     mem, env, gb = ARGS.mem, ARGS.env, ARGS.gb

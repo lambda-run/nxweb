@@ -26,6 +26,7 @@ int nx_mem_svc(int num, uint64_t *regs);
 void nx_mem_module(const char *name, uint64_t base, uint64_t size, uint64_t ro_off, uint64_t data_off);
 uint64_t nx_mem_main_stack(uint64_t size);        // maps the main thread's stack; returns its top
 uint64_t nx_mem_heap_size(void);
+uint64_t nx_mem_alias_mapped(void);
 
 // ---- unit registry and translator service (kernel/nx_units.cpp)
 // boot: NULL, or the game to load in the translator thread's realm before it serves (see nx_js_tr_init)
