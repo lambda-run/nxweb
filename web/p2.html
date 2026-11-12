@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8"><title>nxem proof 2</title>
+<pre id="out"></pre>
+<script>
+// ?args=a,b,c : the program's arguments (test/p2_main.c). Output goes to the console (the headless driver reads it) and the page.
+var nxSay = (s) => { console.log(s); document.getElementById("out").textContent += s + "\n"; };
+var say = nxSay, nxQ = new URLSearchParams(location.search);
+if (!crossOriginIsolated) say("[RED] the page is not cross-origin isolated: no shared memory");
+var Module = { arguments: (nxQ.get("args") ?? "").split(",").filter(Boolean), print: say, printErr: (s) => say("[err] " + s),
+               onAbort: (w) => say("[RED] abort: " + w), onExit: (c) => say("EXIT " + c) };
+addEventListener("error", (e) => say("[RED] page error: " + e.message));
+addEventListener("unhandledrejection", (e) => say("[RED] rejection: " + (e.reason?.message ?? e.reason)));
+</script>
+<script src="p2.js"></script>

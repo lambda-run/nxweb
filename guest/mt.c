@@ -4,10 +4,11 @@
 // svcWaitSynchronization. Entry at offset 0:
 //   x0 = struct shared * (zeroed by the host), x1 = main thread handle, x2 = threads, x3 = rounds, x4 = mode
 //   mode 0: mutex + counter;  mode 1: pure computation, nothing shared (throughput);  mode 2: LSE/exclusive atomic counter, no kernel
+//   mode 3: the same atomic increment on a 32-bit word at an ODD address (the game does this; a wasm atomic traps there)
 // Returns the counter (mode 0, 2) or the xor of the per-thread results (mode 1).
 typedef unsigned long u64; typedef unsigned int u32;
 #define WAITERS 0x40000000u
-struct shared { u32 mutex; u32 pad; volatile u64 counter; u64 atomic_counter; u64 lock_svcs; u64 per_thread[16]; u64 result[16]; u64 started; };
+struct shared { u32 mutex; u32 pad; volatile u64 counter; u64 atomic_counter; u64 lock_svcs; u64 per_thread[32]; u64 result[32]; u64 started; u64 mis[2]; };
 struct targ { u32 handle, idx; u64 rounds, mode, threads; struct shared *s; };
 
 #define SVC_ASM(n) "svc #" #n
@@ -63,6 +64,10 @@ static void work(struct targ *t) {
   } else if (t->mode == 1) {
     s->result[t->idx] = compute(0x9E3779B97F4A7C15ul * (t->idx + 1), t->rounds);
     s->per_thread[t->idx] = t->rounds;
+  } else if (t->mode == 3) {
+    u32 *odd = (u32 *)((char *)s->mis + 1);
+    for (u64 i = 0; i < t->rounds; i++) __atomic_fetch_add(odd, 1, __ATOMIC_SEQ_CST);
+    s->per_thread[t->idx] = t->rounds;
   } else {
     for (u64 i = 0; i < t->rounds; i++) __atomic_fetch_add(&s->atomic_counter, 1, __ATOMIC_SEQ_CST);
     s->per_thread[t->idx] = t->rounds;
@@ -70,10 +75,10 @@ static void work(struct targ *t) {
 }
 static void thread_entry(void *arg) { work(arg); svc_exit_thread(0, 0, 0, 0); for (;;) ; }
 
-static struct targ T[16];
-static char stacks[16][0x4000] __attribute__((aligned(16)));
+static struct targ T[32];
+static char stacks[32][0x4000] __attribute__((aligned(16)));
 __attribute__((section(".text.start"))) u64 guest_main(struct shared *s, u64 main_handle, u64 threads, u64 rounds, u64 mode) {
-  if (threads > 16) threads = 16;
+  if (threads > 32) threads = 32;
   for (u64 i = 0; i < threads; i++) { T[i].idx = (u32)i; T[i].rounds = rounds; T[i].mode = mode; T[i].threads = threads; T[i].s = s; }
   T[0].handle = (u32)main_handle;
   for (u64 i = 1; i < threads; i++) {
@@ -87,6 +92,7 @@ __attribute__((section(".text.start"))) u64 guest_main(struct shared *s, u64 mai
     svc_close(h, 0, 0, 0);
   }
   if (mode == 1) { u64 r = 0; for (u64 i = 0; i < threads; i++) r ^= s->result[i]; return r; }
+  if (mode == 3) return *(u32 *)((char *)s->mis + 1);
   return mode == 0 ? s->counter : s->atomic_counter;
 }
 // a function the host calls directly (nx_guest_call), as hle_bind_system_event calls nn::os::CreateSystemEvent

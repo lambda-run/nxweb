@@ -22,7 +22,8 @@ uint32_t nx_js_tr_translate(double pc);
 int nx_js_tid(void);
 
 // ---- registry (written by the translator thread only; readers take the count first)
-enum { NX_MAX_UNITS = 1 << 16, NX_TABLE_CAP = 1 << 18 };
+enum { NX_MAX_UNITS = 1 << 16 };
+static uint32_t g_table_cap = 1 << 18;   // slots of every thread's table; nx_set_table_cap before the first guest thread, or threads grow theirs when they sync
 typedef struct { uint8_t *bytes; uint32_t len, table_base, nfuncs; } nx_unit_t;
 static nx_unit_t g_units[NX_MAX_UNITS];
 static _Atomic uint32_t g_nunits;
@@ -33,7 +34,7 @@ _Atomic uint64_t nx_stat_translate_ns, nx_stat_translate_calls, nx_stat_unit_byt
 EMSCRIPTEN_KEEPALIVE void nx_unit_publish(double bytes_, uint32_t len, uint32_t table_base, uint32_t nfuncs) {
     uint8_t *bytes = (uint8_t *)(uintptr_t)bytes_;
     uint32_t i = atomic_load(&g_nunits);
-    if (i >= NX_MAX_UNITS || table_base + nfuncs > NX_TABLE_CAP) die("translated-unit registry or function table full (%u units, table index %u)", i, table_base + nfuncs);
+    if (i >= NX_MAX_UNITS || table_base + nfuncs > g_table_cap) die("translated-unit registry or function table full (%u units, table index %u)", i, table_base + nfuncs);
     g_units[i] = (nx_unit_t){bytes, len, table_base, nfuncs};
     nx_stat_unit_bytes += len;
     atomic_store(&g_nunits, i + 1);
@@ -42,7 +43,9 @@ EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_count(void) { return atomic_load(&g_nunits
 EMSCRIPTEN_KEEPALIVE double nx_unit_bytes(uint32_t i) { return (double)(uintptr_t)g_units[i].bytes; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_len(uint32_t i) { return g_units[i].len; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_base(uint32_t i) { return g_units[i].table_base; }
-EMSCRIPTEN_KEEPALIVE uint32_t nx_table_cap(void) { return NX_TABLE_CAP; }
+EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_nfuncs(uint32_t i) { return g_units[i].nfuncs; }
+EMSCRIPTEN_KEEPALIVE uint32_t nx_table_cap(void) { return g_table_cap; }
+EMSCRIPTEN_KEEPALIVE void nx_set_table_cap(uint32_t n) { g_table_cap = n; }
 EMSCRIPTEN_KEEPALIVE void nx_mod_set(int which, double p, uint32_t len) { g_wmod[which].p = (uint8_t *)(uintptr_t)p; g_wmod[which].len = len; }
 EMSCRIPTEN_KEEPALIVE double nx_mod_ptr(int which) { return (double)(uintptr_t)g_wmod[which].p; }
 EMSCRIPTEN_KEEPALIVE int nx_is64(void) { return sizeof(void *) == 8; }
@@ -106,7 +109,7 @@ EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
 
 // ---- thread entry: hle_thread.c's thread_main calls this on the new pthread, after StartThread
 #define NX_MAX_SEEN 64
-struct nx_seen { uint64_t entry; int js_tid; uintptr_t pt; } nx_seen[NX_MAX_SEEN]; _Atomic int nx_nseen;
+struct nx_seen { uint64_t entry; int js_tid; uintptr_t pt; } nx_seen[NX_MAX_SEEN]; _Atomic int nx_nseen;   // js_tid: an id of the worker's JS realm
 void nx_note_thread(uint64_t entry) { int i = atomic_fetch_add(&nx_nseen, 1); if (i < NX_MAX_SEEN) nx_seen[i] = (struct nx_seen){entry, nx_js_tid(), (uintptr_t)pthread_self()}; }
 void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp) {
     nx_note_thread(entry);

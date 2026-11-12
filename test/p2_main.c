@@ -2,6 +2,8 @@
 // guest thread, all on the one shared memory, with their SVCs answered by nxnative's C kernel (hle_thread.c).
 // The ARM64 guest is guest/mt.c; the translator is nxweb's (src/a64, shared mode), used as built by nxweb.
 // Usage: node p2.js <guest.bin> <translator.shared.wasm> <helpers.shared.wasm> <guest_add3 address> [mutex rounds] [compute rounds]
+//        [many: a third thread count for the mutex test, 0 = none] [mis|-: the misaligned-atomic case] [cache blob URL ...]
+// The cache blobs (browser only) are nxweb's translation cache entries for the real game: the Chrome gate's second half.
 #include "dm.h"
 #include "nx_port.h"
 #include <stdatomic.h>
@@ -15,6 +17,9 @@ uint32_t svc_thread_main_init(void);
 void nx_translator_start(const uint8_t *tr, uint32_t tr_len, const uint8_t *hlp, uint32_t hlp_len, uint64_t code_lo, uint64_t code_size);
 void nx_js_guest_run(uint64_t *io);
 void nx_js_thread_stats(double *out);
+void nx_js_thread_prepare(double *out);
+int nx_js_cache_publish(const char *url, double max_pages, double *out);
+void nx_set_table_cap(uint32_t n);
 void nx_note_thread(uint64_t entry);
 extern struct nx_seen { uint64_t entry; int js_tid; uintptr_t pt; } nx_seen[]; extern _Atomic int nx_nseen;
 extern _Atomic uint64_t nx_stat_translate_ns, nx_stat_translate_calls, nx_stat_unit_bytes, nx_stat_svcs;
@@ -30,7 +35,7 @@ uint32_t nx_unit_count(void);
 #define STACK_TOP 0x09200000ull
 #endif
 #define CODE_SPAN 0x00100000ull
-struct shared { uint32_t mutex, pad; uint64_t counter, atomic_counter, lock_svcs, per_thread[16], result[16], started; };
+struct shared { uint32_t mutex, pad; uint64_t counter, atomic_counter, lock_svcs, per_thread[32], result[32], started, mis[2]; };
 #define S ((struct shared *)(uintptr_t)DATA)
 
 // the SVCs of the test guest ABI that are not thread SVCs (nxweb docs/CONTRACT.md)
@@ -69,6 +74,15 @@ static uint64_t compute(uint64_t seed, uint64_t rounds) {
     return acc ^ x;
 }
 static int g_fail;
+// ---- gate: a thread that only builds its copy of everything in the registry, reports, and stays (its instances stay alive)
+static pthread_mutex_t gm = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t gc = PTHREAD_COND_INITIALIZER; static int g_prepared; static double g_prep[8];
+static void *prep_thread(void *arg) {
+    (void)arg; double st[8] = {0};
+    uint64_t t0 = now_ns(); nx_js_thread_prepare(st); st[5] = (now_ns() - t0) / 1e6;
+    pthread_mutex_lock(&gm); memcpy(g_prep, st, sizeof st); g_prepared++; pthread_cond_broadcast(&gc);
+    for (;;) pthread_cond_wait(&gc, &gm);
+    return NULL;
+}
 #define CHECK(c, ...) do { if (!(c)) { LOG("[RED] FAIL " __VA_ARGS__); g_fail = 1; } } while (0)
 static void *watchdog(void *arg) { (void)arg; sleep(240); LOG("[RED] FAIL no result after 240 s"); extern void svc_thread_dump(void); svc_thread_dump(); emscripten_force_exit(2); return NULL; }
 
@@ -103,7 +117,8 @@ int main(int argc, char **argv) {
     r = nx_guest_call(add3, 5, 7, 11); CHECK(r == 5 + 14 + 33, "nx_guest_call(guest_add3) = %llu", (unsigned long long)r);
     printf("%s host -> guest call: guest_add3(5, 7, 11) = %llu\n", r == 52 ? "ok  " : "FAIL", (unsigned long long)r);
 
-    for (int threads = 2; threads <= 4; threads += 2) {
+    int many = argc > 7 ? atoi(argv[7]) : 0, mis = argc > 8 && !strcmp(argv[8], "mis");
+    for (int threads = 2; threads; threads = threads == 2 ? 4 : threads == 4 ? many : 0) {
         uint64_t s0 = nx_stat_svcs;
         r = run(threads, mrounds, 0, &ms);
         int ok = r == (uint64_t)threads * mrounds && S->mutex == 0;
@@ -116,6 +131,11 @@ int main(int argc, char **argv) {
     CHECK(r == 4 * mrounds * 5, "atomic counter %llu", (unsigned long long)r);
     printf("%s guest atomic counter (no kernel), 4 guest threads x %llu: %llu, %.0f ms (%.1f M increments/s)\n", r == 4 * mrounds * 5 ? "ok  " : "FAIL", (unsigned long long)(mrounds * 5), (unsigned long long)r, ms, 4 * mrounds * 5 / ms / 1e3);
 
+    if (mis) {   // the game's misaligned LSE atomics: needs nxweb's translator with the lock-protected fallback
+        r = run(4, mrounds, 3, &ms);
+        CHECK(r == 4 * mrounds, "misaligned atomic counter %llu, want %llu", (unsigned long long)r, (unsigned long long)(4 * mrounds));
+        printf("%s guest atomic counter at an odd address, 4 guest threads x %llu: %llu, %.0f ms\n", r == 4 * mrounds ? "ok  " : "FAIL", (unsigned long long)mrounds, (unsigned long long)r, ms);
+    }
     // throughput: the same pure computation on 1, 2 and 4 guest threads (best of 3)
     uint64_t n0 = now_ns(); uint64_t nat = compute(0x9E3779B97F4A7C15ull, crounds); double nat_ms = (now_ns() - n0) / 1e6;
     double one = 0;
@@ -139,6 +159,28 @@ int main(int argc, char **argv) {
     for (int i = 0; i < n && i < 12; i++) printf(" %d", nx_seen[i].js_tid);
     printf("%s)\n", n > 12 ? " ..." : "");
     CHECK(distinct >= 2, "all guest threads ran on one worker");
+    // ---- the gate's second half: the game's real translated units through the registry, thread after thread
+    if (argc > 9) {
+        nx_set_table_cap(1u << 30);
+        double tot_bytes = 0, tot_funcs = 0; int units = 0;
+        for (int i = 9; i < argc; i++) {
+            double o[3] = {0}; int n = nx_js_cache_publish(argv[i], (double)(emscripten_get_heap_size() >> 16), o);
+            printf("cache blob %d: %d units, %.1f MB of wasm, %.0f functions (fetched in %.0f ms)\n", i - 8, n, o[0] / 1048576, o[1], o[2]);
+            units += n; tot_bytes += o[0]; tot_funcs += o[1];
+        }
+        printf("registry: %u units, %.1f MB of wasm, %.0f functions from the game's translation cache\n", nx_unit_count(), tot_bytes / 1048576, tot_funcs);
+        int nthr = many > 0 ? many : 4;
+        for (int k = 1; k <= nthr && units; k++) {
+            pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 1 << 20);
+            uint64_t t0 = now_ns();
+            if (pthread_create(&th, &a, prep_thread, NULL)) die("pthread_create (gate thread %d)", k);
+            pthread_mutex_lock(&gm); while (g_prepared < k) pthread_cond_wait(&gc, &gm); double st[8]; memcpy(st, g_prep, sizeof st); pthread_mutex_unlock(&gm);
+            printf("MARK thread %d: all units from bytes in %.0f ms (compile %.0f ms, instantiate %.0f ms, %.1f MB; from pthread_create %.0f ms)\n", k, st[5], st[4], st[1] - st[4], st[2] / 1048576, (now_ns() - t0) / 1e6);
+            fflush(stdout);
+            usleep(700000);   // the driver samples the browser's memory at each MARK
+        }
+        printf("MARK end\n"); fflush(stdout); usleep(700000);
+    }
     printf(g_fail ? "P2 FAIL\n" : "P2 PASS\n");
     fflush(stdout);
     emscripten_force_exit(g_fail);

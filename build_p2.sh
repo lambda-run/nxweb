@@ -4,7 +4,9 @@ set -e
 . /ctl/emsdk/env.sh
 NX=/ctl/repos/nxnative/dm; W=/mnt
 M=${1:-32}   # 32 or 64: the linear memory's index type
-R=/ctl/nxem; B=$R/build/p2; [ $M = 64 ] && B=$R/build/p2_64; mkdir -p $B $R/build/host $R/build/gen
+E=${2:-node}   # node, or web: a page for Chromium (64 only; files embedded, 16 GB memory, served by web/serve.mjs)
+GB=${3:-16}
+R=/ctl/nxem; B=$R/build/p2; [ $M = 64 ] && B=$R/build/p2_64; [ $E = web ] && B=$R/build/web/p2; mkdir -p $B $R/build/host $R/build/gen
 # 1. guest: once with ARMv8.0 exclusives (LDAXR/STLXR), once as the Switch 2 builds are (LSE atomics, pointer authentication)
 for v in v80 a78c; do
   [ $v = v80 ] && ISA="-march=armv8-a" || ISA="-mcpu=cortex-a78c -mbranch-protection=pac-ret+b-key+leaf -mno-outline-atomics"
@@ -28,9 +30,15 @@ python3 $R/kernel/port_thread.py $NX/host/hle_thread.c $R/build/host/hle_thread.
 MEM="-sGLOBAL_BASE=268435456 -sINITIAL_MEMORY=536870912"; [ $M = 64 ] && MEM="-sMEMORY64=1 -sGLOBAL_BASE=7516192768 -sINITIAL_MEMORY=8589934592 -sMAXIMUM_MEMORY=8589934592"
 CF="-O2 -g1 -pthread -D_GNU_SOURCE -I$R/kernel/shim -I$NX/host -I$R/build/gen -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-format -Wno-unused-function"
 [ $M = 64 ] && CF="$CF -sMEMORY64=1"
+ENVF="-sNODERAWFS=1 -sENVIRONMENT=node,worker -sPTHREAD_POOL_SIZE=8"
+if [ $E = web ]; then
+  MEM="-sMEMORY64=1 -sGLOBAL_BASE=$(( (GB - 2) * 1073741824 )) -sINITIAL_MEMORY=$(( GB * 1073741824 ))"
+  ENVF="-sENVIRONMENT=web,worker -sPTHREAD_POOL_SIZE=30 --embed-file $B/mt.a78c.bin@/mt.a78c.bin --embed-file $B/mt.v80.bin@/mt.v80.bin --embed-file $B/translator.shared.wasm@/translator.shared.wasm --embed-file $B/helpers.shared.wasm@/helpers.shared.wasm"
+  cp $R/web/p2.html $B/index.html
+fi
 emcc $CF $R/build/host/hle_thread.c $R/kernel/nx_shims.c $R/kernel/nx_guest.c $R/test/p2_main.c -o $B/p2.js \
   --js-library $R/kernel/nx_guest.js --pre-js $B/a64_host.js \
-  -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=8 $MEM \
-  -sEXIT_RUNTIME=1 -sNODERAWFS=1 -sENVIRONMENT=node,worker -sEXPORTED_FUNCTIONS=_main,_malloc,_free
+  -sPROXY_TO_PTHREAD $MEM $ENVF \
+  -sEXIT_RUNTIME=1 -sEXPORTED_FUNCTIONS=_main,_malloc,_free
 ls -la $B/p2.js $B/p2.wasm | awk '{print $5, $9}'
 echo BUILD_P2_DONE
