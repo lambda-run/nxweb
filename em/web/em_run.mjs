@@ -10,8 +10,6 @@ const secs = Number(process.argv[2] ?? 300), name = process.argv[3] ?? "em", L =
 const profile = process.env.PROFILE ?? "/ctl/nxweb-em/em/build/profile", game = process.env.GAME ?? "/gamefs/zelda-oot.nup";
 const url = process.env.URL ?? `http://localhost:8080/em/index.html?secs=${secs + 600}`, limit = Number(process.env.LIMIT_MB ?? 6500);
 const con = `${L}/${name}.console.txt`; writeFileSync(con, "");
-// (this VM boot: the default flags of cdp.mjs, ANGLE on Vulkan, give no adapter; ANGLE on SwiftShader does)
-if (!process.env.GPU_FLAGS) process.env.GPU_FLAGS = "--enable-unsafe-webgpu --ignore-gpu-blocklist --disable-gpu-sandbox --use-webgpu-adapter=swiftshader --use-angle=swiftshader --enable-features=Vulkan";
 const { child, cdp } = await launch({ profile, port: 9447, log: `${L}/${name}.chromium.log` });
 const pss = () => { let kb = 0;
   for (const d of readdirSync("/proc")) { if (!/^\d+$/.test(d)) continue;
