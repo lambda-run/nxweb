@@ -1,0 +1,6 @@
+# hle_guestthread.c after tools/port_gcalls.py.
+[
+ # the host starts a guest thread at a host function: the SDK's CreateThread needs a guest address for it (a stub)
+ ("sa->fn = fn; sa->arg = arg; fn = spawn_tramp; arg = sa;",
+  "sa->fn = fn; sa->arg = arg; fn = (void (*)(void *))(uintptr_t)nx_host_entry(spawn_tramp); arg = sa;"),
+]

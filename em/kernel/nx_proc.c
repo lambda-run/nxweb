@@ -114,12 +114,29 @@ static _Atomic int g_stub_owner[MAX_STUB];   // 0 not asked, -1 none, else the o
 static uint64_t g_stub_base; static _Atomic int g_first_seq; static int g_nstub;
 static _Atomic uint64_t g_host_calls, g_host_unported, g_owner_calls, g_owner_ns;
 #include <emscripten/threading.h>
-// A host call that one of nxweb's modules answers (owner/owner.ts): proxied to the main thread, in arrival order
+void dm_host_lock(pthread_mutex_t *m);
+// The request slot of the owner realm (kernel/nx_owner.js nx_owner_serve): one caller at a time, in arrival order.
+// Emscripten's own synchronous proxy costs a wake-up of the main thread's event loop per call (measured: about 150 us
+// under node); here the owner keeps watching the slot between the calls of a burst.
+static struct { _Atomic uint32_t state; int32_t code; int32_t result; int32_t pad; double ctx; } g_slot;
+static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER; static int g_slot_on;
+static int owner_request(int code, uint64_t *regs) {
+    dm_host_lock(&g_slot_mu);   // a guest thread that waits here holds no guest core (hle_thread.c)
+    if (!g_slot_on) { g_slot_on = 1; nx_owner_serve((double)(uintptr_t)&g_slot); }
+    g_slot.code = code; g_slot.ctx = (double)(uintptr_t)regs;
+    atomic_store(&g_slot.state, 1); emscripten_futex_wake(&g_slot.state, 1);
+    for (int spin = 0; atomic_load(&g_slot.state) != 2; spin++) if (spin > 20000) emscripten_futex_wait(&g_slot.state, 1, 5.0);
+    int r = g_slot.result;
+    atomic_store(&g_slot.state, 0);
+    pthread_mutex_unlock(&g_slot_mu);
+    return r;
+}
+// A host call that one of nxweb's modules answers (owner/owner.ts): on the owner thread, in arrival order
 static void owner_call(int code, uint64_t *regs) {
     uint64_t args[8], t0 = now_ns(); memcpy(args, regs, sizeof args);
     _Atomic uint32_t *cell = (_Atomic uint32_t *)((uint8_t *)regs + 0x3F0);
     for (;;) {
-        int r = nx_owner_call(code, (double)(uintptr_t)regs);
+        int r = owner_request(code, regs);
         if (r == 0) break;
         if (r == 1) { while (!atomic_load(cell)) emscripten_futex_wait(cell, 0, 1e9); break; }   // pending: the owner sets the cell when the storage answered
         memcpy(regs, args, sizeof args); usleep(200);                                             // retry: busy with another thread's pending call
@@ -141,9 +158,26 @@ EMSCRIPTEN_KEEPALIVE void nx_stub_set(uint32_t id, double name_) {
     if ((int)id >= g_nstub) g_nstub = (int)id + 1;
 }
 EMSCRIPTEN_KEEPALIVE int nx_hle_have(double name) { const nx_hle_ent *e = nx_hle_find((const char *)(uintptr_t)name); return e ? (int)e->flags : 0; }
+// ---- host functions the guest is given as addresses (a thread entry the host starts: hle_guestthread.c): stubs 40000..40255
+enum { HOSTFN_BASE = 40000, HOSTFN_MAX = 256 };
+static void (*g_hostfn[HOSTFN_MAX])(void *); static _Atomic int g_nhostfn; static pthread_mutex_t g_hostfn_mu = PTHREAD_MUTEX_INITIALIZER;
+uint64_t nx_host_entry(void (*fn)(void *)) {
+    pthread_mutex_lock(&g_hostfn_mu);
+    int i = 0; for (; i < g_nhostfn; i++) if (g_hostfn[i] == fn) break;
+    if (i == g_nhostfn) { if (i == HOSTFN_MAX) die("more than %d host functions given to the guest", HOSTFN_MAX); g_hostfn[i] = fn; g_nhostfn = i + 1; }
+    pthread_mutex_unlock(&g_hostfn_mu);
+    return g_stub_base + 4ull * (uint64_t)(HOSTFN_BASE + i);
+}
+
 EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)ctx_;
     uint64_t id = (regs[32] - g_stub_base) / 4;
+    if (regs[32] >= g_stub_base && id >= HOSTFN_BASE && id < HOSTFN_BASE + (uint64_t)g_nhostfn) {   // a host function the guest was given by address
+        void (*fn)(void *) = g_hostfn[id - HOSTFN_BASE];
+        regs[32] = regs[30];
+        fn((void *)(uintptr_t)regs[0]);
+        return;
+    }
     if (regs[32] >= g_stub_base && id < MAX_STUB && !g_stub_name[id]) {   // not a stub of the loader's: one the owner realm handed out (an NVN entry point)?
         int code = nx_owner_stub((int)id);
         if (code) { char nm[128]; nx_owner_stub_name((int)id, (double)(uintptr_t)nm, sizeof nm); g_stub_owner[id] = code; g_stub_name[id] = strdup(nm); if ((int)id >= g_nstub) g_nstub = (int)id + 1; }

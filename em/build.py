@@ -68,7 +68,7 @@ def gen():
     return out
 
 KERNEL_C = lambda: [gen(), f"{R}/kernel/nx_shims.c"]
-SEAM = [f"{R}/kernel/nx_guest.c", f"{R}/kernel/nx_units.cpp", f"{R}/kernel/nx_proc.c", f"{R}/kernel/nx_mem.cpp"]
+SEAM = [f"{R}/kernel/nx_guest.c", f"{R}/kernel/nx_units.cpp", f"{R}/kernel/nx_proc.c", f"{R}/kernel/nx_mem.cpp", f"{R}/kernel/nx_stubs.c"]
 
 def p1():
     objs = compile_all(KERNEL_C() + [f"{R}/test/p1_stress.c"], 32)

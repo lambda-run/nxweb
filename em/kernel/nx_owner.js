@@ -18,6 +18,34 @@ addToLibrary({
   nx_owner_stub_name__sig: 'vidi',
   nx_owner_stub_name__deps: ['$stringToUTF8'],
   nx_owner_stub_name: function(id, out, n) { stringToUTF8(globalThis.NXOWNER ? globalThis.NXOWNER.stubName(id) : '', out, n); },
+  // The fast path: one request slot in the shared memory (kernel/nx_proc.c: int32 state, code, result, pad, double ctx).
+  // A caller writes its request and sets state 1; the owner answers and sets state 2. The owner learns of a request
+  // through Atomics.waitAsync (it stays in its event loop), and after each call it keeps looking at the slot for a
+  // moment before going back to the event loop: calls come in bursts, and a burst then costs no wake-up per call.
+  nx_owner_serve__proxy: 'sync',
+  nx_owner_serve__sig: 'vd',
+  nx_owner_serve: function(slot) {
+    const s = slot / 4, own = globalThis.NXOWNER;
+    const serve = () => {
+      let until = 0;
+      for (;;) {
+        if (Atomics.load(HEAP32, s) === 1) {
+          let r = 0;
+          try { r = own.call(HEAP32[s + 1], HEAPF64[slot / 8 + 2]); } catch (e) { err('[RED] owner: ' + (e && e.stack || e)); }
+          HEAP32[s + 2] = r;
+          Atomics.store(HEAP32, s, 2); Atomics.notify(HEAP32, s);
+          until = performance.now() + 0.2;
+          continue;
+        }
+        if (performance.now() < until) continue;
+        const cur = Atomics.load(HEAP32, s);
+        if (cur === 1) continue;
+        const w = Atomics.waitAsync(HEAP32, s, cur);
+        if (w.async) { w.value.then(serve); return; }
+      }
+    };
+    serve();
+  },
   nx_owner_stats__proxy: 'sync',
   nx_owner_stats__sig: 'vd',
   nx_owner_stats: function(out) { const s = globalThis.NXOWNER && globalThis.NXOWNER.stats; if (!s) return; HEAPF64[out / 8] = s.fsCalls; HEAPF64[out / 8 + 1] = s.fsPending; HEAPF64[out / 8 + 2] = s.fsRetry; HEAPF64[out / 8 + 3] = s.fsNs;

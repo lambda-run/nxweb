@@ -93,7 +93,8 @@ static inline void nx_ret_f64(uint64_t *ctx, double d) { uint8_t *v = (uint8_t *
 extern "C" {
 #endif
 uint64_t nx_guest_calln(uint64_t pc, int n, ...);
-uint64_t nx_guest_x1(void);                           // x1 of the calling thread's last guest call (a 16-byte struct result)    // kernel/nx_guest.c: run the guest function on the calling guest thread, return its x0
+uint64_t nx_guest_x1(void);
+uint64_t nx_host_entry(void (*fn)(void *));           // kernel/nx_proc.c: a guest address (a stub) for a host function `void fn(void *)`, e.g. as a guest thread's entry                           // x1 of the calling thread's last guest call (a 16-byte struct result)    // kernel/nx_guest.c: run the guest function on the calling guest thread, return its x0
 __attribute__((error("a floating-point argument in a call of a guest function: write this call by hand"))) uint64_t nx_gcall_float_arg(void);
 #ifdef __cplusplus
 }

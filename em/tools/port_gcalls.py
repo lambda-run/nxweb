@@ -18,7 +18,7 @@ KEYWORDS = {"sizeof", "if", "while", "for", "switch", "return"}
 
 def rewrite(text):
     names = {m.group(1) for m in DECL.finditer(text)} - KEYWORDS
-    if not names: return text, 0, 0
+    if not names: names = {"__no_function_pointer_here__"}
     alt = "|".join(sorted(map(re.escape, names), key=len, reverse=True))
     # the callee: an optional chain of members / indexed names, ending in one of the names
     call = re.compile(r'(?<![\w.>*])((?:[A-Za-z_]\w*(?:\[[^\]\n]*\])?(?:->|\.))*(?:' + alt + r'))(\[[^\]\n]*\])?\s*\((\s*\))?')
@@ -33,7 +33,15 @@ def rewrite(text):
         callee = m.group(1) + (m.group(2) or "")
         return f"NXG0({callee})" if m.group(3) else f"NXG({callee}, "
     out = call.sub(sub, text)
-    casts = len(re.findall(r'\)\s*\)\s*\(', out))
+    # a symbol looked up and called in one expression: ((type)lookup("name"))(args), type a typedef or `ret (*)(params)`
+    cast = re.compile(r'\(\(((?:[A-Za-z_]\w*)|(?:[A-Za-z_][\w\s]*\**\s*\(\s*\*\s*\)\s*\([^()]*\)))\)\s*((?:need|gsym|guest_sym|module_sym)\([^()]*\))\)\s*\((\s*\))?')
+    def csub(m):
+        nonlocal n
+        n += 1
+        f = f"(({m.group(1)}){m.group(2)})"
+        return f"NXG0({f})" if m.group(3) else f"NXG({f}, "
+    out = cast.sub(csub, out)
+    casts = max(0, len(re.findall(r"\)\s*\)\s*\(", out)) - 2 * len(cast.findall(text)))
     return out, n, casts
 
 if __name__ == "__main__":
