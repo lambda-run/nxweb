@@ -47,6 +47,13 @@ int nx_is64(void);
 struct nx_stats { uint64_t translate_ns, translate_calls, unit_bytes; };
 void nx_get_stats(struct nx_stats *out);
 
+// ---- the owner realm (kernel/nx_owner.js -> owner/owner.ts): nxweb's modules that exist once, on the main thread
+int nx_owner_lookup(double name);
+int nx_owner_call(int code, double ctx);
+void nx_owner_stats(double out);
+int nx_owner_stub(int id);
+void nx_owner_stub_name(int id, double out, int n);
+
 // ---- JS half (kernel/nx_guest.js)
 void nx_js_guest_run(uint64_t *io);               // io: x0..x4, pc, sp in; x0 out. Returns when the guest reaches the exit pc
 void nx_js_tr_init(const uint8_t *tr, uint32_t tr_len, const uint8_t *hlp, uint32_t hlp_len, double code_lo, double code_size, double *boot);

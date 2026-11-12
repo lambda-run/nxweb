@@ -142,9 +142,7 @@ addToLibrary({
     NX.host = host;
     if (boot && HEAPF64[boot / 8]) nxLoadGame(host, boot / 8); else host.addCode(codeLo, codeSize);
     const put = (which, b) => { const p = _malloc(b.length); HEAPU8.set(b, p); _nx_mod_set(which, p, b.length); };
-    // the core module's bytes: A64Host keeps only the compiled module, so build it once more (same options, same bytes)
-    const len = host.tr.buildCore(), out = Number(host.tr.outPtr());
-    put(0, HEAPU8.slice(out, out + len));
+    put(0, host.coreBytes);
     put(1, HEAPU8.slice(hlp, hlp + hlpLen));
   },
   nx_js_tr_job__deps: ['$NX', 'nx_unit_publish', 'malloc', '$UTF8ToString'],
@@ -154,6 +152,15 @@ addToLibrary({
     if (kind === 1) {   // a symbol's address, by name, from the loader's tables (0: none, or it is a host stub)
       const a = NX.ld ? NX.ld.lookup(UTF8ToString(pc)) : undefined;
       return a === undefined || NX.ld.stubId(a) >= 0 ? 0 : a;
+    }
+    if (kind === 2) {   // module_sym: a symbol of one module; pc -> { name address, module index }
+      const q = pc / 8, m = NX.mods && NX.mods[Number(HEAPU64[q + 1])];
+      const a = m ? NX.ld.lookupIn(m.handle, UTF8ToString(Number(HEAPU64[q]))) : undefined;
+      return a === undefined || NX.ld.stubId(a) >= 0 ? 0 : a;
+    }
+    if (kind === 3) {   // dm_game_imports: does a module refer to a host name that starts with the prefix
+      const p = UTF8ToString(pc);
+      return NX.ld && NX.ld.hostFunctions().some(f => f.refs > 0 && f.name.startsWith(p)) ? 1 : 0;
     }
     let idx = h.getPcMap(pc);
     try { if (idx <= 1) idx = h.translateUnit([BigInt(pc)])[0]; } catch (e) { err('translator: ' + (e && e.message || e)); return 0; }

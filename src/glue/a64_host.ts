@@ -118,6 +118,7 @@ export class A64Host {
   maxModuleBytes = 0;
   cacheHits = 0;          // units instantiated from the translation cache
   readonly mem64: boolean;
+  coreBytes!: Uint8Array;            // the core module's bytes: a thread that cannot be sent a compiled module (an Emscripten pthread, em/) compiles them itself
   coreModule!: WebAssembly.Module;   // the core module, compiled: another thread on the same shared memory instantiates its own (its own CPU state)
   helpersModule!: WebAssembly.Module;   // ... and its own instance of the helpers (with scratch blocks of its own: helperScratch)
   // Helper Workers (src/glue/rt_helpers.ts) keep their own table and unit instances at the same indices. onUnit: a unit
@@ -184,7 +185,8 @@ export class A64Host {
     if (m64) { this.setAddr(OPT.pcSpan, this.span); this.tr.setOpt(OPT.maxPages, opts.memoryMaxPages ?? MEM64_MAX_PAGES); }
     this.table = new WebAssembly.Table({ element: "anyfunc", initial: 2 });
     const coreLen = this.tr.buildCore();
-    const coreMod = new WebAssembly.Module(this.u8().slice(num(this.tr.outPtr()), num(this.tr.outPtr()) + coreLen));
+    this.coreBytes = this.u8().slice(num(this.tr.outPtr()), num(this.tr.outPtr()) + coreLen);
+    const coreMod = new WebAssembly.Module(this.coreBytes as unknown as BufferSource);
     this.coreModule = coreMod;
     const onTranslate = opts.onTranslate ?? ((pc: bigint) => this.translateUnit([pc])[0]);
     const coreX = new WebAssembly.Instance(coreMod, {

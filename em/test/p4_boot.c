@@ -20,7 +20,7 @@ const char *nx_where(uint64_t pc, char *buf, size_t n);
 #define CODE_LO 0x08000000ull
 #define CODE_SIZE 0x10000000ull
 #define STAGING 0x18000000ull      // the files, while the loader reads them: between the code region and the process's address space
-#define STAGING_END 0x20000000ull
+#define STAGING_END 0x1C000000ull   // above it, to 0x2000_0000: the owner realm's low allocations (owner/owner.ts)
 
 static uint8_t *load(const char *path, uint32_t *len) {
     FILE *f = fopen(path, "rb"); if (!f) die("cannot open %s", path);

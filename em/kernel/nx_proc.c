@@ -10,6 +10,7 @@
 #include "nx_hle.h"
 #include <stdatomic.h>
 #include <emscripten.h>
+#include <unistd.h>
 
 // ---- modules
 static module_t g_mods[16];
@@ -23,11 +24,37 @@ EMSCRIPTEN_KEEPALIVE void nx_module_add(double name_, double base, double size, 
     nx_mem_module(name, (uint64_t)base, (uint64_t)size, (uint64_t)ro_off, (uint64_t)data_off);
     g_nmod++;
 }
+EMSCRIPTEN_KEEPALIVE int nx_mod_count(void) { return g_nmod; }
+// 0 base, 1 size, 2 end of text, 3 offset of the read-only data, 4 of the data, 5 the name's address
+EMSCRIPTEN_KEEPALIVE double nx_mod_field(int i, int f) {
+    module_t *m = &g_mods[i];
+    return f == 0 ? (double)(uintptr_t)m->base : f == 1 ? (double)m->size : f == 2 ? (double)m->text_end : f == 3 ? (double)m->ro_off : f == 4 ? (double)m->data_off : (double)(uintptr_t)m->name;
+}
 module_t *module_of(const void *p) {
     for (int i = 0; i < g_nmod; i++) if ((const uint8_t *)p >= g_mods[i].base && (const uint8_t *)p < g_mods[i].base + g_mods[i].size) return &g_mods[i];
     return NULL;
 }
 void *guest_sym(const char *name) { return (void *)(uintptr_t)nx_tr_job(1, (uint64_t)(uintptr_t)name); }   // the loader's symbol tables live in the translator thread's realm
+// loader.c's services, answered from nxweb's loader (the translator thread's realm) and the mapped images
+void *module_sym(module_t *m, const char *name) {
+    uint64_t q[2] = {(uint64_t)(uintptr_t)name, (uint64_t)(m - g_mods)};
+    return (void *)(uintptr_t)nx_tr_job(2, (uint64_t)(uintptr_t)q);
+}
+int dm_game_imports(const char *prefix) { return (int)nx_tr_job(3, (uint64_t)(uintptr_t)prefix); }
+static const uint8_t *find_in(const module_t *m, const char *pat) {
+    size_t n = strlen(pat);
+    for (const uint8_t *p = m->base + m->ro_off, *e = m->base + m->size - n; p < e; p++) if (*p == (uint8_t)pat[0] && !memcmp(p, pat, n)) return p;
+    return NULL;
+}
+static module_t *sdk_mod(void) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mods[i].name, "sdk")) return &g_mods[i]; return NULL; }
+int dm_sdk_ounce(void) { static int v = -1; if (v < 0) { module_t *m = sdk_mod(); v = m && find_in(m, "spec: Ounce") != NULL; } return v; }
+int dm_sdk_major(void) {   // "NintendoSDK nnSdk-Generic_22_2_8-Release": the first number after nnSdk-
+    static int v = -1;
+    if (v < 0) { module_t *m = sdk_mod(); const uint8_t *p = m ? find_in(m, "nnSdk-") : NULL; v = 0;
+        if (p) { p += 6; while (*p && (*p < '0' || *p > '9') && *p != ' ') p++; v = atoi((const char *)p); } }
+    return v;
+}
+
 // "main+0x1234" for a log line
 const char *nx_where(uint64_t pc, char *buf, size_t n) {
     module_t *m = module_of((void *)(uintptr_t)pc);
@@ -83,8 +110,22 @@ EMSCRIPTEN_KEEPALIVE void nx_note_pc(double pc) { int k = trk(); g_trk[k].pc = (
 // ---- host calls
 enum { MAX_STUB = 65536 };
 static char *g_stub_name[MAX_STUB]; static const nx_hle_ent *g_stub_ent[MAX_STUB]; static _Atomic uint32_t g_stub_calls[MAX_STUB];
+static _Atomic int g_stub_owner[MAX_STUB];   // 0 not asked, -1 none, else the owner realm's code for the name
 static uint64_t g_stub_base; static _Atomic int g_first_seq; static int g_nstub;
-static _Atomic uint64_t g_host_calls, g_host_unported;
+static _Atomic uint64_t g_host_calls, g_host_unported, g_owner_calls, g_owner_ns;
+#include <emscripten/threading.h>
+// A host call that one of nxweb's modules answers (owner/owner.ts): proxied to the main thread, in arrival order
+static void owner_call(int code, uint64_t *regs) {
+    uint64_t args[8], t0 = now_ns(); memcpy(args, regs, sizeof args);
+    _Atomic uint32_t *cell = (_Atomic uint32_t *)((uint8_t *)regs + 0x3F0);
+    for (;;) {
+        int r = nx_owner_call(code, (double)(uintptr_t)regs);
+        if (r == 0) break;
+        if (r == 1) { while (!atomic_load(cell)) emscripten_futex_wait(cell, 0, 1e9); break; }   // pending: the owner sets the cell when the storage answered
+        memcpy(regs, args, sizeof args); usleep(200);                                             // retry: busy with another thread's pending call
+    }
+    atomic_fetch_add_explicit(&g_owner_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_owner_ns, now_ns() - t0, memory_order_relaxed);
+}
 __attribute__((weak)) const nx_hle_ent *nx_hle_find(const char *mangled) { (void)mangled; return NULL; }   // the generated table of the HLE files in the build
 // every name nxnative's host answers, built or not (generated: build.py hle_names): the loader has to bind them all to stubs
 typedef struct { const char *name; uint32_t flags; } nx_hle_name;
@@ -103,17 +144,26 @@ EMSCRIPTEN_KEEPALIVE int nx_hle_have(double name) { const nx_hle_ent *e = nx_hle
 EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)ctx_;
     uint64_t id = (regs[32] - g_stub_base) / 4;
+    if (regs[32] >= g_stub_base && id < MAX_STUB && !g_stub_name[id]) {   // not a stub of the loader's: one the owner realm handed out (an NVN entry point)?
+        int code = nx_owner_stub((int)id);
+        if (code) { char nm[128]; nx_owner_stub_name((int)id, (double)(uintptr_t)nm, sizeof nm); g_stub_owner[id] = code; g_stub_name[id] = strdup(nm); if ((int)id >= g_nstub) g_nstub = (int)id + 1; }
+    }
     if (regs[32] < g_stub_base || id >= MAX_STUB || !g_stub_name[id]) { char w[64]; die("host call at pc %#llx (called from %s): not a stub", (unsigned long long)regs[32], nx_where(regs[30], w, sizeof w)); }
     atomic_fetch_add_explicit(&g_host_calls, 1, memory_order_relaxed);
     const nx_hle_ent *e = g_stub_ent[id];
+    int own = g_stub_owner[id];
+    if (!own) { own = nx_owner_lookup((double)(uintptr_t)g_stub_name[id]); g_stub_owner[id] = own = own ? own : -1; }   // nxweb's module wins where both have the name: its back end is the one that exists here
+    if (own > 0) e = NULL;
     if (!atomic_fetch_add(&g_stub_calls[id], 1)) {
         char w[64]; int seq = atomic_fetch_add(&g_first_seq, 1) + 1;
-        if (seq <= 400) LOG("%shost call #%d %s (thread %#x, from %s)%s", e && !(e->flags & NX_HLE_HAND) ? "" : "[RED] ", seq, g_stub_name[id], thr_cur_handle(), nx_where(regs[30], w, sizeof w),
+        if (own > 0) { if (seq <= 60) LOG("host call #%d %s (thread %#x, from %s): nxweb's module, on the owner thread", seq, g_stub_name[id], thr_cur_handle(), nx_where(regs[30], w, sizeof w)); }
+        else if (seq <= 400) LOG("%shost call #%d %s (thread %#x, from %s)%s", e && !(e->flags & NX_HLE_HAND) ? "" : "[RED] ", seq, g_stub_name[id], thr_cur_handle(), nx_where(regs[30], w, sizeof w),
                             !e ? ": not ported, answers 0" : e->flags & NX_HLE_HAND ? ": needs a hand-written thunk" : "");
     }
     regs[32] = regs[30];   // return to the caller (the thunk may still redirect)
     int k = trk(); g_trk[k].in_host = (int)id + 1;
-    if (e) e->thunk(regs);
+    if (own > 0) owner_call(own, regs);
+    else if (e) e->thunk(regs);
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;
 }
@@ -128,9 +178,13 @@ void nx_boot_report(const char *why) {
     LOG("translated: %u units, %.1f MB of wasm, %llu requests, %.1f s in the translator", nx_unit_count(), s.unit_bytes / 1048576.0, (unsigned long long)s.translate_calls, s.translate_ns / 1e9);
     LOG("SVCs outside the thread kernel, by number: %s", b[0] ? b : "none");
     LOG("heap %llu MB; host calls %llu (%llu to functions that are not ported), %d distinct names", (unsigned long long)(nx_mem_heap_size() >> 20), (unsigned long long)g_host_calls, (unsigned long long)g_host_unported, (int)g_first_seq);
+    { double os[12] = {0}; nx_owner_stats((double)(uintptr_t)os);
+      LOG("graphics (nxweb's recorder on the owner thread): %.0f host calls of it (%.0f NVN calls recorded, %.0f waited), %.1f us each inside; host stream %.0f batches, %.1f MB; presents %.0f", os[4], os[10], os[6], os[4] ? os[5] / 1e3 / os[4] : 0.0, os[8], os[9] / 1048576, os[7]);
+      LOG("owner thread: %llu proxied calls, %.1f us each on the caller's side; nn::fs %0.f calls (%0.f pending, %0.f retried), %.1f us each inside the module", (unsigned long long)g_owner_calls,
+          g_owner_calls ? g_owner_ns / 1e3 / g_owner_calls : 0.0, os[0], os[1], os[2], os[0] ? os[3] / 1e3 / os[0] : 0.0); }
     int n = 0;
     for (int pass = 0; pass < 2; pass++) for (int i = 0; i < g_nstub && n < 60; i++) {
-        if (!g_stub_calls[i] || (pass == 0) != (g_stub_ent[i] == NULL)) continue;
+        if (!g_stub_calls[i] || g_stub_owner[i] > 0 || (pass == 0) != (g_stub_ent[i] == NULL)) continue;
         if (pass == 0) { LOG("  not ported: %s x%u", g_stub_name[i], g_stub_calls[i]); n++; }
     }
     for (int i = 0; i < g_ntrk && i < 64; i++) {
