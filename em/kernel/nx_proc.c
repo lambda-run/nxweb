@@ -73,6 +73,13 @@ void nx_svc_counts(char *out, size_t n) {
     for (int i = 0; i < 128 && o + 24 < n; i++) if (g_svc_count[i]) o += (size_t)snprintf(out + o, n - o, "%s%#x:%llu", o ? " " : "", i, (unsigned long long)g_svc_count[i]);
 }
 
+// ---- where each guest thread is, for the report: the pc at its last slice end, and the host call it is inside
+static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32_t handle; } g_trk[64];
+static _Atomic int g_ntrk; static __thread int t_trk = -1;
+uint32_t thr_cur_handle(void);
+static int trk(void) { if (t_trk < 0) { t_trk = atomic_fetch_add(&g_ntrk, 1) & 63; } g_trk[t_trk].handle = thr_cur_handle(); return t_trk; }
+EMSCRIPTEN_KEEPALIVE void nx_note_pc(double pc) { int k = trk(); g_trk[k].pc = (uint64_t)pc; g_trk[k].slices++; }
+
 // ---- host calls
 enum { MAX_STUB = 65536 };
 static char *g_stub_name[MAX_STUB]; static const nx_hle_ent *g_stub_ent[MAX_STUB]; static _Atomic uint32_t g_stub_calls[MAX_STUB];
@@ -93,7 +100,6 @@ EMSCRIPTEN_KEEPALIVE void nx_stub_set(uint32_t id, double name_) {
     if ((int)id >= g_nstub) g_nstub = (int)id + 1;
 }
 EMSCRIPTEN_KEEPALIVE int nx_hle_have(double name) { const nx_hle_ent *e = nx_hle_find((const char *)(uintptr_t)name); return e ? (int)e->flags : 0; }
-uint32_t thr_cur_handle(void);
 EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)ctx_;
     uint64_t id = (regs[32] - g_stub_base) / 4;
@@ -106,8 +112,10 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
                             !e ? ": not ported, answers 0" : e->flags & NX_HLE_HAND ? ": needs a hand-written thunk" : "");
     }
     regs[32] = regs[30];   // return to the caller (the thunk may still redirect)
+    int k = trk(); g_trk[k].in_host = (int)id + 1;
     if (e) e->thunk(regs);
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
+    g_trk[k].in_host = 0;
 }
 
 // ---- what a boot run reports when it ends (by time, by a fault, by the guest)
@@ -124,6 +132,10 @@ void nx_boot_report(const char *why) {
     for (int pass = 0; pass < 2; pass++) for (int i = 0; i < g_nstub && n < 60; i++) {
         if (!g_stub_calls[i] || (pass == 0) != (g_stub_ent[i] == NULL)) continue;
         if (pass == 0) { LOG("  not ported: %s x%u", g_stub_name[i], g_stub_calls[i]); n++; }
+    }
+    for (int i = 0; i < g_ntrk && i < 64; i++) {
+        char w[64]; int h = g_trk[i].in_host;
+        LOG("  thread %#x: %llu slices of translated code, last slice ended at %s%s%s", g_trk[i].handle, (unsigned long long)g_trk[i].slices, nx_where(g_trk[i].pc, w, sizeof w), h ? "; inside host call " : "", h ? g_stub_name[h - 1] : "");
     }
     svc_thread_dump();
 }

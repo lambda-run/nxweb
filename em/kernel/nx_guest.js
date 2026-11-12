@@ -43,7 +43,7 @@ addToLibrary({
     return idx;
   },
 
-  $nxThread__deps: ['$NX', '$nxSync', '$nxTranslate', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
+  $nxThread__deps: ['$NX', '$nxSync', '$nxTranslate', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_note_pc', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxThread: function() {
     if (NX.t) return NX.t;
     const mem = wasmMemory, t0 = performance.now();
@@ -54,13 +54,16 @@ addToLibrary({
     const hx = new WebAssembly.Instance(new WebAssembly.Module(bytes(1)), { env: { memory: mem, abort: () => { throw new Error('a64 helpers abort'); } } }).exports;
     t.hlp = {};
     for (const k in hx) if (!['staticBase', 'staticEnd', 'memory', 'libcStat', 'libcGuard'].includes(k)) t.hlp[k] = hx[k];
-    t.ctx = _malloc(0x400);
+    // context blocks, one per nesting level: an SVC or a host call may run guest code (nx_guest_call), whose own SVCs
+    // and host calls must not write over the block the outer one is still working on
+    t.ctx = _malloc(0x400 * 32); t.depth = 0;
+    t.enter = () => { if (t.depth >= 31) throw new Error('guest calls nested more than 31 deep'); return t.ctx + 0x400 * ++t.depth; };
     const core = t.core, m64 = _nx_is64();
     t.save = m64 ? (p) => core.save_ctx(BigInt(p)) : core.save_ctx;   // the wasm64 core takes its pointer as an i64
     t.load = m64 ? (p) => core.load_ctx(BigInt(p)) : core.load_ctx;
     t.unitEnv = {
       memory: mem, table: t.table,
-      svc: (n) => { t.save(t.ctx); _nx_svc(n, t.ctx); t.load(t.ctx); },
+      svc: (n) => { const c = t.enter(); t.save(c); _nx_svc(n, c); t.load(c); t.depth--; },
       unimpl: (pc, w) => { throw new Error('unimplemented instruction ' + (w >>> 0).toString(16) + ' at ' + pc.toString(16)); },
       brk: (pc) => { throw new Error('brk at ' + pc.toString(16)); },
       cntpct: () => BigInt(Math.round(performance.now() * 19200)),
@@ -70,10 +73,10 @@ addToLibrary({
     // slot 2: the one function every host stub's pc maps to (as nxweb's rt_runtime.ts THUNK): it calls host_call
     const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 0x11, 1, 3, 0x65, 0x6E, 0x76, 9, 0x68, 0x6F, 0x73, 0x74, 0x5F, 0x63, 0x61, 0x6C, 0x6C, 0, 0,
                                   3, 2, 1, 0, 7, 5, 1, 1, 0x66, 0, 1, 0x0A, 6, 1, 4, 0, 0x10, 0, 0x0B]);
-    t.table.set(2, new WebAssembly.Instance(new WebAssembly.Module(THUNK), { env: { host_call: () => { t.save(t.ctx); _nx_host_call(t.ctx); t.load(t.ctx); } } }).exports.f);
+    t.table.set(2, new WebAssembly.Instance(new WebAssembly.Module(THUNK), { env: { host_call: () => { const c = t.enter(); t.save(c); _nx_host_call(c); t.load(c); t.depth--; } } }).exports.f);
     // run until pc is `until`; a trap in translated code ends the process with a report (pthread_exit's unwind passes through)
     t.runTo = (until) => {
-      try { while (core.pc.value !== until) { core.budget.value = 1 << 30; core.run(); } }
+      try { while (core.pc.value !== until) { core.budget.value = 1 << 26; core.run(); _nx_note_pc(Number(BigInt.asUintN(64, core.pc.value))); } }
       catch (e) {
         if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e;
         const m = String(e && e.message || e), p = _malloc(lengthBytesUTF8(m) + 1); stringToUTF8(m, p, lengthBytesUTF8(m) + 1);
@@ -104,6 +107,7 @@ addToLibrary({
   nx_js_guest_setup__sig: 'vd',
   nx_js_guest_setup: function(sp) {
     const t = nxThread(), c = t.core;
+    t.depth = 0;   // a worker that a thread left by pthread_exit (inside an SVC) starts clean
     HEAPU8.fill(0, t.ctx, t.ctx + 0x330); t.load(t.ctx);
     c.sp.value = BigInt(sp); c.tpidr.value = BigInt(_nx_tls()); c.tpidrro.value = BigInt(_nx_tlr()); c.excl_addr.value = BigInt(-1);
   },
