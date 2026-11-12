@@ -9,7 +9,7 @@ import { RtShaders, workerTranslator, webShaderStore } from "../../src/glue/rt_s
 import { NupTree, blobBytes } from "../../src/prepare/host/nup.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { WebCodecsVideo } from "../../src/glue/video_webcodecs.ts";
-import { startOwner, sharedBuild, type Owner, type OwnerConfig } from "./owner.ts";
+import { startOwner, sharedBuild, gfxShared, type Owner, type OwnerConfig } from "./owner.ts";
 
 export interface PageSide {
   file: File;                                            // the .nup
@@ -20,6 +20,7 @@ export interface PageSide {
   stage: (text: string) => void;
   modulesList: string[];                                 // the code modules to load, in order
   nativeImage: OwnerConfig["nativeImage"];
+  gfxDirect?: boolean;   // false (?gfxdirect=0): every NVN call goes to the owner thread, as before
   pace: string | null;                                   // 'timer': never requestAnimationFrame
   ndve: boolean;                                         // nxweb's stand-in for nn::ndve's movie upscaler (GfxHost.ndveBypass): its dispatches cannot run on WebGPU yet
 }
@@ -31,7 +32,8 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   const prep = new PrepWasm(await WebAssembly.compile(await bytes("wasm/prepare.wasm") as unknown as BufferSource), log);
   const sha256 = (b: Uint8Array) => prep.sha256(b);
   const shared = async (n: string) => WebAssembly.compile(sharedBuild(await bytes(`wasm/${n}64.wasm`), pages) as unknown as BufferSource);
-  const [fsModule, gfxModule] = await Promise.all([shared("fs"), shared("gfx")]);
+  const g = gfxShared(sharedBuild(await bytes("wasm/gfx64.wasm"), pages), p.gfxDirect !== false);
+  const [fsModule, gfxModule] = await Promise.all([shared("fs"), WebAssembly.compile(g.wasm as unknown as BufferSource)]);
   for (const n of ["translator64.shared", "helpers64.shared", "loader64"]) p.writeFile(`/rt/${n}.wasm`, await bytes(`wasm/${n}.wasm`));
   // the translation cache: its blobs out of the Cache API into /cache, where the translator thread reads them (kernel/nx_guest.js)
   p.stage("translation cache");
@@ -74,7 +76,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   log(p.pace === "timer" ? "page: pace=timer: display frames from a 16 ms message timer (not requestAnimationFrame)" : "page: display frames from requestAnimationFrame while the page is visible, from a 16 ms message timer while it is hidden (?pace=timer: always the timer)");
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
-    tree, prep, fsModule, gfxModule, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
+    tree, prep, fsModule, gfxModule, gfxShare: g.share, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
     gfx: device ? { ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");

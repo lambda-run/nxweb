@@ -14,7 +14,7 @@ void nx_log(const char *line);                    // nxnative's LOG()
 uint64_t nx_now_ns(void);
 void nx_native_wait(int entering);                // hle_thread.c dm_thread_native_wait: the caller blocks in host code and holds no guest core
 void nx_note_thread(uint64_t entry);
-void nx_guest_fault(double pc, double what);   // translated code cannot go on (a trap, no code at pc): report and end the process
+void nx_guest_fault(double pc, double what, double ctx);   // translated code cannot go on (a trap, no code at pc): report and end the process
 void nx_svc(int num, double regs);                // a unit's svc import: regs = the thread's context block (nxweb CONTRACT.md)
 int nx_svc_other(int num, uint64_t *regs);        // weak: the SVCs that are not thread SVCs
 void nx_host_call(double ctx);                    // the stub thunk's host_call import (kernel/nx_proc.c)
@@ -58,6 +58,9 @@ void nx_units_share(int up_to, double cell);      // main thread: compile the re
 void nx_units_distribute(void);                   // kernel/nx_proc.c: the same, and wait until what is published now has been posted
 void nx_js_stopped(double why);
 int nx_owner_stub(int id);
+int nx_owner_stub_direct(int id);
+int nx_gfx_enabled(void); void nx_gfx_direct(int code, uint64_t *regs); int nx_gfx_release_all(void); void nx_gfx_reacquire(int depth);
+void nx_regs_dump(const uint64_t *regs, const char *what);
 void nx_owner_stub_name(int id, double out, int n);
 
 // ---- JS half (kernel/nx_guest.js)

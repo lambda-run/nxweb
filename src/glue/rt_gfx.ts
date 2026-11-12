@@ -40,6 +40,11 @@ const SYNC_FOREVER = 1n << 62n;
 export class RtGfx implements HleGfx {
   readonly rt: Runtime;
   readonly x: any;                    // the recorder's exports (nvn_*, gfx_*)
+  readonly env: any;                  // its imports as given (em/: a recorder instance of another thread has the owner run them)
+  // stub address -> (NVN function id + 1) | abi << 16, for every entry point whose stub does nothing but nvn_call
+  // (em/: a guest thread calls those in its own instance of the recorder)
+  readonly direct = new Map<number, number>();
+  private lastGeneric = -1;
   readonly host: GfxHost;             // the replayer (with the null replayer: its fences, hooks and shader library are used)
   readonly live: boolean;             // a real device is attached
   stats: Record<string, number> = { shaderWaits: 0, nvnCalls: 0, frames: 0, shown: 0, syncWaits: 0, syncParked: 0, syncTimeouts: 0, finishes: 0, finishParked: 0, acquires: 0, acquireParked: 0, acquireLate: 0, floatArgCalls: 0, floatResults: 0,
@@ -79,7 +84,9 @@ export class RtGfx implements HleGfx {
       gfx_guest_call: (fn: bigint, a0: bigint, a1: bigint, a2: bigint, a3: bigint) => rt.guestCall(BigInt.asUintN(64, fn), [a0, a1, a2, a3]),
       gfx_proc_address: (id: number) => BigInt(this.stubOfId(id, `nvn#${id}`)),
     };
+    this.env = env;
     this.x = instantiate(module, { env }, { mem64: rt.mem64, name: "gfx.wasm" });
+    if ((opts as any).wrapExports) this.x = (opts as any).wrapExports(this.x);   // (em/: every call into the recorder under its lock)
     const st = range("gfx static"), arena = range("gfx arena"), end = this.x.gfx_static_end(), need = this.x.gfx_arena_bytes();
     if (rt.r.rt_static_check(99, BigInt(st.lo), BigInt(st.hi), BigInt(end))) throw new Error("runtime: the gfx module's static data is outside its range (was it built with --memoryBase " + st.lo + "?)");
     if (need > arena.hi - arena.lo) throw new Error(`runtime: the gfx arena needs ${need} bytes, the range has ${arena.hi - arena.lo}`);
@@ -271,7 +278,7 @@ export class RtGfx implements HleGfx {
   }
   private stubOfId(id: number, name: string): number {
     let a = this.byId.get(id);
-    if (a === undefined) { a = this.rt.lateStub(name, this.handler(id, name)); this.byId.set(id, a); }
+    if (a === undefined) { this.lastGeneric = -1; a = this.rt.lateStub(name, this.handler(id, name)); this.byId.set(id, a); if (this.lastGeneric === id) this.direct.set(a, (id + 1) | (this.abi[id] ?? 0) << 16); }
     return a;
   }
   private call(id: number, args: number): bigint { this.stats.nvnCalls++; return BigInt.asUintN(64, this.x.nvn_call(id, args)); }
@@ -378,6 +385,7 @@ export class RtGfx implements HleGfx {
     // implemented functions read none, so only x0..x7 are marshalled (HostCpu.argsX); four return a float, which is
     // at args + 64 after the call and goes to d0.
     const abi = this.abi[id] ?? 0, floats = abi & 15, retF = (abi & 16) !== 0;
+    this.lastGeneric = id;
     if (retF) return cpu => {
       const a = floats ? cpu.args() : cpu.argsX();
       this.call(id, a); this.stats.floatResults++;

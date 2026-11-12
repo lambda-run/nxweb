@@ -69,7 +69,7 @@ def gen():
 
 KERNEL_C = lambda: [gen(), f"{R}/kernel/nx_shims.c"]
 AUDIO = [f"{R}/audio/nx_audio.c"]   # the audio output: the shared ring the page's AudioWorklet reads (audio/)
-SEAM = [f"{R}/kernel/nx_guest.c", f"{R}/kernel/nx_units.cpp", f"{R}/kernel/nx_proc.c", f"{R}/kernel/nx_mem.cpp", f"{R}/kernel/nx_stubs.c", f"{R}/kernel/nx_video.c", f"{R}/kernel/nx_cores.c"]
+SEAM = [f"{R}/kernel/nx_guest.c", f"{R}/kernel/nx_units.cpp", f"{R}/kernel/nx_proc.c", f"{R}/kernel/nx_mem.cpp", f"{R}/kernel/nx_stubs.c", f"{R}/kernel/nx_video.c", f"{R}/kernel/nx_cores.c", f"{R}/kernel/nx_gfx.c"]
 
 def p1():
     objs = compile_all(KERNEL_C() + [f"{R}/test/p1_stress.c"], 32)

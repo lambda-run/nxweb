@@ -109,7 +109,8 @@ addToLibrary({
         }
         const m = String(e && e.message || e), p = _malloc(lengthBytesUTF8(m) + 1); stringToUTF8(m, p, lengthBytesUTF8(m) + 1);
         err(String(e && e.stack || e).split('\n').slice(0, 6).join(' | '));
-        _nx_guest_fault(Number(BigInt.asUintN(64, core.pc.value)), p);
+        let c = 0; try { c = t.enter(); t.save(c); } catch (e2) {}   // the registers as the core has them, for the report
+        _nx_guest_fault(Number(BigInt.asUintN(64, core.pc.value)), p, c);
         throw e;
       }
     };
@@ -142,6 +143,44 @@ addToLibrary({
   // A host call into guest code on the calling guest thread (nested inside whatever that thread was doing, an SVC or a
   // host call included): a[0..n-1] -> x0.., a[8] = pc; the function's x0 comes back in a[0]. The caller's registers
   // are saved and restored around it (the callee-saved ones must survive for the host function's caller).
+  // This thread's instance of nxweb's NVN recorder (kernel/nx_gfx.c): the build for further instances that the owner
+  // put into the memory (owner/owner.ts GFX_MOD), over the shared memory. Its imports: gfx_exec (the replayer), the
+  // stub of an entry point and more table memory are the owner's, asked through the lock holder's request words at
+  // NXG; a callback into guest code runs here, on the calling thread. Addresses are i64 in this build (nx.abi).
+  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'malloc'],
+  $nxGfx: function() {
+    const G = 0x1FF1F000, MOD = 0x1FF20000, s = (G + 8) / 4, f = G / 8, t0 = performance.now();
+    const mod = new WebAssembly.Module(HEAPU8.slice(MOD, MOD + HEAPU32[(G + 40) / 4]));
+    const ask = (kind, a, b) => {
+      HEAP32[s + 1] = kind; HEAPF64[f + 2] = a; HEAPF64[f + 3] = b;
+      Atomics.store(HEAP32, s, 1); Atomics.notify(HEAP32, s);
+      for (let spin = 0; Atomics.load(HEAP32, s) !== 2; spin++) if (spin > 4000) Atomics.wait(HEAP32, s, 1, 5);
+      const r = HEAPF64[f + 4];
+      Atomics.store(HEAP32, s, 0);
+      return r;
+    };
+    const blk = _malloc(48), pages = HEAPU8.length / 65536;
+    const env = {
+      memory: wasmMemory, memory_size: () => pages, memory_grow: (n) => n ? -1 : pages,
+      log: (p, n) => err(new TextDecoder().decode(HEAPU8.slice(Number(p), Number(p) + n))),
+      abort: () => { throw new Error('abort in the gfx module'); },
+      gfx_exec: (p, n) => { ask(0, Number(p), n >>> 0); },
+      gfx_proc_address: (id) => BigInt(ask(1, id, 0)),
+      gfx_arena_more: (n) => ask(2, n >>> 0, 0),
+      gfx_guest_call: (fn, a0, a1, a2, a3) => { const q = blk / 8, v = [fn, a0, a1, a2, a3]; for (let i = 0; i < 5; i++) HEAPU64[q + i] = BigInt.asUintN(64, v[i]); _nx_gfx_guest_call(blk); return HEAPU64[q]; },
+    };
+    const x = new WebAssembly.Instance(mod, { env }).exports;
+    NX.gfx = x; NX.gfxMs = performance.now() - t0;
+    return x;
+  },
+  // nvn_call(id, args) in this thread's instance; the result goes to args[16]. The caller holds the recorder's lock
+  nx_js_gfx_call__deps: ['$NX', '$nxGfx'],
+  nx_js_gfx_call__sig: 'vid',
+  nx_js_gfx_call: function(id, args) {
+    const x = NX.gfx || nxGfx();
+    try { HEAPU64[args / 8 + 16] = BigInt.asUintN(64, x.nvn_call(id, BigInt(args))); }
+    catch (e) { if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e; HEAPU64[args / 8 + 16] = 0n; err('[RED] nvn_call(' + id + ') failed in a guest thread: ' + String(e && e.stack || e).split('\n').slice(0, 5).join(' | ')); }
+  },
   nx_js_guest_callv__deps: ['$nxThread'],
   nx_js_guest_callv__sig: 'vpi',
   nx_js_guest_callv: function(a, n) {

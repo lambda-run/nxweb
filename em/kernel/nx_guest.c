@@ -85,10 +85,12 @@ EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
     nx_core_ensure();   // back to guest code: on a core again (a yield queues behind whoever waited for it)
 }
 
-EMSCRIPTEN_KEEPALIVE void nx_guest_fault(double pc, double what_) {
-    const char *what = (const char *)(uintptr_t)what_;
+EMSCRIPTEN_KEEPALIVE void nx_guest_fault(double pc, double what_, double ctx_) {
+    const char *what = (const char *)(uintptr_t)what_; uint64_t *regs = (uint64_t *)(uintptr_t)ctx_;
     module_t *m = module_of((void *)(uintptr_t)pc);
     LOG("[RED] guest fault at pc %#llx (%s+%#llx): %s", (unsigned long long)pc, m ? m->name : "?", (unsigned long long)(m ? (uint64_t)pc - (uint64_t)(uintptr_t)m->base : 0), what);
+    // (the registers are as of the last transfer the translated code wrote them back at: those of the faulting function's entry or of its last call, not of the faulting instruction)
+    { void nx_ring_dump(const char *why); nx_ring_dump("guest fault"); if (regs) { regs[32] = (uint64_t)pc; nx_regs_dump(regs, "the fault"); } }
     { extern char g_stop_why[400];
       snprintf(g_stop_why, 400, "guest fault at pc %#llx (%s+%#llx): %s", (unsigned long long)pc, m ? m->name : "?", (unsigned long long)(m ? (uint64_t)pc - (uint64_t)(uintptr_t)m->base : 0), what); }
     nx_boot_report("a guest fault");

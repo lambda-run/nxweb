@@ -14,6 +14,10 @@ addToLibrary({
   nx_owner_stub__proxy: 'sync',
   nx_owner_stub__sig: 'ii',
   nx_owner_stub: function(id) { return globalThis.NXOWNER ? globalThis.NXOWNER.lookupStub(id) : 0; },
+  // (NVN id + 1) | abi << 16 when a guest thread may answer the stub in its own instance of the recorder, else 0
+  nx_owner_stub_direct__proxy: 'sync',
+  nx_owner_stub_direct__sig: 'ii',
+  nx_owner_stub_direct: function(id) { return globalThis.NXOWNER ? globalThis.NXOWNER.stubDirect(id) : 0; },
   nx_owner_stub_name__proxy: 'sync',
   nx_owner_stub_name__sig: 'vidi',
   nx_owner_stub_name__deps: ['$stringToUTF8'],
@@ -29,6 +33,7 @@ addToLibrary({
     const serve = () => {
       let until = 0;
       for (;;) {
+        if (own.svc()) { until = performance.now() + 0.2; continue; }   // the request of the thread that is inside the recorder (gfx_exec)
         if (Atomics.load(HEAP32, s) === 1) {
           let r = 0;
           try { r = own.call(HEAP32[s + 1], HEAPF64[slot / 8 + 2]); } catch (e) { err('[RED] owner: ' + (e && e.stack || e)); }
@@ -45,6 +50,20 @@ addToLibrary({
       }
     };
     serve();
+    // the same watch on the recorder's request word (owner/owner.ts NXG + 8): a guest thread's flush reaches the replayer
+    const g = 0x1FF1F000 / 4 + 2;
+    const flush = () => {
+      let until = 0;
+      for (;;) {
+        if (own.svc()) { until = performance.now() + 0.2; continue; }
+        if (performance.now() < until) continue;
+        const cur = Atomics.load(HEAP32, g);
+        if (cur === 1) continue;
+        const w = Atomics.waitAsync(HEAP32, g, cur);
+        if (w.async) { w.value.then(flush); return; }
+      }
+    };
+    flush();
   },
   // Compiled modules for the workers. What the translation cache published before any guest thread runs is compiled
   // once here on the main thread and handed to every worker in ONE message, which a worker takes in while it is in its

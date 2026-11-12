@@ -179,6 +179,8 @@ void nx_ring_dump(const char *why) {
 // ---- host calls
 enum { MAX_STUB = 65536 };
 static char *g_stub_name[MAX_STUB]; static const nx_hle_ent *g_stub_ent[MAX_STUB]; static _Atomic uint32_t g_stub_calls[MAX_STUB];
+static _Atomic int g_stub_direct[MAX_STUB];   // 0 not asked, -1 no, else nx_gfx_direct's code: the calling thread answers it in its instance of the recorder
+static uint8_t g_stub_texinit[MAX_STUB];    // nvnTextureInitialize: its builder's size is looked at
 static _Atomic int g_stub_owner[MAX_STUB];   // 0 not asked, -1 none, else the owner realm's code for the name
 static uint64_t g_stub_base; static _Atomic int g_first_seq; static int g_nstub;
 static _Atomic uint64_t g_host_calls, g_host_unported, g_owner_calls, g_owner_ns;
@@ -194,6 +196,7 @@ static _Atomic int g_slot_waiting; static _Atomic uint64_t g_slot_depth[8];   //
 // For the page's frame split (main thread): out = requests, ns waiting for the slot, ns from request to answer, then the 8 depth counts
 EMSCRIPTEN_KEEPALIVE void nx_slot_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)g_slot_n; o[1] = (double)g_slot_queue_ns; o[2] = (double)g_slot_serve_ns; for (int i = 0; i < 8; i++) o[3 + i] = (double)g_slot_depth[i]; }   // waiting for the slot (behind other threads); from the request to its answer
 static int owner_request(int code, uint64_t *regs) {
+    int gl = nx_gfx_release_all();   // (a callback of the recorder into guest code that asks the owner for something)
     uint64_t t0 = now_ns();
     { int d = atomic_fetch_add(&g_slot_waiting, 1); atomic_fetch_add_explicit(&g_slot_depth[d < 4 ? d : d < 8 ? 4 : d < 16 ? 5 : d < 32 ? 6 : 7], 1, memory_order_relaxed); }
     dm_host_lock(&g_slot_mu);   // a guest thread that waits here holds no guest core (hle_thread.c)
@@ -207,6 +210,7 @@ static int owner_request(int code, uint64_t *regs) {
     atomic_fetch_sub(&g_slot_waiting, 1);
     g_slot_queue_ns += t1 - t0; g_slot_serve_ns += now_ns() - t1; g_slot_n++;   // (under the slot's lock)
     pthread_mutex_unlock(&g_slot_mu);
+    nx_gfx_reacquire(gl);
     return r;
 }
 // A host call that one of nxweb's modules answers (owner/owner.ts): on the owner thread, in arrival order
@@ -247,6 +251,31 @@ uint64_t nx_host_entry(void (*fn)(void *)) {
     return g_stub_base + 4ull * (uint64_t)(HOSTFN_BASE + i);
 }
 
+// The registers of a thread that stops (an abort it called, a fault) and where its frames return to
+void nx_regs_dump(const uint64_t *regs, const char *what) {
+    char w[64];
+    LOG("  registers at %s: pc=%#llx (%s) lr=%#llx sp=%#llx", what, (unsigned long long)regs[32], nx_where(regs[32], w, sizeof w), (unsigned long long)regs[30], (unsigned long long)regs[31]);
+    for (int i = 0; i < 30; i += 5) LOG("    x%-2d=%#llx x%-2d=%#llx x%-2d=%#llx x%-2d=%#llx x%-2d=%#llx", i, (unsigned long long)regs[i], i + 1, (unsigned long long)regs[i + 1], i + 2, (unsigned long long)regs[i + 2], i + 3, (unsigned long long)regs[i + 3], i + 4, (unsigned long long)regs[i + 4]);
+    LOG("  frame 0: return to %s", nx_where(regs[30], w, sizeof w));
+    uint64_t fp = regs[29];
+    for (int k = 1; k < 12 && fp > 0x8000000 && fp < (16ull << 30) && !(fp & 7); k++) { uint64_t *f = (uint64_t *)(uintptr_t)fp; LOG("  frame %d: return to %s", k, nx_where(f[1], w, sizeof w)); if (f[0] <= fp) break; fp = f[0]; }
+}
+// nvnTextureInitialize(texture, builder): a size no device has (the replayer's WebGPU error "Texture size (65535 x 65535 x 1)
+// exceeded maximum" was seen in the page) is reported with who asked and what the builder holds. The builder is the
+// recorder's (nxweb src/gfx/obj.ts tex_builder_t): +8 target, +12 format, +16 flags, +20 samples, +24 width, +28 height, +32 depth, +36 levels, +40 stride
+static _Atomic int g_tex_guard_n;
+static void tex_guard(const uint64_t *regs) {
+    const uint32_t *b = (const uint32_t *)(uintptr_t)regs[1];
+    if (!b || (b[6] <= 16384 && b[7] <= 16384 && b[8] <= 16384)) return;
+    int n = atomic_fetch_add(&g_tex_guard_n, 1);
+    if (n >= 8) return;
+    char nm[96] = "?", w[64]; int thr_name_of(pthread_t pt, char *out, size_t n_); thr_name_of(pthread_self(), nm, sizeof nm);
+    LOG("[RED] nvnTextureInitialize: a texture of %u x %u x %u asked by thread %s from %s: texture %#llx, builder %#llx { device %#llx, target %u, format %u, flags %#x, samples %u, levels %u, stride %u, pool %#llx + %#llx }",
+        b[6], b[7], b[8], nm, nx_where(regs[30], w, sizeof w), (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)*(const uint64_t *)b, b[2], b[3], b[4], b[5], b[9], b[10],
+        (unsigned long long)*(const uint64_t *)(b + 12), (unsigned long long)*(const uint64_t *)(b + 14));
+    { char hex[200]; int o = 0; for (int i = 0; i < 24; i++) o += snprintf(hex + o, sizeof hex - (size_t)o, "%08x ", b[i]); LOG("  the builder's 96 bytes: %s", hex); }
+    if (n < 3) { nx_ring_dump("an oversized texture"); nx_regs_dump(regs, "the call"); }
+}
 static char *g_stub_name_of(int id) { return id >= 0 && id < MAX_STUB && g_stub_name[id] ? g_stub_name[id] : "?"; }
 EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)ctx_;
@@ -260,7 +289,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     }
     if (regs[32] >= g_stub_base && id < MAX_STUB && !g_stub_name[id]) {   // not a stub of the loader's: one the owner realm handed out (an NVN entry point)?
         int code = nx_owner_stub((int)id);
-        if (code) { char nm[128]; nx_owner_stub_name((int)id, (double)(uintptr_t)nm, sizeof nm); g_stub_owner[id] = code; g_stub_name[id] = strdup(nm); if ((int)id >= g_nstub) g_nstub = (int)id + 1; }
+        if (code) { char nm[128]; nx_owner_stub_name((int)id, (double)(uintptr_t)nm, sizeof nm); g_stub_owner[id] = code; g_stub_texinit[id] = !strcmp(nm, "nvnTextureInitialize"); g_stub_name[id] = strdup(nm); if ((int)id >= g_nstub) g_nstub = (int)id + 1; }
     }
     if (regs[32] < g_stub_base || id >= MAX_STUB || !g_stub_name[id]) { char w[64]; die("host call at pc %#llx (called from %s): not a stub", (unsigned long long)regs[32], nx_where(regs[30], w, sizeof w)); }
     atomic_fetch_add_explicit(&g_host_calls, 1, memory_order_relaxed);
@@ -276,15 +305,22 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     }
     regs[32] = regs[30];   // return to the caller (the thunk may still redirect)
     uint64_t in[3] = {regs[0], regs[1], regs[2]};
-    if (strstr(g_stub_name[id], "Abort") || strstr(g_stub_name[id], "abort")) {   // the game gives up: what led to it
+    if (g_stub_texinit[id]) tex_guard(regs);
+    if ((strstr(g_stub_name[id], "Abort") || strstr(g_stub_name[id], "abort")) && !strstr(g_stub_name[id], "Observer")) {   // the game gives up: what led to it
         nx_ring_dump(g_stub_name[id]);
+        nx_regs_dump(regs, "the abort");
+#if 0
         LOG("  registers at the abort: x0=%#llx x1=%#llx x2=%#llx x3=%#llx x8=%#llx x19=%#llx x20=%#llx x21=%#llx x22=%#llx x29=%#llx lr=%#llx sp=%#llx", (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2], (unsigned long long)regs[3], (unsigned long long)regs[8],
             (unsigned long long)regs[19], (unsigned long long)regs[20], (unsigned long long)regs[21], (unsigned long long)regs[22], (unsigned long long)regs[29], (unsigned long long)regs[30], (unsigned long long)regs[31]);
         { uint64_t fp = regs[29]; char w2[64]; for (int k = 0; k < 10 && fp > 0x8000000 && fp < (16ull << 30) && !(fp & 7); k++) { uint64_t *f = (uint64_t *)(uintptr_t)fp; LOG("  frame %d: return to %s", k, nx_where(f[1], w2, sizeof w2)); if (f[0] <= fp) break; fp = f[0]; } }
+#endif
     }
     { void nx_yield_reset(void); nx_yield_reset(); }   // a thread that makes host calls between its yields is working
     int k = trk(); g_trk[k].in_host = (int)id + 1;
-    if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
+    int direct = own > 0 ? g_stub_direct[id] : -1;
+    if (!direct) { direct = nx_gfx_enabled() ? nx_owner_stub_direct((int)id) : 0; g_stub_direct[id] = direct = direct ? direct : -1; }
+    if (direct > 0) nx_gfx_direct(direct, regs);
+    else if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
                    nx_owner_do(own, regs); }
     else if (e && !(e->flags & NX_HLE_HAND)) e->thunk(regs);   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
@@ -377,6 +413,8 @@ void nx_boot_report(const char *why) {
       LOG("graphics (nxweb's recorder on the owner thread): %.0f host calls of it (%.0f NVN calls recorded, %.0f waited), %.1f us each inside; host stream %.0f batches, %.1f MB; presents %.0f", os[4], os[10], os[6], os[4] ? os[5] / 1e3 / os[4] : 0.0, os[8], os[9] / 1048576, os[7]);
       LOG("owner thread: %llu proxied calls, %.1f us each on the caller's side; nn::fs %0.f calls (%0.f pending, %0.f retried), %.1f us each inside the module", (unsigned long long)g_owner_calls,
           g_owner_calls ? g_owner_ns / 1e3 / g_owner_calls : 0.0, os[0], os[1], os[2], os[0] ? os[3] / 1e3 / os[0] : 0.0); }
+    { void nx_gfx_stats(double); double g[3] = {0}; nx_gfx_stats((double)(uintptr_t)g);
+      LOG("recorder on the calling thread: %.0f NVN calls, %.2f us each (lock included), %.0f times a thread slept for the lock%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[2], nx_gfx_enabled() ? "" : " (off: every NVN call goes to the owner)"); }
     LOG("owner slot: %llu requests; waiting for the slot %.1f us each, request to answer %.1f us each (the modules' own time is in the two lines above)", (unsigned long long)g_slot_n,
         g_slot_n ? g_slot_queue_ns / 1e3 / g_slot_n : 0.0, g_slot_n ? g_slot_serve_ns / 1e3 / g_slot_n : 0.0);
     int n = 0;

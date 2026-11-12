@@ -15,11 +15,19 @@ import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { RtGfx } from "../../src/glue/rt_gfx.ts";
 import { nvn2Items, sdkVersionIn } from "../../src/glue/rt_runtime.ts";
 import { STUBS } from "../../src/glue/rt_layout.ts";
+// @ts-ignore (a plain module, also a command-line tool)
+import { globalsToMemory } from "../tools/globals_to_memory.mjs";
 import { VCODEC, type VideoBackend, type VideoPicture, type VideoSink } from "../../src/glue/video_host.ts";
 
 export const KIND_FS = 1, KIND_HOST = 2, KIND_VIDEO = 3;   // 3: the AV1 decoder of kernel/nx_video.c   // nxweb's fs module; a host function nxweb's glue registers (RtGfx: nvnBootstrapLoader, every NVN entry point, nv::)
 export const DONE = 0, PENDING = 1, RETRY = 2;
 const LOW_BASE = 0x1C000000, LOW_END = 0x1FF00000;   // host allocations that must be below 4 GB (test/p4_boot.c stages the module files below this, up to 0x1C00_0000)
+// The recorder shared with the guest threads (tools/globals_to_memory.mjs): its globals are in the memory at GFX_GLOBALS,
+// the build for the other threads' instances at GFX_MOD, and at NXG the words both sides use (kernel/nx_gfx.c):
+//   +0 the recorder's lock (0 free, 1 the owner, else a thread)   +4 threads waiting for it   +8 the holder's request to
+//   the owner: 0 none, 1 asked, 2 answered   +12 its kind (0 gfx_exec, 1 gfx_proc_address, 2 gfx_arena_more)
+//   +16 +24 f64 arguments   +32 f64 result   +40 bytes at GFX_MOD   +44 1: guest threads call the recorder themselves
+export const NXG = 0x1FF1F000, GFX_GLOBALS = 0x1FF10000, GFX_MOD = 0x1FF20000, GFX_MOD_MAX = 0x80000;
 const CELL = 0x3F0;   // in the caller's context block (0x400 bytes, the CPU state ends at 0x330): the word a pending call's completion sets
 
 // What the platform (owner_node.ts, owner_web.ts) gives the owner
@@ -28,6 +36,7 @@ export interface OwnerConfig {
   prep: PrepWasm;                       // nxweb's prepare module: RomFS tables, SHA-256
   fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
   gfxModule: WebAssembly.Module;
+  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
   saves: FsStorage;
   programId: bigint;
   scratch: number;                      // 8 KB of the memory nothing else uses
@@ -158,18 +167,61 @@ export class Owner {
     }
     x.fs_set_account_save(-1);
   }
+  // ---- the recorder's lock, owner side. The owner cannot block, so it spins, and while it does it serves the request
+  // of the thread that holds the lock (that thread is inside the recorder, waiting for gfx_exec). While such a request
+  // is served the recorder is the holder's: what the replayer calls of it then needs no lock (`lent`).
+  private gl!: Int32Array; private glf!: Float64Array; private glDepth = 0; private glHeld = false; private lent = false;
+  glStats = { locks: 0, spins: 0, served: 0, execMs: 0 };
+  lock(): void {
+    if (this.glDepth++ || this.lent) return;
+    const g = this.gl; this.glStats.locks++;
+    while (Atomics.compareExchange(g, 0, 0, 1) !== 0) { this.glStats.spins++; this.svc(); }
+    this.glHeld = true;
+  }
+  unlock(): void {
+    if (--this.glDepth || !this.glHeld) return;
+    this.glHeld = false;
+    const g = this.gl; Atomics.store(g, 0, 0); if (Atomics.load(g, 1)) Atomics.notify(g, 0, 1);
+  }
+  // The lock holder's request, if there is one: true when one was served
+  svc(): boolean {
+    const g = this.gl;
+    if (!g || Atomics.load(g, 2) !== 1) return false;
+    const f = this.glf, env = this.gfx!.env, was = this.lent, t0 = performance.now(); let r = 0;
+    this.lent = true;
+    try {
+      if (g[3] === 0) env.gfx_exec(f[2], f[3]);
+      else if (g[3] === 1) r = Number(env.gfx_proc_address(f[2]));
+      else if (g[3] === 2) r = Number(env.gfx_arena_more(f[2]));
+    } catch (e) { this.log(`[RED] owner: the recorder's request ${g[3]} from a guest thread failed: ${(e as Error).stack ?? e}`); }
+    this.lent = was; this.glStats.served++; this.glStats.execMs += performance.now() - t0;
+    f[4] = r;
+    Atomics.store(g, 2, 2); Atomics.notify(g, 2);
+    return true;
+  }
+  // the code of a stub a guest thread may answer in its own instance of the recorder: (NVN id + 1) | abi << 16, else 0
+  stubDirect(id: number): number { return this.cfg.gfxShare?.direct ? this.gfx?.direct.get(STUBS.base + 4 * id) ?? 0 : 0; }
   lowAlloc(n: number): number { const a = this.low; if (a + n > LOW_END) return 0; this.low = Math.ceil((a + n) / 0x1000) * 0x1000; return a; }
   // nxweb's NVN recorder (gfx64.wasm) and its glue (src/glue/rt_gfx.ts), with the null replayer: the host stream is
   // counted, and a present is the first-frame mark. `device` / `canvas` make it the real replayer (the page).
   startGfx(c: OwnerConfig, pages: number): void {
     const o: any = c.gfx ?? {};
     const rt = this.rt = new RtShim(this.memory, { memory_size: () => pages, memory_grow: (n: number) => n ? -1 : pages }, c, this);
-    const t0 = performance.now();
-    this.gfx = new RtGfx(rt as any, c.gfxModule, { unpaced: !o.device, shaderWait: false, ...o, onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
+    const t0 = performance.now(), sh = c.gfxShare;
+    this.gl = new Int32Array(this.memory.buffer, NXG, 12); this.glf = new Float64Array(this.memory.buffer, NXG, 6);
+    if (sh) {
+      if (sh.secondary.length > GFX_MOD_MAX) throw new Error("owner: the recorder's build for the guest threads is larger than its room");
+      const u8 = new Uint8Array(this.memory.buffer);
+      for (const g of sh.globals) { u8.fill(0, g.addr, g.addr + 16); u8.set(g.init, g.addr); }
+      u8.set(sh.secondary, GFX_MOD); this.gl[10] = sh.secondary.length;
+    }
+    const wrapExports = (x: any) => { const out: any = {}; for (const k of Object.keys(x)) { const fn = x[k]; out[k] = typeof fn === "function" ? (...a: any[]) => { this.lock(); try { return fn(...a); } finally { this.unlock(); } } : fn; } return out; };
+    this.gfx = new RtGfx(rt as any, c.gfxModule, { unpaced: !o.device, shaderWait: false, wrapExports, ...o, onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
     if (c.nativeImage) this.gfx.nativeImageOf = c.nativeImage;
     const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
     host.account = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
     host.exec = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return exec(p, n); };
+    if (sh?.direct) { Atomics.store(this.gl, 11, 1); this.log(`owner: the recorder's ${sh.globals.length} globals are in the memory at 0x${GFX_GLOBALS.toString(16)}: every guest thread calls it in its own instance under one lock; the owner keeps the replayer (gfx_exec) and the calls that wait or pace`); }
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
   names(): string[] { return [...this.fsIds.keys(), ...(this.rt ? this.rt.byName.keys() : [])]; }
@@ -254,7 +306,8 @@ export class Owner {
     const go = (timedOut: boolean) => {
       if (over) return; over = true;
       let r: any;
-      try { r = w.resume(cpu, timedOut); } catch (e) { this.log(`[RED] owner: a host function failed after its wait: ${(e as Error).message}`); r = 0; }
+      this.lock();
+      try { r = w.resume(cpu, timedOut); } catch (e) { this.log(`[RED] owner: a host function failed after its wait: ${(e as Error).message}`); r = 0; } finally { this.unlock(); }
       if (r && r.__wait) this.arm(ctx, cpu, r); else { this.store(ctx, r); this.wake(ctx); }
     };
     const timed = () => { const ms = w.at === undefined ? 0 : Number(w.at - nowNs()) / 1e6; if (ms > 0.05) setTimeout(() => go(false), ms); else go(false); };
@@ -264,7 +317,9 @@ export class Owner {
   private hostCall(h: number, ctx: number): number {
     this.hostCalls++;
     const cpu = this.fast ?? (this.fast = this.cpu(ctx)); cpu.q = ctx / 8;
-    const r = this.rt.handlers[h](cpu);
+    let r: any;
+    this.lock();   // a handler is one step of the recorder for the other threads, as it was when every call came here
+    try { r = this.rt.handlers[h](cpu); } finally { this.unlock(); }
     if (r && r.__wait) { this.hostPending++; new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0; this.arm(ctx, this.cpu(ctx), r); return PENDING; }
     this.store(ctx, r);
     return DONE;
@@ -324,3 +379,9 @@ export async function startOwner(memory: WebAssembly.Memory, c: OwnerConfig): Pr
   return { owner: o, exefs: rom.exefs };
 }
 export { sharedBuild };
+// gfx64.wasm (already the shared build) as the globals-in-memory build and what goes with it (OwnerConfig.gfxShare)
+export function gfxShared(wasm: Uint8Array, direct: boolean): { wasm: Uint8Array; share: NonNullable<OwnerConfig["gfxShare"]> } {
+  const first = globalsToMemory(wasm, { base: GFX_GLOBALS }), second = globalsToMemory(wasm, { base: GFX_GLOBALS, secondary: true });
+  if (first.size > 0x8000) throw new Error("owner: the recorder has more globals than their block holds");
+  return { wasm: first.wasm, share: { globals: first.globals, secondary: second.wasm, direct } };
+}

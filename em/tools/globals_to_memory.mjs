@@ -166,12 +166,11 @@ function constBytes(b, p, bytes) {
 // Write the initial values (once, before the first instance runs)
 export function writeGlobalInits(memory, globals) { const u8 = new Uint8Array(memory.buffer); for (const g of globals) { u8.fill(0, g.addr, g.addr + 16); u8.set(g.init, g.addr); } }
 
-if (typeof process !== "undefined" && process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop())) {
-  const { readFileSync, writeFileSync } = await import("node:fs");
+if (typeof process !== "undefined" && process.argv && /globals_to_memory\.mjs$/.test(process.argv[1] ?? "")) import(["node", "fs"].join(":")).then(({ readFileSync, writeFileSync }) => {
   const [inp, outp, base] = process.argv.slice(2).filter(a => a !== "--secondary"), secondary = process.argv.includes("--secondary");
   if (!inp || !outp || base === undefined) { console.error("usage: node globals_to_memory.mjs <in.wasm> <out.wasm> <base>"); process.exit(2); }
   const r = globalsToMemory(readFileSync(inp), { base: Number(base), secondary });
   writeFileSync(outp, r.wasm);
   writeFileSync(outp + ".globals.json", JSON.stringify(r.globals.map(g => ({ index: g.index, type: g.type, addr: g.addr, init: Buffer.from(g.init).toString("hex") }))));
   console.log(`globals_to_memory: ${r.globals.length} mutable globals moved to 0x${Number(base).toString(16)} (+${r.size} bytes), ${r.gets} global.get and ${r.sets} global.set rewritten in ${r.functions} functions; ${r.wasm.length} bytes (was ${readFileSync(inp).length})`);
-}
+});
