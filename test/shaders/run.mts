@@ -18,6 +18,7 @@ import { load } from "../../tools/shaders/naga_node.mts";
 import { jobFor, keyControl, ctlLens } from "../../src/shaders/job.ts";
 import { convertStage } from "../../src/shaders/convert.ts";
 import { imageVariant, formatClass } from "../../src/shaders/images.ts";
+import { vertexInputVariant, fragmentInputVariant, missingInputs, stageInterface } from "../../src/shaders/variants.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../.."), OUT = join(ROOT, "build/shaders");
 mkdirSync(OUT, { recursive: true });
@@ -100,6 +101,56 @@ await test("SPIR-V pass: warp operations, native (WGSL subgroups, a 32-lane warp
   const b1 = convertStage(naga, glslToSpv(join(CORPUS, "subgroup_ballot.frag")), { bindings: "keep" }).wgsl;
   if (!/select\(0u, 1u,/.test(b1) && !/select\(vec4<u32>\(0u, 0u, 0u, 0u\), vec4<u32>\(1u, 0u, 0u, 0u\)/.test(b1)) throw new Error(`one-invocation ballot:\n${b1}`);
   return `${cases.length} stages, both paths pass spirv-val`;
+});
+await test("SPIR-V pass: warp operations in a compute stage with a two-dimensional workgroup; a ballot of a constant true is no `subgroupBallot()`", () => {
+  const d = mkdtempSync(join(tmpdir(), "nxsl-sgc-")), f = join(d, "sg.comp");
+  writeFileSync(f, `#version 460
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_vote : enable
+#extension GL_KHR_shader_subgroup_shuffle : enable
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 160, std430) buffer B { uint data[]; } b;
+void main() {
+  uvec4 act = subgroupBallot(true);
+  bool all1 = subgroupAll(true);
+  uint sh = subgroupShuffle(b.data[gl_LocalInvocationIndex], gl_SubgroupInvocationID ^ 1u);
+  b.data[gl_LocalInvocationIndex] = act.x + uint(all1) + uint(subgroupElect()) + sh + gl_SubgroupSize + subgroupBallotBitCount(subgroupBallot(sh > 3u));
+}`);
+  const w = convertStage(naga, glslToSpv(f), { bindings: "keep", subgroups: "native" }).wgsl, w1 = convertStage(naga, glslToSpv(f), { bindings: "keep" }).wgsl;
+  if (/subgroupBallot\(\s*\)/.test(w) || !/subgroupBallot\(\(\w+ == \w+\)\)/.test(w)) throw new Error(`a ballot without its bool:\n${w}`);
+  if (!/@workgroup_size\(8, 8, 1\)/.test(w) || !/@builtin\(subgroup_invocation_id\) \w+: u32/.test(w)) throw new Error(`the entry point:\n${w}`);
+  if (/subgroup/.test(w1)) throw new Error(`subgroup builtins on the one-invocation path:\n${w1}`);
+});
+await test("SPIR-V pass: a texture that is only fetched from has no sampler; sampled textures past the device's samplers a stage share a sampler binding (FixOptions.samplers)", () => {
+  const d = mkdtempSync(join(tmpdir(), "nxsl-samp-")), f = join(d, "many.frag"), name = (slot: number) => `fp_t2D_tcb_${(8 + 2 * slot).toString(16).toUpperCase()}`;
+  // 20 texture slots: 3 and 7 fetched only, 18 and 19 shadow maps, the rest sampled
+  let g = "#version 460\nlayout(location = 0) in vec4 v;\nlayout(location = 0) out vec4 o;\n";
+  for (let k = 0; k < 20; k++) g += `layout(set = 1, binding = ${k}) uniform ${k >= 18 ? "sampler2DShadow" : "sampler2D"} ${name(k)};\n`;
+  g += "void main() {\n  vec4 c = vec4(0.0);\n";
+  for (let k = 0; k < 20; k++) g += k === 3 || k === 7 ? `  c += texelFetch(${name(k)}, ivec2(v.xy), 0) + vec4(textureSize(${name(k)}, 0), 0, 0);\n` : k >= 18 ? `  c.x += texture(${name(k)}, v.xyz);\n` : `  c += texture(${name(k)}, v.xy);\n`;
+  writeFileSync(f, g + "  o = c;\n}\n");
+  const spv = glslToSpv(f), shape = (samplers?: number) => {
+    const c = convertStage(naga, spv, { bindings: "nxweb", samplers }), t = c.reflection.textures;
+    const decl = [...c.wgsl.matchAll(/@group\(1\) @binding\((\d+)\)\s*var \w+: sampler(?:_comparison)?;/g)].map(m => (+m[1] - 65) / 2);
+    eq(decl, t.filter(x => x.sampler === undefined).map(x => x.slot), `samplers ${samplers}: the sampler declarations are those of the slots that keep one`);
+    return [t.length, decl.length, t.filter(x => x.sampler === false).map(x => x.slot), t.filter(x => typeof x.sampler === "number").map(x => `${x.slot}>${x.sampler}`), c.reflection.notes.some(n => /samplers a stage on this device/.test(n))];
+  };
+  eq(shape(), [20, 16, [3, 7], ["17>16", "19>18"], true], "the default 16: the depth slot shares with the other depth slot, the highest float slot with the one below");
+  eq(shape(20), [20, 18, [3, 7], [], false], "a device with 20");
+  eq(shape(12)[1], 12, "a device with 12");
+  // one comparison sampler cannot be shared with a float texture
+  throws(() => convertStage(naga, glslToSpv(f), { bindings: "nxweb", samplers: 1 }), /no texture of the same sampler kind/, "one sampler for float and depth textures");
+});
+await test("variants: a vertex stage's inputs declared with the bound attribute class (the body gets the bits); a fragment stage's inputs the vertex stage does not write read a constant", () => {
+  const vs = byName(corpus, "matrix_ubo").entry!.wgsl, fs = byName(corpus, "tex_ops").entry!.wgsl;
+  eq(stageInterface(vs, "vertex"), { inputs: [{ location: 0, name: "pos", type: "vec3<f32>", cls: "float" }], outputs: [{ location: 0, name: "member", type: "vec4<f32>", cls: "float" }] }, "the vertex stage's interface");
+  eq(stageInterface(fs, "fragment")!.inputs.map(i => [i.location, i.type]), [[0, "vec4<f32>"]], "the fragment stage's inputs");
+  const v = vertexInputVariant(vs, { 0: "uint", 5: "sint" })!;
+  if (!/fn main\(@location\(0\) nx_in_pos: vec3<u32>\) -> VertexOutput \{\s*let pos = bitcast<vec3<f32>>\(nx_in_pos\);/.test(v)) throw new Error(`the uint variant:\n${v}`);
+  eq([vertexInputVariant(vs, { 0: "float" }) === vs, vertexInputVariant(fs, { 0: "uint" })], [true, undefined], "the declared classes give the text itself; a fragment stage none");
+  const f = fragmentInputVariant(fs, [])!;
+  if (!/fn main\(\) -> @location\(0\) vec4<f32> \{\s*let v = vec4<f32>\(0f, 0f, 0f, 1f\);/.test(f)) throw new Error(`the fragment variant:\n${f}`);
+  eq([fragmentInputVariant(fs, [0]), fragmentInputVariant(fs, vs), missingInputs(fs, []), missingInputs(fs, vs), missingInputs(fs, [0, 3])], [null, null, "0", "", ""], "nothing missing: null; the signature names the inputs left out");
 });
 await test("SPIR-V pass: uniform blocks are cut to what is read; a computed index keeps the whole array", () => {
   eq(byName(corpus, "ubo_const_index").entry!.reflection.uboSize, { "0": 96 }, "data[0] and data[5] read");

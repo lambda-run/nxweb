@@ -1,4 +1,5 @@
-// node tools/shaders/one.mts <sh-KEY.bin ...> [--out DIR] [--quiet]
+// node tools/shaders/one.mts <sh-KEY.bin ...> [--out DIR] [--quiet] [--subgroups] [--samplers N] [--storage N]
+// (--subgroups: as for a device with WebGPU subgroups; --samplers / --storage: its maxSamplersPerShaderStage / maxStorageBuffersPerShaderStage)
 // One stage through the page's chain outside the page: the translator (build/shaders/xlate_wasm), fixForWgsl, naga, as
 // tools/shaders/sweep_worker.mts does it. The input is what the page's ?shaderdump= posts for a stage that failed
 // (u32 control length, control, code). Prints one line per stage; with --out the translator's SPIR-V, the SPIR-V after
@@ -13,8 +14,8 @@ import { fixForWgsl, type FixOptions } from "../../src/shaders/spv.ts";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const argv = process.argv.slice(2), files: string[] = [];
-let out = "", quiet = false;
-for (let i = 0; i < argv.length; i++) { if (argv[i] === "--out") out = argv[++i]; else if (argv[i] === "--quiet") quiet = true; else files.push(argv[i]); }
+let out = "", quiet = false, subgroups = false, samplers: number | undefined, storage: number | undefined;
+for (let i = 0; i < argv.length; i++) { if (argv[i] === "--out") out = argv[++i]; else if (argv[i] === "--quiet") quiet = true; else if (argv[i] === "--subgroups") subgroups = true; else if (argv[i] === "--samplers") samplers = +argv[++i]; else if (argv[i] === "--storage") storage = +argv[++i]; else files.push(argv[i]); }
 if (!files.length) { console.error("usage: node tools/shaders/one.mts <sh-KEY.bin ...> [--out DIR] [--quiet]"); process.exit(2); }
 if (out) mkdirSync(out, { recursive: true });
 
@@ -45,7 +46,7 @@ for (const f of files) {
     try { res = JSON.parse(FS.readFile(`${dir}/${key}.res.json`, { encoding: "utf8" })); } catch { /* none */ }
     if (out) { writeFileSync(join(out, `${key}.xlate.spv`), spv); writeFileSync(join(out, `${key}.res.json`), JSON.stringify({ job: xjob, res }, null, 1)); }
     phase = "fix";
-    const opts = { bindings: "nxweb" as const, sbufs: res.sbufs ?? [], mesh, c1: (job as any).c1 };
+    const opts = { bindings: "nxweb" as const, sbufs: res.sbufs ?? [], mesh, c1: (job as any).c1, subgroups: subgroups ? "native" as const : "single" as const, samplers, storageBuffers: storage };
     if (out) { try { writeFileSync(join(out, `${key}.fixed.spv`), fixForWgsl(spv, opts as any).spv); } catch { /* the pass failed: convertStage says why */ } }
     const c = convertStage({ spvToWgsl(s: Uint8Array, flags?: number) { phase = "naga"; const w = naga.spvToWgsl(s, flags); phase = "fix"; return w; } }, spv, opts);
     if (out) writeFileSync(join(out, `${key}.wgsl`), c.wgsl);

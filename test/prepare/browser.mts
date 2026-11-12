@@ -129,7 +129,7 @@ try {
       return { out, text: document.getElementById("handoff")!.textContent, shape: { modules: msg.modules.map((m: any) => [m.name, m.file instanceof Blob, m.cuts]), rom: msg.rom.files.length, romBlobs: msg.rom.files.every((f: any) => f instanceof File), aoc: msg.aoc.map((a: any) => a.index), saveId: msg.saveId, shaders: { ...msg.shaders, prewarm: msg.shaders.prewarm && { found: msg.shaders.prewarm.found, failed: msg.shaders.prewarm.failed } }, provisional: msg.profile.provisional, hooks: msg.hooks.length } };
     });
     if (!r.out.ok) throw new Error(r.out.error);
-    eq(r.shape, { modules: [["main", true, 0], ["sdk", true, 0]], rom: 2, romBlobs: true, aoc: [2], saveId: "nxweb-save-" + APP_HEX, shaders: { mode: "on-demand", chain: "nxweb-shaders-10/page", store: "nxweb-shaders", prewarm: { found: 0, failed: 0 } }, provisional: true, hooks: 0 }, "message");
+    eq(r.shape, { modules: [["main", true, 0], ["sdk", true, 0]], rom: 2, romBlobs: true, aoc: [2], saveId: "nxweb-save-" + APP_HEX, shaders: { mode: "on-demand", chain: "nxweb-shaders-11/page", store: "nxweb-shaders", prewarm: { found: 0, failed: 0 } }, provisional: true, hooks: 0 }, "message");
     eq([r.out.kind, r.out.code, r.out.red, r.out.romSync], ["exit", 0, [], true], "run");
     eq(r.out.stdout, "lib: DT_INIT\nlib: init_array[0]\nlib: init_array[1]\n" + fsgOut(b1) + "lib: fini_array[0]\nlib: DT_FINI\n", "stdout");
     let sum = 0; for (const f of ["c.txt", "pack/a.bin", "pack/b.bin"]) { const b = gameFiles[`dlc/${dlcId}/0/romfs/${f}`]; for (const v of typeof b === "string" ? Buffer.from(b) : b) sum = (sum * 31 + v) >>> 0; }
@@ -565,7 +565,7 @@ try {
     if (!row.startsWith("3 shader stages found in 4 files (2 BNSH, 1 SARC, 1 YAZ0)") || !row.includes("not read: BAHS (agl / gsys shader archives) (1)")) throw new Error("shaders row: " + row);
     if (!translator) { eq([out.chain, out.untranslated], [null, 3], "scan only"); return `no build/web/shader_worker.js (web:build): scanned only; row: ${row}`; }
     const xlateFailed = out.failures.filter((f: any) => !/^a compute|^bindings/.test(f.reason)).reduce((n: number, f: any) => n + f.count, 0);
-    eq([out.chain, out.translated + out.cached + xlateFailed], ["nxweb-shaders-10/page", 3], `every stage translated or failed with a reason (${JSON.stringify(out.failures)})`);
+    eq([out.chain, out.translated + out.cached + xlateFailed], ["nxweb-shaders-11/page", 3], `every stage translated or failed with a reason (${JSON.stringify(out.failures)})`);
     const cached = await page.evaluate(async (ids: string[]) => { const c = await caches.open("nxweb-shaders"); const o: Record<string, number> = {}; for (const id of ids) { const r = await c.match("/shader-cache/" + encodeURIComponent(id)); o[id] = r ? ((await r.json()).wgsl as string).length : 0; } return o; }, [vs, ps, ps2].map(x => `${key(x)}/nxweb-shaders-4/page`));
     const stored = Object.values(cached).filter(n => n > 0).length;
     eq(stored, out.translated, `the translations in the runtime's store (${JSON.stringify(cached)})`);

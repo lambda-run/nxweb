@@ -712,6 +712,23 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnCommandBufferBindImages: C.bindTextures(P(a, 0), I(a, 1), I(a, 2), I(a, 3), P(a, 4), O.OP_BIND_IMG); return 0;
     case F.nvnCommandBufferDispatchCompute: C.dispatch(P(a, 0), I(a, 1), I(a, 2), I(a, 3), 0); return 0;
     case F.nvnCommandBufferDispatchComputeIndirect: C.dispatch(P(a, 0), 0, 0, 0, X(a, 1)); return 0;
+    // As nxnative (hle_nvn.c): discard and restart are state of the walk; the point size comes from the shader, lines are one pixel wide, and conservative
+    // raster has no host path (one red line when a game asks for what the host does not do)
+    case F.nvnCommandBufferSetRasterizerDiscard: C.rasterizerDiscard(P(a, 0), B(a, 1)); return 0;
+    case F.nvnCommandBufferSetPrimitiveRestart: C.primitiveRestart(P(a, 0), B(a, 1), I(a, 2)); return 0;
+    case F.nvnCommandBufferClearBuffer: C.clearBuffer(P(a, 0), X(a, 1), X(a, 2), <u32>I(a, 3)); return 0;
+    case F.nvnCommandBufferSetLineWidth: if (FL(a, 0) != 1 && !(condRed & 4)) { condRed |= 4; L.redLine("SetLineWidth other than 1: WebGPU has only 1-pixel lines"); } return 0;
+    case F.nvnCommandBufferSetConservativeRasterEnable: if (B(a, 1) && !(condRed & 8)) { condRed |= 8; L.redLine("SetConservativeRasterEnable(on): WebGPU has no conservative rasterization, ignored"); } return 0;
+    // The handles are read when the command is recorded (nxnative reads them again at execution; a game that changes them in between gets the earlier ones)
+    case F.nvnCommandBufferBindTexturesDeferred:
+      if (!(condRed & 16)) { condRed |= 16; L.redLine("BindTexturesDeferred: the handles are read at recording time, not at execution"); }
+      C.bindTextures(P(a, 0), I(a, 1), I(a, 2), I(a, 3), P(a, 4)); return 0;
+    // The zcull storage of a texture: 8 bytes a 32x32 tile, to 256 bytes (nxnative zcull_size)
+    case F.nvnTextureBuilderGetZCullStorageSize: case F.nvnTextureGetZCullStorageSize: {
+      const d = P(a, 0) + (fn == F.nvnTextureBuilderGetZCullStorageSize ? O.TB_d : O.TEX_d);
+      const tiles = <u64>((load<u32>(d, O.TD_width) + 31) / 32) * <u64>((load<u32>(d, O.TD_height) + 31) / 32) * <u64>max<u32>(load<u32>(d, O.TD_depth), 1);
+      return tiles ? (tiles * 8 + 0xff) & ~<u64>0xff : 0x100;
+    }
     case F.nvnCommandBufferSetDepthClamp: C.depthClamp(P(a, 0), B(a, 1)); return 0;
     case F.nvnCommandBufferClearTexture: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), 0); return 0;
     case F.nvnCommandBufferClearTexturei: C.clearTexture(P(a, 0), P(a, 1), P(a, 2), P(a, 3), P(a, 4), I(a, 5), 2); return 0;

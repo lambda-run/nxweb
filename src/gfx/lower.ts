@@ -45,6 +45,9 @@ const TEXH: usize = memory.data(1536);       // [stage 0..5][32] u64 handle
 const SSBO: usize = memory.data(1536);       // [stage 0..5][16] { u64 address, u64 size }
 const IMGH: usize = memory.data(384);        // [stage 0..5][8] u64 image handle (a texture ID)
 let progC: usize = 0, depthClamp = false;
+// SetRasterizerDiscard: nothing is rasterized, so the draws are not issued (transform feedback, the other reason to draw then, has no host path).
+// SetPrimitiveRestart: WebGPU's strips always restart at the all-ones index; turning it off cannot be honoured (one red line at such a strip draw)
+let rastDiscard = false, restartSet = false, restartOn = false;
 // Storage ranges a compute pass wrote: read back into guest memory when the pass ends
 const WR: usize = memory.data(512); let nwr: i32 = 0;
 // @ts-ignore: decorator
@@ -408,14 +411,21 @@ function fillKey(prim: i32, itype: i32): bool {
   store<u8>(k, <u8>samples, PK.PK_samples); store<u8>(k, load<u8>(MS, 2), PK.PK_a2c);
   let flags: u32 = depthClamp ? 1 : 0, vin: u64 = 0;
   if (itype >= 0 && (prim == 3 || prim == 5)) store<u8>(k, <u8>(itype + 1), PK.PK_itype);
-  let need = load<u32>(libRefl(curVs), RF_io);
+  const rfv = libRefl(curVs);
+  let need = load<u32>(rfv, RF_io);
   store<u32>(k, need, PK.PK_attr_mask);
   for (let loc = 0; need; loc++, need >>= 1) {
     if (!(need & 1)) continue;
     const a = loc < nattr ? load<u32>(VATTR + (<usize>loc << 2)) : 0;
-    if (!(a & 0xff)) { if (once(4)) { L.red("the vertex shader reads attribute "); L.i(loc); L.str(", which the bound vertex attribute state does not have: the draw is skipped"); L.end(); } return false; }
     const stream = a >> 27;
-    if (stream >= 16 || !load<u64>(VBUF + (<usize>stream << 4))) { if (once(5)) { L.red("no vertex buffer bound for stream "); L.u(stream); L.str(": the draw is skipped"); L.end(); } return false; }
+    // An attribute the state does not have, or whose stream has no buffer: NVN (as GL) gives the shader the constant (0, 0, 0, 1). The key's entry stays 0
+    // (format 0) and the replayer feeds the location from a constant vertex buffer; its class is the one the shader declares, so no variant is needed
+    if (!(a & 0xff) || stream >= 16 || !load<u64>(VBUF + (<usize>stream << 4))) {
+      if (!(a & 0xff)) { if (once(4)) { L.begin("the vertex shader reads attribute "); L.i(loc); L.str(", which the bound vertex attribute state does not have: it reads the constant (0, 0, 0, 1)"); L.end(); } }
+      else if (once(5)) { L.begin("no vertex buffer bound for stream "); L.u(stream); L.str(" of attribute "); L.i(loc); L.str(": it reads the constant (0, 0, 0, 1)"); L.end(); }
+      if (load<u32>(rfv, RF_flags) & 1) vin |= ((load<u64>(rfv, RF_vin) >> (<u64>loc * 2)) & 3) << (<u64>loc * 2);
+      continue;
+    }
     store<u32>(k + PK.PK_attr + (<usize>loc << 2), a);
     store<u64>(k + PK.PK_stream + (<usize>stream << 3), <i32>stream < nstream ? load<u64>(VSTREAM + (<usize>stream << 3)) : 0);
     vin |= <u64>fmtClass(a & 0xff) << (<u64>loc * 2);
@@ -460,7 +470,7 @@ function emitState(): void {
   if (dirty & D_BIND) { const r = H.hostRec(H.H_PIPELINE, 16); store<u32>(r, curPipe, 8); }
   if (dirty & D_VBUF) {
     let streams: u32 = 0;
-    for (let loc = 0, need = load<u32>(PK.KEY, PK.PK_attr_mask); need; loc++, need >>= 1) if (need & 1) streams |= 1 << (load<u32>(PK.KEY + PK.PK_attr + (<usize>loc << 2)) >> 27);
+    for (let loc = 0, need = load<u32>(PK.KEY, PK.PK_attr_mask); need; loc++, need >>= 1) if (need & 1) { const va = load<u32>(PK.KEY + PK.PK_attr + (<usize>loc << 2)); if (va & 0xff) streams |= 1 << (va >> 27); }
     for (let s: u32 = 0; streams; s++, streams >>= 1) {
       if (!(streams & 1)) continue;
       const r = H.hostRec(H.H_VBUF, 24);
@@ -701,6 +711,8 @@ function draw(r: usize, size: u32, indexed: bool): void {
   }
   if (!prog || load<u32>(prog) != O.MAGIC_PROG) { if (once(9)) L.redLine("draw without a bound program: skipped"); skipRec(H.SKIP_STATE, 0, 0); nSkipped++; return; }
   const orig = load<i32>(r);
+  if (rastDiscard) return;
+  if (indexed && restartSet && !restartOn && (orig == 3 || orig == 5) && once(45)) L.redLine("SetPrimitiveRestart(off) with an indexed strip: WebGPU strips always restart at the all-ones index, a strip that uses that index as a vertex is cut there");
   if (orig == MESH_PRIM) { meshDraw(r); return; }
   // WebGPU has points, lines, line strips, triangles and triangle strips. Loops, fans, quads, quad strips and polygons
   // are drawn as strips or lists through an index buffer the replayer builds (conv = the NVN primitive)
@@ -855,6 +867,16 @@ function copyT2B(r: usize, size: u32): void {
 }
 // A CPU-visible write in stream order: everything before it is executed first (the replayer uploads what the earlier
 // draws bound), then guest memory changes, then the replayer is told to forget its uploads
+// nvnCommandBufferClearBuffer: the range takes the 32-bit value (as nxnative's OP_CLEAR_BUF), in stream order like memWrite
+function memFill(dst: usize, n: usize, v: u32): void {
+  if (!dst || !n) return;
+  H.hostFlush();
+  R.reportOverwrite(dst, n);
+  if (!v) memory.fill(dst, 0, n);
+  else { let i: usize = 0; for (; i + 4 <= n; i += 4) store<u32>(dst + i, v); for (; i < n; i++) store<u8>(dst + i, <u8>(v >> (<u32>(i & 3) * 8))); }
+  H.hostRec(H.H_MEM_DIRTY, 8);
+  dirty |= D_VBUF | D_UBO;
+}
 function memWrite(dst: usize, src: usize, n: usize): void {
   H.hostFlush();
   R.reportOverwrite(dst, n);
@@ -934,6 +956,9 @@ function exec(p: usize, depth: i32): void {
         dirty |= D_UBO; break;
       }
       case O.OP_DISPATCH: dispatch(a); break;
+      case O.OP_RAST_DISCARD: rastDiscard = load<i32>(a) != 0; break;
+      case O.OP_PRIM_RESTART: restartSet = true; restartOn = load<i32>(a) != 0; break;
+      case O.OP_CLEAR_BUF: memFill(<usize>load<u64>(a), <usize>load<u64>(a, 8), load<u32>(a, 16)); break;
       case O.OP_DEPTH_CLAMP: { const on = load<i32>(a) != 0; if (on != depthClamp) { depthClamp = on; dirty |= D_PIPE; } break; }
       case O.OP_BIND_TEX: {
         const st = hst(load<u32>(a)), first = load<u32>(a, 4), n = load<u32>(a, 8);

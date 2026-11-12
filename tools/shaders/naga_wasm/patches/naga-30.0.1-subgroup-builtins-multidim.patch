@@ -1,0 +1,20 @@
+--- a/src/valid/interface.rs	2026-11-12 09:01:50
++++ b/src/valid/interface.rs	2026-11-12 09:01:51
+@@ -278,13 +278,10 @@
+                     return Err(VaryingError::UnsupportedCapability(required));
+                 }
+ 
+-                if matches!(
+-                    built_in,
+-                    crate::BuiltIn::SubgroupId | crate::BuiltIn::SubgroupInvocationId
+-                ) && ep.workgroup_size[1..].iter().any(|&s| s > 1)
+-                {
+-                    return Err(VaryingError::InvalidMultiDimensionalSubgroupBuiltIn);
+-                }
++                // nxweb: naga refuses subgroup_id and subgroup_invocation_id in a compute stage whose
++                // workgroup has more than one dimension (wgpu cannot give them a defined order on
++                // every backend). The game's shaders are written for such workgroups, WGSL itself
++                // has no such rule, and the text goes to the browser's own compiler: allowed here.
+ 
+                 let (visible, type_good) = match built_in {
+                     Bi::BaseInstance | Bi::BaseVertex | Bi::VertexIndex => (

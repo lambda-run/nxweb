@@ -17,6 +17,10 @@ export const NOPS = [
   "nvnCommandBufferSetPatchSize", "nvnCommandBufferSetDepthBounds", "nvnCommandBufferSetShaderScratchMemory", "nvnCommandBufferPushDebugGroupDynamic",
   "nvnCommandBufferPopDebugGroup", "nvnCommandBufferInsertDebugMarkerDynamic", "nvnCommandBufferInsertDebugMarker", "nvnCommandBufferPushDebugGroup",
   "nvnCommandBufferPushDebugGroupStatic", "nvnCommandBufferPopDebugGroupId", "nvnCommandBufferInsertDebugMarkerStatic",
+  // no host equivalent, as nxnative: Tegra's tiled cache hints, variable rate shading (every pixel is shaded), the geometry processing mode, the command
+  // memory callback switch, and the point size (it comes from the shader)
+  "nvnCommandBufferSetTiledCacheAction", "nvnCommandBufferSetTiledCacheTileSize", "nvnCommandBufferShadingRateImagePalette", "nvnCommandBufferBindShadingRateImage",
+  "nvnCommandBufferSetGeometryProcessingMode", "nvnCommandBufferSetCommandMemoryCallbackEnabled", "nvnCommandBufferSetPointSize",
 ];
 
 export function generate(): { source: string; total: number; implemented: number; nops: number } {

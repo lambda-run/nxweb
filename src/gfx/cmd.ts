@@ -364,6 +364,9 @@ export function dispatch(c: usize, x: i32, y: i32, z: i32, ind: u64): void {
   const r = rec(c, O.OP_DISPATCH, O.P_DISPATCH_SIZE);
   if (r) { store<i32>(r, x); store<i32>(r, y, 4); store<i32>(r, z, 8); store<u64>(r, ind, O.P_DISPATCH_ind); }
 }
+export function rasterizerDiscard(c: usize, on: bool): void { const r = rec(c, O.OP_RAST_DISCARD, 4); if (r) store<i32>(r, on ? 1 : 0); }
+export function primitiveRestart(c: usize, on: bool, index: i32): void { const r = rec(c, O.OP_PRIM_RESTART, 8); if (r) { store<i32>(r, on ? 1 : 0); store<i32>(r, index, 4); } }
+export function clearBuffer(c: usize, addr: u64, n: u64, v: u32): void { const r = rec(c, O.OP_CLEAR_BUF, 24); if (r) { store<u64>(r, addr); store<u64>(r, n, 8); store<u32>(r, v, 16); } }
 export function depthClamp(c: usize, on: bool): void { const r = rec(c, O.OP_DEPTH_CLAMP, 4); if (r) store<i32>(r, on ? 1 : 0); }
 // Downsample: a multisample resolve of the whole texture, recorded as a texture copy with COPY_RESOLVE (as nxnative)
 export function downsample(c: usize, s: usize, sv: usize, d: usize, dv: usize): void {
