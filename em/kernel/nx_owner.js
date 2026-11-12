@@ -112,6 +112,10 @@ addToLibrary({
   nx_js_stopped__sig: 'vd',
   nx_js_stopped__deps: ['$UTF8ToString'],
   nx_js_stopped: function(why) { if (Module.nxStopped) Module.nxStopped(UTF8ToString(why)); },
+  // the process's CPU time so far in microseconds, every thread (Node); -1 where it cannot be asked (a page)
+  nx_js_cpu_us__proxy: 'sync',
+  nx_js_cpu_us__sig: 'd',
+  nx_js_cpu_us: function() { if (typeof process === 'undefined' || !process.cpuUsage) return -1; const u = process.cpuUsage(); return u.user + u.system; },
   nx_owner_stats__proxy: 'sync',
   nx_owner_stats__sig: 'vd',
   nx_owner_stats: function(out) { const s = globalThis.NXOWNER && globalThis.NXOWNER.stats; if (!s) return;

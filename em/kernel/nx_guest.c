@@ -35,7 +35,26 @@ _Atomic uint64_t nx_svc_by_num[128];   // every SVC by number (the progress line
 // never gets to 64 and is not slowed, which is what the fixed floor tried on 2026-11-12 got wrong.
 static _Atomic uint32_t g_wake_word; static _Atomic int g_parked;
 _Atomic uint64_t nx_stat_yield_parks;
-static __thread unsigned t_yields;
+static __thread unsigned t_yields, t_polls;
+// Polling with short sleeps. The game's idle job workers and its main thread wait with yield, yield, SleepThread(tens of
+// microseconds), for ever: on the console each has a core to itself for that; here ~90 threads share the host's cores and
+// each cycle is three SVCs and a real wake-up (measured: 850,000 such runs in 10 s at the title; the Mac's load average
+// 16-44). The 20 us sleep ended the run of yields, so the park above never applied. Now: after 48 short sleeps and yields
+// in a row with nothing else in between (no other SVC, no host call: a thread that works between them is never touched)
+// the thread parks on the wake word, NX_POLL_PARK_US microseconds (default 250; the page: ?pollpark=; 0 = off) doubling
+// with every further 48 up to eight times that, ended early by any SVC that wakes or starts a thread.
+_Atomic uint64_t nx_stat_poll_parks, nx_stat_poll_park_ns;
+static int poll_park_us(void) { static int v = -1; if (v < 0) { const char *e = getenv("NX_POLL_PARK_US"); v = e && *e ? atoi(e) : 250; } return v; }
+uint64_t nx_now_ns(void);
+static void poll_park(void) {
+    if (++t_polls <= 48 || poll_park_us() <= 0) return;
+    unsigned k = (t_polls - 48) / 48; if (k > 3) k = 3;
+    uint32_t w = atomic_load(&g_wake_word); uint64_t t0 = nx_now_ns();
+    atomic_fetch_add(&g_parked, 1);
+    emscripten_futex_wait(&g_wake_word, w, (double)(poll_park_us() << k) / 1000.0);
+    atomic_fetch_sub(&g_parked, 1);
+    atomic_fetch_add_explicit(&nx_stat_poll_parks, 1, memory_order_relaxed); atomic_fetch_add_explicit(&nx_stat_poll_park_ns, nx_now_ns() - t0, memory_order_relaxed);
+}
 // What the runs of yields look like (all threads): how long a run is when it ends (log2 buckets: 1, 2-3, 4-7, ...) and
 // what ends it (a host call, or an SVC by number)
 _Atomic uint64_t nx_yrun_len[16], nx_yrun_by_host, nx_yrun_by_svc[128];
@@ -46,7 +65,7 @@ static void yrun_end(int by_svc) {
     if (by_svc < 0) atomic_fetch_add_explicit(&nx_yrun_by_host, 1, memory_order_relaxed); else atomic_fetch_add_explicit(&nx_yrun_by_svc[by_svc & 127], 1, memory_order_relaxed);
     t_yields = 0;
 }
-void nx_yield_reset(void) { yrun_end(-1); }
+void nx_yield_reset(void) { yrun_end(-1); t_polls = 0; }
 static int park_us(void) { static int v = -1; if (v < 0) { const char *e = getenv("NX_YIELD_PARK_US"); v = e && *e ? atoi(e) : 100; } return v; }
 static void yield_or_wake(int num, const uint64_t *regs) {
     // (SleepThread of less than 20 us is a yield to hle_thread.c too. The game's job workers and its main thread wait with
@@ -59,9 +78,12 @@ static void yield_or_wake(int num, const uint64_t *regs) {
             atomic_fetch_sub(&g_parked, 1);
             atomic_fetch_add_explicit(&nx_stat_yield_parks, 1, memory_order_relaxed);
         }
+        poll_park();
         return;
     }
     yrun_end(num);
+    if (num == 0x0B && (int64_t)regs[0] < 1000000) { poll_park(); return; }   // a sleep of under a millisecond: the third step of the polling cycle
+    t_polls = 0;
     if (num == 0x09 || num == 0x0A || num == 0x11 || num == 0x1B || num == 0x1D || num == 0x35) {   // StartThread, ExitThread, SignalEvent, ArbitrateUnlock, SignalProcessWideKey, SignalToAddress
         atomic_fetch_add(&g_wake_word, 1);
         if (atomic_load(&g_parked)) emscripten_futex_wake(&g_wake_word, 1 << 30);

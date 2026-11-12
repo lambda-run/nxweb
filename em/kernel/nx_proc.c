@@ -423,6 +423,11 @@ void nx_progress(void) {
       for (int i = 1; i < 128; i++) if (dv[i] > dv[top]) top = i;
       for (int i = 0; i < 128; i++) if (i != top && dv[i] >= dv[top2 == top ? (top ? 0 : 1) : top2]) top2 = i;
       if (runs) LOG("yield runs since the last line: %llu; by length (yields in a row, from):%s; ended by a host call %llu, by svc %#x %llu, by svc %#x %llu", (unsigned long long)runs, b, (unsigned long long)hd, top, (unsigned long long)dv[top], top2, (unsigned long long)dv[top2]); }
+    { extern _Atomic uint64_t nx_stat_poll_parks, nx_stat_poll_park_ns; static uint64_t pp, pn, cpu0, wall0; uint64_t a = nx_stat_poll_parks, b = nx_stat_poll_park_ns, wall = now_ns();
+      double cpu = nx_js_cpu_us(), cores = cpu >= 0 && wall0 && wall > wall0 ? (cpu - (double)cpu0) * 1e3 / (double)(wall - wall0) : -1;
+      char cs[64]; if (cores >= 0) snprintf(cs, sizeof cs, "%.2f host cores busy", cores); else snprintf(cs, sizeof cs, "host CPU not known here (a page cannot ask)");
+      LOG("since the last line: %s; polling threads parked %llu times, %.1f ms in all (NX_POLL_PARK_US)", cs, (unsigned long long)(a - pp), (b - pn) / 1e6);
+      pp = a; pn = b; cpu0 = cpu >= 0 ? (uint64_t)cpu : 0; wall0 = wall; }
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }
