@@ -197,6 +197,7 @@ static _Atomic int g_slot_waiting; static _Atomic uint64_t g_slot_depth[8];   //
 EMSCRIPTEN_KEEPALIVE void nx_slot_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)g_slot_n; o[1] = (double)g_slot_queue_ns; o[2] = (double)g_slot_serve_ns; for (int i = 0; i < 8; i++) o[3 + i] = (double)g_slot_depth[i]; }   // waiting for the slot (behind other threads); from the request to its answer
 static int owner_request(int code, uint64_t *regs) {
     int gl = nx_gfx_release_all();   // (a callback of the recorder into guest code that asks the owner for something)
+    nx_core_release();   // waiting for the owner thread is not running: the caller's core is free (taken again at the end of the host call)
     uint64_t t0 = now_ns();
     { int d = atomic_fetch_add(&g_slot_waiting, 1); atomic_fetch_add_explicit(&g_slot_depth[d < 4 ? d : d < 8 ? 4 : d < 16 ? 5 : d < 32 ? 6 : 7], 1, memory_order_relaxed); }
     dm_host_lock(&g_slot_mu);   // a guest thread that waits here holds no guest core (hle_thread.c)

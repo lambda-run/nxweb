@@ -19,10 +19,11 @@ addToLibrary({
 
   // A worker instantiates a unit when it first calls into it (most guest threads run a small part of the code): every
   // table slot it has not filled holds the trampoline, which lands in nxTranslate with the pc.
-  $nxUnit__deps: ['$NX', 'nx_unit_bytes', 'nx_unit_len', 'nx_unit_base', 'nx_unit_nfuncs'],
+  $nxUnit__deps: ['$NX', 'nx_core_out', 'nx_core_in', 'nx_unit_bytes', 'nx_unit_len', 'nx_unit_base', 'nx_unit_nfuncs'],
   $nxUnit: function(t, k) {
     if (t.have[k]) return;
     const p = _nx_unit_bytes(k), len = _nx_unit_len(k), base = _nx_unit_base(k);
+    _nx_core_out();   // host work: the thread's virtual core is free meanwhile (kernel/nx_cores.c)
     const t0 = performance.now();
     // the module the main thread compiled and sent to this worker before its thread started (kernel/nx_owner.js
     // nx_units_share), when there is one: a module compiled here from the bytes is a copy of the code for this thread alone
@@ -33,6 +34,7 @@ addToLibrary({
     if (end > t.table.length) t.table.grow(Math.max(end - t.table.length, 1 << 18), t.tramp);
     new WebAssembly.Instance(mod, { cpu: t.core, hlp: t.hlp, env: Object.assign({ table_base: new WebAssembly.Global({ value: 'i32', mutable: false }, base) }, t.unitEnv) });
     t.have[k] = 1; t.n++;
+    _nx_core_in();
     if (typeof process !== 'undefined' && process.env && process.env.NX_MEMDBG && (t.n === 1 || t.n === 20 || t.n === 200) && (NX.dbg = (NX.dbg || 0) + 1) < 4) { const m = process.memoryUsage(); err('[memdbg] worker with ' + t.n + ' units (' + t.shared + ' shared): JS heap used ' + (m.heapUsed / 1048576).toFixed(1) + ' MB of ' + (m.heapTotal / 1048576).toFixed(1) + ', external ' + (m.external / 1048576).toFixed(1) + ' MB; shared modules held ' + (globalThis.NXSHARED ? globalThis.NXSHARED.length : 0)); }
     t.syncMs += performance.now() - t0; t.syncBytes += len;
   },
@@ -148,14 +150,14 @@ addToLibrary({
   // put into the memory (owner/owner.ts GFX_MOD), over the shared memory. Its imports: gfx_exec (the replayer), the
   // stub of an entry point and more table memory are the owner's, asked through the lock holder's request words at
   // NXG; a callback into guest code runs here, on the calling thread. Addresses are i64 in this build (nx.abi).
-  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'malloc'],
+  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'nx_core_out', 'malloc'],
   $nxGfx: function() {
     const G = 0x1FF1F000, MOD = 0x1FF20000, s = (G + 8) / 4, f = G / 8, t0 = performance.now();
     const mod = new WebAssembly.Module(HEAPU8.slice(MOD, MOD + HEAPU32[(G + 40) / 4]));
     const ask = (kind, a, b) => {
       HEAP32[s + 1] = kind; HEAPF64[f + 2] = a; HEAPF64[f + 3] = b;
       Atomics.store(HEAP32, s, 1); Atomics.notify(HEAP32, s);
-      for (let spin = 0; Atomics.load(HEAP32, s) !== 2; spin++) if (spin > 4000) Atomics.wait(HEAP32, s, 1, 5);
+      for (let spin = 0; Atomics.load(HEAP32, s) !== 2; spin++) if (spin > 4000) { if (spin === 4001) _nx_core_out(); Atomics.wait(HEAP32, s, 1, 5); }   // (a flush is a millisecond or more: the thread's virtual core is free meanwhile)
       const r = HEAPF64[f + 4];
       Atomics.store(HEAP32, s, 0);
       return r;

@@ -17,6 +17,9 @@
 // 2^17 instructions (nx_slice_budget) and at its end the core goes to a waiting thread of HIGHER priority only (equal
 // priorities do not time-slice on Horizon); (2) a thread that wants a busy core spins for a moment before it sleeps
 // (most holds end at the next SVC, microseconds away).
+// (3) the holder kept its core through host-side waits (measured in Chrome: 6,958 waits for a core of 300 ms each,
+// one or two of eight cores running): the core is now given up around a unit's translation, compile and instantiation,
+// around every request to the owner thread, and when a thread has to sleep for the recorder's lock.
 // Off unless NX_CORES=1 (the page: ?cores=1): in the node harness it made the boot about three times slower (the same
 // 318,000 host calls took 79 s instead of 26 s), because loading is the part that runs in parallel and the port's
 // threads are much slower per core than the console's; what it does to the title's yield-spinning is not measured yet.
@@ -82,6 +85,9 @@ void nx_core_yield(void) {
     int best = atomic_load_explicit(&g_core[t_held].best, memory_order_relaxed);
     if (best < t_prio || (best == t_prio && now_ns() - t_since > 10000000ull)) { if (best < t_prio) g_preempts++; else g_slices++; nx_core_release(); nx_core_ensure(); }
 }
+// for kernel/nx_guest.js: around the compile and instantiation of a unit (tens of milliseconds of host work in the middle of guest code)
+EMSCRIPTEN_KEEPALIVE void nx_core_out(void) { nx_core_release(); }
+EMSCRIPTEN_KEEPALIVE void nx_core_in(void) { nx_core_ensure(); }
 // instructions of translated code per slice: short when a core can be asked for
 EMSCRIPTEN_KEEPALIVE int nx_slice_budget(void) { pthread_once(&g_once, init); return g_on ? 1 << 17 : 1 << 26; }
 void nx_core_stats(char *out, size_t n) {

@@ -22,6 +22,7 @@ static uint32_t g_depth;   // the holder's
 static _Atomic uint64_t g_calls, g_ns, g_contended, g_lock_ns;
 static __thread uint32_t t_me;
 uint64_t nx_now_ns(void);
+void nx_core_release(void);
 void nx_js_gfx_call(int id, double args);
 uint64_t nx_guest_calln(uint64_t pc, int n, ...);
 
@@ -34,7 +35,7 @@ void nx_gfx_lock(void) {
         uint32_t z = 0;
         if (atomic_compare_exchange_weak(GL_LOCK, &z, m)) break;
         if (spin < 4000) continue;   // (a call of the recorder is about a microsecond: the lock is usually free again within the spin)
-        if (spin == 4000) atomic_fetch_add_explicit(&g_contended, 1, memory_order_relaxed);
+        if (spin == 4000) { atomic_fetch_add_explicit(&g_contended, 1, memory_order_relaxed); nx_core_release(); }   // (its core is free while it sleeps; taken again at the end of the host call)
         atomic_fetch_add(GL_WAITERS, 1); if (z) emscripten_futex_wait(GL_LOCK, z, 1.0); atomic_fetch_sub(GL_WAITERS, 1);
     }
     g_depth = 1;
