@@ -144,7 +144,7 @@ export function threadNew(entry: u64, arg: u64, stackTop: u64, prio: i32, core: 
 // Eight, as the Switch 2 has: a game written for it pins threads to cores 4 and 5 (Ocarina of Time's movie player:
 // nn::os::SetThreadCoreMask(thread, -1, 0x20)). With four, such a thread queued on core 0 behind the main thread,
 // which has the better priority and is rarely idle here, so it ran only while the main thread waited for the GPU.
-export const NCORES: i32 = 8;
+export const NCORES: i32 = 4;   // 8 (the Switch 2) made the movie decoder deadlock: back to 4 until that is understood
 // The virtual core a thread queues on: its ideal core when its mask allows it and the core exists, else the lowest
 // core of its mask that exists, else core 0
 export function runCoreOf(t: KThread): i32 {

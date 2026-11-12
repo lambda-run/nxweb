@@ -64,6 +64,7 @@ const ndve = new URLSearchParams(self.location?.search ?? "").get("ndve") === "b
 // (runs that nobody watches: the development loop). Off by default: a watched picture should follow the display
 const timerPace = new URLSearchParams(self.location?.search ?? "").get("pace") === "timer";
 // (a browser also slows a hidden page's timers: the 16 ms are counted by messages to this Worker itself, which it does not slow)
+const noShortTimer = new URLSearchParams(self.location?.search ?? "").get("yield") === "timeout";   // ?yield=timeout: the old run-loop timer, to compare
 const spinChannel = new MessageChannel();
 // One list of waiting callbacks, looked at on every message while it is not empty (several may wait at once: the frame clock and the run loop)
 const spinWaiting: { at: number; fn: () => void }[] = [];
@@ -74,6 +75,9 @@ spinChannel.port1.onmessage = () => {
 };
 function spinTimer(fn: () => void, ms: number): void { spinWaiting.push({ at: performance.now() + ms, fn }); if (spinWaiting.length === 1) spinChannel.port2.postMessage(0); }
 function spinFor(ms: number): Promise<void> { return new Promise(res => spinTimer(res, ms)); }
+// The run loop's timer when the page is watched: a browser makes a nested setTimeout wait 4 ms or more, which a loop that yields every 8 ms and guest
+// sleeps of a millisecond pay each time. Short waits are counted by messages instead; longer ones stay real timers (a message loop keeps a core busy)
+function shortTimer(fn: () => void, ms: number): void { if (ms <= 4) spinTimer(fn, ms); else setTimeout(fn, ms); }
 // ?canvas=off: nothing is presented to the page's canvas (a hidden page's canvas holds every present back); the frames are still drawn, and a frame
 // capture shows them. For runs nobody watches
 const noCanvas = new URLSearchParams(self.location?.search ?? "").get("canvas") === "off";
@@ -151,7 +155,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
     try { if (!hasMemory64()) throw new Error("this browser has no 64-bit WebAssembly memory"); set = await modules64(); }
     catch (e: any) { log(`[RED] page: this program needs the 64-bit memory mode and it cannot be had here (${e?.message ?? e})`); rt = undefined as any; status(); return; }
   }
-  const me = rt = new Runtime(set, { timer: timerPace ? spinTimer : undefined, clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
+  const me = rt = new Runtime(set, { timer: timerPace ? spinTimer : noShortTimer ? undefined : shortTimer, clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
     layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
   optionsNote = (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
     (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");

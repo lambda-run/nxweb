@@ -1032,6 +1032,9 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
       }
       // a uniform slot read through its address is bound as a uniform buffer too when the shader also reads the slot's bank: read-only unless the shader writes it
       if (write && ubo !== undefined && !storageWritten(c, id)) { c.addDecoration(id, Dec.NonWritable); write = false; }
+      // any stage: a buffer no instruction writes through is read-only. The replayer takes a written range for the GPU's (read back, kept over the
+      // guest's own later bytes), which a buffer the shader only reads must not be
+      if (write && mode === "nxweb" && !storageWritten(c, id)) { c.addDecoration(id, Dec.NonWritable); write = false; }
       set(id, 0, 128 + st * 16 + slot);
       out.push({ kind: "storage", reg: slot, write, ...(ubo === undefined ? {} : { ubo }), ...where(id, 0, 128 + st * 16 + slot), name });
       if (ubo !== undefined) c.notes.push(`storage buffer ${name} is the compute stage's uniform slot ${ubo}, read through its address (c0 + 0x${(C0_CS_UBO + C0_ROW * ubo).toString(16)}): storage slot ${slot}, binding ${128 + st * 16 + slot}`);

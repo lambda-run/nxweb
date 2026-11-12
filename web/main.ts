@@ -111,6 +111,9 @@ worker.onmessage = ev => {
     // own host calls, in WebGPU calls, and waiting
     hudMore = m.fps === undefined ? "" : `game frames ${m.fps.toFixed(0)}/s${m.video > 0.5 ? ` · video ${m.video.toFixed(0)}/s` : ""}` +
       (m.ms ? `\ncode ${m.ms.code.toFixed(1)} · host ${m.ms.host.toFixed(1)} · gpu ${m.ms.gpu.toFixed(1)} · idle ${m.ms.idle.toFixed(1)} ms` : "");
+    // before the first frames of a build whose shaders are not stored yet the picture is black for minutes: say what is going on
+    { const sh = /shaders: (\d+) ready \(\d+ library, (\d+) stored, (\d+) translated\)/.exec(m.more ?? "");
+      if (m.state === "Running" && sh && +sh[3] > 50 && +sh[3] > +sh[2] && (m.fps ?? 0) < 12) hudMore = `preparing shaders: ${sh[3]} translated so far (first run on a new build, a few minutes)\n` + hudMore; }
     drawHud();
     $("ups").textContent = m.ups === undefined ? "–" : fmt(m.ups);
     $("ips").textContent = m.ips === undefined ? "– (not measured for this module: see budget units)" : `${fmt(m.ips)} (budget units × ${m.ratio.toFixed(2)}, the ratio measured for the demo at build time)`;
@@ -210,9 +213,12 @@ $("ctrlclose").onclick = () => answer(false);
 ($("ctrlprompt") as HTMLDialogElement).addEventListener("cancel", e => { e.preventDefault(); answer(false); });
 
 // ---- frame capture: the pass text and the target images ----
-$("capturebtn").onclick = () => worker.postMessage({ type: "capture" });
+let captureTries = 0;   // a capture that began in the middle of a frame has no pass in it: it is asked for again (a few times)
+$("capturebtn").onclick = () => { captureTries = 0; worker.postMessage({ type: "capture" }); };
 function showCapture(m: { text: string; images: { name: string; width: number; height: number; format: string; png: Uint8Array | null }[] }) {
+  if (!/^P \d+ begin/m.test(m.text) && captureTries++ < 6) { setTimeout(() => worker.postMessage({ type: "capture" }), 37); return; }
   $("capturetext").textContent = m.text;
+  { const to = new URLSearchParams(location.search).get("logto"); if (to) { void fetch(`${to}/live.capture.txt`, { method: "POST", body: m.text }).catch(() => {}); const im = m.images.filter(i => i.png); for (const [k, i] of im.slice(-2).entries()) void fetch(`${to}/live.capture.${k}.png`, { method: "POST", body: i.png as BlobPart }).catch(() => {}); } }   // the feed takes a capture too
   const box = $("captureimages");
   for (const img of Array.from(box.querySelectorAll("img"))) URL.revokeObjectURL((img as HTMLImageElement).src);
   box.textContent = "";

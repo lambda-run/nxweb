@@ -538,7 +538,7 @@ export class GfxHost {
     const up = (v: number, b: number) => Math.ceil(v / b) * b;
     const compressed = t.fmt.bw > 1, ms = t.samples > 1;
     let usage = 0x04 /* TEXTURE_BINDING */ | (ms ? 0 : 0x01 | 0x02 /* COPY_SRC | COPY_DST */);
-    if (!compressed && !is3d && t.fmt.tex !== "rgb9e5ufloat") usage |= 0x10; /* RENDER_ATTACHMENT */
+    if (!compressed && t.fmt.tex !== "rgb9e5ufloat") usage |= 0x10; /* RENDER_ATTACHMENT */
     if (!ms && (STORAGE_FORMATS.has(t.fmt.tex) || (t.fmt.tex === "bgra8unorm" && this.device.features?.has?.("bgra8unorm-storage")))) usage |= 0x08; /* STORAGE_BINDING */
     const twin = SRGB_TWIN[t.fmt.tex];
     // WebGPU has 1 and 4 samples: a multisampled NVN texture of any count has 4
@@ -897,7 +897,7 @@ export class GfxHost {
       const clear = dv.getUint32(o + 20, true) !== 0;
       // The recorder sends the texture's format, or its sRGB twin when a view asks for that (lower.ts rtFill)
       const vf = hostFormat(dv.getUint32(o + 16, true), this.caps)?.tex, af = vf && vf === SRGB_TWIN[t.fmt.tex!] ? vf : t.fmt.tex!;
-      colorAttachments.push({ view: this.attachView(t, dv.getUint32(o + 8, true), dv.getUint32(o + 12, true), af), loadOp: clear ? "clear" : "load", storeOp: "store",
+      colorAttachments.push({ view: this.attachView(t, dv.getUint32(o + 8, true), dv.getUint32(o + 12, true), af), ...(t.gpu.dimension === "3d" ? { depthSlice: dv.getUint32(o + 12, true) } : {}), loadOp: clear ? "clear" : "load", storeOp: "store",
         clearValue: { r: dv.getFloat32(o + 24, true), g: dv.getFloat32(o + 28, true), b: dv.getFloat32(o + 32, true), a: dv.getFloat32(o + 36, true) } });
       colorFmt.push(af);
       targets.push({ name: `color${i}`, serial: t.serial, level: dv.getUint32(o + 8, true), layer: dv.getUint32(o + 12, true) });
@@ -1131,12 +1131,13 @@ export class GfxHost {
   private bind() {
     this.imgBlits.length = 0;
     const c = this.cur!, layouts = c.layouts, e0: any[] = [], offs: number[] = [], g1: any[] = [];
-    const wbufs = new Set<GPU>(), robind: number[] = [];
+    const wbufs = new Set<GPU>(), robind: number[] = [], ubind: number[] = [], dynAt = new Map<number, number>();
     for (const b of c.g0) {
       if (b.kind === "ubo" || b.kind === "host") {
         if (b.kind === "host") this.hostBlock(b);
         const r = this.uboSlot(b.st, b.i);
-        if (b.dyn) { e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: 0, size: r.size } }); offs.push(r.off); }
+        ubind.push(e0.length);
+        if (b.dyn) { dynAt.set(e0.length, offs.length); e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: 0, size: r.size } }); offs.push(r.off); }
         else e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: r.off, size: r.size } });
       } else {
         const s = this.ssbo.get(b.st * 64 + b.i);
@@ -1152,6 +1153,7 @@ export class GfxHost {
     // WebGPU refuses a buffer that one dispatch or draw has as writable storage and as anything else (the whole command buffer is then invalid). A
     // game's compute stage may read one range and write another of memory that lives in one GPU buffer here: what it only reads is bound as a copy
     // made just before (in a compute pass the pass is closed for the copy and opened again)
+    if (wbufs.size && ubind.some(i => wbufs.has(e0[i].resource.buffer))) for (const i of ubind) robind.push(i);   // a uniform block in a buffer the draw also writes: copied as well
     if (wbufs.size && robind.some(i => wbufs.has(e0[i].resource.buffer))) {
       if (!this.computePass && !this.passDesc) this.red("ssboalias", "a draw reads and writes storage in one GPU buffer: WebGPU refuses it, and this render pass cannot be opened again for a copy");
       else {
@@ -1160,9 +1162,10 @@ export class GfxHost {
         for (const i of robind) {
           const res = e0[i].resource;
           if (!wbufs.has(res.buffer)) continue;
-          const n = Math.max(4, down4(res.size + 3)), copy = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(n))));
-          this.encoder().copyBufferToBuffer(res.buffer, res.offset, copy, 0, n);
+          const n = Math.max(4, down4(res.size + 3)), copy = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(n)))), dk = dynAt.get(i);
+          this.encoder().copyBufferToBuffer(res.buffer, dk === undefined ? res.offset : offs[dk], copy, 0, n);
           this.inUse.push(copy); this.stats.ssboCopies++;
+          if (dk !== undefined) offs[dk] = 0;
           e0[i] = { binding: e0[i].binding, resource: { buffer: copy, offset: 0, size: res.size } };
         }
         if (render) this.reopenRenderPass(); else { this.pass = this.encoder().beginComputePass(); this.computePass = true; }
@@ -1377,7 +1380,7 @@ ${planes ? `  // NV12 to RGB as BT.709 limited range (the stand-in's assumption;
   // A render pass closed in the middle (for a copy no pass may hold) is opened again on the same attachments, loading what was drawn, with the
   // state the stream had set on it; the buffers of the next draw are set again (drawSet)
   private passDesc: any = null;
-  private passState: { vp?: number[]; sc?: number[]; bc?: number[]; sr?: number } = {};
+  private passState: { vp?: number[]; sc?: number[]; bc?: number[]; sr?: number; vb?: Map<number, [GPU, number]> } = {};
   private reopenRenderPass() {
     const d = this.passDesc, desc: any = { colorAttachments: d.colorAttachments.map((a: any) => a && { view: a.view, ...(a.depthSlice !== undefined ? { depthSlice: a.depthSlice } : {}), ...(a.resolveTarget ? { resolveTarget: a.resolveTarget } : {}), loadOp: "load", storeOp: a.storeOp }) };
     if (d.depthStencilAttachment) { const a = { ...d.depthStencilAttachment }; if (a.depthLoadOp) { a.depthLoadOp = "load"; delete a.depthClearValue; } if (a.stencilLoadOp) { a.stencilLoadOp = "load"; delete a.stencilClearValue; } desc.depthStencilAttachment = a; }
@@ -1388,6 +1391,7 @@ ${planes ? `  // NV12 to RGB as BT.709 limited range (the stand-in's assumption;
     if (s.sc) this.pass.setScissorRect(...(s.sc as [number, number, number, number]));
     if (s.bc) this.pass.setBlendConstant(s.bc);
     if (s.sr !== undefined) this.pass.setStencilReference(s.sr);
+    if (s.vb) for (const [slot, [b, off]] of s.vb) this.pass.setVertexBuffer(slot, b, off);
   }
   private drawSet: { pipe: Pipe; bv: number; bi: number; di: number } | null = null;
   private setDrawParams(bv: number, bi: number, di: number) {
@@ -1827,7 +1831,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.SCISSOR: this.passState.sc = [dv.getUint32(p + 8, true), dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true)]; this.pass.setScissorRect(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true)); break;
         case H.PIPELINE_CREATE: this.createPipeline(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true)); break;
         case H.PIPELINE: if (this.pass && !this.computePass) this.usePipeline(dv.getUint32(p + 8, true)); break;
-        case H.VBUF: { const b = this.upload(this.u64(dv, p + 16), dv.getUint32(p + 12, true), 0); if (b) this.pass.setVertexBuffer(dv.getUint32(p + 8, true), b, this.upOff); break; }
+        case H.VBUF: { const b = this.upload(this.u64(dv, p + 16), dv.getUint32(p + 12, true), 0); if (b) { (this.passState.vb ??= new Map()).set(dv.getUint32(p + 8, true), [b, this.upOff]); this.pass.setVertexBuffer(dv.getUint32(p + 8, true), b, this.upOff); } break; }
         case H.UBO: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), need: dv.getUint32(p + 28, true) }); this.bindDirty = true; break;
         case H.TEX: {
           const flags = dv.getUint32(p + 24, true);
