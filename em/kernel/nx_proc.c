@@ -157,13 +157,13 @@ static int trk(void) { if (t_trk < 0) { t_trk = atomic_fetch_add(&g_ntrk, 1) & 6
 EMSCRIPTEN_KEEPALIVE void nx_note_pc(double pc) { int k = trk(); g_trk[k].pc = (uint64_t)pc; g_trk[k].slices++; nx_core_yield(); }   // a slice end: a waiting thread of this core gets it
 
 // ---- the last SVCs and host calls of each thread (as nxweb's fault report keeps them): dumped for the thread that aborts
-enum { RING = 32 };
-typedef struct { int16_t kind, num; uint64_t a[3], ret, lr; } ring_ent;   // kind 0 SVC (num), 1 host call (num = stub id)
+enum { RING = 64 };
+typedef struct { int32_t kind, num; uint64_t a[3], ret, lr; } ring_ent;   // (num was 16 bits until 8d733f4: the stubs the owner hands out, 65535 downwards, printed as '?')   // kind 0 SVC (num), 1 host call (num = stub id)
 static __thread ring_ent t_ring[RING]; static __thread unsigned t_ring_n;
 static char *g_stub_name_of(int id);
 void nx_ring_note(int kind, int num, const uint64_t *in, uint64_t ret, uint64_t lr) {
     ring_ent *e = &t_ring[t_ring_n++ % RING];
-    e->kind = (int16_t)kind; e->num = (int16_t)num; e->a[0] = in[0]; e->a[1] = in[1]; e->a[2] = in[2]; e->ret = ret; e->lr = lr;
+    e->kind = kind; e->num = num; e->a[0] = in[0]; e->a[1] = in[1]; e->a[2] = in[2]; e->ret = ret; e->lr = lr;
 }
 int thr_name_of(pthread_t pt, char *out, size_t n);
 void nx_ring_dump(const char *why) {
@@ -257,8 +257,18 @@ void nx_regs_dump(const uint64_t *regs, const char *what) {
     LOG("  registers at %s: pc=%#llx (%s) lr=%#llx sp=%#llx", what, (unsigned long long)regs[32], nx_where(regs[32], w, sizeof w), (unsigned long long)regs[30], (unsigned long long)regs[31]);
     for (int i = 0; i < 30; i += 5) LOG("    x%-2d=%#llx x%-2d=%#llx x%-2d=%#llx x%-2d=%#llx x%-2d=%#llx", i, (unsigned long long)regs[i], i + 1, (unsigned long long)regs[i + 1], i + 2, (unsigned long long)regs[i + 2], i + 3, (unsigned long long)regs[i + 3], i + 4, (unsigned long long)regs[i + 4]);
     LOG("  frame 0: return to %s", nx_where(regs[30], w, sizeof w));
+    if (strcmp(what, "the fault") == 0) {
+        // what the registers point at (a fault report has to say what the data was): 0x140 bytes for the callee-saved ones, 0x40 for the rest
+        for (int i = 0; i <= 31; i++) {
+            uint64_t a = regs[i] & ~7ull; int n = i >= 19 && i <= 28 ? 0x140 : i == 31 ? 0x100 : 0x40;
+            if (i == 29 || i == 30 || a < 0x8000000 || a + (uint64_t)n > (14ull << 30)) continue;
+            for (int o = 0; o < n; o += 32) { const uint32_t *p = (const uint32_t *)(uintptr_t)(a + (uint64_t)o);
+                LOG("    [%s%d %#llx +%03x] %08x %08x %08x %08x %08x %08x %08x %08x", i == 31 ? "sp" : "x", i == 31 ? 0 : i, (unsigned long long)a, o, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]); }
+        }
+        for (int i = 0; i < 32; i += 2) LOG("    v%-2d=%016llx:%016llx v%-2d=%016llx:%016llx", i, (unsigned long long)regs[39 + 2 * i], (unsigned long long)regs[38 + 2 * i], i + 1, (unsigned long long)regs[41 + 2 * i], (unsigned long long)regs[40 + 2 * i]);
+    }
     uint64_t fp = regs[29];
-    for (int k = 1; k < 12 && fp > 0x8000000 && fp < (16ull << 30) && !(fp & 7); k++) { uint64_t *f = (uint64_t *)(uintptr_t)fp; LOG("  frame %d: return to %s", k, nx_where(f[1], w, sizeof w)); if (f[0] <= fp) break; fp = f[0]; }
+    for (int k = 1; k < 16 && fp > 0x8000000 && fp < (16ull << 30) && !(fp & 7); k++) { uint64_t *f = (uint64_t *)(uintptr_t)fp; LOG("  frame %d: return to %s", k, nx_where(f[1], w, sizeof w)); if (f[0] <= fp) break; fp = f[0]; }
 }
 // nvnTextureInitialize(texture, builder): a size no device has (the replayer's WebGPU error "Texture size (65535 x 65535 x 1)
 // exceeded maximum" was seen in the page) is reported with who asked and what the builder holds. The builder is the
@@ -413,8 +423,8 @@ void nx_boot_report(const char *why) {
       LOG("graphics (nxweb's recorder on the owner thread): %.0f host calls of it (%.0f NVN calls recorded, %.0f waited), %.1f us each inside; host stream %.0f batches, %.1f MB; presents %.0f", os[4], os[10], os[6], os[4] ? os[5] / 1e3 / os[4] : 0.0, os[8], os[9] / 1048576, os[7]);
       LOG("owner thread: %llu proxied calls, %.1f us each on the caller's side; nn::fs %0.f calls (%0.f pending, %0.f retried), %.1f us each inside the module", (unsigned long long)g_owner_calls,
           g_owner_calls ? g_owner_ns / 1e3 / g_owner_calls : 0.0, os[0], os[1], os[2], os[0] ? os[3] / 1e3 / os[0] : 0.0); }
-    { void nx_gfx_stats(double); double g[3] = {0}; nx_gfx_stats((double)(uintptr_t)g);
-      LOG("recorder on the calling thread: %.0f NVN calls, %.2f us each (lock included), %.0f times a thread slept for the lock%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[2], nx_gfx_enabled() ? "" : " (off: every NVN call goes to the owner)"); }
+    { void nx_gfx_stats(double); double g[4] = {0}; nx_gfx_stats((double)(uintptr_t)g);
+      LOG("recorder on the calling thread: %.0f NVN calls, %.2f us each, of it %.2f us getting the lock; %.0f times a thread slept for the lock%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[0] ? g[3] / 1e3 / g[0] : 0.0, g[2], nx_gfx_enabled() ? "" : " (off: every NVN call goes to the owner)"); }
     LOG("owner slot: %llu requests; waiting for the slot %.1f us each, request to answer %.1f us each (the modules' own time is in the two lines above)", (unsigned long long)g_slot_n,
         g_slot_n ? g_slot_queue_ns / 1e3 / g_slot_n : 0.0, g_slot_n ? g_slot_serve_ns / 1e3 / g_slot_n : 0.0);
     int n = 0;

@@ -19,7 +19,7 @@
 #define GL_WAITERS ((_Atomic uint32_t *)(uintptr_t)(NXG + 4))
 #define GL_ON ((_Atomic uint32_t *)(uintptr_t)(NXG + 44))
 static uint32_t g_depth;   // the holder's
-static _Atomic uint64_t g_calls, g_ns, g_contended;
+static _Atomic uint64_t g_calls, g_ns, g_contended, g_lock_ns;
 static __thread uint32_t t_me;
 uint64_t nx_now_ns(void);
 void nx_js_gfx_call(int id, double args);
@@ -33,8 +33,8 @@ void nx_gfx_lock(void) {
     for (int spin = 0;; spin++) {
         uint32_t z = 0;
         if (atomic_compare_exchange_weak(GL_LOCK, &z, m)) break;
-        if (spin < 400) continue;
-        if (spin == 400) atomic_fetch_add_explicit(&g_contended, 1, memory_order_relaxed);
+        if (spin < 4000) continue;   // (a call of the recorder is about a microsecond: the lock is usually free again within the spin)
+        if (spin == 4000) atomic_fetch_add_explicit(&g_contended, 1, memory_order_relaxed);
         atomic_fetch_add(GL_WAITERS, 1); if (z) emscripten_futex_wait(GL_LOCK, z, 1.0); atomic_fetch_sub(GL_WAITERS, 1);
     }
     g_depth = 1;
@@ -60,10 +60,11 @@ void nx_gfx_direct(int code, uint64_t *regs) {
     memcpy(a, regs, 64);
     if (abi & 15) for (int i = 0; i < 8; i++) a[8 + i] = regs[38 + 2 * i];
     nx_gfx_lock();
+    uint64_t t1 = nx_now_ns();
     nx_js_gfx_call(id, (double)(uintptr_t)a);
     nx_gfx_unlock();
     if (abi & 16) { regs[38] = a[8]; regs[39] = 0; } else regs[0] = a[16];
-    atomic_fetch_add_explicit(&g_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_ns, nx_now_ns() - t0, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_ns, nx_now_ns() - t0, memory_order_relaxed); atomic_fetch_add_explicit(&g_lock_ns, t1 - t0, memory_order_relaxed);
 }
 // The recorder's callback into guest code (gfx_guest_call: the command memory callbacks), on the thread that is in the
 // recorder: blk = the function and four arguments, the result comes back in blk[0]
@@ -71,5 +72,5 @@ EMSCRIPTEN_KEEPALIVE void nx_gfx_guest_call(double blk_) {
     uint64_t *b = (uint64_t *)(uintptr_t)blk_;
     b[0] = nx_guest_calln(b[0], 4, b[1], b[2], b[3], b[4]);
 }
-// out: calls answered on the calling thread, their time in ns (lock wait included), times a thread had to sleep for the lock
-EMSCRIPTEN_KEEPALIVE void nx_gfx_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)atomic_load(&g_calls); o[1] = (double)atomic_load(&g_ns); o[2] = (double)atomic_load(&g_contended); }
+// out: calls answered on the calling thread, their time in ns (lock wait included), times a thread had to sleep for the lock, ns getting the lock
+EMSCRIPTEN_KEEPALIVE void nx_gfx_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)atomic_load(&g_calls); o[1] = (double)atomic_load(&g_ns); o[2] = (double)atomic_load(&g_contended); o[3] = (double)atomic_load(&g_lock_ns); }
