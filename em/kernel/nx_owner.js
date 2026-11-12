@@ -31,9 +31,15 @@ addToLibrary({
   nx_owner_serve__deps: ['nx_gfx_ring'],
   nx_owner_serve: function(slot) {
     const s = slot / 4, own = globalThis.NXOWNER;
+    // The owner must get back to its event loop: decoded pictures (VideoFrame.copyTo), GPU fences, display frames and
+    // timers all arrive as tasks there. While requests kept coming this loop never returned: under NVN traffic a
+    // picture's copy took 70-100 ms instead of 1-5 (the movie stuttered) and a thread at a flush waited as long with the
+    // recorder's lock. After 3 ms without a break it goes on in a new task, behind whatever is queued.
+    const later = (fn) => { if (typeof MessageChannel !== 'undefined') { const ch = new MessageChannel(); ch.port1.onmessage = () => { ch.port1.close(); fn(); }; ch.port2.postMessage(0); } else setTimeout(fn, 0); };
     const serve = () => {
-      let until = 0;
+      let until = 0; const began = performance.now();
       for (;;) {
+        if (performance.now() - began > 3) { later(serve); return; }
         if (own.svc()) { until = performance.now() + 0.2; continue; }   // the request of the thread that is inside the recorder (gfx_exec)
         if (Atomics.load(HEAP32, s) === 1) {
           let r = 0;
@@ -54,8 +60,9 @@ addToLibrary({
     // the same watch on the recorder's request word (owner/owner.ts NXG + 8): a guest thread's flush reaches the replayer
     // (and on the fs module's, NXF + 8: a storage read of a guest thread's nn::fs call)
     const watch = (g) => { const flush = () => {
-      let until = 0;
+      let until = 0; const began = performance.now();
       for (;;) {
+        if (performance.now() - began > 3) { later(flush); return; }
         if (own.svc()) { until = performance.now() + 0.2; continue; }
         if (performance.now() < until) continue;
         const cur = Atomics.load(HEAP32, g);
