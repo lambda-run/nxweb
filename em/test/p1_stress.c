@@ -253,3 +253,8 @@ int main(int argc, char **argv) {
     printf("P1 PASS: %llu thread SVCs from %d pthreads, no deadlock\n", (unsigned long long)n_svc, nt);
     emscripten_force_exit(0);
 }
+
+// (the small tests have no virtual cores: kernel/nx_cores.c is not linked)
+void nx_core_release(void) {}
+void nx_core_ensure(void) {}
+void nx_core_yield(void) {}

@@ -3,6 +3,7 @@
 Module.preRun = Module.preRun || [];
 Module.preRun.push(function () {
   if (typeof ENVIRONMENT_IS_PTHREAD !== 'undefined' && ENVIRONMENT_IS_PTHREAD) return;
+  if (Module.nxEnv) for (var k in Module.nxEnv) ENV[k] = Module.nxEnv[k];   // the page's options the C side reads with getenv (NX_CORES)
   addRunDependency('nxowner');
   var mods = function () {
     var out = [];

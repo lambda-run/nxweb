@@ -154,7 +154,7 @@ static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32
 static _Atomic int g_ntrk; static __thread int t_trk = -1;
 uint32_t thr_cur_handle(void);
 static int trk(void) { if (t_trk < 0) { t_trk = atomic_fetch_add(&g_ntrk, 1) & 63; } g_trk[t_trk].handle = thr_cur_handle(); return t_trk; }
-EMSCRIPTEN_KEEPALIVE void nx_note_pc(double pc) { int k = trk(); g_trk[k].pc = (uint64_t)pc; g_trk[k].slices++; }
+EMSCRIPTEN_KEEPALIVE void nx_note_pc(double pc) { int k = trk(); g_trk[k].pc = (uint64_t)pc; g_trk[k].slices++; nx_core_yield(); }   // a slice end: a waiting thread of this core gets it
 
 // ---- host calls
 enum { MAX_STUB = 65536 };
@@ -191,7 +191,7 @@ void nx_owner_do(int code, uint64_t *regs) {
     for (;;) {
         int r = owner_request(code, regs);
         if (r == 0) break;
-        if (r == 1) { while (!atomic_load(cell)) emscripten_futex_wait(cell, 0, 1e9); break; }   // pending: the owner sets the cell when the storage answered
+        if (r == 1) { nx_core_release(); while (!atomic_load(cell)) emscripten_futex_wait(cell, 0, 1e9); break; }   // pending: the owner sets the cell when the storage answered
         memcpy(regs, args, sizeof args); usleep(200);                                             // retry: busy with another thread's pending call
     }
     atomic_fetch_add_explicit(&g_owner_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_owner_ns, now_ns() - t0, memory_order_relaxed);
@@ -229,6 +229,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
         void (*fn)(void *) = g_hostfn[id - HOSTFN_BASE];
         regs[32] = regs[30];
         fn((void *)(uintptr_t)regs[0]);
+        nx_core_ensure();
         return;
     }
     if (regs[32] >= g_stub_base && id < MAX_STUB && !g_stub_name[id]) {   // not a stub of the loader's: one the owner realm handed out (an NVN entry point)?
@@ -249,10 +250,12 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     }
     regs[32] = regs[30];   // return to the caller (the thunk may still redirect)
     int k = trk(); g_trk[k].in_host = (int)id + 1;
-    if (own > 0) nx_owner_do(own, regs);
+    if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
+                   nx_owner_do(own, regs); }
     else if (e && !(e->flags & NX_HLE_HAND)) e->thunk(regs);   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;
+    nx_core_ensure();   // back to guest code
 }
 
 // One line of progress (the boot harness prints it every 30 s): is the game still getting on
@@ -299,6 +302,9 @@ void nx_progress(void) {
       for (int i = 0; i < 128; i++) { uint64_t v = nx_svc_by_num[i]; d[i] = v - prev[i]; prev[i] = v; }
       for (int k = 0; k < 3; k++) { for (int i = 0; i < 128; i++) if (d[i] > d[top[k]] && (k < 1 || i != top[0]) && (k < 2 || i != top[1])) top[k] = i; if (k < 2 && top[k + 1] == top[k]) top[k + 1] = top[k] ? 0 : 1; }
       LOG("SVCs since the last line: %#x x%llu, %#x x%llu, %#x x%llu; (yield floor: off, %llu)", top[0], (unsigned long long)d[top[0]], top[1], (unsigned long long)d[top[1]], top[2], (unsigned long long)d[top[2]], (unsigned long long)nx_stat_yield_floor); }
+    { void nx_core_stats(char *, size_t); __attribute__((weak)) void nx_yield_top(char *, size_t); char cs[240], yt[400] = "";
+      nx_core_stats(cs, sizeof cs); if (nx_yield_top) nx_yield_top(yt, sizeof yt);
+      LOG("cores: %s", cs); if (yt[0]) LOG("most yields since the last line: %s", yt); }
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }

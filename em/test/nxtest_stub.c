@@ -7,3 +7,8 @@
 void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp) { (void)entry; (void)arg; (void)sp; abort(); }
 #endif
 uint64_t nx_guest_call(uint64_t pc, uint64_t a0, uint64_t a1, uint64_t a2) { (void)pc; (void)a0; (void)a1; (void)a2; abort(); }
+
+// (the small tests have no virtual cores: kernel/nx_cores.c is not linked)
+void nx_core_release(void) {}
+void nx_core_ensure(void) {}
+void nx_core_yield(void) {}

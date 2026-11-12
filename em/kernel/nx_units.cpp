@@ -100,6 +100,6 @@ void nx_get_stats(struct nx_stats *out) { out->translate_ns = g_translate_ns; ou
 void nx_translator_start(const uint8_t *tr, uint32_t tr_len, const uint8_t *hlp, uint32_t hlp_len, uint64_t code_lo, uint64_t code_size, double *boot) {
     g_translator.start(tr, tr_len, hlp, hlp_len, code_lo, code_size, boot);
 }
-EMSCRIPTEN_KEEPALIVE uint32_t nx_translate(double pc) { return (uint32_t)g_translator.job(0, (uint64_t)pc); }
+EMSCRIPTEN_KEEPALIVE uint32_t nx_translate(double pc) { uint32_t r = (uint32_t)g_translator.job(0, (uint64_t)pc); nx_core_ensure(); return r; }   // (the wait gave the core up)
 uint64_t nx_tr_job(int kind, uint64_t arg) { return g_translator.job(kind, arg); }
 }
