@@ -176,7 +176,10 @@ Sizes: S = under a day, M = days, L = a week or more, for one person who knows b
 
 1. **Game-scale unit instantiation per thread.** The game has on the order of 10^5 translated functions in thousands
    of units, and every guest thread (20-30) needs its own instances. Memory per instance and compile time per thread
-   are not measured. If V8's cross-isolate code sharing does not hold, this alone can sink the route. First thing to
+   are measured only on a synthetic guest (test/scale_units.ts, node: 455,061 instructions = 9.86 MB of wasm in 29
+   units cost each further thread 23-126 ms to compile and instantiate, 37-192 ms more on its first run, and 9-16 MB
+   of resident memory above an empty worker's 18 MB). The game is 10-50 times that. If V8's cross-isolate code
+   sharing does not hold at that size, this alone can sink the route. First thing to
    measure after the spike: publish nxweb's real translation cache for this game into the registry and time thread 2.
 2. **Globals as CPU state.** The per-thread-instance design exists only because the translator keeps registers in
    wasm globals. The alternative (registers in memory, one instance for all threads, units shared by all workers
@@ -189,6 +192,6 @@ Sizes: S = under a day, M = days, L = a week or more, for one person who knows b
    favour of nxnative's C. Fixes made in nxweb since the port (memory64 audit, alias pages, WebCodecs path) have to be
    carried over by hand.
 8. **Same-core handoff under worker scheduling.** nxnative's handoff waits in 50 µs sleeps for a woken thread to
-   block (hle_thread.c:215-231). Workers wake more slowly than Darwin threads (measured: ~10 µs per uncontended
-   SVC, tens of µs for a wake); timing-sensitive workarounds (yield back-off :791-820, clock-wait prediction
+   block (hle_thread.c:215-231). How fast a worker wakes compared with a Darwin thread is not measured (here: 11.5 µs for an event round trip
+   with two wake-ups, on a loaded VM); timing-sensitive workarounds (yield back-off :791-820, clock-wait prediction
    :851-893, `sleep_precise` :976) were tuned on Apple hardware and will need re-tuning.
