@@ -38,6 +38,7 @@
     "rt:test": "node tools/modes.mjs --expose-gc test/runtime/run.mts",
     "rt:browser": "node tools/modes.mjs test/runtime/browser.mts",
     "rt:mem64": "node --expose-gc test/runtime/mem64_speed.mts",
+    "rt:mem64:browser": "node test/runtime/mem64_browser.mts",
     "rt:guard": "node test/runtime/guard_bench.mts",
     "a64:mem64": "node test/a64/mem64_bench.mts",
     "a64:mem64:speed": "npm run -s a64:build && npm run -s a64:guests:build && node test/a64/mem64_speed.ts",
