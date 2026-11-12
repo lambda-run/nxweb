@@ -71,6 +71,13 @@ addToLibrary({
     t.table = new WebAssembly.Table({ element: 'anyfunc', initial: 2 });
     t.core = new WebAssembly.Instance(new WebAssembly.Module(bytes(0)), { env: { memory: mem, table: t.table, translate: (pc) => nxTranslate(t, pc) } }).exports;
     const hx = new WebAssembly.Instance(new WebAssembly.Module(bytes(1)), { env: { memory: mem, abort: () => { throw new Error('a64 helpers abort'); } } }).exports;
+    // The helpers keep scratch blocks for their vector operations in static memory: ONE place for every instance on this
+    // memory unless each is given its own (src/a64/helpers.ts setScratch; nxweb's a64_host.ts helperScratch does it for
+    // its helper Workers). Until b74d623 the port did not: every guest thread's NEON helper calls (the table lookups,
+    // the pairwise and polynomial operations, AES...) wrote their operands to the same 128 bytes, and two threads inside
+    // such a helper at once got each other's values. That is the title's NaN transform (2026-11-12).
+    if (!hx.setScratch) throw new Error('the a64 helpers have no setScratch: every thread would share one scratch block');
+    { const sc = Math.ceil(_malloc(128 + 16) / 16) * 16;   /* (not `& ~15`: the address is above 4 GB) */ HEAPU8.fill(0, sc, sc + 128); hx.setScratch(_nx_is64() ? BigInt(sc) : sc); t.scratch = sc; }
     t.hlp = {};
     for (const k in hx) if (!['staticBase', 'staticEnd', 'memory', 'libcStat', 'libcGuard'].includes(k)) t.hlp[k] = hx[k];
     // context blocks, one per nesting level: an SVC or a host call may run guest code (nx_guest_call), whose own SVCs
