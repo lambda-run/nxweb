@@ -11,7 +11,7 @@ if [ ! -f emscripten/emcc.py ]; then
   rm em.tgz
 fi
 cd emscripten
-[ -f emar ] || python3 tools/maint/create_entry_points.py >/dev/null
+[ -f emar ] || python3 tools/maint/create_entry_points.py >/dev/null 2>&1 || true   # fails at the end on test/runner (not unpacked); the tool launchers are written before that
 [ -d node_modules/acorn ] || npm install --omit=dev --no-audit --no-fund --ignore-scripts >/dev/null 2>&1 || echo "npm install failed"
 cat > /ctl/emsdk/emscripten.cfg <<EOC
 LLVM_ROOT = '/usr/bin'

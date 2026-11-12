@@ -29,7 +29,9 @@ static _Atomic uint32_t g_nunits;
 static struct { uint8_t *p; uint32_t len; } g_wmod[2];   // 0 = the core module (CPU state + run loop), 1 = helpers
 _Atomic uint64_t nx_stat_translate_ns, nx_stat_translate_calls, nx_stat_unit_bytes;
 
-EMSCRIPTEN_KEEPALIVE void nx_unit_publish(uint8_t *bytes, uint32_t len, uint32_t table_base, uint32_t nfuncs) {
+// Addresses cross the JS boundary as doubles (exact to 2^53): the same code for a 32-bit and a 64-bit memory.
+EMSCRIPTEN_KEEPALIVE void nx_unit_publish(double bytes_, uint32_t len, uint32_t table_base, uint32_t nfuncs) {
+    uint8_t *bytes = (uint8_t *)(uintptr_t)bytes_;
     uint32_t i = atomic_load(&g_nunits);
     if (i >= NX_MAX_UNITS || table_base + nfuncs > NX_TABLE_CAP) die("translated-unit registry or function table full (%u units, table index %u)", i, table_base + nfuncs);
     g_units[i] = (nx_unit_t){bytes, len, table_base, nfuncs};
@@ -37,12 +39,13 @@ EMSCRIPTEN_KEEPALIVE void nx_unit_publish(uint8_t *bytes, uint32_t len, uint32_t
     atomic_store(&g_nunits, i + 1);
 }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_count(void) { return atomic_load(&g_nunits); }
-EMSCRIPTEN_KEEPALIVE uint8_t *nx_unit_bytes(uint32_t i) { return g_units[i].bytes; }
+EMSCRIPTEN_KEEPALIVE double nx_unit_bytes(uint32_t i) { return (double)(uintptr_t)g_units[i].bytes; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_len(uint32_t i) { return g_units[i].len; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_base(uint32_t i) { return g_units[i].table_base; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_table_cap(void) { return NX_TABLE_CAP; }
-EMSCRIPTEN_KEEPALIVE void nx_mod_set(int which, uint8_t *p, uint32_t len) { g_wmod[which].p = p; g_wmod[which].len = len; }
-EMSCRIPTEN_KEEPALIVE uint8_t *nx_mod_ptr(int which) { return g_wmod[which].p; }
+EMSCRIPTEN_KEEPALIVE void nx_mod_set(int which, double p, uint32_t len) { g_wmod[which].p = (uint8_t *)(uintptr_t)p; g_wmod[which].len = len; }
+EMSCRIPTEN_KEEPALIVE double nx_mod_ptr(int which) { return (double)(uintptr_t)g_wmod[which].p; }
+EMSCRIPTEN_KEEPALIVE int nx_is64(void) { return sizeof(void *) == 8; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_mod_len(int which) { return g_wmod[which].len; }
 
 // ---- translator service
@@ -93,7 +96,8 @@ EMSCRIPTEN_KEEPALIVE uint32_t nx_translate(double pc) {
 // ---- SVC entry: regs is the thread's context block (nxweb docs/CONTRACT.md: x0..x30 at +0, sp +0xF8, pc +0x100)
 __attribute__((weak)) int nx_svc_other(int num, uint64_t *regs) { (void)num; (void)regs; return 0; }
 _Atomic uint64_t nx_stat_svcs;
-EMSCRIPTEN_KEEPALIVE void nx_svc(int num, uint64_t *regs) {
+EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
+    uint64_t *regs = (uint64_t *)(uintptr_t)regs_;
     atomic_fetch_add_explicit(&nx_stat_svcs, 1, memory_order_relaxed);
     thr_svc_enter(regs, regs[32]);
     if (!svc_thread(num, regs) && !nx_svc_other(num, regs)) die("svc %#x at pc %#llx: not implemented", num, (unsigned long long)regs[32]);

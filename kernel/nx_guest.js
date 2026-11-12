@@ -7,11 +7,12 @@ addToLibrary({
   $NX: { t: null, host: null, published: 0 },   // pcs >= 0xFFFFFF00 return to the embedder: 0xFFFFFFF0 = thread exit, 0xFFFFFFC0 = return from a host call
 
   // the pc map (two levels; nxweb src/a64/README.md) read from the shared memory: pc -> table index, 0 = not translated
-  $nxPcMap__deps: ['$NX'],
+  $nxPcMap__deps: ['$NX', 'nx_is64'],
   $nxPcMap: function(pc) {
     const lay = NXA64.A64, page = Math.floor(pc / 65536);
-    const leaf = HEAPU32[(lay.pcmapBase + page * 4) >>> 2];
-    return HEAPU32[(leaf + (pc % 65536 & 0xFFFC)) >>> 2];
+    if (!_nx_is64()) return HEAPU32[(HEAPU32[(lay.pcmapBase + page * 4) >>> 2] + (pc % 65536 & 0xFFFC)) >>> 2];
+    if (pc >= HEAPU8.length) return 0;   // memory64: the first level has 8-byte entries and covers the memory
+    return HEAPU32[(Number(HEAPU64[lay.pcmapBase / 8 + page]) + (pc % 65536 & 0xFFFC)) / 4];
   },
 
   // instantiate the units this worker does not have yet
@@ -38,7 +39,7 @@ addToLibrary({
     return idx;
   },
 
-  $nxThread__deps: ['$NX', '$nxSync', '$nxTranslate', 'nx_svc', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'malloc'],
+  $nxThread__deps: ['$NX', '$nxSync', '$nxTranslate', 'nx_svc', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc'],
   $nxThread: function() {
     if (NX.t) return NX.t;
     const mem = wasmMemory, t0 = performance.now();
@@ -50,10 +51,12 @@ addToLibrary({
     t.hlp = {};
     for (const k in hx) if (!['staticBase', 'staticEnd', 'memory', 'libcStat', 'libcGuard'].includes(k)) t.hlp[k] = hx[k];
     t.ctx = _malloc(0x400);
-    const core = t.core;
+    const core = t.core, m64 = _nx_is64();
+    t.save = m64 ? (p) => core.save_ctx(BigInt(p)) : core.save_ctx;   // the wasm64 core takes its pointer as an i64
+    t.load = m64 ? (p) => core.load_ctx(BigInt(p)) : core.load_ctx;
     t.unitEnv = {
       memory: mem, table: t.table,
-      svc: (n) => { core.save_ctx(t.ctx); _nx_svc(n, t.ctx); core.load_ctx(t.ctx); },
+      svc: (n) => { t.save(t.ctx); _nx_svc(n, t.ctx); t.load(t.ctx); },
       unimpl: (pc, w) => { throw new Error('unimplemented instruction ' + (w >>> 0).toString(16) + ' at ' + pc.toString(16)); },
       brk: (pc) => { throw new Error('brk at ' + pc.toString(16)); },
       cntpct: () => BigInt(Math.round(performance.now() * 19200)),
@@ -71,7 +74,7 @@ addToLibrary({
   nx_js_guest_run__sig: 'vp',
   nx_js_guest_run: function(io) {
     const t = nxThread(), c = t.core, q = io / 8;
-    HEAPU8.fill(0, t.ctx, t.ctx + 0x330); c.load_ctx(t.ctx);
+    HEAPU8.fill(0, t.ctx, t.ctx + 0x330); t.load(t.ctx);
     c.x0.value = HEAPU64[q]; c.x1.value = HEAPU64[q + 1]; c.x2.value = HEAPU64[q + 2]; c.x3.value = HEAPU64[q + 3]; c.x4.value = HEAPU64[q + 4];
     c.pc.value = HEAPU64[q + 5]; c.sp.value = HEAPU64[q + 6]; const EXIT = BigInt(0xFFFFFFF0);
     c.x30.value = EXIT; c.excl_addr.value = BigInt(-1);
@@ -84,22 +87,23 @@ addToLibrary({
   nx_guest_call__sig: 'jjjjj',
   nx_guest_call: function(pc, a0, a1, a2) {
     const t = nxThread(), c = t.core, save = _malloc(0x400);
-    c.save_ctx(save);
+    t.save(save);
     c.x0.value = a0; c.x1.value = a1; c.x2.value = a2; const RET = BigInt(0xFFFFFFC0);
     c.x30.value = RET; c.pc.value = pc;
     while (c.pc.value !== RET) { c.budget.value = 1 << 30; c.run(); }
     const r = c.x0.value;
-    c.load_ctx(save); _free(save);
+    t.load(save); _free(save);
     return r;
   },
 
   // ---- the translator thread's realm
-  nx_js_tr_init__deps: ['$NX', 'nx_mod_set', 'malloc'],
+  nx_js_tr_init__deps: ['$NX', 'nx_mod_set', 'nx_is64', 'malloc'],
   nx_js_tr_init__sig: 'vpipidd',
   nx_js_tr_init: function(tr, trLen, hlp, hlpLen, codeLo, codeSize) {
     const stop = (what) => () => { throw new Error('the translator realm does not run guest code (' + what + ')'); };
     const host = new NXA64.A64Host(HEAPU8.slice(tr, tr + trLen), HEAPU8.slice(hlp, hlp + hlpLen), {
       memory: wasmMemory, shared: true, layout: Object.assign({}, NXA64.A64, { codeRegionLo: codeLo }),
+      mem64: !!_nx_is64(), memoryMaxPages: wasmMemory.buffer.byteLength / 65536,   // no growth: the maximum is the size
       imports: { svc: stop('svc'), unimpl: stop('unimpl'), brk: stop('brk'), cntpct: () => BigInt(0) },
     });
     host.keepBytes = true;

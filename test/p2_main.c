@@ -20,9 +20,15 @@ extern struct nx_seen { uint64_t entry; int js_tid; uintptr_t pt; } nx_seen[]; e
 extern _Atomic uint64_t nx_stat_translate_ns, nx_stat_translate_calls, nx_stat_unit_bytes, nx_stat_svcs;
 uint32_t nx_unit_count(void);
 
+#ifdef __wasm64__   // memory64: the guest linked, and everything it touches, above 4 GB
+#define BASE 0x180000000ull
+#define DATA 0x181000000ull
+#define STACK_TOP 0x181200000ull
+#else
 #define BASE 0x08000000ull
 #define DATA 0x09000000ull
 #define STACK_TOP 0x09200000ull
+#endif
 #define CODE_SPAN 0x00100000ull
 struct shared { uint32_t mutex, pad; uint64_t counter, atomic_counter, lock_svcs, per_thread[16], result[16], started; };
 #define S ((struct shared *)(uintptr_t)DATA)
@@ -74,7 +80,7 @@ int main(int argc, char **argv) {
     { pthread_t wd; pthread_create(&wd, NULL, watchdog, NULL); }
     // Emscripten's own data, stack and heap must lie outside the guest's address space and nxweb's host area (0 .. 0x0800_0000)
     static int probe; void *heap = malloc(16);
-    printf("layout: module data %p, C stack %p, heap %p; guest code %#llx, guest data %#llx; memory %zu MB\n", (void *)&probe, (void *)emscripten_stack_get_base(), heap,
+    printf("layout (%d-bit memory): module data %p, C stack %p, heap %p; guest code %#llx, guest data %#llx; memory %zu MB\n", (int)sizeof(void *) * 8, (void *)&probe, (void *)emscripten_stack_get_base(), heap,
            BASE, DATA, emscripten_get_heap_size() >> 20);
     if ((uintptr_t)&probe < STACK_TOP || emscripten_stack_get_end() < STACK_TOP || (uintptr_t)heap < STACK_TOP) die("the Emscripten module overlaps the guest address space");
     uint32_t glen, tlen, hlen;
