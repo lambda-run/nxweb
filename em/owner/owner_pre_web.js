@@ -10,7 +10,9 @@ Module.preRun.push(function () {
       out.push({ name: UTF8ToString(f(5)), base: f(0), imageSize: f(1), ro: { addr: f(0) + f(3), size: f(4) - f(3) } }); }
     return out;
   };
-  var page = Object.assign({ writeFile: function (path, bytes) { FS.mkdirTree(path.slice(0, path.lastIndexOf('/'))); FS.writeFile(path, bytes); } }, Module.nxPage);
+  var niBuf = 0;
+  var nativeImage = function (h) { if (!niBuf) niBuf = _malloc(64); if (!_nx_native_image(h, niBuf)) return null; var q = niBuf / 8; return { mem: Number(HEAPU64[q]), size: Number(HEAPU64[q + 1]), w: Number(HEAPU64[q + 2]), h: Number(HEAPU64[q + 3]), stride: Number(HEAPU64[q + 4]) }; };
+  var page = Object.assign({ nativeImage: nativeImage, writeFile: function (path, bytes) { FS.mkdirTree(path.slice(0, path.lastIndexOf('/'))); FS.writeFile(path, bytes); } }, Module.nxPage);
   NXOWN.start(wasmMemory, function (n) { return _malloc(n); }, function (l) { err('[owner] ' + l); }, mods, page)
     .then(function (o) { globalThis.NXOWNER = o; Module.nxLiveThreads = function () { return _nx_live_threads(); }; removeRunDependency('nxowner'); },
           function (e) { err('[RED] owner: ' + (e && e.stack || e)); Module.nxPage.stage('failed: ' + (e && e.message || e)); });

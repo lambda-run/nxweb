@@ -135,7 +135,7 @@ static int owner_request(int code, uint64_t *regs) {
     return r;
 }
 // A host call that one of nxweb's modules answers (owner/owner.ts): on the owner thread, in arrival order
-static void owner_call(int code, uint64_t *regs) {
+void nx_owner_do(int code, uint64_t *regs) {
     uint64_t args[8], t0 = now_ns(); memcpy(args, regs, sizeof args);
     _Atomic uint32_t *cell = (_Atomic uint32_t *)((uint8_t *)regs + 0x3F0);
     for (;;) {
@@ -199,7 +199,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     }
     regs[32] = regs[30];   // return to the caller (the thunk may still redirect)
     int k = trk(); g_trk[k].in_host = (int)id + 1;
-    if (own > 0) owner_call(own, regs);
+    if (own > 0) nx_owner_do(own, regs);
     else if (e && !(e->flags & NX_HLE_HAND)) e->thunk(regs);   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;

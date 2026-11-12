@@ -8,6 +8,7 @@ import { GfxHost } from "../../src/glue/gfx_host.ts";
 import { RtShaders, workerTranslator, webShaderStore } from "../../src/glue/rt_shaders.ts";
 import { NupTree, blobBytes } from "../../src/prepare/host/nup.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
+import { WebCodecsVideo } from "../../src/glue/video_webcodecs.ts";
 import { startOwner, sharedBuild, type Owner, type OwnerConfig } from "./owner.ts";
 
 export interface PageSide {
@@ -17,6 +18,7 @@ export interface PageSide {
   writeFile: (path: string, bytes: Uint8Array) => void;  // into the Emscripten file system, for main()
   stage: (text: string) => void;
   modulesList: string[];                                 // the code modules to load, in order
+  nativeImage: OwnerConfig["nativeImage"];
 }
 
 export async function start(memory: WebAssembly.Memory, malloc: (n: number) => number, log: (line: string) => void, modules: OwnerConfig["modules"], p: PageSide): Promise<Owner> {
@@ -42,6 +44,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   try { device = await requestDevice(); } catch (e) { gpuInfo = `no WebGPU device (${(e as Error).message}): the null replayer`; }
   log("page: " + gpuInfo);
   const c: OwnerConfig = {
+    video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
     tree, prep, fsModule, gfxModule, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
     gfx: device ? { device, canvas: p.canvas, nextFrame: () => new Promise(res => requestAnimationFrame(res)), requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };

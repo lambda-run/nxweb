@@ -352,7 +352,8 @@ if not A.no_gen:
     for s in sorted({x.thunk for x in allents}): T.append(f"nx_hle_thunk {s};")
     T += ["", "const nx_hle_ent nx_hle_table[] = {   // sorted by name (strcmp order)"]
     for x in allents:
-        fl = x.flags + (" | NX_HLE_HAND" if x.hand else "")
+        have = os.path.exists(f"{A.hand}/{x.stem}.inc") and f"NXT_HAVE_{x.cname} " in open(f"{A.hand}/{x.stem}.inc").read()
+        fl = x.flags + (" | NX_HLE_HAND" if x.hand and not have else "")
         T.append(f"    {{\"{x.name}\", {x.thunk}, {fl}, {x.why if x.why else '0'}}},")
     T += ["};", f"const unsigned nx_hle_count = {len(allents)};", "",
           "const nx_hle_ent *nx_hle_find(const char *mangled) {",

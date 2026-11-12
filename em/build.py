@@ -36,7 +36,7 @@ def headers():
     return HEADERS
 
 def flags(mem, cxx):
-    f = ["-O2", "-g1", "-pthread", "-D_GNU_SOURCE", f"-I{R}/kernel", f"-I{R}/kernel/shim", f"-I{R}/hle", f"-I{NX}/host", f"-I{R}/build/gen",
+    f = ["-O2", "-g1", "-pthread", "-D_GNU_SOURCE", f"-I{R}/kernel", f"-I{R}/kernel/shim", f"-I{R}/hle", f"-I{NX}/third_party/libvpx", f"-I{NX}/host", f"-I{R}/build/gen",
          "-Wno-int-to-pointer-cast", "-Wno-pointer-to-int-cast", "-Wno-format", "-Wno-unused-function"]
     if mem == 64: f.append("-sMEMORY64=1")
     if cxx: f += ["-std=c++20", "-fno-exceptions", "-fno-rtti"]
@@ -68,7 +68,7 @@ def gen():
     return out
 
 KERNEL_C = lambda: [gen(), f"{R}/kernel/nx_shims.c"]
-SEAM = [f"{R}/kernel/nx_guest.c", f"{R}/kernel/nx_units.cpp", f"{R}/kernel/nx_proc.c", f"{R}/kernel/nx_mem.cpp", f"{R}/kernel/nx_stubs.c"]
+SEAM = [f"{R}/kernel/nx_guest.c", f"{R}/kernel/nx_units.cpp", f"{R}/kernel/nx_proc.c", f"{R}/kernel/nx_mem.cpp", f"{R}/kernel/nx_stubs.c", f"{R}/kernel/nx_video.c"]
 
 def p1():
     objs = compile_all(KERNEL_C() + [f"{R}/test/p1_stress.c"], 32)
@@ -123,7 +123,7 @@ def hle():
         if not os.path.exists(out) or open(out, encoding="utf-8").read() != text: open(out, "w", encoding="utf-8").write(text)
         files[i] = out
     open(f"{G}/gcalls.txt", "w").write("\n".join(notes) + "\n")
-    if newer(f"{G}/hle_table.c", files + [f"{R}/tools/gen_hle.py", f"{R}/hle/nx_hle.h"]):
+    if newer(f"{G}/hle_table.c", files + [f"{R}/tools/gen_hle.py", f"{R}/hle/nx_hle.h"] + glob.glob(f"{R}/hle/hand/*.inc")):
         sh(["python3", f"{R}/tools/gen_hle.py", "--out", G, *files], stdout=open(f"{G}/report.tsv", "w"), stderr=open(f"{G}/report.summary", "w"))
     allr = f"{R}/build/hle/report_all.tsv"
     if not os.path.exists(allr):

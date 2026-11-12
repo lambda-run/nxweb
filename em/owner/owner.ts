@@ -15,8 +15,9 @@ import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { RtGfx } from "../../src/glue/rt_gfx.ts";
 import { nvn2Items, sdkVersionIn } from "../../src/glue/rt_runtime.ts";
 import { STUBS } from "../../src/glue/rt_layout.ts";
+import { VCODEC, type VideoBackend, type VideoPicture, type VideoSink } from "../../src/glue/video_host.ts";
 
-export const KIND_FS = 1, KIND_HOST = 2;   // nxweb's fs module; a host function nxweb's glue registers (RtGfx: nvnBootstrapLoader, every NVN entry point, nv::)
+export const KIND_FS = 1, KIND_HOST = 2, KIND_VIDEO = 3;   // 3: the AV1 decoder of kernel/nx_video.c   // nxweb's fs module; a host function nxweb's glue registers (RtGfx: nvnBootstrapLoader, every NVN entry point, nv::)
 export const DONE = 0, PENDING = 1, RETRY = 2;
 const LOW_BASE = 0x1C000000, LOW_END = 0x1FF00000;   // host allocations that must be below 4 GB (test/p4_boot.c stages the module files below this, up to 0x1C00_0000)
 const CELL = 0x3F0;   // in the caller's context block (0x400 bytes, the CPU state ends at 0x330): the word a pending call's completion sets
@@ -33,6 +34,8 @@ export interface OwnerConfig {
   malloc: (n: number) => number;
   modules: () => { name: string; base: number; imageSize: number; ro: { addr: number; size: number } }[];   // the loaded code modules (kernel/nx_proc.c), once main() has loaded them
   log: (line: string) => void;
+  video?: (sink: VideoSink) => VideoBackend;   // the browser's video decoder (src/glue/video_webcodecs.ts); omitted: no pictures
+  nativeImage?: (handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null;   // nn::codec's picture of a native image handle (hle_codec_video.c)
   gfx?: Record<string, unknown>;        // RtGfx options: device, canvas, nextFrame, requestDevice (the page); omitted: the null replayer
 }
 
@@ -123,11 +126,12 @@ export class Owner {
   private fsNames = new Map<number, string>(); private shown = new Map<number, number>();
   private waiting = new Map<number, number>();   // fs token -> the context block of the thread that waits
   private log: (line: string) => void;
+  private cfg!: OwnerConfig;
   private low = LOW_BASE;
   stats = { fsCalls: 0, fsPending: 0, fsRetry: 0, fsNs: 0 };
 
   constructor(memory: WebAssembly.Memory, storage: FsStorage, c: OwnerConfig) {
-    this.memory = memory; this.log = c.log;
+    this.memory = memory; this.log = c.log; this.cfg = c;
     const pages = memory.buffer.byteLength / 65536;
     this.fs = new FsHost(c.fsModule, storage, {
       memory, memEnv: { memory_size: () => pages, memory_grow: (n: number) => n ? -1 : pages }, log: l => c.log(l),
@@ -162,12 +166,51 @@ export class Owner {
     const rt = this.rt = new RtShim(this.memory, { memory_size: () => pages, memory_grow: (n: number) => n ? -1 : pages }, c, this);
     const t0 = performance.now();
     this.gfx = new RtGfx(rt as any, c.gfxModule, { unpaced: !o.device, shaderWait: false, ...o, onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
+    if (c.nativeImage) this.gfx.nativeImageOf = c.nativeImage;
     const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
     host.account = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
     host.exec = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return exec(p, n); };
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
   names(): string[] { return [...this.fsIds.keys(), ...(this.rt ? this.rt.byName.keys() : [])]; }
+  // ---- video: one request of mav1_* (kernel/nx_video.c). A decode waits for the completion of its packet number.
+  private videoBack: VideoBackend | null = null; private videoWait = new Map<string, number>(); videoStats = { packets: 0, pictures: 0 };
+  private videoCall(ctx: number): number {
+    const dv = new DataView(this.memory.buffer), n = (i: number) => Number(dv.getBigUint64(ctx + 8 * i, true));
+    const op = n(0), dec = n(1), set0 = (v: number) => new DataView(this.memory.buffer).setBigUint64(ctx, BigInt(v), true);
+    if (!this.videoBack) {
+      if (!this.cfg.video) { if (op === 1) this.log("[RED] nn::codec: no video decoder in this environment: movies give no pictures"); set0(0); return DONE; }
+      this.videoBack = this.cfg.video({ log: l => this.log(l), picture: (d, _gen, seq, pic) => this.videoDone(d, seq, pic) });
+    }
+    const b = this.videoBack;
+    if (op === 1) { const name = b.open(dec, VCODEC.AV1, 0, 0); if (!name) this.log("[RED] nn::codec: the browser has no AV1 decoder (WebCodecs)"); set0(name ? 1 : 0); return DONE; }
+    if (op === 3) { b.reset(dec, 0); for (const [k, c] of [...this.videoWait]) if (k.startsWith(dec + ":")) { this.videoWait.delete(k); new DataView(this.memory.buffer).setBigUint64(c, 0n, true); this.wake(c); } set0(0); return DONE; }
+    if (op === 4) { b.close(dec); set0(0); return DONE; }
+    const seq = dv.getBigUint64(ctx + 48, true);
+    this.videoStats.packets++;
+    new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0;
+    this.videoWait.set(dec + ":" + seq, ctx);
+    const r = b.decode(dec, 0, seq, new Uint8Array(this.memory.buffer, n(2), n(3)), false);
+    if (r === 1) return PENDING;
+    this.videoWait.delete(dec + ":" + seq); set0(0);
+    return DONE;
+  }
+  private videoDone(dec: number, seq: bigint, pic: VideoPicture | null): void {
+    const ctx = this.videoWait.get(dec + ":" + seq);
+    if (ctx === undefined) return;
+    this.videoWait.delete(dec + ":" + seq);
+    const dv = new DataView(this.memory.buffer), u8 = new Uint8Array(this.memory.buffer), buf = Number(dv.getBigUint64(ctx + 32, true)), cap = Number(dv.getBigUint64(ctx + 40, true));
+    let ok = 0;
+    if (pic && pic.w * pic.h * 3 / 2 <= cap) {
+      const { w, h } = pic, cw = (w + 1) >> 1, ch = (h + 1) >> 1;
+      for (let y = 0; y < h; y++) u8.set(pic.y.subarray(y * pic.yStride, y * pic.yStride + w), buf + y * w);
+      for (let y = 0; y < ch && y < h >> 1; y++) { const o = buf + w * h + y * w, pu = y * pic.uvStride; for (let x = 0; x < cw && 2 * x + 1 < w; x++) { u8[o + 2 * x] = pic.u[pu + x]; u8[o + 2 * x + 1] = pic.v[pu + x]; } }
+      dv.setBigUint64(ctx + 8, BigInt(w), true); dv.setBigUint64(ctx + 16, BigInt(h), true); dv.setBigUint64(ctx + 24, BigInt(pic.matrix), true); dv.setBigUint64(ctx + 32, BigInt(pic.fullRange ? 1 : 0), true);
+      ok = 1; if (!this.videoStats.pictures++) this.log(`[codec] first AV1 picture ${w}x${h} handed to the game`);
+    } else if (pic) this.log(`[RED] nn::codec: a ${pic.w}x${pic.h} picture does not fit the buffer`);
+    dv.setBigUint64(ctx, BigInt(ok), true);
+    this.wake(ctx);
+  }
   // The code of a stub the loader did not make (handed out by the owner: an NVN entry point), 0 = not one
   lookupStub(id: number): number { const h = this.rt?.late.get(id); return h === undefined ? 0 : KIND_HOST << 24 | h; }
   stubName(id: number): string { return this.lateNames.get(id) ?? ""; }
@@ -237,6 +280,7 @@ export class Owner {
     const t0 = performance.now();
     try {
       if (code >>> 24 === KIND_HOST) { const h0 = performance.now(); try { return this.hostCall(code & 0xFFFFFF, ctx); } finally { this.hostNs += (performance.now() - h0) * 1e6; } }
+      if (code >>> 24 === KIND_VIDEO) return this.videoCall(ctx);
       if (code >>> 24 !== KIND_FS) throw new Error("owner: no module of kind " + (code >>> 24));
       this.stats.fsCalls++;
       const id = code & 0xFFFFFF, dv = new DataView(this.memory.buffer), shown = this.shown.get(id) ?? 0, name = shown < 6 ? this.fsNames.get(id) ?? "" : "";
