@@ -300,7 +300,17 @@ export class GfxHost {
   // Every texture and buffer the replayer makes, until it destroys it: what dispose() releases
   private live = new Set<GPU>();
   private newBuffer(desc: any): GPU { const o = this.device.createBuffer(desc); this.live.add(o); return o; }
-  private newTexture(desc: any): GPU { const o = this.device.createTexture(desc); this.live.add(o); return o; }
+  // No texture is asked of the device with an empty extent or no level (the device answers with an invalid texture, and every view, bind group and
+  // command buffer that touches it is then invalid too): such a request is made 1 texel large and said once, with who asked
+  private newTexture(desc: any, who = "a helper"): GPU {
+    const z = desc.size, arr = Array.isArray(z), dims = arr ? [z[0], z[1] ?? 1, z[2] ?? 1] : [z.width, z.height ?? 1, z.depthOrArrayLayers ?? 1];
+    if (dims.some(v => !(v >= 1)) || desc.mipLevelCount === 0) {
+      this.red(`zerotex${who}`, `${who} asks for a ${desc.format} texture of ${dims.join("x")} with ${desc.mipLevelCount ?? 1} levels: made 1 texel large instead`);
+      const [w, h, d] = dims.map(v => v >= 1 ? v : 1);
+      desc = { ...desc, size: { width: w, height: h, depthOrArrayLayers: d }, mipLevelCount: Math.max(1, desc.mipLevelCount ?? 1) };
+    }
+    const o = this.device.createTexture(desc); this.live.add(o); return o;
+  }
   private kill(o: GPU): void { if (o) { this.live.delete(o); o.destroy(); } }
   get liveObjects(): number { return this.live.size; }
   disposed = false;
@@ -592,6 +602,9 @@ export class GfxHost {
     const t = this.textures.get(serial);
     if (!t || t.gpu) return t;
     if (!t.fmt?.tex) { this.red(`fmt${t.format}`, `texture format 0x${t.format.toString(16)} has no WebGPU format: the texture is not created`); return undefined; }
+    // a texture the game described with no size (a builder left at 0, or one whose size comes with data the recorder does not read): nothing to create,
+    // a blank texture is sampled in its place and a pass has no such target
+    if (!t.width || (!t.height && t.target !== 0 && t.target !== 3)) { this.red(`texsize${serial}`, `tex#${serial} (format 0x${t.format.toString(16)}, target ${t.target}) is ${t.width}x${t.height}x${t.depth} with ${t.levels} levels: not created (a blank texture is sampled in its place)`); return undefined; }
     const cube = t.target === 8 || t.target === 9, layers = t.target === 4 || t.target === 6 || t.target === 9 || t.target === 3 ? Math.max(1, t.target === 3 ? t.height : t.depth) : cube ? 6 : 1;
     const is3d = t.target === 2, h = t.target === 0 || t.target === 3 ? 1 : t.height;
     const up = (v: number, b: number) => Math.ceil(v / b) * b;
@@ -605,7 +618,7 @@ export class GfxHost {
     const twin = SRGB_TWIN[t.fmt.tex];
     // WebGPU has 1 and 4 samples: a multisampled NVN texture of any count has 4
     t.gpu = this.newTexture({ ...(twin ? { viewFormats: [twin] } : {}), size: { width: up(t.width, t.fmt.bw), height: up(h, t.fmt.bh), depthOrArrayLayers: is3d ? Math.max(1, t.depth) : layers }, format: t.fmt.tex,
-      dimension: is3d ? "3d" : "2d", mipLevelCount: ms ? 1 : Math.max(1, t.levels), sampleCount: ms ? 4 : 1, usage });
+      dimension: is3d ? "3d" : "2d", mipLevelCount: ms ? 1 : Math.max(1, t.levels), sampleCount: ms ? 4 : 1, usage }, `tex#${serial}`);
     return t;
   }
   private layerCount(t: Tex) { return t.gpu.depthOrArrayLayers; }
@@ -1361,7 +1374,7 @@ export class GfxHost {
           if (!whyNot) {
             const key = `${lv}/${ly}/${sf}`;
             let sc = (tx.imgScratch ??= new Map()).get(key);
-            if (!sc) tx.imgScratch.set(key, sc = this.newTexture({ size: { width: Math.max(1, tx.gpu.width >> lv), height: Math.max(1, tx.gpu.height >> lv) }, format: sf, usage: 0x08 | 0x04 | 0x10 }));
+            if (!sc) tx.imgScratch.set(key, sc = this.newTexture({ size: { width: Math.max(1, tx.gpu.width >> lv), height: Math.max(1, tx.gpu.height >> lv) }, format: sf, usage: 0x08 | 0x04 | 0x10 }, "a storage image stand-in"));
             if (m.format !== sf) (ivar ??= []).push({ sid, st, slot: m.slot, format: sf });
             g1.push({ binding: 256 + st * 8 + m.slot, resource: sc.createView() });
             if (!standIns.some(x => x.sc === sc)) standIns.push({ t: tx, sc, lv, ly, cls });
@@ -1908,7 +1921,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   // Depth texels (f32 rows) into a depth texture: WebGPU writes depth32float and depth24plus only by drawing. Encoded
   // and submitted on its own, so it takes effect at once like writeTexture
   private depthData(t: Tex, level: number, z: number, x: number, y: number, w: number, h: number, ptr: number, pitch: number) {
-    const src = this.newTexture({ size: { width: w, height: h }, format: "r32float", usage: 0x04 | 0x02 });
+    const src = this.newTexture({ size: { width: w, height: h }, format: "r32float", usage: 0x04 | 0x02 }, "a depth upload");
     this.device.queue.writeTexture({ texture: src }, this.u8.subarray(ptr, ptr + pitch * (h - 1) + w * 4), { bytesPerRow: pitch, rowsPerImage: h }, { width: w, height: h });
     const key = `depthup|${t.gpu.format}`;
     let pl = this.helpers.get(key);
@@ -1972,7 +1985,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.endPass();
     const g = t.gpu;
     if (g.sampleCount > 1) { this.red("snapms", "a draw samples a multisampled target of its own pass: no copy is made, it reads the texture itself"); return; }
-    t.snap ??= this.newTexture({ size: { width: g.width, height: g.height, depthOrArrayLayers: g.depthOrArrayLayers }, format: g.format, dimension: g.dimension, mipLevelCount: g.mipLevelCount, usage: 0x04 | 0x02 | 0x10 });
+    t.snap ??= this.newTexture({ size: { width: g.width, height: g.height, depthOrArrayLayers: g.depthOrArrayLayers }, format: g.format, dimension: g.dimension, mipLevelCount: g.mipLevelCount, usage: 0x04 | 0x02 | 0x10 }, "a snapshot");
     for (let l = 0; l < g.mipLevelCount; l++)
       this.encoder().copyTextureToTexture({ texture: g, mipLevel: l }, { texture: t.snap, mipLevel: l }, { width: Math.max(1, g.width >> l), height: Math.max(1, g.height >> l), depthOrArrayLayers: g.depthOrArrayLayers });
     this.stats.snapshots++;
