@@ -28,7 +28,7 @@ extern _Atomic uint64_t nx_stat_svcs;
 #define STACK_TOP 0x09200000ull
 #endif
 #define CODE_SPAN 0x00100000ull
-struct shared { uint32_t mutex, pad; uint64_t counter, atomic_counter, lock_svcs, per_thread[32], result[32], started, mis[2]; };
+struct shared { uint32_t mutex, pad; uint64_t counter, atomic_counter, lock_svcs, per_thread[32], result[32], started, mis[2]; uint32_t cv, busy; uint64_t cv_waits; };
 #define S ((struct shared *)(uintptr_t)DATA)
 
 // the SVCs of the test guest ABI that are not thread SVCs (nxweb docs/CONTRACT.md)
@@ -121,6 +121,16 @@ int main(int argc, char **argv) {
         CHECK(ok, "mutex counter %llu, want %llu (lock word %#x)", (unsigned long long)r, (unsigned long long)threads * mrounds, S->mutex);
         printf("%s guest mutex + counter, %d guest threads x %llu rounds: counter %llu (exact), every thread did %llu, %llu contended locks (svcArbitrateLock), %llu SVCs in all, %.0f ms\n", ok ? "ok  " : "FAIL",
                threads, (unsigned long long)mrounds, (unsigned long long)r, (unsigned long long)S->per_thread[threads - 1], (unsigned long long)S->lock_svcs, (unsigned long long)(nx_stat_svcs - s0), ms);
+    }
+    // the same with a condition variable (svcWaitProcessWideKeyAtomic / svcSignalProcessWideKey): 4, 8 and 16 threads through a one-place semaphore
+    for (int threads = 4; threads <= 16; threads *= 2) {
+        uint64_t s0 = nx_stat_svcs, rounds = mrounds / 4;
+        r = run(threads, rounds, 4, &ms);
+        int ok = r == (uint64_t)threads * rounds && S->mutex == 0 && S->busy == 0;
+        for (int i = 0; i < threads; i++) ok &= S->per_thread[i] == rounds;
+        CHECK(ok, "condition variable semaphore: counter %llu, want %llu (lock word %#x, key %u)", (unsigned long long)r, (unsigned long long)threads * rounds, S->mutex, S->cv);
+        printf("%s guest mutex + condition variable (a one-place semaphore), %d guest threads x %llu rounds: counter %llu (exact), %llu waits on the key, %llu SVCs in all, %.0f ms\n", ok ? "ok  " : "FAIL",
+               threads, (unsigned long long)rounds, (unsigned long long)r, (unsigned long long)S->cv_waits, (unsigned long long)(nx_stat_svcs - s0), ms);
     }
     r = run(4, mrounds * 5, 2, &ms);
     CHECK(r == 4 * mrounds * 5, "atomic counter %llu", (unsigned long long)r);

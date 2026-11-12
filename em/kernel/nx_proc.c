@@ -195,6 +195,12 @@ static uint64_t g_slot_queue_ns, g_slot_serve_ns, g_slot_n;
 static _Atomic int g_slot_waiting; static _Atomic uint64_t g_slot_depth[8];   // callers at the slot when one arrives: 0, 1, 2, 3, 4-7, 8-15, 16-31, 32+
 // For the page's frame split (main thread): out = requests, ns waiting for the slot, ns from request to answer, then the 8 depth counts
 EMSCRIPTEN_KEEPALIVE void nx_slot_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)g_slot_n; o[1] = (double)g_slot_queue_ns; o[2] = (double)g_slot_serve_ns; for (int i = 0; i < 8; i++) o[3 + i] = (double)g_slot_depth[i]; }   // waiting for the slot (behind other threads); from the request to its answer
+// The owner starts watching the request slot and the two modules' holder requests (kernel/nx_owner.js nx_owner_serve):
+// before the first of either. (Until f09b22b only the first slot request started it: with nn::fs on the calling thread
+// the first thing asked of the owner is a storage read, which nobody watched for: the boot hung in MountRom.)
+static pthread_once_t g_serve_once = PTHREAD_ONCE_INIT;
+static void serve_start(void) { g_slot_on = 1; nx_owner_serve((double)(uintptr_t)&g_slot); }
+static void owner_serve_start(void) { pthread_once(&g_serve_once, serve_start); }
 static int owner_request(int code, uint64_t *regs) {
     int gl = nx_gfx_release_all();   // (a callback of the recorder into guest code that asks the owner for something)
     nx_core_release();   // waiting for the owner thread is not running: the caller's core is free (taken again at the end of the host call)
@@ -202,7 +208,7 @@ static int owner_request(int code, uint64_t *regs) {
     { int d = atomic_fetch_add(&g_slot_waiting, 1); atomic_fetch_add_explicit(&g_slot_depth[d < 4 ? d : d < 8 ? 4 : d < 16 ? 5 : d < 32 ? 6 : 7], 1, memory_order_relaxed); }
     dm_host_lock(&g_slot_mu);   // a guest thread that waits here holds no guest core (hle_thread.c)
     uint64_t t1 = now_ns();
-    if (!g_slot_on) { g_slot_on = 1; nx_owner_serve((double)(uintptr_t)&g_slot); }
+    owner_serve_start();
     g_slot.code = code; g_slot.ctx = (double)(uintptr_t)regs;
     atomic_store(&g_slot.state, 1); emscripten_futex_wake(&g_slot.state, 1);
     for (int spin = 0; atomic_load(&g_slot.state) != 2; spin++) if (spin > 20000) emscripten_futex_wait(&g_slot.state, 1, 5.0);
@@ -331,7 +337,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     int direct = own > 0 ? g_stub_direct[id] : -1;
     if (!direct) { direct = nx_gfx_enabled() ? nx_owner_stub_direct((int)id) : 0; g_stub_direct[id] = direct = direct ? direct : -1; }
     if (direct > 0) nx_gfx_direct(direct, regs);
-    else if (own > 0 && own >> 24 == 1 && nx_fs_enabled()) { nx_core_release(); nx_fs_direct(own & 0xFFFFFF, regs); }
+    else if (own > 0 && own >> 24 == 1 && nx_fs_enabled()) { owner_serve_start(); nx_core_release(); nx_fs_direct(own & 0xFFFFFF, regs); }
     else if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
                    nx_owner_do(own, regs); }
     else if (e && !(e->flags & NX_HLE_HAND)) e->thunk(regs);   // (one that needs a hand-written thunk answers 0 until it has it)
@@ -392,6 +398,7 @@ void nx_progress(void) {
       else if (os[7] > 0 && now - since >= 10000000000ull && (!dumped || now - dumped >= 60000000000ull)) {
           dumped = now;
           LOG("[RED] STALL: no present for %.0f s (stopped at present %.0f). Every guest thread: what it waits on (the kernel's list), then where its translated code last was", (now - since) / 1e9, os[7]);
+          { void nx_lock_report(void); nx_lock_report(); }   // (consistent: under the kernel's lock. The list after it is not: threads go on while it prints)
           svc_thread_dump(); trk_dump();
           LOG("[RED] STALL: end of the thread list");
       } }

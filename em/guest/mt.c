@@ -8,7 +8,7 @@
 // Returns the counter (mode 0, 2) or the xor of the per-thread results (mode 1).
 typedef unsigned long u64; typedef unsigned int u32;
 #define WAITERS 0x40000000u
-struct shared { u32 mutex; u32 pad; volatile u64 counter; u64 atomic_counter; u64 lock_svcs; u64 per_thread[32]; u64 result[32]; u64 started; u64 mis[2]; };
+struct shared { u32 mutex; u32 pad; volatile u64 counter; u64 atomic_counter; u64 lock_svcs; u64 per_thread[32]; u64 result[32]; u64 started; u64 mis[2]; u32 cv, busy; u64 cv_waits; };
 struct targ { u32 handle, idx; u64 rounds, mode, threads; struct shared *s; };
 
 #define SVC_ASM(n) "svc #" #n
@@ -27,6 +27,8 @@ DEF_SVC(svc_close, 0x16)
 DEF_SVC(svc_wait_sync, 0x18)       // x1 = handles, x2 = count, x3 = timeout
 DEF_SVC(svc_arb_lock, 0x1A)        // w0 = owner handle, x1 = address, w2 = own tag
 DEF_SVC(svc_arb_unlock, 0x1B)      // x0 = address
+DEF_SVC(svc_wait_key, 0x1C)        // x0 = lock address, x1 = condition key address, w2 = own tag, x3 = timeout: returns holding the lock
+DEF_SVC(svc_signal_key, 0x1D)      // x0 = condition key address, w1 = count
 
 static inline int cas32(u32 *p, u32 *expect, u32 v) { return __atomic_compare_exchange_n(p, expect, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
 static void lock(struct shared *s, u32 self) {
@@ -61,6 +63,22 @@ static void work(struct targ *t) {
   while (__atomic_load_n(&s->started, __ATOMIC_SEQ_CST) < t->threads) ;
   if (t->mode == 0) {
     for (u64 i = 0; i < t->rounds; i++) { lock(s, t->handle); s->counter = s->counter + 1; unlock(s, t->handle); s->per_thread[t->idx]++; }
+  } else if (t->mode == 4) {
+    // a one-place semaphore out of the mutex and a condition variable (the SDK's protocol: the key word is 1 while
+    // anyone waits; the kernel hands the lock to a signalled waiter). The counter is touched inside the semaphore but
+    // OUTSIDE the mutex: a lost wake-up hangs the test, two threads let through at once lose increments
+    for (u64 i = 0; i < t->rounds; i++) {
+      lock(s, t->handle);
+      while (s->busy) { __atomic_fetch_add(&s->cv_waits, 1, __ATOMIC_RELAXED); svc_wait_key((u64)&s->mutex, (u64)&s->cv, t->handle, ~0ul); }
+      s->busy = 1;
+      unlock(s, t->handle);
+      s->counter = s->counter + 1;
+      lock(s, t->handle);
+      s->busy = 0;
+      if (__atomic_load_n(&s->cv, __ATOMIC_SEQ_CST)) svc_signal_key((u64)&s->cv, 1, 0, 0);
+      unlock(s, t->handle);
+      s->per_thread[t->idx]++;
+    }
   } else if (t->mode == 1) {
     s->result[t->idx] = compute(0x9E3779B97F4A7C15ul * (t->idx + 1), t->rounds);
     s->per_thread[t->idx] = t->rounds;
@@ -93,7 +111,7 @@ __attribute__((section(".text.start"))) u64 guest_main(struct shared *s, u64 mai
   }
   if (mode == 1) { u64 r = 0; for (u64 i = 0; i < threads; i++) r ^= s->result[i]; return r; }
   if (mode == 3) return *(u32 *)((char *)s->mis + 1);
-  return mode == 0 ? s->counter : s->atomic_counter;
+  return mode == 0 || mode == 4 ? s->counter : s->atomic_counter;
 }
 // a function the host calls directly (nx_guest_call), as hle_bind_system_event calls nn::os::CreateSystemEvent
 u64 guest_add3(u64 a, u64 b, u64 c) { return a + 2 * b + 3 * c; }

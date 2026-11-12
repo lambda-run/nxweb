@@ -51,8 +51,8 @@ addToLibrary({
     };
     serve();
     // the same watch on the recorder's request word (owner/owner.ts NXG + 8): a guest thread's flush reaches the replayer
-    const g = 0x1FF1F000 / 4 + 2;
-    const flush = () => {
+    // (and on the fs module's, NXF + 8: a storage read of a guest thread's nn::fs call)
+    const watch = (g) => { const flush = () => {
       let until = 0;
       for (;;) {
         if (own.svc()) { until = performance.now() + 0.2; continue; }
@@ -62,8 +62,8 @@ addToLibrary({
         const w = Atomics.waitAsync(HEAP32, g, cur);
         if (w.async) { w.value.then(flush); return; }
       }
-    };
-    flush();
+    }; flush(); };
+    watch(0x1FF1F000 / 4 + 2); watch(0x1FF1F100 / 4 + 2);
   },
   // Compiled modules for the workers. What the translation cache published before any guest thread runs is compiled
   // once here on the main thread and handed to every worker in ONE message, which a worker takes in while it is in its

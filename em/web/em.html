@@ -25,6 +25,8 @@
 // ?fsdirect=1: guest threads call the fs module in their own instance and the owner is asked only for the storage itself
 //   (off by default until it has run at game scale once; then the default and ?fsdirect=0 the way back).
 // ?gfxdirect=0: every NVN call goes to the owner thread (default: guest threads call the recorder in their own instance).
+// ?handoff=1: nxweb's wake hand-off between cores: a thread that made a thread of better priority ready on another core
+//   stands back until that one has blocked (5 ms at most). For the story movie's stall.
 // ?coreexcl=1: two guest threads of one virtual core never run at the same time, the one of higher priority first (as on
 //   the console; kernel/nx_cores.c). For the A/B of the fault on the title.
 // ?cores=1: one running guest thread per virtual core (kernel/nx_cores.c; off by default: it slows loading).
@@ -92,7 +94,7 @@ function start(file) {
   window.nxem.state = "starting";
   window.Module = {
     arguments: ["/exefs", "/rt/translator64.shared.wasm", "/rt/helpers64.shared.wasm", "/rt/loader64.wasm", q.get("secs") || "86400"],
-    nxEnv: Object.assign({ NX_CORES: q.get("cores") === "1" ? "1" : "0", NX_COREEXCL: q.get("coreexcl") === "1" ? "1" : "0" }, q.get("yieldpark") !== null ? { NX_YIELD_PARK_US: q.get("yieldpark") } : {}),
+    nxEnv: Object.assign({ NX_CORES: q.get("cores") === "1" ? "1" : "0", NX_COREEXCL: q.get("coreexcl") === "1" ? "1" : "0", NX_WAKE_HANDOFF: q.get("handoff") === "1" ? "1" : "0" }, q.get("yieldpark") !== null ? { NX_YIELD_PARK_US: q.get("yieldpark") } : {}),
     print: say, printErr: say,
     onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; if (!window.nxem.reason) Module.nxStopped("abort() in host code: " + w); },
     nxStopped: function (why) { if (window.nxem.reason) return; window.nxem.reason = why; $("stage").textContent = "stopped: " + why; $("stage").style.color = "#f66"; },

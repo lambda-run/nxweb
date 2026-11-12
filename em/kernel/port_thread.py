@@ -48,6 +48,21 @@ replace_once("    if (entering) { t->native_wait++; hand_leave(t); }", "    if (
 #    nxnative's own same-core handoff (the waker sleeps until the higher-priority threads it woke have blocked) needs
 #    those threads to run meanwhile: the waker gives its core up for it.
 replace_once("uint64_t t0 = now_ns(); int w = dm_yield_to_core_peers(g_core_preempt);", "uint64_t t0 = now_ns(); nx_core_release(); int w = dm_yield_to_core_peers(g_core_preempt);")
+# 4. nxweb's wake hand-off between cores (its src/kernel/sched.ts HOLD; NX_WAKE_HANDOFF=1). nxnative holds a waker only
+#    for a better thread pinned to the waker's own core. nxweb found that this game's movie library needs more with the
+#    Switch 2's cores: a thread whose SVC made a thread of better priority ready on ANOTHER core stands back until that
+#    thread has blocked (or a bound has passed: nxweb's four slices, here 5 ms), which keeps the order the two would have
+#    on the console, where the woken thread starts at once. Without it the story movie stalled (2026-11-12).
+replace_once("    if (t->prio < self->prio && t->mask == 1ull << (self->core & 63) && !(self->mask & ~t->mask)) self->yield_pending = 1;",
+             "    if (t->prio < self->prio && ((t->mask == 1ull << (self->core & 63) && !(self->mask & ~t->mask)) || nx_wake_handoff())) self->yield_pending = 1;")
+replace_once("    if (self->mask & ~bit) return 0;\n    for (;;) {\n        int busy = 0;",
+             "    int multi = (self->mask & ~bit) != 0, xh = nx_wake_handoff(); uint64_t x0 = now_ns();\n    if (multi && !xh) return 0;\n    for (;;) {\n        int busy = 0;")
+replace_once("            if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && thr_runnable(t) && (all || thr_in_handoff(t, self))) busy = 1;",
+             "            if (t != self && t->started && !t->exited && !t->host_owned && t->prio < self->prio && thr_runnable(t)) {\n"
+             "                if (t->mask == bit && !multi && (all || thr_in_handoff(t, self))) busy = 1;\n"
+             "                else if (xh && thr_in_handoff(t, self) && now_ns() - x0 < 5000000ull) { busy = 1; g_xhand_n += !waited; }   /* nxem: another core's thread this one made ready */\n"
+             "            }")
+replace_once("static int g_core_preempt;", "static int g_core_preempt;\nstatic uint64_t g_xhand_n;\nstatic int nx_wake_handoff(void) { static int on = -1; if (on < 0) { const char *e = getenv(\"NX_WAKE_HANDOFF\"); on = e && *e == '1'; } return on; }   /* nxem */")
 s += """
 // nxem (kernel/port_thread.py): what kernel/nx_cores.c reads of the calling guest thread, without G
 int nx_thr_sched(int *prio, uint64_t *mask) {
@@ -66,6 +81,25 @@ void nx_yield_top(char *out, size_t n) {
     }
     size_t o = 0; char nb[32]; out[0] = 0;
     for (int i = 0; i < 4 && top[i] && d[i] && o < n; i++) o += (size_t)snprintf(out + o, n - o, "%s%#x '%s' prio %d core %d x%llu", i ? ", " : "", top[i]->handle, thr_name(top[i], nb, sizeof nb), top[i]->prio, top[i]->core, (unsigned long long)d[i]);
+    pthread_mutex_unlock(&G);
+}
+// nxem: for the stall report (kernel/nx_proc.c), one consistent picture under G. A lock's word holds its owner's tag,
+// which is the owner's thread id (the TLR's +0x110, from 0x51), not its handle: every tag with its thread, and for each
+// thread that waits for a lock who the owner is and what that one is doing.
+void nx_lock_report(void) {
+    static const char *kinds[] = {"runs (not waiting)", "waits for a lock", "waits on a condition variable", "waits on an address", "waits on a sync object"};
+    char nb[32], nb2[32];
+    pthread_mutex_lock(&G);
+    LOG("wake hand-off between cores: %s; held %llu times so far", nx_wake_handoff() ? "on" : "off (NX_WAKE_HANDOFF=1)", (unsigned long long)g_xhand_n);
+    for (thr_t *t = g_all; t; t = t->all) if (!t->exited) LOG("  tag %#llx = thread %#x '%s' prio %d core %d: %s%s", (unsigned long long)t->id, t->handle, thr_name(t, nb, sizeof nb), t->prio, t->core, kinds[t->wkind >= 0 && t->wkind <= 4 ? t->wkind : 0], t->sleeping ? " (in a timed sleep)" : t->native_wait ? " (in a host wait)" : "");
+    for (thr_t *t = g_all; t; t = t->all) {
+        if (t->exited || t->wkind != 1 || !t->waddr) continue;
+        uint32_t w = ld32(t->waddr), tag = w & ~WAITERS_BIT; thr_t *o = NULL;
+        for (thr_t *x = g_all; x; x = x->all) if ((uint32_t)x->id == tag) { o = x; break; }
+        if (!o) LOG("  [RED] thread %#x '%s' waits for the lock at %#llx whose word is %#x: tag %#x is NO thread (the word is not a lock any more: freed or overwritten memory?)", t->handle, thr_name(t, nb, sizeof nb), (unsigned long long)t->waddr, w, tag);
+        else LOG("  %sthread %#x '%s' waits for the lock at %#llx (word %#x): its owner is thread %#x '%s', which %s%s", o->exited || o == t ? "[RED] " : "", t->handle, thr_name(t, nb, sizeof nb), (unsigned long long)t->waddr, w, o->handle, thr_name(o, nb2, sizeof nb2),
+                 o->exited ? "has EXITED" : o == t ? "is this thread itself" : kinds[o->wkind >= 0 && o->wkind <= 4 ? o->wkind : 0], !o->exited && o->wkind == 1 && o->waddr == t->waddr ? " [RED] (the SAME lock)" : "");
+    }
     pthread_mutex_unlock(&G);
 }
 """
