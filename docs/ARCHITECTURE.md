@@ -12,7 +12,7 @@ The rules every area shares are in `docs/CONTRACT.md`.
 | Kit | `src/kit`, `docs/machines` | State machines as data: every lifecycle is a table generated from `src/<area>/defs/*.json`; `kit:test` fails while a transition has no test |
 | Translator | `src/a64`, `src/glue/a64_host.ts` | ARM64 → WebAssembly, a unit (wasm module) per 64 KB chunk of functions, on demand; CPU state in wasm globals of one core module; a two-level pc map in memory |
 | Loader | `src/loader` | NSO / NRO into guest memory, relocation, binding against other modules and host functions (stubs) |
-| Kernel | `src/kernel` | Horizon's SVCs for one process: threads on four virtual cores, locks, condition variables, events, memory, the guest clock. Never blocks, never reads a clock |
+| Kernel | `src/kernel` | Horizon's SVCs for one process: threads on eight virtual cores, locks, condition variables, events, memory, the guest clock. Never blocks, never reads a clock |
 | Runtime | `src/runtime`, `src/glue/rt_*.ts` | One guest process: the one memory, the run loop, host-call dispatch (one answer per name), faults, the process machine; attaches everything below. The address space is laid out per game from its profile (`rt_process.ts`) |
 | Prepare | `src/prepare`, `tools/prepare`, `web/prepare*` | A folder of extracted game files becomes what the runtime starts: detect, index, profile (nxnative's 153 game profiles converted), code cuts, a RomFS device over the folder; one machine, a manifest in OPFS, a hand-off message |
 | Graphics | `src/gfx`, `src/glue/gfx_host.ts` | NVN: a recorder (AssemblyScript) lowers submitted commands to a host stream, a replayer (TypeScript) makes the WebGPU calls |

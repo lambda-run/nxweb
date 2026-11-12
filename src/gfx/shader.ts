@@ -12,7 +12,7 @@ import * as L from "./log";
 import { shaInit, shaUpdate, shaFinal, DIGEST } from "./sha256";
 import { PROG_nstage, PROG_sd, PROG_serial } from "./obj";
 import { progEntry, PE_ok, PE_key, PE_shader } from "./tables";
-import { arenaAlloc } from "./arena";
+import { arenaAlloc, arenaBig } from "./arena";
 import { Inst } from "../kit/machine";
 import { GFX_SHADER, GfxShaderE, GfxShaderS } from "../kit/gen/tables";
 import { pipelineResetShader } from "./pipeline";
@@ -52,13 +52,13 @@ export const C2_POOL: usize = 0x980;
 export const RF_gmem: usize = 400;      // u32: bits 0..7 how many addresses (0: none), bits 8..15 how many ranges the module declares for them (storage slots 32 + j)
 export const RF_gmem_ptr: usize = 404;  // [8] { u8 slot; u8 word }: the 64-bit address is at 32-bit word `word` of the range bound at storage slot `slot` (16 + r: uniform slot r)
 export const RF_SIZE: usize = 424;
-const LIB_N: u32 = 4096;
+const LIB_N: u32 = 16384;
 const LE_SIZE: usize = 432;              // u64 key, reflection record
 let LIB: usize = 0;
 // What is known about a key (machine gfx_shader), for keys the embedder has spoken of: { u64 key, Inst }
-const KEYS_N: u32 = 4096 + 256, KE_SIZE: usize = 24;
+const KEYS_N: u32 = 16384 + 256, KE_SIZE: usize = 24;
 let KEYS: usize = 0, nKeys: u32 = 0, keysFullRed = false;
-export function shaderInit(): void { LIB = arenaAlloc(<usize>LIB_N * LE_SIZE); KEYS = arenaAlloc(<usize>KEYS_N * KE_SIZE); }
+export function shaderInit(): void { LIB = arenaBig(<usize>LIB_N * LE_SIZE); KEYS = arenaBig(<usize>KEYS_N * KE_SIZE); }
 function keyInst(key: u64, make: bool): usize {
   for (let i: u32 = 0; i < nKeys; i++) if (load<u64>(KEYS + <usize>i * KE_SIZE) == key) return KEYS + <usize>i * KE_SIZE + 8;
   if (!make) return 0;
@@ -91,7 +91,7 @@ export function libRegister(key: u64, refl: usize): i32 {
     pipelineResetShader(i);
     return <i32>i;
   }
-  if (libCount == LIB_N) { L.redLine("shader library full (4096 shaders)"); return -1; }
+  if (libCount == LIB_N) { L.redLine("shader library full (16384 shaders)"); return -1; }
   const e = LIB + <usize>libCount * LE_SIZE;
   store<u64>(e, key); memory.copy(e + 8, refl, RF_SIZE);
   libVersion++;

@@ -57,7 +57,8 @@ QueryMemory the MemoryInfo it wrote). Every entry takes the kernel lock
 
 ## Scheduler and threads
 
-Four virtual cores; a thread queues on its ideal core (or the lowest core of its mask). Each core runs its ready
+Eight virtual cores (the Switch 2's count; a Switch application uses 0..2): a thread queues on its ideal core (or the
+lowest core of its mask); a mask that names no core of the eight queues on core 0. Each core runs its ready
 thread of best priority; equals run in the order they became ready; a preempted thread keeps its place. `SleepThread`
 0 / -1 go behind the equals, -2 lets a lower priority have one turn. `kernel_preempt` rotates equals. An idle core
 takes a waiting thread whose mask allows it. A wake or start of a better thread on the caller's core makes the
@@ -129,7 +130,7 @@ the end every thread finishes and nothing leaks.
   `kLock` must become a real lock; `sched.ts` already keeps its state per core.
 - Linear memory is never given back: unmapped pages and a shrunk heap stay resident (they read zero when mapped again).
 - O(threads) scans in the scheduler and the wait queues (256 threads at most); no per-thread CPU time; no core 3 in
-  GetInfo's core mask (7, as nxnative) though the scheduler has four cores.
+  GetInfo's core mask (7, as nxnative) though the scheduler has eight cores.
 - Not implemented (answer 0 with `[RED] svc 0xNN unimplemented`): IPC beyond the stubs, shared and transfer memory,
   code memory, process and debug SVCs. SetHeapSize does not check Horizon's 2 MB multiple, WaitForAddress an unknown
   type, CreateThread its priority or core, CloseHandle an invalid handle (all as nxnative).

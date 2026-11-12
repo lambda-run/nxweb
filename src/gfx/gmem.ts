@@ -5,16 +5,16 @@
 // The table holds the buffer objects, not their ranges: a virtual pool's memory is known only once it is mapped (dispatch.ts nvnMemoryPoolMapVirtual)
 import * as L from "./log";
 import * as O from "./obj";
-import { arenaAlloc } from "./arena";
+import { arenaBig } from "./arena";
 
-const CAP: i32 = 8192;
+const CAP: i32 = 32768;
 const PS: usize = sizeof<usize>();
 let TAB: usize = 0, n: i32 = 0, said = false;
 export const GMEM_MAX_BYTES: u64 = 128 << 20;   // WebGPU's default maxStorageBufferBindingSize
 
 export function gmemBufInit(buf: usize): void {   // nvnBufferInitialize
-  if (!TAB) TAB = arenaAlloc(<usize>CAP * PS);
-  if (n == CAP) { if (!said) { said = true; L.redLine("more than 8192 live buffers: memory a shader reads through a loaded address is not found in the others"); } return; }
+  if (!TAB) TAB = arenaBig(<usize>CAP * PS);
+  if (n == CAP) { if (!said) { said = true; L.redLine("more than 32768 live buffers: memory a shader reads through a loaded address is not found in the others"); } return; }
   store<usize>(TAB + <usize>n * PS, buf); n++;
 }
 export function gmemBufDrop(buf: usize): void {   // nvnBufferFinalize, or the object initialized again

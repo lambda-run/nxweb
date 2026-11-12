@@ -174,6 +174,26 @@ test("nn::codec with the embedder's decoder: completions come later and in order
   h.call(by("h_cv_av1fin"), m.t); assert.deepEqual(mock.closed, [1]);
 });
 
+test("nn::codec pacing line: whether pictures waited for the game's buffers or buffers for the decoder's pictures", () => {
+  const h = new Hle().sdk(), mock = new Mock(); h.host.env.video = mock;
+  const m = movie(h, { w: 4, h: 2 });
+  loaded(h, m); for (let i = 0; i < 4; i++) m.acq();
+  h.call(by("h_cv_av1start"), m.t);
+  h.u8.set([1, 2, 3], m.pkt);
+  // the buffer is there first: it is filled when its picture arrives
+  m.rel(0); m.submit(100, false, 3);
+  const gen = mock.packets[0].gen;
+  h.host.videoPicture(1, gen, 1n, flat(4, 2, 81, 90, 240, 6));
+  assert.equal(m.props(0).r, 0n);
+  // the picture is there first: it waits, and goes into the buffer at its release
+  m.submit(200, false, 3);
+  h.host.videoPicture(1, gen, 2n, flat(4, 2, 81, 90, 240, 6));
+  m.rel(1);
+  assert.equal(m.props(1).ts, 200n);
+  h.call(by("h_cv_av1fin"), m.t);
+  assert.ok(h.logs.includes("[codec] AV1 decoder 1 pacing over 2 pictures: 2 packets taken, 0 refused busy, 2 buffers released; 1 pictures were waiting for their buffer, 1 buffers for their picture; at most 1 pictures waiting, 1 packets decoding"), h.logs.filter(l => l.includes("pacing")).join("\n"));
+});
+
 test("nn::codec native images: the pool's memory gets each picture as RGBA (16 KB aligned, 64-byte rows) for nvnTextureInitializeFromNativeImage", () => {
   const h = new Hle().sdk(), mock = new Mock(); h.host.env.video = mock;
   const m = movie(h, { w: 20, h: 4, bufs: 2 });

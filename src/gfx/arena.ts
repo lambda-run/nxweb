@@ -9,6 +9,15 @@ export function arenaInit(p: usize, n: u32): bool {
   memory.fill(p, 0, n);
   return true;
 }
+// Tables that outgrew the arena's range (the shader library, the live buffers): zeroed memory the embedder allocates for the process's life
+// @ts-ignore: decorator
+@external("env", "gfx_arena_more")
+declare function arenaMore(n: u32): f64;
+export function arenaBig(n: usize): usize {
+  const p = <usize>arenaMore(<u32>n);
+  if (!p) { L.redLine("gfx: no host memory for a table"); unreachable(); }
+  return p;
+}
 export function arenaAlloc(n: usize): usize {
   const p = top; top += (n + 15) & ~<usize>15;
   if (top > end) { L.redLine("gfx arena exhausted"); unreachable(); }

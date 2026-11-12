@@ -49,6 +49,7 @@ const NBUF: u32 = 32;
 const NFIFO: u32 = 8;
 const CV_READY: u32 = 4;
 const CV_HOLD: u32 = 12;
+const CV_PACE: u32 = 120;   // pictures between two pacing lines
 const CV_EVENT_OFF: usize = 0x100;
 const NPOOL: u32 = 64;
 const POOL_IMGS: u32 = 32;
@@ -65,6 +66,8 @@ const CS_709: u32 = 1, CS_UNSET: u32 = 2, CS_601: u32 = 6, CS_2020: u32 = 9;
   used: u32; codec: u32; w: u32; h: u32; gen: u32; nheld: u32; ninfl: u32; eosPending: u32;
   backend: u32; fhead: u32; fcount: u32; phead: u32; pcount: u32; busyLogs: u32; dropLogs: u32; blackLogs: u32;
   event: u64; submits: u64; pictures: u64; eosAt: u64; black: u64;
+  // since the last pacing line (CV_PACE pictures)
+  sSub: u32; sBusy: u32; sRel: u32; sFillRel: u32; sFillDone: u32; sPeakHeld: u32; sPeakInfl: u32; sPad: u32;
 }
 @unmanaged class Buf { pool: u32; pidx: u32; reg: u32; filled: u32; gen: u32; filledGen: u32; w: u32; h: u32; eos: u32; pad: u32; ts: i64; }
 @unmanaged class Held { pic: u32; eos: u32; ts: i64; }
@@ -74,7 +77,7 @@ const CS_709: u32 = 1, CS_UNSET: u32 = 2, CS_601: u32 = 6, CS_2020: u32 = 9;
 
 const DSZ: usize = offsetof<Dec>(), BSZ: usize = offsetof<Buf>(), HSZ: usize = offsetof<Held>(), ISZ: usize = offsetof<Infl>();
 const PSZ: usize = offsetof<Pool>(), QSZ: usize = offsetof<Pic>();
-const DECS: usize = memory.data(<i32>(NDEC * 112), 8);
+const DECS: usize = memory.data(<i32>(NDEC * 160), 8);
 const BUFS: usize = memory.data(<i32>(NDEC * NBUF * 48), 8);
 const FIFO: usize = memory.data(<i32>(NDEC * NFIFO * 4), 8);
 const PEND: usize = memory.data(<i32>(NDEC * NBUF * 4), 8);
@@ -89,14 +92,15 @@ const TMP: usize = memory.data(128, 4);
 let genCounter: u32 = 0;
 let poolLogs: u32 = 0, nativeLogs: u32 = 0, rgbaRegionRed = false, nv12RegionRed = false, hdrRed = false, encRed = false, syncRed = false, sptFullRed = false, picFullRed = false;
 let nativeWrites: u64 = 0;
+let drainAt: u32 = 0;   // what drain() was called for: 0 a released buffer, 1 a picture that arrived, 2 a packet
 let fnDestroy: u64 = 0, fnTryWait: u64 = 0, fnHolder: u64 = 0;
 
 export function cvInit(): void {
-  zero(DECS, <usize>NDEC * 112); zero(BUFS, <usize>(NDEC * NBUF) * 48); zero(FIFO, <usize>(NDEC * NFIFO) * 4); zero(PEND, <usize>(NDEC * NBUF) * 4);
+  zero(DECS, <usize>NDEC * 160); zero(BUFS, <usize>(NDEC * NBUF) * 48); zero(FIFO, <usize>(NDEC * NFIFO) * 4); zero(PEND, <usize>(NDEC * NBUF) * 4);
   zero(HELD, <usize>(NDEC * CV_HOLD) * 16); zero(INFL, <usize>(NDEC * CV_HOLD) * 16); zero(POOLS, <usize>NPOOL * 40); zero(POOLPICS, <usize>(NPOOL * POOL_IMGS) * 4);
   zero(PICS, <usize>NPIC * 40); zero(SPT, <usize>NSPT * 8);
   poolLogs = 0; nativeLogs = 0; rgbaRegionRed = false; nv12RegionRed = false; hdrRed = false; encRed = false; syncRed = false; sptFullRed = false; picFullRed = false;
-  nativeWrites = 0; genCounter = 0; initLogged = false; fnDestroy = 0; fnTryWait = 0; fnHolder = 0;
+  nativeWrites = 0; drainAt = 0; genCounter = 0; initLogged = false; fnDestroy = 0; fnTryWait = 0; fnHolder = 0;
 }
 function sdkFns(): void {   // looked up until found
   if (!fnDestroy) fnDestroy = guestSym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
@@ -345,16 +349,28 @@ function drain(id: u32, took: bool, before: u32): void {
         const at = poolPicAt(b.pool, b.pidx);
         picFree(load<u32>(at)); store<u32>(at, pid);
       } else picFree(pid);
+      if (drainAt == 0) d.sFillRel++; else d.sFillDone++;
       if (!d.pictures++) { ls(); ps("[codec] "); name(id); ps(" decoder "); pu(id); ps(": first picture "); pu(b.w); ps("x"); pu(b.h); ps(" into buffer "); pu(i); if (d.black) ps(" (video black: no decoder)"); le(); }
     } else { b.w = 0; b.h = 0; b.ts = 0; b.eos = 1; d.eosPending = 0; }
     if (b.eos) { ls(); ps("[codec] "); name(id); ps(" decoder "); pu(id); ps(": end of stream after "); pu(d.pictures); ps(" pictures"); le(); }
     b.filled = 1; b.filledGen = b.gen;
     sptFire(id, i);
   }
+  if (d.sFillRel + d.sFillDone >= CV_PACE) pace(id);
   if (d.event) {
     const n = load_(id);
     if (n >= CV_READY) seClear(<usize>d.event); else if (took || before >= CV_READY) seSignal(<usize>d.event);
   }
+}
+// Who paces the movie, every CV_PACE pictures. A buffer filled at its release had a picture waiting for it: the game
+// took its pictures later than the decoder made them (the game sets the pace, or cannot keep up). One filled when
+// its picture arrived was released first: the game waited for the decoder
+function pace(id: u32): void {
+  const d = dec(id);
+  ls(); ps("[codec] "); name(id); ps(" decoder "); pu(id); ps(" pacing over "); pu(d.sFillRel + d.sFillDone); ps(" pictures: "); pu(d.sSub); ps(" packets taken, "); pu(d.sBusy);
+  ps(" refused busy, "); pu(d.sRel); ps(" buffers released; "); pu(d.sFillRel); ps(" pictures were waiting for their buffer, "); pu(d.sFillDone);
+  ps(" buffers for their picture; at most "); pu(d.sPeakHeld); ps(" pictures waiting, "); pu(d.sPeakInfl); ps(" packets decoding"); le();
+  d.sSub = 0; d.sBusy = 0; d.sRel = 0; d.sFillRel = 0; d.sFillDone = 0; d.sPeakHeld = 0; d.sPeakInfl = 0;
 }
 function hold(id: u32, pid: u32, ts: i64, eos: bool): bool {
   const d = dec(id);
@@ -363,6 +379,7 @@ function hold(id: u32, pid: u32, ts: i64, eos: bool): bool {
     picFree(pid); return false;
   }
   const h = held(id, d.nheld); h.pic = pid; h.ts = ts; h.eos = eos ? 1 : 0; d.nheld++;
+  if (d.nheld > d.sPeakHeld) d.sPeakHeld = d.nheld;
   return true;
 }
 function inflDrop(id: u32, seq: u64): i32 {   // removes seq's in-flight entry; its index, -1 when it was not in flight
@@ -387,7 +404,7 @@ export function cvComplete(id: u32, gen: u32, seq: u64, pid: u32, cs: u32, full:
   let got = false;
   if (pid) { pic(pid).cs = cs; pic(pid).full = full; got = hold(id, pid, ts, eos); }
   if (eos && !got) d.eosPending = 1;
-  drain(id, false, before);
+  drainAt = 1; drain(id, false, before);
   return got ? 1 : 0;
 }
 function blackPicture(id: u32, ts: i64, eos: bool): bool {
@@ -426,6 +443,7 @@ function decFin(t: usize): u64 {
   const d = dec(id);
   if (d.backend) cvClose(id);
   for (let k: u32 = 0; k < d.nheld; k++) picFree(held(id, k).pic);
+  if (d.sFillRel + d.sFillDone) pace(id);
   ls(); ps("[codec] "); name(id); ps(" decoder "); pu(id); ps(" finalized: "); pu(d.submits); ps(" packets, "); pu(d.pictures); ps(" pictures"); if (d.black) { ps(", "); pu(d.black); ps(" of them video black"); } le();
   d.nheld = 0; d.ninfl = 0; d.used = 0; d.gen = ++genCounter;
   sdkFns();
@@ -485,13 +503,16 @@ function decSubmit(out: usize, t: usize, data: usize, size: u64, ts: i64, eos: b
   if (load_(id) >= CV_HOLD) {
     if (d.busyLogs++ < 4) { ls(); ps("nn::codec "); name(id); ps(": busy (result 3603), a packet refused with "); pu(d.nheld); ps(" pictures waiting for a released buffer and "); pu(d.ninfl); ps(" packets decoding"); le(); }
     if (d.event) seClear(<usize>d.event);
+    d.sBusy++;
     return R(BUSY);
   }
   const seq = ++d.submits, gen = d.gen;
+  d.sSub++;
   if (size && data) {
     let r: i32 = 0;
     if (d.backend) {
       const f = infl(id, d.ninfl); f.seq = seq; f.ts = ts; d.ninfl++;
+      if (d.ninfl > d.sPeakInfl) d.sPeakInfl = d.ninfl;
       if (eos) d.eosAt = seq;
       r = cvDecode(id, gen, seq, data, <usize>size, eos ? 1 : 0);
       if (d.gen != gen) r = 2;            // reset from inside the decoder's call
@@ -508,7 +529,7 @@ function decSubmit(out: usize, t: usize, data: usize, size: u64, ts: i64, eos: b
     if (d.backend) cvDecode(id, gen, seq, 0, 0, 1);
   }
   if (out) store<u64>(out, seq);
-  drain(id, true, 0);
+  drainAt = 2; drain(id, true, 0);
   return 0;
 }
 function decAcq(idx: usize, sync: usize, t: usize): u64 {
@@ -525,11 +546,11 @@ function decRel(t: usize, i: u32): u64 {
   const id = decOf(t);
   if (!id || i >= NBUF || !buf(id, i).reg) { ls(); ps("[RED] nn::codec::Release…DecoderOutputBuffer index "); pu(i); le(); return 0; }
   const d = dec(id), b = buf(id, i), before = load_(id);
-  b.gen++; b.filled = 0;
+  b.gen++; b.filled = 0; d.sRel++;
   if (d.pcount < NBUF) { store<u32>(pendAt(id, (d.phead + d.pcount) % NBUF), i); d.pcount++; }
   if (d.fcount < NFIFO) { store<u32>(fifoAt(id, (d.fhead + d.fcount) % NFIFO), i); d.fcount++; }
   else { ls(); ps("[RED] nn::codec: acquirable queue full at release "); pu(i); le(); }
-  drain(id, false, before);
+  drainAt = 0; drain(id, false, before);
   return 0;
 }
 function decProps(w: usize, h: usize, cw: usize, ch: usize, ts: usize, eos: usize, t: usize, i: u32): u64 {

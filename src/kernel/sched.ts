@@ -7,8 +7,8 @@
 import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { KThread, thr, MAX_THREADS, NCORES, runCoreOf, WK_LOCK } from "./thread";
 
-const CUR: usize = memory.data(16);      // per core: the index of its current thread, -1 none
-const RESCHED: usize = memory.data(4);   // per core: its ready set or a priority changed since it last chose
+const CUR: usize = memory.data(NCORES * 4);   // per core: the index of its current thread, -1 none
+const RESCHED: usize = memory.data(NCORES);   // per core: its ready set or a priority changed since it last chose
 let seq: u64 = 0;
 let cursor: i32 = 0;
 let effDirty: bool = true;

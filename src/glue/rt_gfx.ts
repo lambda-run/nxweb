@@ -70,6 +70,7 @@ export class RtGfx implements HleGfx {
       memory: rt.memory, ...rt.memImports,
       log: (p: number, n: number) => rt.log(dec.decode(rt.u8().slice(p, p + n))),
       abort: () => { throw new Error("abort in the gfx module"); },
+      gfx_arena_more: (n: number) => { const a = Number(rt.hostAlloc(n >>> 0)); rt.log(a ? `gfx: a table of ${((n >>> 0) / 1048576).toFixed(1)} MB at 0x${a.toString(16)} (host-allocated)` : `[RED] gfx: no host memory for a table of ${n >>> 0} bytes`); return a; },
       gfx_exec: (p: number, n: number) => {
         if (this.live) { const t0 = performance.now(); this.host.exec(p, n >>> 0); this.times.execMs += performance.now() - t0; }
         else { this.host.account(p, n >>> 0); if (!this.opts.holdFences?.()) this.releaseFences(); }   // null replayer: the "GPU" is done at once

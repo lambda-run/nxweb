@@ -167,7 +167,7 @@ export class GfxHost {
   ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0,
-    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0 };
+    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
   caps = 0;
   // Hooks for the embedder (the kernel's waits): a fence completed (everything submitted before it is done on the GPU
@@ -749,7 +749,7 @@ export class GfxHost {
 
   // ---- encoder and passes ----
   private encoder(): GPU { return (this.enc ??= this.device.createCommandEncoder()); }
-  private endPass() { if (this.pass) { this.pass.end(); this.pass = null; this.computePass = false; } this.drawSet = null; }
+  private endPass() { if (this.pass) { this.pass.end(); this.pass = null; this.computePass = false; } this.drawSet = null; this.passDesc = null; }
   private flush() {
     this.endPass();
     if (this.uniformArena) this.uaWrite();
@@ -917,7 +917,7 @@ export class GfxHost {
     }
     this.endPass();
     this.stamp(desc);
-    this.pass = this.encoder().beginRenderPass(desc);
+    this.pass = this.encoder().beginRenderPass(desc); this.passDesc = desc; this.passState = {};
     this.passInfo = { colorFmt, depthFmt, samples, w: dv.getUint32(p + 24, true), h: dv.getUint32(p + 28, true), targets };
     this.cur = null; this.bindDirty = true; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
     this.stats.passes++;
@@ -1153,8 +1153,9 @@ export class GfxHost {
     // game's compute stage may read one range and write another of memory that lives in one GPU buffer here: what it only reads is bound as a copy
     // made just before (in a compute pass the pass is closed for the copy and opened again)
     if (wbufs.size && robind.some(i => wbufs.has(e0[i].resource.buffer))) {
-      if (!this.computePass) this.red("ssboalias", "a draw reads and writes storage in one GPU buffer: WebGPU refuses it, and no copy is made inside a render pass");
+      if (!this.computePass && !this.passDesc) this.red("ssboalias", "a draw reads and writes storage in one GPU buffer: WebGPU refuses it, and this render pass cannot be opened again for a copy");
       else {
+        const render = !this.computePass;
         this.pass.end();
         for (const i of robind) {
           const res = e0[i].resource;
@@ -1164,7 +1165,7 @@ export class GfxHost {
           this.inUse.push(copy); this.stats.ssboCopies++;
           e0[i] = { binding: e0[i].binding, resource: { buffer: copy, offset: 0, size: res.size } };
         }
-        this.pass = this.encoder().beginComputePass(); this.computePass = true;
+        if (render) this.reopenRenderPass(); else { this.pass = this.encoder().beginComputePass(); this.computePass = true; }
         this.pass.setPipeline(c.gpu);
       }
     }
@@ -1373,6 +1374,21 @@ ${planes ? `  // NV12 to RGB as BT.709 limited range (the stand-in's assumption;
   }
   // The draw parameters of a pipeline whose vertex shader reads them (src/shaders/spv.ts drawParameters): base vertex (the first vertex of a non-indexed draw,
   // as Vulkan's BaseVertex), base instance, draw index (a multi-draw's record number), in 16 bytes of the uniform arena at a dynamic offset of group 2. Unchanged from the last draw: nothing
+  // A render pass closed in the middle (for a copy no pass may hold) is opened again on the same attachments, loading what was drawn, with the
+  // state the stream had set on it; the buffers of the next draw are set again (drawSet)
+  private passDesc: any = null;
+  private passState: { vp?: number[]; sc?: number[]; bc?: number[]; sr?: number } = {};
+  private reopenRenderPass() {
+    const d = this.passDesc, desc: any = { colorAttachments: d.colorAttachments.map((a: any) => a && { view: a.view, ...(a.depthSlice !== undefined ? { depthSlice: a.depthSlice } : {}), ...(a.resolveTarget ? { resolveTarget: a.resolveTarget } : {}), loadOp: "load", storeOp: a.storeOp }) };
+    if (d.depthStencilAttachment) { const a = { ...d.depthStencilAttachment }; if (a.depthLoadOp) { a.depthLoadOp = "load"; delete a.depthClearValue; } if (a.stencilLoadOp) { a.stencilLoadOp = "load"; delete a.stencilClearValue; } desc.depthStencilAttachment = a; }
+    if (d.occlusionQuerySet) desc.occlusionQuerySet = d.occlusionQuerySet;
+    this.pass = this.encoder().beginRenderPass(desc); this.computePass = false; this.drawSet = null; this.stats.passReopens++;
+    const s = this.passState;
+    if (s.vp) this.pass.setViewport(...(s.vp as [number, number, number, number, number, number]));
+    if (s.sc) this.pass.setScissorRect(...(s.sc as [number, number, number, number]));
+    if (s.bc) this.pass.setBlendConstant(s.bc);
+    if (s.sr !== undefined) this.pass.setStencilReference(s.sr);
+  }
   private drawSet: { pipe: Pipe; bv: number; bi: number; di: number } | null = null;
   private setDrawParams(bv: number, bi: number, di: number) {
     const c = this.cur!, d = this.drawSet;
@@ -1807,8 +1823,8 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.MESH_DRAW: this.meshDraw(); break;
         case H.BUF_READBACK: this.bufReadback(this.u64(dv, p + 8), dv.getUint32(p + 16, true)); break;
         case H.UBO_DATA: this.ubo.set(uboKey(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true)), { addr: 0, size: 0, need: 0, data: this.u8.slice(p + 24, p + 24 + dv.getUint32(p + 16, true)) }); this.bindDirty = true; break;
-        case H.VIEWPORT: this.pass.setViewport(dv.getFloat32(p + 8, true), dv.getFloat32(p + 12, true), dv.getFloat32(p + 16, true), dv.getFloat32(p + 20, true), dv.getFloat32(p + 24, true), Math.max(dv.getFloat32(p + 24, true), dv.getFloat32(p + 28, true))); break;
-        case H.SCISSOR: this.pass.setScissorRect(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true)); break;
+        case H.VIEWPORT: this.passState.vp = [dv.getFloat32(p + 8, true), dv.getFloat32(p + 12, true), dv.getFloat32(p + 16, true), dv.getFloat32(p + 20, true), dv.getFloat32(p + 24, true), Math.max(dv.getFloat32(p + 24, true), dv.getFloat32(p + 28, true))]; this.pass.setViewport(...(this.passState.vp as [number, number, number, number, number, number])); break;
+        case H.SCISSOR: this.passState.sc = [dv.getUint32(p + 8, true), dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true)]; this.pass.setScissorRect(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true)); break;
         case H.PIPELINE_CREATE: this.createPipeline(dv.getUint32(p + 8, true), dv.getUint32(p + 12, true)); break;
         case H.PIPELINE: if (this.pass && !this.computePass) this.usePipeline(dv.getUint32(p + 8, true)); break;
         case H.VBUF: { const b = this.upload(this.u64(dv, p + 16), dv.getUint32(p + 12, true), 0); if (b) this.pass.setVertexBuffer(dv.getUint32(p + 8, true), b, this.upOff); break; }
@@ -1818,8 +1834,8 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
           this.tex.set(dv.getUint32(p + 8, true) * 64 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), snap: (flags & 1) !== 0, view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null, samp: dv.getUint32(p + 28, true) });
           this.bindDirty = true; break;
         }
-        case H.BLEND_COLOR: this.pass.setBlendConstant([0, 1, 2, 3].map(i => dv.getFloat32(p + 8 + i * 4, true))); break;
-        case H.STENCIL_REF: this.pass.setStencilReference(dv.getUint32(p + 8, true)); break;
+        case H.BLEND_COLOR: this.passState.bc = [0, 1, 2, 3].map(i => dv.getFloat32(p + 8 + i * 4, true)); this.pass.setBlendConstant([0, 1, 2, 3].map(i => dv.getFloat32(p + 8 + i * 4, true))); break;
+        case H.STENCIL_REF: this.passState.sr = dv.getUint32(p + 8, true); this.pass.setStencilReference(dv.getUint32(p + 8, true)); break;
         case H.DRAW: case H.DRAW_IDX: {
           if (!this.cur || this.computePass) { this.ledger.dropped("pipeline not built on the host"); break; }
           if (this.bindDirty && !this.bind()) { this.ledger.dropped("bindings not made on the host"); break; }
