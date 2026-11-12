@@ -16,10 +16,10 @@
 
 namespace {
 struct Unit { uint8_t *bytes; uint32_t len, table_base, nfuncs; };
-constexpr uint32_t kMaxUnits = 1u << 16;
+constexpr uint32_t kMaxUnits = 1u << 18;   // (65536 until 2026-11-12; the game had 11,078 units when its first area loaded)
 std::array<Unit, kMaxUnits> g_units;
 std::atomic<uint32_t> g_nunits{0};
-std::atomic<uint32_t> g_table_cap{1u << 18};   // slots of every thread's table
+std::atomic<uint32_t> g_table_cap{1u << 26};   // the highest table index a unit may have: a bound against a runaway, not a size (every thread's table grows to what it calls: kernel/nx_guest.js). It was 2^18, which the game passed with 11,078 units as its first area loaded
 struct { uint8_t *p; uint32_t len; } g_wmod[2];
 std::atomic<uint64_t> g_translate_ns{0}, g_translate_calls{0}, g_unit_bytes{0};
 

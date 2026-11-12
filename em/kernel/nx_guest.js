@@ -31,7 +31,7 @@ addToLibrary({
     if (mod) t.shared++; else mod = new WebAssembly.Module(HEAPU8.slice(p, p + len));
     t.compileMs += performance.now() - t0;
     const end = base + _nx_unit_nfuncs(k);
-    if (end > t.table.length) t.table.grow(Math.max(end - t.table.length, 1 << 18), t.tramp);
+    if (end > t.table.length) t.table.grow(Math.ceil((end - t.table.length + 8192) / 4096) * 4096, t.tramp);   // (to what is needed and a little: a slot costs every thread 32 bytes. It grew by 2^18 slots at a time, 8 MB)
     new WebAssembly.Instance(mod, { cpu: t.core, hlp: t.hlp, env: Object.assign({ table_base: new WebAssembly.Global({ value: 'i32', mutable: false }, base) }, t.unitEnv) });
     t.have[k] = 1; t.n++;
     _nx_core_in();
