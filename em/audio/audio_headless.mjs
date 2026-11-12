@@ -2,6 +2,7 @@
 // /ctl/headless/cdp.mjs's flags, which include --autoplay-policy=no-user-gesture-required), watching the audio output:
 // one line of nxemAudio.status() every 10 s to stdout, and at the end what the worklet itself put out during the last
 // REC seconds (AudioDeviceMain.record / dump) as logs/<name>.wav with its peak and the share of frames that are not silence.
+// A game-scale job: start it as  /ctl/heavy.sh audio node audio/audio_headless.mjs 290  (one at a time in the VM).
 // The page's console goes to logs/<name>.console.txt. Environment: GAME, PROFILE, URL, LIMIT_MB, REC (5), QUERY (extra query, e.g. audiotone=440:
 // the sink's test tone, whose breaks in the worklet's output are then counted).
 import { launch, evaluate } from "/ctl/headless/cdp.mjs";

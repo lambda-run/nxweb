@@ -66,11 +66,32 @@ static int alive(sink_t *s, uint64_t now) {
 }
 static void *test_consumer(void *arg);
 
+// Who answers the nn::audio and nn::codec names the game's modules refer to (once, when the first output opens): the
+// HLE files in the build, nxweb's modules on the owner thread, or nobody: a name of an nxnative file that is not built
+// (hle_audio.c: AudioOut, AudioIn, OutputStream) is bound to a stub that answers 0, and kernel/nx_proc.c logs its first call in red
+int dm_game_imports(const char *prefix); unsigned nx_hle_name_count(void); double nx_hle_name_at(unsigned i); int nx_hle_have(double name); int nx_owner_lookup(double name);
+static void audit(void) {
+    int refs = 0, built = 0, owner = 0, none = 0; char list[1500]; size_t ln = 0; list[0] = 0;
+    for (unsigned i = 0, n = nx_hle_name_count(); i < n; i++) {
+        const char *nm = (const char *)(uintptr_t)nx_hle_name_at(i);
+        if (!strstr(nm, "2nn5audio") && !strstr(nm, "2nn5codec")) continue;
+        if (strstr(nm, "2nn5codec") && (strstr(nm, "Video") || strstr(nm, "Av1") || strstr(nm, "Vp9") || strstr(nm, "H264"))) continue;   // the movie pictures: kernel/nx_video.c's side
+        if (!dm_game_imports(nm)) continue;
+        refs++;
+        if (nx_owner_lookup((double)(uintptr_t)nm) > 0) owner++;
+        else if (nx_hle_have((double)(uintptr_t)nm)) built++;
+        else { none++; if (ln + strlen(nm) + 2 < sizeof list) ln += (size_t)snprintf(list + ln, sizeof list - ln, " %s", nm); }
+    }
+    LOG("%saudio: the game's modules refer to %d nn::audio / nn::codec (sound) names: %d answered by the HLE files in the build, %d by nxweb's modules, %d by nobody (they answer 0)%s%s",
+        none ? "[RED] " : "", refs, built, owner, none, none ? ":" : "", list);
+}
+
 void *dm_pcmout_open(int ch) {
     sink_t *s = calloc(1, sizeof *s); s->ch = ch;
     int free_ = 0; s->ring = atomic_compare_exchange_strong(&g_owner, &free_, 1);
     if (atomic_load(&g_log) < 0) atomic_store(&g_log, getenv("NX_AUDIO_LOG") ? atoi(getenv("NX_AUDIO_LOG")) : 0);
     if (atomic_load(&g_tone) < 0) atomic_store(&g_tone, getenv("NX_AUDIO_TONE") ? atoi(getenv("NX_AUDIO_TONE")) : 0);
+    static _Atomic int audited; if (!atomic_exchange(&audited, 1)) audit();
     if (s->ring) {
         atomic_store(&g_ring.h[H_CAP], CAP); target();
         LOG("audio: output %d channels into the shared ring at %p (%d frames, target %d ms): the page's AudioWorklet reads it in place", ch, (void *)&g_ring, CAP, atomic_load(&g_target_ms));
