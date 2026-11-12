@@ -32,8 +32,12 @@ not host stubs, `HostCpu.block` / `jump`.
 How far the game gets (`test/p4_boot.c`, node, `sh run_p4.sh 900`): SDK start, `nnMain`, RomFS mounted and read (real
 data), `nvnBootstrapLoader`, device and window created, the audio renderer opened and rendering, 70+ guest threads
 (resource loaders, decompression, scene, graphics module) running in parallel under the C kernel: about 290,000 NVN
-calls, 10,000 nn::fs calls and 6 command submissions in the first minutes. **No present yet** in the time the runs
-were given on the shared VM; see REPORT / the coordinator's log for the current state.
+calls, 10,000 nn::fs calls and 6 command submissions in the first minutes. **First present** (`nvnQueuePresentTexture` reaching the
+host stream, null replayer) 375 s after the recorder started on the loaded VM, then about one present per 30 s.
+
+To do when the harness becomes a page (owner's request): the page says which runtime it is, beside the build stamp
+and on the FPS overlay, as the AssemblyScript build does (`web/main.ts` RT_KIND / rtLabel in the main checkout):
+`rt C/C++ (nxnative) → Emscripten · WebGPU · N real threads`, N the live guest thread count.
 
 ## The idea in one paragraph
 
