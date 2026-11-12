@@ -19,7 +19,8 @@
 <div id="log"></div>
 <script>
 // The Emscripten runtime's page: nxnative's C under real threads, nxweb's translator, file system, recorder and
-// WebGPU replayer. ?secs=N: how long the harness runs before it prints its report (default: a day).
+// WebGPU replayer. ?ndve=off: without nxweb's stand-in for the movie upscaler (on by default: ?ndve=bypass is accepted too).
+// ?secs=N: how long the harness runs before it prints its report (default: a day).
 // ?auto=1: start at once with the game the nxweb page was last given (its stored file handle), when the browser still
 // grants reading it without a click ("allow on every visit").
 var RT_KIND = "C/C++ (nxnative) → Emscripten";
@@ -72,7 +73,7 @@ function start(file) {
     print: say, printErr: say,
     onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; },
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
-    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], stage: function (t) { $("stage").textContent = t; window.nxem.state = t; } },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", stage: function (t) { $("stage").textContent = t; window.nxem.state = t; } },
   };
   var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s);
   var last = 0, lastT = performance.now();

@@ -25,6 +25,10 @@ vpx_image_t *vpx_img_alloc(vpx_image_t *img, vpx_img_fmt_t fmt, unsigned int d_w
 }
 void vpx_img_free(vpx_image_t *img) { if (!img) return; if (img->img_data_owner) free(img->img_data); if (img->self_allocd) free(img); }
 
+// Host code wrote [p, p + n) of guest memory: nxweb's recorder (owner thread) marks what lies over it for upload
+void nx_owner_do(int code, uint64_t *regs);   // kernel/nx_proc.c
+void nx_guest_wrote(const void *p, size_t n) { _Alignas(16) uint64_t blk[0x80]; blk[0] = (uint64_t)(uintptr_t)p; blk[1] = n; nx_owner_do(4 << 24, blk); }
+
 // ---- I420 -> NV12 / RGBA (the semantics of hle_movie.c md_nv12 / md_rgba, without NEON)
 void md_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
     int cw = (int)im->d_w < w ? (int)im->d_w : w, ch = (int)im->d_h < h ? (int)im->d_h : h;
@@ -36,6 +40,7 @@ void md_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
         uint8_t *o = dst + (size_t)w * h + (size_t)y * w;
         for (int x = 0; x < cw2 && 2 * x + 1 < w; x++) { o[2 * x] = u[x]; o[2 * x + 1] = v[x]; }
     }
+    nx_guest_wrote(dst, (size_t)w * h * 3 / 2);
 }
 static inline uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
 void md_rgba(const vpx_image_t *im, uint8_t *dst, int w, int h) {
@@ -53,12 +58,12 @@ void md_rgba(const vpx_image_t *im, uint8_t *dst, int w, int h) {
             o[4 * x] = clamp8((yy + RV * v) >> 16); o[4 * x + 1] = clamp8((yy - GU * u - GV * v) >> 16); o[4 * x + 2] = clamp8((yy + BU * u) >> 16); o[4 * x + 3] = 255;
         }
     }
+    nx_guest_wrote(dst, (size_t)w * h * 4);
 }
 
 // ---- the AV1 decoder on the owner thread. A request block as a host call's (x0.. at its start, the completion cell at +0x3F0):
 // x0 op (1 open, 2 decode, 3 reset, 4 close), x1 decoder, x2 packet, x3 length, x4 picture buffer, x5 its size, x6 packet number;
 // back: x0 = 1 a picture (x1 w, x2 h, x3 matrix, x4 full range; NV12 in the buffer, rows of w), 0 none
-void nx_owner_do(int code, uint64_t *regs);   // kernel/nx_proc.c
 enum { OWNER_VIDEO = 3 << 24, PIC_MAX = 4096 * 2304 * 3 / 2 };
 struct mav1 { int id; uint8_t *buf; uint64_t seq; };
 static _Atomic int g_av1_ids;

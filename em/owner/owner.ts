@@ -281,6 +281,7 @@ export class Owner {
     try {
       if (code >>> 24 === KIND_HOST) { const h0 = performance.now(); try { return this.hostCall(code & 0xFFFFFF, ctx); } finally { this.hostNs += (performance.now() - h0) * 1e6; } }
       if (code >>> 24 === KIND_VIDEO) return this.videoCall(ctx);
+      if (code >>> 24 === 4) { const dv = new DataView(this.memory.buffer); (this.gfx as any)?.x.gfx_note_flush?.(dv.getBigUint64(ctx, true), dv.getBigUint64(ctx + 8, true)); return DONE; }   // host code wrote guest memory
       if (code >>> 24 !== KIND_FS) throw new Error("owner: no module of kind " + (code >>> 24));
       this.stats.fsCalls++;
       const id = code & 0xFFFFFF, dv = new DataView(this.memory.buffer), shown = this.shown.get(id) ?? 0, name = shown < 6 ? this.fsNames.get(id) ?? "" : "";

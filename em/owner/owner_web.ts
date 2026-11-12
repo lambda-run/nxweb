@@ -19,6 +19,7 @@ export interface PageSide {
   stage: (text: string) => void;
   modulesList: string[];                                 // the code modules to load, in order
   nativeImage: OwnerConfig["nativeImage"];
+  ndve: boolean;                                         // nxweb's stand-in for nn::ndve's movie upscaler (GfxHost.ndveBypass): its dispatches cannot run on WebGPU yet
 }
 
 export async function start(memory: WebAssembly.Memory, malloc: (n: number) => number, log: (line: string) => void, modules: OwnerConfig["modules"], p: PageSide): Promise<Owner> {
@@ -43,10 +44,11 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   };
   try { device = await requestDevice(); } catch (e) { gpuInfo = `no WebGPU device (${(e as Error).message}): the null replayer`; }
   log("page: " + gpuInfo);
+  if (device) log(p.ndve ? "page: ndve=bypass: nxweb's bilinear stand-in shows the movie pictures in place of nn::ndve's upscaler (the default here; ?ndve=off for the game's own dispatches)" : "page: ndve=off: the game's own nn::ndve dispatches (the movie stays black where WebGPU cannot run them)");
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
     tree, prep, fsModule, gfxModule, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
-    gfx: device ? { device, canvas: p.canvas, nextFrame: () => new Promise(res => requestAnimationFrame(res)), requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
+    gfx: device ? { ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame: () => new Promise(res => requestAnimationFrame(res)), requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");
   const { owner, exefs } = await startOwner(memory, c);

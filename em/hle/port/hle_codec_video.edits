@@ -1,0 +1,11 @@
+# hle_codec_video.c after tools/port_gcalls.py: where the decoder writes pictures into guest memory the recorder has to
+# hear of it (nxweb: hle_cv_wrote -> gfx_note_flush), so that a texture over that memory is uploaded again. The
+# conversions themselves (kernel/nx_video.c md_nv12 / md_rgba) report their destination; these are the copies beside them.
+[
+ ("    if (!im) { memset(ydst, 16, ysize); memset(uvdst, 128, uvsize); return 0; }\n    if ((uint8_t *)uvdst == (uint8_t *)ydst + (size_t)w * h)",
+  "    if (!im) { memset(ydst, 16, ysize); memset(uvdst, 128, uvsize); nx_guest_wrote(ydst, ysize); nx_guest_wrote(uvdst, uvsize); return 0; }\n    if ((uint8_t *)uvdst == (uint8_t *)ydst + (size_t)w * h)"),
+ ("    memcpy(ydst, tmp, (size_t)w * h); memcpy(uvdst, tmp + (size_t)w * h, (size_t)w * h / 2); free(tmp);",
+  "    memcpy(ydst, tmp, (size_t)w * h); memcpy(uvdst, tmp + (size_t)w * h, (size_t)w * h / 2); free(tmp);\n    nx_guest_wrote(ydst, (size_t)w * h); nx_guest_wrote(uvdst, (size_t)w * h / 2);"),
+ ("    for (uint32_t y = 0; y < p->h; y++) memcpy(dst + (size_t)y * stride, tmp + (size_t)y * p->w * 4, (size_t)p->w * 4);",
+  "    for (uint32_t y = 0; y < p->h; y++) memcpy(dst + (size_t)y * stride, tmp + (size_t)y * p->w * 4, (size_t)p->w * 4);\n    nx_guest_wrote(dst, (size_t)stride * p->h);"),
+]
