@@ -77,6 +77,21 @@ addToLibrary({
     }
     run().then(() => { if (cell) { err('[owner] compiled modules: ' + S.mods.length + ' units, ' + (S.bytes / 1048576).toFixed(1) + ' MB, compiled once on the main thread in ' + S.ms.toFixed(0) + ' ms and posted to ' + workers().length + ' workers'); Atomics.store(HEAP32, cell / 4, 1); Atomics.notify(HEAP32, cell / 4); } });
   },
+  // The page: a cache file the translator wrote into the in-memory /cache goes into the Cache API (as nxweb keeps its
+  // translation cache) and leaves the memory; older entries of the same module go. Node: the file is the cache.
+  nx_js_cache_store__proxy: 'sync',
+  nx_js_cache_store__sig: 'vd',
+  nx_js_cache_store__deps: ['$UTF8ToString', '$FS'],
+  nx_js_cache_store: function(path) {
+    if (typeof caches === 'undefined' || typeof window === 'undefined') return;
+    const p = UTF8ToString(path), name = p.split('/').pop(); let b;
+    try { b = FS.readFile(p); FS.unlink(p); } catch (e) { err('[RED] translation cache: ' + name + ': ' + e.message); return; }
+    caches.open('nxem-a64').then(async (c) => {
+      for (const k of await c.keys()) { const n = decodeURIComponent(new URL(k.url).pathname.split('/').pop()); if (n.split('-')[0] === name.split('-')[0] && n !== name) await c.delete(k); }
+      await c.put('/em-a64-cache/' + encodeURIComponent(name), new Response(b, { headers: { 'Content-Type': 'application/octet-stream' } }));
+      err('[owner] translation cache: ' + name + ' stored in the browser (' + (b.length / 1048576).toFixed(1) + ' MB)');
+    }).catch((e) => err('[RED] translation cache: not stored: ' + (e && e.message || e)));
+  },
   // why the harness stopped, to the page (its status line and live status); runs on the main thread
   nx_js_stopped__proxy: 'sync',
   nx_js_stopped__sig: 'vd',

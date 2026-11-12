@@ -166,7 +166,7 @@ addToLibrary({
     put(0, host.coreBytes);
     put(1, HEAPU8.slice(hlp, hlp + hlpLen));
   },
-  nx_js_tr_job__deps: ['$NX', '$nxPublish', 'malloc', '$UTF8ToString'],
+  nx_js_tr_job__deps: ['$NX', '$nxPublish', 'malloc', 'free', 'nx_file_write', 'nx_js_cache_store', '$UTF8ToString'],
   nx_js_tr_job__sig: 'did',
   nx_js_tr_job: function(kind, pc) {
     const h = NX.host;
@@ -179,13 +179,18 @@ addToLibrary({
       const a = m ? NX.ld.lookupIn(m.handle, UTF8ToString(Number(HEAPU64[q]))) : undefined;
       return a === undefined || NX.ld.stubId(a) >= 0 ? 0 : a;
     }
-    if (kind === 4) {   // write the translation cache (when something was translated since it was read): the units of each module
-      if (!NX.cacheDir || !NX.mods || h.translatedInsns === NX.cacheInsns) return 0;
-      const fs = require('fs'); let bytes = 0;
-      try { fs.mkdirSync(NX.cacheDir, { recursive: true });
-        for (const m of NX.mods) { const blob = h.exportCache(m.base, m.imageSize); if (blob.length <= 16) continue; fs.writeFileSync(NX.cacheDir + '/' + NX.cacheKey(m) + '.tmp', blob); fs.renameSync(NX.cacheDir + '/' + NX.cacheKey(m) + '.tmp', NX.cacheDir + '/' + NX.cacheKey(m)); bytes += blob.length; }
-      } catch (e) { err('[RED] translation cache: not written: ' + (e && e.message || e)); return 0; }
-      NX.cacheInsns = h.translatedInsns;
+    if (kind === 4) {   // write the translation cache (when something was translated since it was read or written): the units of each module
+      if (!NX.cacheDir || !NX.mods || h.cacheHits + h.translatedInsns === NX.cacheMark) return 0;
+      let bytes = 0;
+      for (const m of NX.mods) {
+        const blob = h.exportCache(m.base, m.imageSize); if (blob.length <= 16) continue;
+        const p = _malloc(blob.length); if (!p) { err('[RED] translation cache: no memory for a blob of ' + blob.length + ' bytes'); break; }
+        HEAPU8.set(blob, p);
+        const path = NX.cstr(NX.cacheDir + '/' + NX.cacheKey(m));
+        if (_nx_file_write(path, p, blob.length)) { bytes += blob.length; _nx_js_cache_store(path); } else err('[RED] translation cache: ' + NX.cacheKey(m) + ' was not written');
+        _free(path); _free(p);
+      }
+      NX.cacheMark = h.cacheHits + h.translatedInsns;
       err('[loader] translation cache: ' + (bytes / 1048576).toFixed(1) + ' MB written to ' + NX.cacheDir);
       return bytes;
     }
@@ -297,7 +302,7 @@ addToLibrary({
   // out: [38] index of nnosInitialize in the start list, [39] nnMain, [40] start list length, [41..] the pcs to call in
   // order (nxweb rt_runtime.ts sdkStart = nxnative main.c: _init_libc0, nnosInitialize, _init_libc1,
   // nninitInitializeSdkModule, nninitStartup, _init_libc2, each module's DT_INIT).
-  $nxLoadGame__deps: ['$NX', '$nxPublish', 'nx_module_add', 'nx_stub_set', 'nx_stub_base_set', 'nx_hle_name_count', 'nx_hle_name_at', 'nx_hle_name_flags', 'malloc', 'free', '$UTF8ToString', '$stringToUTF8', '$lengthBytesUTF8'],
+  $nxLoadGame__deps: ['$NX', '$nxPublish', 'nx_cache_dir', 'nx_file_read', 'nx_module_add', 'nx_stub_set', 'nx_stub_base_set', 'nx_hle_name_count', 'nx_hle_name_at', 'nx_hle_name_flags', 'malloc', 'free', '$UTF8ToString', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxLoadGame: function(host, B) {
     const A = nxLoadA64(), D = HEAPF64, pages = wasmMemory.buffer.byteLength / 65536;
     const cstr = (s) => { const n = lengthBytesUTF8(s) + 1, p = _malloc(n); stringToUTF8(s, p, n); return p; };
@@ -333,18 +338,28 @@ addToLibrary({
     NX.ld = ld; NX.mods = set.modules;
     // The translation cache (nxweb's: A64Host.exportCache / importCache blobs, one per module, keyed by the module's
     // build id, its base and the translator's options). Node: files in the directory NX_CACHE names.
-    NX.cacheDir = typeof process !== 'undefined' && process.env && process.env.NX_CACHE || '';
+    // Where: the directory NX_CACHE names (Node), or /cache in the page, which the owner fills from the Cache API before
+    // main() and empties into it again when something was written (kernel/nx_owner.js nx_js_cache_store).
+    NX.cacheDir = UTF8ToString(_nx_cache_dir());
     NX.cacheKey = (m) => { let h = 5381; for (const ch of host.optionsKey()) h = (h * 33 ^ ch.charCodeAt(0)) >>> 0;
       return m.name + '-' + Array.from(m.buildId.slice(0, 8), b => b.toString(16).padStart(2, '0')).join('') + '-' + m.base.toString(16) + '-' + h.toString(16) + '.a64cache'; };
+    NX.cstr = cstr;
     NX.cacheInsns = 0;
     if (NX.cacheDir) {
-      const fs = require('fs'); let units = 0, bytes = 0; const t0 = performance.now();
-      for (const m of set.modules) { let b = null; try { b = fs.readFileSync(NX.cacheDir + '/' + NX.cacheKey(m)); } catch (e) { continue; } units += host.importCache(new Uint8Array(b.buffer, b.byteOffset, b.length)); bytes += b.length; }
+      let units = 0, bytes = 0; const t0 = performance.now(), lenAt = _malloc(8);
+      for (const m of set.modules) {
+        const path = cstr(NX.cacheDir + '/' + NX.cacheKey(m)), p = _nx_file_read(path, lenAt), n = Number(HEAPU64[lenAt / 8]);
+        _free(path);
+        if (!p) continue;
+        units += host.importCache(HEAPU8.subarray(p, p + n)); bytes += n;   // (importCache copies what it keeps)
+        _free(p);
+      }
+      _free(lenAt);
+      NX.cacheInsns = host.translatedInsns;
       // every cached unit gets its table slots and goes into the registry now, so that the main thread can compile each
       // once and hand the compiled modules to the workers before guest threads start (a running thread cannot be sent one)
       if (units && host.cache) { for (const [pc, cu] of [...host.cache]) if (host.cache.get(pc) === cu) host.translateUnit([BigInt(pc)]); nxPublish(); }
       err('[loader] translation cache: ' + (units ? units + ' units, ' + (bytes / 1048576).toFixed(1) + ' MB from ' + NX.cacheDir + ' in ' + (performance.now() - t0).toFixed(0) + ' ms' : 'nothing in ' + NX.cacheDir + ' for these modules and options yet'));
     }
-    err('[loader] ' + set.modules.map(m => m.name + ' at 0x' + m.base.toString(16) + ' +0x' + m.imageSize.toString(16)).join(', ') + '; ' + nNames + ' host names registered, ' + hf.filter(f => f.refs).length + ' of ' + hf.length + ' stubs referred to, ' + set.unresolved.length + ' imports nothing answers');
   },
 });

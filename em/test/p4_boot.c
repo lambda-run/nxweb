@@ -32,6 +32,8 @@ static int g_secs;
 void nx_progress(void); void nx_rss_mb(int *rss, int *swap);
 static void *watchdog(void *arg) { (void)arg; for (int t = 0; t < g_secs; t += 10) {
         sleep(10); nx_progress();
+        // what was translated is kept: 30 s after the start, then every 2 minutes when there is something new
+        if (t == 20 || (t > 20 && t % 120 == 0)) nx_tr_job(4, 0);
         int rss, swp; nx_rss_mb(&rss, &swp);   // the VM is shared: stop before this process pushes the others into swap
         int lim = getenv("NX_RSS_LIMIT_MB") ? atoi(getenv("NX_RSS_LIMIT_MB")) : 5200;
         if (rss + swp > lim) { char w[96]; snprintf(w, sizeof w, "memory limit: %d MB resident + %d MB swapped is over %d MB", rss, swp, lim); nx_boot_report(w); emscripten_force_exit(5); }

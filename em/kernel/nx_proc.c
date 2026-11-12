@@ -96,6 +96,31 @@ EMSCRIPTEN_KEEPALIVE double nx_tls(void) { return (double)(uintptr_t)t_tls; }
 __attribute__((weak)) void guest_clock_read_wait(void);
 EMSCRIPTEN_KEEPALIVE double nx_cntpct(void) { if (guest_clock_read_wait) guest_clock_read_wait(); return (double)(guest_ns() / 625 * 12 + guest_ns() % 625 * 12 / 625); }
 
+// ---- files for the translation cache (kernel/nx_guest.js): Node's files, or the page's in-memory /cache
+#include <sys/stat.h>
+EMSCRIPTEN_KEEPALIVE double nx_cache_dir(void) {
+    const char *e = getenv("NX_CACHE"); struct stat st;
+    if (e) return (double)(uintptr_t)e;
+    return (double)(uintptr_t)(stat("/cache", &st) == 0 ? "/cache" : "");
+}
+EMSCRIPTEN_KEEPALIVE double nx_file_read(double path, double len_out) {   // the file's bytes (malloc), 0 when there is none
+    FILE *f = fopen((const char *)(uintptr_t)path, "rb"); if (!f) return 0;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *p = n > 0 ? malloc((size_t)n) : NULL;
+    if (p && fread(p, 1, (size_t)n, f) != (size_t)n) { free(p); p = NULL; }
+    fclose(f);
+    if (p && !getenv("NX_CACHE")) remove((const char *)(uintptr_t)path);   // the page's copy in memory: read once
+    *(uint64_t *)(uintptr_t)len_out = p ? (uint64_t)n : 0;
+    return (double)(uintptr_t)p;
+}
+EMSCRIPTEN_KEEPALIVE int nx_file_write(double path, double data, double len) {
+    char tmp[600]; snprintf(tmp, sizeof tmp, "%s.tmp", (const char *)(uintptr_t)path);
+    FILE *f = fopen(tmp, "wb"); if (!f) return 0;
+    int ok = fwrite((const void *)(uintptr_t)data, 1, (size_t)len, f) == (size_t)len;
+    ok = !fclose(f) && ok;
+    return ok && !rename(tmp, (const char *)(uintptr_t)path);
+}
+
 // ---- SVCs
 static _Atomic uint64_t g_svc_count[128];
 __attribute__((weak)) int nx_svc_other(int num, uint64_t *regs) {   // weak: proof 2 answers the test guests' SVCs itself
@@ -287,7 +312,7 @@ void nx_boot_report(const char *why) {
     nx_js_stopped((double)(uintptr_t)(g_stop_why[0] ? g_stop_why : why));
     smaps_report();
     nx_tr_job(5, 0); { double os[12] = {0}; os[11] = 1; nx_owner_stats((double)(uintptr_t)os); }   // where the JS side's memory is
-    if (getenv("NX_CACHE")) nx_tr_job(4, 0);   // keep what this run translated
+    nx_tr_job(4, 0);   // keep what this run translated
     char b[2000]; nx_svc_counts(b, sizeof b);
     struct nx_stats s; nx_get_stats(&s);
     LOG("==== boot report: %s, %.1f s after the start", why, (now_ns() - g_t0_ns) / 1e9);

@@ -16,6 +16,7 @@ export interface PageSide {
   canvas: HTMLCanvasElement;
   root: string;                                          // the nxweb page's folder (its wasm/, shader_worker.js, shaders/), e.g. "../"
   writeFile: (path: string, bytes: Uint8Array) => void;  // into the Emscripten file system, for main()
+  mkdir: (path: string) => void;
   stage: (text: string) => void;
   modulesList: string[];                                 // the code modules to load, in order
   nativeImage: OwnerConfig["nativeImage"];
@@ -31,6 +32,14 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   const shared = async (n: string) => WebAssembly.compile(sharedBuild(await bytes(`wasm/${n}64.wasm`), pages) as unknown as BufferSource);
   const [fsModule, gfxModule] = await Promise.all([shared("fs"), shared("gfx")]);
   for (const n of ["translator64.shared", "helpers64.shared", "loader64"]) p.writeFile(`/rt/${n}.wasm`, await bytes(`wasm/${n}.wasm`));
+  // the translation cache: its blobs out of the Cache API into /cache, where the translator thread reads them (kernel/nx_guest.js)
+  p.stage("translation cache");
+  p.mkdir("/cache");
+  try {
+    const c = await caches.open("nxem-a64"); let n = 0, total = 0;
+    for (const req of await c.keys()) { const r = await c.match(req); if (!r) continue; const b = new Uint8Array(await r.arrayBuffer()); p.writeFile("/cache/" + decodeURIComponent(new URL(req.url).pathname.split("/").pop()!), b); n++; total += b.length; }
+    log(n ? `page: translation cache: ${n} entries, ${(total / 1048576).toFixed(1)} MB from the browser's store` : "page: no translation cache yet: this run translates everything (it is stored about 30 s after the start, and again every 2 minutes)");
+  } catch (e) { log(`[RED] page: the translation cache could not be read (${(e as Error).message})`); }
   p.stage("game container");
   const tree = await NupTree.open(blobBytes(p.file, false), p.file.name, { sha256, log });
   p.stage("WebGPU device");
