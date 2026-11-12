@@ -214,21 +214,29 @@ export class Owner {
   // The code of a stub the loader did not make (handed out by the owner: an NVN entry point), 0 = not one
   lookupStub(id: number): number { const h = this.rt?.late.get(id); return h === undefined ? 0 : KIND_HOST << 24 | h; }
   stubName(id: number): string { return this.lateNames.get(id) ?? ""; }
+  // nxweb's HostCpu over a context block. One object serves every call that finishes at once (its block is set per
+  // call); a call that waits gets an object of its own. The views are made once: the memory never grows.
+  private u64!: BigUint64Array; private u32!: Uint32Array; private u8v!: Uint8Array; private dvv!: DataView; private fast: any = null;
+  private views(): void { const b = this.memory.buffer; this.u64 = new BigUint64Array(b); this.u32 = new Uint32Array(b); this.u8v = new Uint8Array(b); this.dvv = new DataView(b); }
   private cpu(ctx: number): any {
-    const mem = this.memory, rt = this.rt, dv = () => new DataView(mem.buffer), u8 = () => new Uint8Array(mem.buffer);
-    const fill = (floats: boolean) => { const d = dv(); for (let i = 0; i < 8; i++) { d.setBigUint64(ctx + ARGS + 8 * i, d.getBigUint64(ctx + 8 * i, true), true); d.setBigUint64(ctx + ARGS + 64 + 8 * i, floats ? d.getBigUint64(ctx + 0x130 + 16 * i, true) : 0n, true); } return ctx + ARGS; };
+    if (!this.u64) this.views();
+    const rt = this.rt, u64 = this.u64, u32 = this.u32, u8 = this.u8v, dvv = this.dvv, own = this;
     const cpu: any = {
-      rt, thread: 0, threadIndex: 0, get lr() { return dv().getBigUint64(ctx + 0xF0, true); },
-      x: (i: number) => dv().getBigUint64(ctx + 8 * i, true), w: (i: number) => dv().getUint32(ctx + 8 * i, true),
-      setX: (i: number, v: bigint | number) => dv().setBigUint64(ctx + 8 * i, BigInt.asUintN(64, BigInt(v)), true),
-      sp: () => dv().getBigUint64(ctx + 0xF8, true), u8, dv,
-      read: (a: number | bigint, n: number) => u8().slice(Number(a), Number(a) + n),
-      write: (a: number | bigint, b: Uint8Array) => { u8().set(b, Number(a)); },
-      cstr: (a: number | bigint, max = 256) => { const m = u8(), p = Number(a); let e = p; while (e < p + max && m[e]) e++; return new TextDecoder().decode(m.slice(p, e)); },
-      log: (l: string) => this.log(l),
-      setD: (i: number, bits: bigint) => { const d = dv(); d.setBigUint64(ctx + 0x130 + 16 * i, bits, true); d.setBigUint64(ctx + 0x138 + 16 * i, 0n, true); },
-      now: () => nowNs(), args: () => fill(true), argsX: () => fill(false),
-      stackArg: (i: number) => dv().getBigUint64(Number(dv().getBigUint64(ctx + 0xF8, true)) + 8 * i, true),
+      rt, thread: 0, threadIndex: 0, q: ctx / 8,
+      get lr() { return u64[this.q + 30]; },
+      x(i: number) { return u64[this.q + i]; }, w(i: number) { return u32[(this.q + i) * 2]; },
+      setX(i: number, v: bigint | number) { u64[this.q + i] = BigInt.asUintN(64, BigInt(v)); },
+      sp() { return u64[this.q + 31]; }, u8: () => u8, dv: () => dvv,
+      read: (a: number | bigint, n: number) => u8.slice(Number(a), Number(a) + n),
+      write: (a: number | bigint, b: Uint8Array) => { u8.set(b, Number(a)); },
+      cstr: (a: number | bigint, max = 256) => { const p = Number(a); let e = p; while (e < p + max && u8[e]) e++; return new TextDecoder().decode(u8.slice(p, e)); },
+      log: (l: string) => own.log(l),
+      setD(i: number, bits: bigint) { u64[this.q + 38 + 2 * i] = bits; u64[this.q + 39 + 2 * i] = 0n; },
+      now: () => nowNs(),
+      // x0..x7 then d0..d7 (the low halves of v0..v7), contiguous, in the block's spare room
+      args() { const q = this.q; u64.copyWithin(q + ARGS / 8, q, q + 8); for (let i = 0; i < 8; i++) u64[q + ARGS / 8 + 8 + i] = u64[q + 38 + 2 * i]; return q * 8 + ARGS; },
+      argsX() { const q = this.q; u64.copyWithin(q + ARGS / 8, q, q + 8); return q * 8 + ARGS; },
+      stackArg(i: number) { return u64[Number(u64[this.q + 31]) / 8 + i]; },
       waitFor: (done: Promise<unknown> | null, at: bigint | undefined, resume: any, deadline?: bigint): Wait => ({ __wait: true, done, at, resume, deadline }),
       jump: () => { throw new Error("owner: HostCpu.jump is not supported in the owner realm"); },
       never: () => { throw new Error("owner: HostCpu.never is not supported in the owner realm"); },
@@ -237,7 +245,7 @@ export class Owner {
     };
     return cpu;
   }
-  private store(ctx: number, r: any): void { if (typeof r === "bigint" || typeof r === "number") new DataView(this.memory.buffer).setBigUint64(ctx, BigInt.asUintN(64, BigInt(r)), true); }
+  private store(ctx: number, r: any): void { if (typeof r === "bigint") this.u64[ctx / 8] = BigInt.asUintN(64, r); else if (typeof r === "number") this.u64[ctx / 8] = BigInt.asUintN(64, BigInt(r)); }
   private wake(ctx: number): void { const cell = new Int32Array(this.memory.buffer, ctx + CELL, 1); Atomics.store(cell, 0, 1); Atomics.notify(cell, 0); }
   // A wait a handler returned: the calling thread stays blocked until `done` has settled and time `at` has come (or the
   // deadline passed), then resume runs here and its result is the call's
@@ -255,8 +263,9 @@ export class Owner {
   }
   private hostCall(h: number, ctx: number): number {
     this.hostCalls++;
-    const cpu = this.cpu(ctx), r = this.rt.handlers[h](cpu);
-    if (r && r.__wait) { this.hostPending++; new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0; this.arm(ctx, cpu, r); return PENDING; }
+    const cpu = this.fast ?? (this.fast = this.cpu(ctx)); cpu.q = ctx / 8;
+    const r = this.rt.handlers[h](cpu);
+    if (r && r.__wait) { this.hostPending++; new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0; this.arm(ctx, this.cpu(ctx), r); return PENDING; }
     this.store(ctx, r);
     return DONE;
   }

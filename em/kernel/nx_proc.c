@@ -132,14 +132,18 @@ void dm_host_lock(pthread_mutex_t *m);
 // under node); here the owner keeps watching the slot between the calls of a burst.
 static struct { _Atomic uint32_t state; int32_t code; int32_t result; int32_t pad; double ctx; } g_slot;
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER; static int g_slot_on;
+static uint64_t g_slot_queue_ns, g_slot_serve_ns, g_slot_n;   // waiting for the slot (behind other threads); from the request to its answer
 static int owner_request(int code, uint64_t *regs) {
+    uint64_t t0 = now_ns();
     dm_host_lock(&g_slot_mu);   // a guest thread that waits here holds no guest core (hle_thread.c)
+    uint64_t t1 = now_ns();
     if (!g_slot_on) { g_slot_on = 1; nx_owner_serve((double)(uintptr_t)&g_slot); }
     g_slot.code = code; g_slot.ctx = (double)(uintptr_t)regs;
     atomic_store(&g_slot.state, 1); emscripten_futex_wake(&g_slot.state, 1);
     for (int spin = 0; atomic_load(&g_slot.state) != 2; spin++) if (spin > 20000) emscripten_futex_wait(&g_slot.state, 1, 5.0);
     int r = g_slot.result;
     atomic_store(&g_slot.state, 0);
+    g_slot_queue_ns += t1 - t0; g_slot_serve_ns += now_ns() - t1; g_slot_n++;   // (under the slot's lock)
     pthread_mutex_unlock(&g_slot_mu);
     return r;
 }
@@ -275,6 +279,8 @@ void nx_boot_report(const char *why) {
       LOG("graphics (nxweb's recorder on the owner thread): %.0f host calls of it (%.0f NVN calls recorded, %.0f waited), %.1f us each inside; host stream %.0f batches, %.1f MB; presents %.0f", os[4], os[10], os[6], os[4] ? os[5] / 1e3 / os[4] : 0.0, os[8], os[9] / 1048576, os[7]);
       LOG("owner thread: %llu proxied calls, %.1f us each on the caller's side; nn::fs %0.f calls (%0.f pending, %0.f retried), %.1f us each inside the module", (unsigned long long)g_owner_calls,
           g_owner_calls ? g_owner_ns / 1e3 / g_owner_calls : 0.0, os[0], os[1], os[2], os[0] ? os[3] / 1e3 / os[0] : 0.0); }
+    LOG("owner slot: %llu requests; waiting for the slot %.1f us each, request to answer %.1f us each (the modules' own time is in the two lines above)", (unsigned long long)g_slot_n,
+        g_slot_n ? g_slot_queue_ns / 1e3 / g_slot_n : 0.0, g_slot_n ? g_slot_serve_ns / 1e3 / g_slot_n : 0.0);
     int n = 0;
     for (int pass = 0; pass < 2; pass++) for (int i = 0; i < g_nstub && n < 60; i++) {
         if (!g_stub_calls[i] || g_stub_owner[i] > 0 || (pass == 0) != (g_stub_ent[i] == NULL)) continue;
