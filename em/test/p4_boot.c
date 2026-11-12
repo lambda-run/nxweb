@@ -29,7 +29,8 @@ static uint8_t *load(const char *path, uint32_t *len) {
     fclose(f); *len = (uint32_t)n; return p;
 }
 static int g_secs;
-static void *watchdog(void *arg) { (void)arg; sleep((unsigned)g_secs); char w[64]; snprintf(w, sizeof w, "the time given (%d s) is over", g_secs); nx_boot_report(w); emscripten_force_exit(0); return NULL; }
+void nx_progress(void);
+static void *watchdog(void *arg) { (void)arg; for (int t = 0; t < g_secs; t += 30) { sleep(30); nx_progress(); } char w[64]; snprintf(w, sizeof w, "the time given (%d s) is over", g_secs); nx_boot_report(w); emscripten_force_exit(0); return NULL; }
 
 int main(int argc, char **argv) {
     if (argc < 5) die("usage: p4 <exefs dir> <translator> <helpers> <loader> [seconds]");

@@ -202,6 +202,16 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     g_trk[k].in_host = 0;
 }
 
+// One line of progress (the boot harness prints it every 30 s): is the game still getting on
+extern _Atomic uint64_t nx_stat_svcs;
+void nx_progress(void) {
+    double os[12] = {0}; nx_owner_stats((double)(uintptr_t)os);
+    struct nx_stats s; nx_get_stats(&s); char w[64] = "?"; uint64_t sl = 0; int h = 0;
+    for (int i = 0; i < g_ntrk && i < 64; i++) if (g_trk[i].handle == 0x1001) { nx_where(g_trk[i].pc, w, sizeof w); sl = g_trk[i].slices; h = g_trk[i].in_host; }
+    LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
+        (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
+}
+
 // ---- what a boot run reports when it ends (by time, by a fault, by the guest)
 void svc_thread_dump(void);
 void nx_boot_report(const char *why) {

@@ -11,24 +11,29 @@ Working, each with a command in SETUP.md:
 | 2 loader hand-off, symbol lookup | done in node: nxweb's loader module and glue, unchanged, run in the translator thread's realm on the Emscripten memory; `module_of`, `guest_sym` |
 | 3 memory SVCs | first version (`kernel/nx_mem.cpp`): enough for the SDK's start (heap of 6.3 GB, MapPhysicalMemory, QueryMemory, GetInfo); no device-shared or code-memory states |
 | 4 HLE thunks, stubs, guest calls | generator done (`tools/gen_hle.py`: 1,810 entries, 1,793 automatic); 30 of nxnative's HLE files are built unedited with their thunks (1,010 entries); the loader binds all 1,319 import / forced names to stubs; `nx_guest_call` in place for `hle_bind_system_event`, not yet at the other call sites |
-| 5 plain HLE files | 30 compile and link (49 symbols of other files still undefined); **nn::fs is the current stop** |
-| 6 graphics, 7 audio / movies, 8 cache and warm-up | not started |
+| 5 plain HLE files | 30 compile and link (45 symbols of other files still undefined). Calls through function pointers are rewritten automatically (`tools/port_gcalls.py`, `NXG` in `hle/nx_hle.h`): a guest address runs as guest code on the calling thread, a host pointer is called as before; three files need hand edits on top (`hle/port/*.edits`) |
+| files | **nxweb's fs module, not `hle_fs.c`**: it serves the RomFS out of the 25 GB `.nup` without unpacking (186,583 files) and runs on the owner thread (below) |
+| 6 graphics | **nxweb's NVN recorder, not `hle_nvn.c`**, on the owner thread, with the null replayer under node (the host stream is counted); device, pools, queue, window, command buffers, programs all answered |
+| 7 audio / movies | audio renderer runs (nxnative's `hle_audren.c`, guest calls through `NXG`, its render thread started by the host) into a silent sink (`kernel/nx_stubs.c`); movies not started |
+| 8 cache and warm-up | not started (every run translates from nothing: about 290 MB of wasm, 75 s of translator time on the loaded VM) |
 
-How far the game gets (`test/p4_boot.c`, node): the three modules are loaded and relocated (0.75 s), the SDK start
-sequence runs (`_init_libc0`, `nnosInitialize`, `nninitInitializeSdkModule`, `nninitStartup`, `_init_libc2`, the modules'
-DT_INIT: 5.2 s for main's constructors), `nnMain` is entered, and the game calls nn::oe, nv::InitializeGraphics,
-nn::vi (display, layer, vsync event) answered by nxnative's C. Its nn::fs calls (`MountRom`, `OpenFile`, `ReadFile`)
-are answered 0 because `hle_fs.c` is not ported, and it goes no further. One guest thread so far; no frame.
+### The owner thread (`owner/owner.ts`, `kernel/nx_owner.js`)
 
-Next, in order: (a) nn::fs: `hle_fs.c` with shims for the Darwin calls and a file-system back end that serves the
-RomFS out of the `.nup` container (nxweb's reader; the container is 25 GB and cannot be unpacked on this disk);
-(b) the 49 undefined symbols, by seam (loader services `dm_sdk_major` / `module_sym` / `nro_*`, audio out
-`dm_pcmout_*`, video decoders, the front end); (c) `hle_nvn.c`'s recorder against nxweb's replayer; (d) the boot harness
-as a page. The benchmark (vm/ctl/threadbench/RESULTS.md) says where this model pays: boot and loading screens.
+nxweb's fs module and NVN recorder are AssemblyScript modules with their state in instance globals: each exists once.
+They live in the realm of the Emscripten module's main thread, which stays in its event loop (`PROXY_TO_PTHREAD`), so
+it can also do what is asynchronous (opening the container; later WebGPU). A guest pthread that calls one of their
+names writes `{code, context block}` into one request slot in the shared memory and waits; the owner serves requests
+in arrival order and keeps watching the slot for 0.2 ms after each call before it returns to the event loop.
+nxweb's glue runs unchanged against a small stand-in for its `Runtime` (`RtShim`) and a `HostCpu` over the caller's
+context block; a handler's `waitFor` keeps the caller blocked until the owner completes it. NVN entry points are
+handed out as stubs from the top of the loader's stub region. Not supported there: callbacks into guest code that are
+not host stubs, `HostCpu.block` / `jump`.
 
-
-Status: design for a spike (2026-11-12). What is proven is in REPORT.md; everything else here is a proposal.
-Paths: `nxnative/` = `vm/ctl/repos/nxnative` (commit dbf84998), `nxweb/` = the nxweb working tree (2610451).
+How far the game gets (`test/p4_boot.c`, node, `sh run_p4.sh 900`): SDK start, `nnMain`, RomFS mounted and read (real
+data), `nvnBootstrapLoader`, device and window created, the audio renderer opened and rendering, 70+ guest threads
+(resource loaders, decompression, scene, graphics module) running in parallel under the C kernel: about 290,000 NVN
+calls, 10,000 nn::fs calls and 6 command submissions in the first minutes. **No present yet** in the time the runs
+were given on the shared VM; see REPORT / the coordinator's log for the current state.
 
 ## The idea in one paragraph
 
