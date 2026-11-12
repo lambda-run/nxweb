@@ -90,11 +90,17 @@ void guest_thread_set_id(uint64_t id) { if (!t_tlr) guest_thread_init(); *(uint3
 EMSCRIPTEN_KEEPALIVE double nx_tlr(void) { return (double)(uintptr_t)t_tlr; }
 EMSCRIPTEN_KEEPALIVE double nx_tls(void) { return (double)(uintptr_t)t_tls; }
 
-// The system counter (`mrs cntpct_el0`, the translated code's cntpct import): 19.2 MHz, the frequency the translator
-// answers for CNTFRQ_EL0. Each read counts on the reading thread (hle_os.c guest_clock_read_wait: thr_yield tells a
-// wait for a time by it) and waits while the guest clock is frozen.
+// The system counter (`mrs cntpct_el0`, the translated code's cntpct import; svc GetSystemTick): hle_os.c's guest_ticks,
+// 31.25 MHz for a Switch 2 SDK (which converts with that rate whatever CNTFRQ_EL0 says), 19.2 MHz otherwise. Until
+// 2026-11-12 the port answered 19.2 MHz to this game: its clock ran at 61 % of real time (a 24 pictures/s movie at
+// about 15). A local read: no lock, no proxy. Each read counts on the reading thread (guest_clock_read_wait: thr_yield
+// tells a wait for a time by it).
 __attribute__((weak)) void guest_clock_read_wait(void);
-EMSCRIPTEN_KEEPALIVE double nx_cntpct(void) { if (guest_clock_read_wait) guest_clock_read_wait(); return (double)(guest_ns() / 625 * 12 + guest_ns() % 625 * 12 / 625); }
+__attribute__((weak)) uint64_t guest_ticks(void);
+EMSCRIPTEN_KEEPALIVE double nx_cntpct(void) {
+    if (guest_clock_read_wait) guest_clock_read_wait();
+    return guest_ticks ? (double)guest_ticks() : (double)(guest_ns() / 625 * 12 + guest_ns() % 625 * 12 / 625);
+}
 
 // ---- files for the translation cache (kernel/nx_guest.js): Node's files, or the page's in-memory /cache
 #include <sys/stat.h>
@@ -289,10 +295,10 @@ void nx_progress(void) {
     for (int i = 0; i < g_ntrk && i < 64; i++) if (g_trk[i].handle == 0x1001) { nx_where(g_trk[i].pc, w, sizeof w); sl = g_trk[i].slices; h = g_trk[i].in_host; }
     int rss, swp; nx_rss_mb(&rss, &swp);
     LOG("memory: process %d MB resident (of it the linear memory %d MB) + %d MB swapped; guest: alias region %llu MB mapped, heap %llu MB set; translated wasm %llu MB", rss, linear_rss_mb(), swp, (unsigned long long)(nx_mem_alias_mapped() >> 20), (unsigned long long)(nx_mem_heap_size() >> 20), (unsigned long long)(s.unit_bytes >> 20));
-    { extern _Atomic uint64_t nx_svc_by_num[128], nx_stat_yield_floor; static uint64_t prev[128]; int top[3] = {0, 0, 0}; uint64_t d[128];
+    { extern _Atomic uint64_t nx_svc_by_num[128]; uint64_t nx_stat_yield_floor = 0; static uint64_t prev[128]; int top[3] = {0, 0, 0}; uint64_t d[128];
       for (int i = 0; i < 128; i++) { uint64_t v = nx_svc_by_num[i]; d[i] = v - prev[i]; prev[i] = v; }
       for (int k = 0; k < 3; k++) { for (int i = 0; i < 128; i++) if (d[i] > d[top[k]] && (k < 1 || i != top[0]) && (k < 2 || i != top[1])) top[k] = i; if (k < 2 && top[k + 1] == top[k]) top[k + 1] = top[k] ? 0 : 1; }
-      LOG("SVCs since the last line: %#x x%llu, %#x x%llu, %#x x%llu; yields put to sleep by the port so far %llu", top[0], (unsigned long long)d[top[0]], top[1], (unsigned long long)d[top[1]], top[2], (unsigned long long)d[top[2]], (unsigned long long)nx_stat_yield_floor); }
+      LOG("SVCs since the last line: %#x x%llu, %#x x%llu, %#x x%llu; (yield floor: off, %llu)", top[0], (unsigned long long)d[top[0]], top[1], (unsigned long long)d[top[1]], top[2], (unsigned long long)d[top[2]], (unsigned long long)nx_stat_yield_floor); }
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }

@@ -60,7 +60,7 @@ addToLibrary({
     return idx;
   },
 
-  $nxThread__deps: ['$NX', '$nxTranslate', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_note_pc', 'nx_cntpct', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
+  $nxThread__deps: ['$NX', '$nxTranslate', '$nxPcMap', 'nx_unit_count', 'nx_unit_base', 'nx_unit_nfuncs', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_note_pc', 'nx_cntpct', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxThread: function() {
     if (NX.t) return NX.t;
     const mem = wasmMemory, t0 = performance.now();
@@ -86,7 +86,12 @@ addToLibrary({
       cntpct: () => BigInt(_nx_cntpct()),
     };
     t.tramp = t.table.get(0);
-    t.table.grow(_nx_table_cap() - t.table.length, t.tramp);
+    // The table: one slot per translated function, the trampoline in every slot this thread has not filled. It is as
+    // long as what is published now (plus room) and grows when a call lands beyond it (runTo): a slot costs 32 bytes
+    // in every thread, and a thread that started early or runs little code need not hold the whole program's.
+    t.cover = () => { let end = 4096; for (let k = 0, n = _nx_unit_count(); k < n; k++) end = Math.max(end, _nx_unit_base(k) + _nx_unit_nfuncs(k)); end = Math.ceil((end + 2048) / 4096) * 4096;
+      if (end > t.table.length) t.table.grow(end - t.table.length, t.tramp); };
+    t.cover();
     // slot 2: the one function every host stub's pc maps to (as nxweb's rt_runtime.ts THUNK): it calls host_call
     const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 0x11, 1, 3, 0x65, 0x6E, 0x76, 9, 0x68, 0x6F, 0x73, 0x74, 0x5F, 0x63, 0x61, 0x6C, 0x6C, 0, 0,
                                   3, 2, 1, 0, 7, 5, 1, 1, 0x66, 0, 1, 0x0A, 6, 1, 4, 0, 0x10, 0, 0x0B]);
@@ -96,6 +101,12 @@ addToLibrary({
       try { while (core.pc.value !== until) { core.budget.value = 1 << 26; core.run(); _nx_note_pc(Number(BigInt.asUintN(64, core.pc.value))); } }
       catch (e) {
         if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e;
+        // a call through a table slot beyond this thread's table: a function another thread had translated since. The
+        // registers were written back and pc is the target (the contract of an indirect transfer), so grow and go on
+        if (e instanceof WebAssembly.RuntimeError && /table index is out of bounds/.test(e.message)) {
+          const idx = nxPcMap(Number(BigInt.asUintN(64, core.pc.value))), len = t.table.length;
+          if (idx >= len) { t.cover(); if (t.table.length > len) { t.grown = (t.grown || 0) + 1; return t.runTo(until); } }
+        }
         const m = String(e && e.message || e), p = _malloc(lengthBytesUTF8(m) + 1); stringToUTF8(m, p, lengthBytesUTF8(m) + 1);
         err(String(e && e.stack || e).split('\n').slice(0, 6).join(' | '));
         _nx_guest_fault(Number(BigInt.asUintN(64, core.pc.value)), p);

@@ -47,7 +47,7 @@ fetch("build.json").then(function (r) { return r.json(); }).then(function (b) { 
 if (q.get("logto")) setInterval(function () {
   var u = q.get("logto").replace(/\/$/, ""), n = window.nxem;
   if (feed.length) { var body = feed.join("\n") + "\n"; feed = []; fetch(u + "/append/em.live.log", { method: "POST", body: body }).catch(function () {}); }
-  fetch(u + "/em.live.status.json", { method: "POST", body: JSON.stringify({ at: new Date().toISOString(), build: stamp, state: n.state, reason: n.reason, frame: n.presents, fps: Math.round(n.fps * 10) / 10, threads: n.threads, label: n.label, red: red }) }).catch(function () {});
+  fetch(u + "/em.live.status.json", { method: "POST", body: JSON.stringify({ at: new Date().toISOString(), build: stamp, state: n.state, reason: n.reason, frame: n.presents, fps: Math.round(n.fps * 10) / 10, split: n.frame || null, threads: n.threads, label: n.label, red: red }) }).catch(function () {});
 }, 3000);
 if (!crossOriginIsolated) say("[RED] page: not cross-origin isolated: no shared memory, the runtime cannot start");
 addEventListener("error", function (e) { say("[RED] page error: " + e.message); });
@@ -115,16 +115,23 @@ function start(file) {
     if (p.join() !== sentP) { sentP = p.join(); M._nx_input(1, p[0], p[1], p[2], p[3], p[4]); }
   };
   requestAnimationFrame(pollInput);
-  var last = 0, lastT = performance.now();
+  var last = 0, lastT = performance.now(), lastO = null;
   setInterval(function () {
     var o = globalThis.NXOWNER; if (!o) return;
     var now = performance.now(), n = o.presents, threads = 0;
     try { threads = window.Module.nxLiveThreads ? window.Module.nxLiveThreads() : 0; } catch (e) {}
-    var fps = (n - last) * 1000 / (now - lastT); last = n; lastT = now;
+    var dN = n - last, dT = now - lastT, fps = dN * 1000 / dT; last = n; lastT = now;
+    // where a frame's time goes, per frame over the last second: the owner thread's part (nxweb's recorder answering NVN
+    // calls, of it the replayer's WebGPU work; nn::fs) and the rest, which is guest code and waiting
+    var g = o.gfx, cur = { nvnNs: o.hostNs, gpuMs: g ? g.times.execMs : 0, fsNs: o.stats.fsNs, calls: o.hostCalls + o.stats.fsCalls }, split = "";
+    if (lastO && dN > 0) { var f = dN, ms = dT / f, nvn = (cur.nvnNs - lastO.nvnNs) / 1e6 / f, gpu = (cur.gpuMs - lastO.gpuMs) / f, fs = (cur.fsNs - lastO.fsNs) / 1e6 / f;
+      window.nxem.frame = { ms: +ms.toFixed(1), ownerNvnMs: +nvn.toFixed(1), gpuReplayMs: +gpu.toFixed(1), ownerFsMs: +fs.toFixed(1), otherMs: +(ms - nvn - fs).toFixed(1), ownerCalls: Math.round((cur.calls - lastO.calls) / f) };
+      split = " · frame " + ms.toFixed(0) + " ms = owner NVN " + nvn.toFixed(0) + " (GPU replay " + gpu.toFixed(0) + ") + fs " + fs.toFixed(0) + " + guest/wait " + (ms - nvn - fs).toFixed(0) + " · " + window.nxem.frame.ownerCalls + " owner calls/frame"; }
+    lastO = cur;
     window.nxem.presents = n; window.nxem.threads = threads; window.nxem.fps = fps; window.nxem.label = rtLabel(threads);
     if (n > 0 && !window.nxem.reason && window.nxem.state !== "aborted" && window.nxem.state !== "exited") { window.nxem.state = "running"; $("stage").textContent = "running"; }
     $("rt").textContent = rtLabel(threads);
-    $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads);
+    $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads) + split;
   }, 1000);
 }
 </script>

@@ -46,36 +46,32 @@ addToLibrary({
     };
     serve();
   },
-  // Compiled modules for the workers. The main thread compiles every unit of the registry once (asynchronously) and posts
-  // the compiled module to every worker; a worker takes it in when it is in its event loop, that is before it runs a
-  // thread, so a guest thread that starts later finds in NXSHARED what was published before. upTo: the registry count
-  // to cover now; cell: an int32 the caller waits on, set to 1 when those are compiled and posted. Afterwards the main
-  // thread looks for new units every 100 ms.
+  // Compiled modules for the workers. What the translation cache published before any guest thread runs is compiled
+  // once here on the main thread and handed to every worker in ONE message, which a worker takes in while it is in its
+  // event loop, that is before it runs a thread; a worker made later gets the same message when it is made. Units
+  // translated while the game runs are not sent (a running thread cannot receive, and the main thread is the owner
+  // thread: a broadcast per unit was tried and stalled it): a thread that needs one compiles it from the registry.
+  // upTo: the registry count to cover; cell: an int32 the caller waits on, set to 1 when the modules are out.
   nx_units_share__proxy: 'sync',
   nx_units_share__sig: 'vid',
-  nx_units_share__deps: ['$PThread', 'nx_unit_count', 'nx_unit_bytes', 'nx_unit_len'],
+  nx_units_share__deps: ['$PThread', 'nx_unit_bytes', 'nx_unit_len'],
   nx_units_share: function(upTo, cell) {
-    const S = globalThis.NXSHARE || (globalThis.NXSHARE = { mods: [], sent: new Map(), next: 0, busy: null, bytes: 0, ms: 0 });
-    const workers = () => PThread.unusedWorkers.concat(PThread.runningWorkers);
-    const post = () => { for (const w of workers()) { let n = S.sent.get(w) || 0; for (; n < S.mods.length; n++) w.postMessage({ nxUnit: n, module: S.mods[n] }); S.sent.set(w, n); } };
-    const pump = async () => {
-      const t0 = performance.now();
-      while (S.next < _nx_unit_count()) {
-        const hi = Math.min(_nx_unit_count(), S.next + 16), jobs = [];
-        for (let k = S.next; k < hi; k++) { const p = _nx_unit_bytes(k), n = _nx_unit_len(k); S.bytes += n; jobs.push(WebAssembly.compile(HEAPU8.slice(p, p + n))); }
-        const got = await Promise.all(jobs);
-        for (const m of got) S.mods.push(m);
-        S.next = hi; post();
+    const done = () => { Atomics.store(HEAP32, cell / 4, 1); Atomics.notify(HEAP32, cell / 4); };
+    if (!upTo || globalThis.NXSHARE) { done(); return; }
+    const S = globalThis.NXSHARE = { mods: [], sent: new Set() }, t0 = performance.now();
+    const post = (w) => { if (S.mods.length && !S.sent.has(w)) { S.sent.add(w); w.postMessage({ nxUnits: S.mods }); } };
+    (async () => {
+      let bytes = 0;
+      for (let k = 0; k < upTo; k += 32) {
+        const jobs = [];
+        for (let i = k; i < Math.min(upTo, k + 32); i++) { const p = _nx_unit_bytes(i), n = _nx_unit_len(i); bytes += n; jobs.push(WebAssembly.compile(HEAPU8.slice(p, p + n))); }
+        for (const m of await Promise.all(jobs)) S.mods.push(m);
       }
-      S.ms += performance.now() - t0;
-    };
-    const run = () => { if (!S.busy) S.busy = pump().then(() => { S.busy = null; post(); }, (e) => { S.busy = null; err('[RED] nx_units_share: ' + (e && e.message || e)); }); return S.busy; };
-    if (!S.timer) {
-      S.timer = setInterval(() => { if (S.next < _nx_unit_count()) run(); else post(); }, 100);   // (post: a worker made since)
-      const load = PThread.loadWasmModuleToWorker;   // a new worker gets what exists right after it is told to load
-      PThread.loadWasmModuleToWorker = function (w) { const r = load.apply(PThread, arguments); S.sent.set(w, 0); post(); return r; };
-    }
-    run().then(() => { if (cell) { err('[owner] compiled modules: ' + S.mods.length + ' units, ' + (S.bytes / 1048576).toFixed(1) + ' MB, compiled once on the main thread in ' + S.ms.toFixed(0) + ' ms and posted to ' + workers().length + ' workers'); Atomics.store(HEAP32, cell / 4, 1); Atomics.notify(HEAP32, cell / 4); } });
+      for (const w of PThread.unusedWorkers.concat(PThread.runningWorkers)) post(w);
+      const load = PThread.loadWasmModuleToWorker;
+      PThread.loadWasmModuleToWorker = function (w) { const r = load.apply(PThread, arguments); post(w); return r; };
+      err('[owner] compiled modules: ' + S.mods.length + ' cached units, ' + (bytes / 1048576).toFixed(1) + ' MB, compiled once on the main thread in ' + (performance.now() - t0).toFixed(0) + ' ms; every worker gets them in one message');
+    })().then(done, (e) => { err('[RED] nx_units_share: ' + (e && e.message || e)); done(); });
   },
   // The page: a cache file the translator wrote into the in-memory /cache goes into the Cache API (as nxweb keeps its
   // translation cache) and leaves the memory; older entries of the same module go. Node: the file is the cache.
