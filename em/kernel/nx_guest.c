@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <emscripten.h>
+#include <emscripten/threading.h>
 
 int svc_thread(int num, uint64_t *regs);
 void thr_svc_enter(uint64_t *regs, uint64_t pc);
@@ -26,10 +27,39 @@ _Atomic uint64_t nx_svc_by_num[128];   // every SVC by number (the progress line
 // (A floor under long runs of yields, 100 us a pass after 2 ms, was tried here on 2026-11-12 and taken out: the game's
 // main thread works between its yields, and the floor made its start about eight times slower in Chrome. hle_thread.c's
 // own back-off, which leaves a loop whose registers move alone, is what applies.)
+// Yields that only wait. A thread that has yielded more than 64 times in a row, with no other SVC and no host call in
+// between, is not working between its yields: it waits for another thread. On the console that yield hands its core
+// over; here it would spin on a real core (3.4 million yields in 10 s at the title, measured in Chrome). Such a yield
+// parks first: up to NX_YIELD_PARK_US microseconds (the page: ?yieldpark=; 0 = never), ended early by any SVC that
+// wakes or starts a thread. A thread that works between its yields (the game's main thread makes host calls there)
+// never gets to 64 and is not slowed, which is what the fixed floor tried on 2026-11-12 got wrong.
+static _Atomic uint32_t g_wake_word; static _Atomic int g_parked;
+_Atomic uint64_t nx_stat_yield_parks;
+static __thread unsigned t_yields;
+void nx_yield_reset(void) { t_yields = 0; }
+static int park_us(void) { static int v = -1; if (v < 0) { const char *e = getenv("NX_YIELD_PARK_US"); v = e && *e ? atoi(e) : 100; } return v; }
+static void yield_or_wake(int num, const uint64_t *regs) {
+    if (num == 0x0B && (int64_t)regs[0] <= 0) {
+        if (++t_yields > 64 && park_us() > 0) {
+            uint32_t w = atomic_load(&g_wake_word);
+            atomic_fetch_add(&g_parked, 1);
+            emscripten_futex_wait(&g_wake_word, w, park_us() / 1000.0);
+            atomic_fetch_sub(&g_parked, 1);
+            atomic_fetch_add_explicit(&nx_stat_yield_parks, 1, memory_order_relaxed);
+        }
+        return;
+    }
+    t_yields = 0;
+    if (num == 0x09 || num == 0x0A || num == 0x11 || num == 0x1B || num == 0x1D || num == 0x35) {   // StartThread, ExitThread, SignalEvent, ArbitrateUnlock, SignalProcessWideKey, SignalToAddress
+        atomic_fetch_add(&g_wake_word, 1);
+        if (atomic_load(&g_parked)) emscripten_futex_wake(&g_wake_word, 1 << 30);
+    }
+}
 EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)regs_;
     atomic_fetch_add_explicit(&nx_stat_svcs, 1, memory_order_relaxed);
     if (num >= 0 && num < 128) atomic_fetch_add_explicit(&nx_svc_by_num[num], 1, memory_order_relaxed);
+    yield_or_wake(num, regs);
     if (num == 0x0B || num == 0x0A) nx_core_release();   // a sleep, a yield, the end of the thread: its core is free meanwhile
     thr_svc_enter(regs, regs[32]);
     if (!svc_thread(num, regs) && !nx_svc_other(num, regs)) {

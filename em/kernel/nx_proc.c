@@ -249,6 +249,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
                             !e ? ": not ported, answers 0" : e->flags & NX_HLE_HAND ? ": needs a hand-written thunk" : "");
     }
     regs[32] = regs[30];   // return to the caller (the thunk may still redirect)
+    { void nx_yield_reset(void); nx_yield_reset(); }   // a thread that makes host calls between its yields is working
     int k = trk(); g_trk[k].in_host = (int)id + 1;
     if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
                    nx_owner_do(own, regs); }
@@ -298,10 +299,10 @@ void nx_progress(void) {
     for (int i = 0; i < g_ntrk && i < 64; i++) if (g_trk[i].handle == 0x1001) { nx_where(g_trk[i].pc, w, sizeof w); sl = g_trk[i].slices; h = g_trk[i].in_host; }
     int rss, swp; nx_rss_mb(&rss, &swp);
     LOG("memory: process %d MB resident (of it the linear memory %d MB) + %d MB swapped; guest: alias region %llu MB mapped, heap %llu MB set; translated wasm %llu MB", rss, linear_rss_mb(), swp, (unsigned long long)(nx_mem_alias_mapped() >> 20), (unsigned long long)(nx_mem_heap_size() >> 20), (unsigned long long)(s.unit_bytes >> 20));
-    { extern _Atomic uint64_t nx_svc_by_num[128]; uint64_t nx_stat_yield_floor = 0; static uint64_t prev[128]; int top[3] = {0, 0, 0}; uint64_t d[128];
+    { extern _Atomic uint64_t nx_svc_by_num[128], nx_stat_yield_parks; uint64_t nx_stat_yield_floor = nx_stat_yield_parks; static uint64_t prev[128]; int top[3] = {0, 0, 0}; uint64_t d[128];
       for (int i = 0; i < 128; i++) { uint64_t v = nx_svc_by_num[i]; d[i] = v - prev[i]; prev[i] = v; }
       for (int k = 0; k < 3; k++) { for (int i = 0; i < 128; i++) if (d[i] > d[top[k]] && (k < 1 || i != top[0]) && (k < 2 || i != top[1])) top[k] = i; if (k < 2 && top[k + 1] == top[k]) top[k + 1] = top[k] ? 0 : 1; }
-      LOG("SVCs since the last line: %#x x%llu, %#x x%llu, %#x x%llu; (yield floor: off, %llu)", top[0], (unsigned long long)d[top[0]], top[1], (unsigned long long)d[top[1]], top[2], (unsigned long long)d[top[2]], (unsigned long long)nx_stat_yield_floor); }
+      LOG("SVCs since the last line: %#x x%llu, %#x x%llu, %#x x%llu; yields parked so far %llu (NX_YIELD_PARK_US)", top[0], (unsigned long long)d[top[0]], top[1], (unsigned long long)d[top[1]], top[2], (unsigned long long)d[top[2]], (unsigned long long)nx_stat_yield_floor); }
     { void nx_core_stats(char *, size_t); __attribute__((weak)) void nx_yield_top(char *, size_t); char cs[240], yt[400] = "";
       nx_core_stats(cs, sizeof cs); if (nx_yield_top) nx_yield_top(yt, sizeof yt);
       LOG("cores: %s", cs); if (yt[0]) LOG("most yields since the last line: %s", yt); }
