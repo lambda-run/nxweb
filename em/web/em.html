@@ -11,6 +11,7 @@
 </style>
 <div id="top">
   <b>nxweb</b> <span id="stamp"></span> <span id="rt"></span>
+  <button id="continue" hidden></button>
   <label>game (.nup): <input type="file" id="fileinput" accept=".nup"></label>
   <span id="stage">choose the game file</span>
 </div>
@@ -19,6 +20,8 @@
 <script>
 // The Emscripten runtime's page: nxnative's C under real threads, nxweb's translator, file system, recorder and
 // WebGPU replayer. ?secs=N: how long the harness runs before it prints its report (default: a day).
+// ?auto=1: start at once with the game the nxweb page was last given (its stored file handle), when the browser still
+// grants reading it without a click ("allow on every visit").
 var RT_KIND = "C/C++ (nxnative) → Emscripten";
 var rtLabel = function (threads) { return "rt " + RT_KIND + " · " + (navigator.gpu ? "WebGPU" : "no WebGPU") + " · " + threads + " real threads"; };
 var $ = function (id) { return document.getElementById(id); }, q = new URLSearchParams(location.search);
@@ -36,8 +39,33 @@ if (!crossOriginIsolated) say("[RED] page: not cross-origin isolated: no shared 
 addEventListener("error", function (e) { say("[RED] page error: " + e.message); });
 addEventListener("unhandledrejection", function (e) { say("[RED] rejection: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason)); });
 var started = false;
-$("fileinput").addEventListener("change", function () {
-  var file = $("fileinput").files[0]; if (!file || started) return; started = true;
+// The game the nxweb page (same origin) was last given: its FileSystemHandle is in IndexedDB "nxweb-prepare", store
+// "handles", key "last" (web/prepare.ts). A file handle is the .nup; a folder handle is searched for one .nup.
+var lastHandle = function () { return new Promise(function (res) {
+  try { var r = indexedDB.open("nxweb-prepare", 1);
+    r.onupgradeneeded = function () { r.result.createObjectStore("handles"); };
+    r.onerror = function () { res(null); };
+    r.onsuccess = function () { var db = r.result, g;
+      try { g = db.transaction("handles").objectStore("handles").get("last"); } catch (e) { db.close(); res(null); return; }
+      g.onsuccess = function () { db.close(); res(g.result || null); }; g.onerror = function () { db.close(); res(null); }; };
+  } catch (e) { res(null); } }); };
+var fileOf = async function (h, ask) {
+  if (h.queryPermission && await h.queryPermission({ mode: "read" }) !== "granted") {
+    if (!ask || await h.requestPermission({ mode: "read" }) !== "granted") return null;   // asking needs a click
+  }
+  if (h.kind === "file") return h.getFile();
+  for await (const e of h.values()) if (e.kind === "file" && /\.nup$/i.test(e.name)) return e.getFile();
+  return null;
+};
+lastHandle().then(async function (h) {
+  if (!h) { if (q.get("auto")) say("[RED] page: ?auto=1, but the nxweb page has stored no game here yet: choose the file once on http://" + location.host + "/ or below"); return; }
+  var b = $("continue"); b.textContent = "Continue with " + h.name; b.hidden = false;
+  b.onclick = async function () { try { var f = await fileOf(h, true); if (f) start(f); else say("[RED] page: the browser did not give " + h.name + " back: choose the file below"); } catch (e) { say("[RED] page: " + e.message); } };
+  if (q.get("auto")) { try { var f = await fileOf(h, false); if (f) start(f); else say("[RED] page: ?auto=1, but reading " + h.name + " needs a click here (the permission is not standing): use the button"); } catch (e) { say("[RED] page: ?auto=1: " + e.message); } }
+});
+$("fileinput").addEventListener("change", function () { var file = $("fileinput").files[0]; if (file) start(file); });
+function start(file) {
+  if (started) return; started = true; $("continue").hidden = true;
   window.nxem.state = "starting";
   window.Module = {
     arguments: ["/exefs", "/rt/translator64.shared.wasm", "/rt/helpers64.shared.wasm", "/rt/loader64.wasm", q.get("secs") || "86400"],
@@ -58,5 +86,5 @@ $("fileinput").addEventListener("change", function () {
     $("rt").textContent = rtLabel(threads);
     $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads);
   }, 1000);
-});
+}
 </script>
