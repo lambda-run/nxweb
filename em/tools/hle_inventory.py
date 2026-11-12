@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile inventory of nxnative's host / HLE sources under Emscripten (wasm64, pthreads). Run in the VM.
 
-  python3 hle_inventory.py [--nx /ctl/repos/nxnative/dm] [--out /ctl/nxem/build/hle/inventory] [-j 4] [files...]
+  python3 hle_inventory.py [--nx /ctl/repos/nxnative/dm] [--out /ctl/nxweb-em/em/build/hle/inventory] [-j 4] [files...]
 
 Each file is compiled (-c, no link) three ways; nothing in nxnative is edited:
   asis   the flags of build.py: kernel/ and kernel/shim/ headers only

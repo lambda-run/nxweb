@@ -1,9 +1,9 @@
 // node web/cache_dump.mjs [list|dump]: nxweb's translation cache (Cache API "nxweb-a64" of http://localhost:8080 in the
-// headless profile) listed, or copied to /ctl/nxem/build/web/put/ through web/serve.mjs (which must be running).
+// headless profile) listed, or copied to /ctl/nxweb-em/em/build/web/put/ through web/serve.mjs (which must be running).
 // Reads the profile through a browser; writes nothing into it. Do not run while another headless run uses the profile.
 import { launch, evaluate } from "/ctl/headless/cdp.mjs";
 const mode = process.argv[2] ?? "list";
-const { child, cdp } = await launch({ profile: process.env.PROFILE ?? "/ctl/headless/profile", port: 9445, log: "/ctl/nxem/logs/cache-chromium.log" });
+const { child, cdp } = await launch({ profile: process.env.PROFILE ?? "/ctl/headless/profile", port: 9445, log: "/ctl/nxweb-em/em/logs/cache-chromium.log" });
 try {
   const { targetId } = await cdp.send("Target.createTarget", { url: "http://localhost:8080/favicon.ico" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });

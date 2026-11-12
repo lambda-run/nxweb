@@ -20,7 +20,7 @@ FILE is an nxnative source (or its ported copy under build/host/). Nothing is ed
      through the typedefs found in the preprocessed text (so through nxnative's headers and the C library's).
      Struct / union by value, va_list, `...`, 128-bit and long double, and any name that does not resolve: the entry
      NEEDS A HAND-WRITTEN THUNK and the reason is reported.
-  3. Output (unless --no-gen), in --out (default /ctl/nxem/build/hle/gen):
+  3. Output (unless --no-gen), in --out (default /ctl/nxweb-em/em/build/hle/gen):
        <stem>.thunks.inc   `void nxt_<stem>_<fn>(uint64_t *ctx)` per entry, with compile-time checks of step 2
        <stem>.tu.c         the translation unit to compile: nx_hle.h, the source file, hand thunks, the thunks
        hle_table.c         {name, thunk, flags, why} sorted by name (strcmp order), nx_hle_find()

@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "commonjs",
+  "description": "Emscripten output (build/*.js) is CommonJS; the tools here are .mjs / .mts"
+}

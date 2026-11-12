@@ -5,7 +5,7 @@ import { launch } from "/ctl/headless/cdp.mjs";
 import { readFileSync, readdirSync, rmSync } from "node:fs";
 const args = process.argv[2] ?? "", secs = Number(process.argv[3] ?? 240), limit = Number(process.env.LIMIT_MB ?? 5000);
 const profile = "/tmp/nxem-gate-profile"; rmSync(profile, { recursive: true, force: true });
-const { child, cdp } = await launch({ profile, port: 9446, log: "/ctl/nxem/logs/gate-chromium.log", extra: (process.env.EXTRA ?? "").split(/\s+/).filter(Boolean) });
+const { child, cdp } = await launch({ profile, port: 9446, log: "/ctl/nxweb-em/em/logs/gate-chromium.log", extra: (process.env.EXTRA ?? "").split(/\s+/).filter(Boolean) });
 const pss = () => { let kb = 0, n = 0;
   for (const d of readdirSync("/proc")) { if (!/^\d+$/.test(d)) continue;
     try { if (!readFileSync(`/proc/${d}/cmdline`, "utf8").includes(profile)) continue; kb += Number(/^Pss:\s+(\d+)/m.exec(readFileSync(`/proc/${d}/smaps_rollup`, "utf8"))[1]); n++; } catch { /* gone */ } }

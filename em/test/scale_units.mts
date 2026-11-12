@@ -3,11 +3,11 @@
 // test/a64/guests/big_gen.py) is translated once on the main thread; then worker A and, after it, worker B
 // compile and instantiate the same unit bytes on the shared memory and run the guest twice each.
 // What it answers: is the second thread's compile cheap (does V8 share compiled wasm between threads by bytes)?
-// Usage: node test/scale_units.ts <big.bin> [stack top offset]      (run by build_scale.sh)
+// Usage: node test/scale_units.mts <big.bin> [stack top offset]      (run by build_scale.sh)
 import { readFileSync } from "node:fs";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
-import { A64Host } from "/mnt/src/glue/a64_host.ts";
-import { A64, HOST_END } from "/mnt/src/glue/rt_layout.ts";
+import { A64Host } from "/ctl/nxweb-em/src/glue/a64_host.ts";
+import { A64, HOST_END } from "/ctl/nxweb-em/src/glue/rt_layout.ts";
 
 const BASE = 0x0800_0000, EXIT = 0xFFFFFFF0n;
 interface Job { memory: WebAssembly.Memory; core: WebAssembly.Module; helpers: WebAssembly.Module; units: { bytes: Uint8Array; tableBase: number }[]; tableLen: number; stackTop: number; image: Uint8Array; clearEnd: number; ctl: SharedArrayBuffer }

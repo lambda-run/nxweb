@@ -1,10 +1,10 @@
 // node web/serve.mjs [port] [root]: a static server for the nxem test pages, cross-origin isolated (COOP/COEP), with
 // Range support and a sink: POST /put/<name> writes the body to <root>/put/<name> (used to copy nxweb's translation
-// cache out of the browser profile). Default: port 8091, root /ctl/nxem/build/web.
+// cache out of the browser profile). Default: port 8091, root /ctl/nxweb-em/em/build/web.
 import { createServer } from "node:http";
 import { createReadStream, createWriteStream, statSync, mkdirSync } from "node:fs";
 import { join, normalize, extname } from "node:path";
-const port = Number(process.argv[2] ?? 8091), root = process.argv[3] ?? "/ctl/nxem/build/web";
+const port = Number(process.argv[2] ?? 8091), root = process.argv[3] ?? "/ctl/nxweb-em/em/build/web";
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm", ".json": "application/json" };
 createServer((req, res) => {
   const h = { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp", "Cross-Origin-Resource-Policy": "cross-origin",

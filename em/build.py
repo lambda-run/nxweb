@@ -12,7 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 R = os.path.dirname(os.path.abspath(__file__))
 NX = os.environ.get("NXNATIVE", "/ctl/repos/nxnative/dm")
-W = os.environ.get("NXWEB", "/mnt")
+W = os.path.dirname(R)                                 # the nxweb tree this directory is part of (branch emscripten-port): its src/ is imported as it is
+WB = os.environ.get("NXWEB_BUILD", "/mnt/build")       # nxweb's built modules (translator, helpers, loader): the main checkout's, read-only, until this tree builds its own
 EM = "/ctl/emsdk/emscripten"
 os.environ["EM_CONFIG"] = "/ctl/emsdk/emscripten.cfg"
 GAME = "0400486024DEC000"
@@ -91,8 +92,8 @@ def nxweb_parts(B, mem):
         f'export {{ Loader }} from "{W}/src/loader/host/loader.mts";\nexport {{ instantiate }} from "{W}/src/glue/wasm_abi.ts";\nexport {{ sharedBuild }} from "{W}/src/glue/wasm_shared.ts";\n')
     sh([f"{W}/node_modules/.bin/esbuild", f"{B}/a64_entry.ts", "--bundle", "--format=iife", "--global-name=NXA64", f"--outfile={B}/a64_host.js", "--log-level=warning"])
     x = "64" if mem == 64 else ""
-    for n in ("translator", "helpers"): sh(["cp", f"{W}/build/runtime/{n}{x}.shared.wasm", f"{B}/{n}.shared.wasm"])
-    if mem == 64: sh(["cp", f"{W}/build/runtime/loader64.wasm", f"{B}/loader64.wasm"])
+    for n in ("translator", "helpers"): sh(["cp", f"{WB}/runtime/{n}{x}.shared.wasm", f"{B}/{n}.shared.wasm"])
+    if mem == 64: sh(["cp", f"{WB}/runtime/loader64.wasm", f"{B}/loader64.wasm"])
     open(f"{B}/nxweb.rev", "w").write(subprocess.run(["git", "-C", W, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout)
 
 # nxnative's HLE files that compile for wasm64 today (tools/hle_inventory.py); thread.c is replaced by kernel/nx_proc.c

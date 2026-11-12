@@ -1,5 +1,32 @@
 # nxem: an Emscripten-threaded core for the browser port
 
+## Where the port stands (2026-11-12, branch `emscripten-port`, directory `em/`)
+
+Working, each with a command in SETUP.md:
+
+| step of the plan (section 6) | state |
+|---|---|
+| 0 thread core + guest seam | done (p1, p2, nxnative's own unit tests; C and C++ in one link) |
+| 1 wasm64 build, fixed memory in Chrome | done for the gate: headless Chromium 156, one 16 GB shared memory64, guest at 6 GB, Emscripten data at 14 GB, 24 guest threads on 24 workers. The game's real translation cache (782 units, 230.7 MB of wasm, 149,405 functions) through the registry: each further thread 0.85-2.6 s and about 9 MB of browser memory (thread 2: 1.95 s; thread 20: 1.37 s) |
+| 2 loader hand-off, symbol lookup | done in node: nxweb's loader module and glue, unchanged, run in the translator thread's realm on the Emscripten memory; `module_of`, `guest_sym` |
+| 3 memory SVCs | first version (`kernel/nx_mem.cpp`): enough for the SDK's start (heap of 6.3 GB, MapPhysicalMemory, QueryMemory, GetInfo); no device-shared or code-memory states |
+| 4 HLE thunks, stubs, guest calls | generator done (`tools/gen_hle.py`: 1,810 entries, 1,793 automatic); 30 of nxnative's HLE files are built unedited with their thunks (1,010 entries); the loader binds all 1,319 import / forced names to stubs; `nx_guest_call` in place for `hle_bind_system_event`, not yet at the other call sites |
+| 5 plain HLE files | 30 compile and link (49 symbols of other files still undefined); **nn::fs is the current stop** |
+| 6 graphics, 7 audio / movies, 8 cache and warm-up | not started |
+
+How far the game gets (`test/p4_boot.c`, node): the three modules are loaded and relocated (0.75 s), the SDK start
+sequence runs (`_init_libc0`, `nnosInitialize`, `nninitInitializeSdkModule`, `nninitStartup`, `_init_libc2`, the modules'
+DT_INIT: 5.2 s for main's constructors), `nnMain` is entered, and the game calls nn::oe, nv::InitializeGraphics,
+nn::vi (display, layer, vsync event) answered by nxnative's C. Its nn::fs calls (`MountRom`, `OpenFile`, `ReadFile`)
+are answered 0 because `hle_fs.c` is not ported, and it goes no further. One guest thread so far; no frame.
+
+Next, in order: (a) nn::fs: `hle_fs.c` with shims for the Darwin calls and a file-system back end that serves the
+RomFS out of the `.nup` container (nxweb's reader; the container is 25 GB and cannot be unpacked on this disk);
+(b) the 49 undefined symbols, by seam (loader services `dm_sdk_major` / `module_sym` / `nro_*`, audio out
+`dm_pcmout_*`, video decoders, the front end); (c) `hle_nvn.c`'s recorder against nxweb's replayer; (d) the boot harness
+as a page. The benchmark (vm/ctl/threadbench/RESULTS.md) says where this model pays: boot and loading screens.
+
+
 Status: design for a spike (2026-11-12). What is proven is in REPORT.md; everything else here is a proposal.
 Paths: `nxnative/` = `vm/ctl/repos/nxnative` (commit dbf84998), `nxweb/` = the nxweb working tree (2610451).
 
@@ -176,7 +203,7 @@ Sizes: S = under a day, M = days, L = a week or more, for one person who knows b
 
 1. **Game-scale unit instantiation per thread.** The game has on the order of 10^5 translated functions in thousands
    of units, and every guest thread (20-30) needs its own instances. Memory per instance and compile time per thread
-   are measured only on a synthetic guest (test/scale_units.ts, node: 455,061 instructions = 9.86 MB of wasm in 29
+   are measured only on a synthetic guest (test/scale_units.mts, node: 455,061 instructions = 9.86 MB of wasm in 29
    units cost each further thread 23-126 ms to compile and instantiate, 37-192 ms more on its first run, and 9-16 MB
    of resident memory above an empty worker's 18 MB). The game is 10-50 times that. If V8's cross-isolate code
    sharing does not hold at that size, this alone can sink the route. First thing to

@@ -3,9 +3,9 @@
 // the output (build/game/exefs) is never committed.
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { Nup, NupReader, scanNup } from "/mnt/src/prepare/host/nup.ts";
-import { nodeBytes } from "/mnt/src/prepare/host/nup_node.ts";
-const path = process.argv[2] ?? "/game/zelda-oot.nup", out = process.argv[3] ?? "/ctl/nxem/build/game/exefs";
+import { Nup, NupReader, scanNup } from "/ctl/nxweb-em/src/prepare/host/nup.ts";
+import { nodeBytes } from "/ctl/nxweb-em/src/prepare/host/nup_node.ts";
+const path = process.argv[2] ?? "/game/zelda-oot.nup", out = process.argv[3] ?? "/ctl/nxweb-em/em/build/game/exefs";
 const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 const src = nodeBytes(path);
 const nup = await Nup.open(src, path, sha256 as any);

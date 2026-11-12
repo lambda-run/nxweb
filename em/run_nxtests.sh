@@ -1,7 +1,7 @@
 #!/bin/sh
 # nxnative's own unit tests of the thread core, unchanged, against the ported hle_thread.c under Emscripten pthreads.
 # Usage (in the VM): sh build_nxtests.sh        builds (build.py nxtests) and runs; results in logs/nxtests.log
-R=/ctl/nxem; B=$R/build/nxtests
+R=/ctl/nxweb-em/em; B=$R/build/nxtests
 python3 $R/build.py nxtests || exit 1
 : > $R/logs/nxtests.log
 for t in t_condvar t_condvar_old t_sync_wait t_pollwait t_clockwait; do

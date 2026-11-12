@@ -1,11 +1,11 @@
 #!/bin/sh
-# nxem HLE thunk tests (run in the VM): sh /ctl/nxem/hle/test/run.sh [thunks|all]
+# nxem HLE thunk tests (run in the VM): sh /ctl/nxweb-em/em/hle/test/run.sh [thunks|all]
 #   thunks  generate + compile + link + run t_thunks under node (4 nxnative files unedited + t_marshal.c)
 #   all     generate for every nxnative HLE file and compile every generated translation unit (-c only); prints
 #           which compile. The thunks' compile-time checks (NX_CHK_*) run for every entry of a file that compiles.
 set -e
 . /ctl/emsdk/env.sh > /dev/null 2>&1
-R=/ctl/nxem; N=${NXNATIVE:-/ctl/repos/nxnative/dm}; B=$R/build/hle
+R=/ctl/nxweb-em/em; N=${NXNATIVE:-/ctl/repos/nxnative/dm}; B=$R/build/hle
 CF="-O1 -pthread -D_GNU_SOURCE -sMEMORY64=1 -I$R/hle -I$R/kernel -I$R/kernel/shim -I$R/hle/shim -I$N/host -I$R/build/gen -I$N/gfx/nvn/include -I$N/third_party/libvpx -I$N/third_party/dav1d/include -I$N/third_party/stb_vorbis -Wno-version-check -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-format -Wno-unused-function"
 case "${1:-thunks}" in
 thunks)
