@@ -52,6 +52,7 @@ export interface A64Options {
   nanFix?: boolean;             // ARM NaN generation/propagation (default true)
   rmodeArith?: boolean;         // scalar FP arithmetic honours FPCR.RMode (default true)
   depthLimit?: number;          // nested guest calls before a call unwinds through run() (default 160, 0 = off)
+  registryOnly?: boolean;       // translate and assign table slots only: units are not compiled or instantiated here (em/)
   shared?: boolean;             // memory is shared: modules import it as shared, exclusives and LDAR/STLR are atomic
   cntYield?: boolean;           // `mrs cntpct_el0` is a yield point (see README)
   profile?: boolean;            // translated code counts events (calls, exits, write-backs, instructions by class): profileCounters()
@@ -440,14 +441,19 @@ export class A64Host {
       break;
     }
     if (base < 0) { base = this.table.length; this.table.grow(pcs.length); }
-    const mod = new WebAssembly.Module(bytes as unknown as BufferSource);
-    new WebAssembly.Instance(mod, {
-      ...this.unitImports,
-      env: { ...(this.unitImports.env as object), table_base: new WebAssembly.Global({ value: "i32", mutable: false }, base) },
-    });
+    // registryOnly (em/: the units run in other threads, each with its own table and CPU state): this realm only
+    // translates and keeps the books, so it neither compiles nor instantiates what it never runs
+    let mod: WebAssembly.Module | undefined;
+    if (!this.opts.registryOnly) {
+      mod = new WebAssembly.Module(bytes as unknown as BufferSource);
+      new WebAssembly.Instance(mod, {
+        ...this.unitImports,
+        env: { ...(this.unitImports.env as object), table_base: new WebAssembly.Global({ value: "i32", mutable: false }, base) },
+      });
+    }
     const u: A64Unit = { tableBase: base, pcs, side, bytes: this.keepBytes ? bytes : null, insns, cached };
     this.units.push(u);
-    this.onUnit?.(u, mod);
+    if (mod) this.onUnit?.(u, mod);
     for (let i = 0; i < pcs.length; i++) {
       const pc = pcs[i];
       if (pc === 0xFFFFFFFF) continue;          // stub: stays on the trampoline path

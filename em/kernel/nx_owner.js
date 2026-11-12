@@ -46,6 +46,37 @@ addToLibrary({
     };
     serve();
   },
+  // Compiled modules for the workers. The main thread compiles every unit of the registry once (asynchronously) and posts
+  // the compiled module to every worker; a worker takes it in when it is in its event loop, that is before it runs a
+  // thread, so a guest thread that starts later finds in NXSHARED what was published before. upTo: the registry count
+  // to cover now; cell: an int32 the caller waits on, set to 1 when those are compiled and posted. Afterwards the main
+  // thread looks for new units every 100 ms.
+  nx_units_share__proxy: 'sync',
+  nx_units_share__sig: 'vid',
+  nx_units_share__deps: ['$PThread', 'nx_unit_count', 'nx_unit_bytes', 'nx_unit_len'],
+  nx_units_share: function(upTo, cell) {
+    const S = globalThis.NXSHARE || (globalThis.NXSHARE = { mods: [], sent: new Map(), next: 0, busy: null, bytes: 0, ms: 0 });
+    const workers = () => PThread.unusedWorkers.concat(PThread.runningWorkers);
+    const post = () => { for (const w of workers()) { let n = S.sent.get(w) || 0; for (; n < S.mods.length; n++) w.postMessage({ nxUnit: n, module: S.mods[n] }); S.sent.set(w, n); } };
+    const pump = async () => {
+      const t0 = performance.now();
+      while (S.next < _nx_unit_count()) {
+        const hi = Math.min(_nx_unit_count(), S.next + 16), jobs = [];
+        for (let k = S.next; k < hi; k++) { const p = _nx_unit_bytes(k), n = _nx_unit_len(k); S.bytes += n; jobs.push(WebAssembly.compile(HEAPU8.slice(p, p + n))); }
+        const got = await Promise.all(jobs);
+        for (const m of got) S.mods.push(m);
+        S.next = hi; post();
+      }
+      S.ms += performance.now() - t0;
+    };
+    const run = () => { if (!S.busy) S.busy = pump().then(() => { S.busy = null; post(); }, (e) => { S.busy = null; err('[RED] nx_units_share: ' + (e && e.message || e)); }); return S.busy; };
+    if (!S.timer) {
+      S.timer = setInterval(() => { if (S.next < _nx_unit_count()) run(); else post(); }, 100);   // (post: a worker made since)
+      const load = PThread.loadWasmModuleToWorker;   // a new worker gets what exists right after it is told to load
+      PThread.loadWasmModuleToWorker = function (w) { const r = load.apply(PThread, arguments); S.sent.set(w, 0); post(); return r; };
+    }
+    run().then(() => { if (cell) { err('[owner] compiled modules: ' + S.mods.length + ' units, ' + (S.bytes / 1048576).toFixed(1) + ' MB, compiled once on the main thread in ' + S.ms.toFixed(0) + ' ms and posted to ' + workers().length + ' workers'); Atomics.store(HEAP32, cell / 4, 1); Atomics.notify(HEAP32, cell / 4); } });
+  },
   // why the harness stopped, to the page (its status line and live status); runs on the main thread
   nx_js_stopped__proxy: 'sync',
   nx_js_stopped__sig: 'vd',

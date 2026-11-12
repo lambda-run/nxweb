@@ -7,6 +7,7 @@
 #include "nx_guest.h"
 #include <stdatomic.h>
 #include <stdarg.h>
+#include <time.h>
 #include <emscripten.h>
 
 int svc_thread(int num, uint64_t *regs);
@@ -21,9 +22,24 @@ void nx_native_wait(int entering) { dm_thread_native_wait(entering); }
 
 // ---- SVC entry: regs is the thread's context block (nxweb docs/CONTRACT.md: x0..x30 at +0, sp +0xF8, pc +0x100)
 _Atomic uint64_t nx_stat_svcs;
+_Atomic uint64_t nx_svc_by_num[128];   // every SVC by number (the progress line shows which ones a spinning thread makes)
+_Atomic uint64_t nx_stat_yield_floor;  // yields this port put to sleep (below)
+// A run of yields with nothing else in between. hle_thread.c backs off when the yielding loop stands still (the same
+// callee-saved registers at each yield) or reads the clock; a loop whose registers move at every pass (a counter) it
+// takes for progress and lets spin, which costs nxnative one native core. Here every yield is an SVC through the
+// thread's JS and the machine's cores are shared with the browser, so a run that has lasted 2 ms sleeps 100 us a pass.
+static __thread uint64_t t_yield_t0; static __thread int t_yielding;
+static void yield_floor(int num, const uint64_t *regs) {
+    if (num != 0x0B || (int64_t)regs[0] > 0) { t_yielding = 0; return; }
+    uint64_t now = now_ns();
+    if (!t_yielding) { t_yielding = 1; t_yield_t0 = now; return; }
+    if (now - t_yield_t0 > 2000000) { struct timespec ts = {0, 100000}; nanosleep(&ts, 0); atomic_fetch_add_explicit(&nx_stat_yield_floor, 1, memory_order_relaxed); }
+}
 EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)regs_;
     atomic_fetch_add_explicit(&nx_stat_svcs, 1, memory_order_relaxed);
+    if (num >= 0 && num < 128) atomic_fetch_add_explicit(&nx_svc_by_num[num], 1, memory_order_relaxed);
+    yield_floor(num, regs);
     thr_svc_enter(regs, regs[32]);
     if (!svc_thread(num, regs) && !nx_svc_other(num, regs)) {
         LOG("[RED] svc %#x at pc %#llx (x0=%#llx x1=%#llx x2=%#llx): not implemented", num, (unsigned long long)regs[32], (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2]);

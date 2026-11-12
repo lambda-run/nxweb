@@ -37,6 +37,26 @@ static void *watchdog(void *arg) { (void)arg; for (int t = 0; t < g_secs; t += 1
         if (rss + swp > lim) { char w[96]; snprintf(w, sizeof w, "memory limit: %d MB resident + %d MB swapped is over %d MB", rss, swp, lim); nx_boot_report(w); emscripten_force_exit(5); }
     } char w[64]; snprintf(w, sizeof w, "the time given (%d s) is over", g_secs); nx_boot_report(w); emscripten_force_exit(0); return NULL; }
 
+static void *guest_main(void *arg) {
+    double *boot = arg; char w[64];
+    guest_thread_init();
+    uint32_t self = svc_thread_main_init();
+    nx_note_thread((uint64_t)boot[39]);
+    uint64_t sp = nx_mem_main_stack(1 << 20);
+    nx_js_guest_setup((double)sp);
+    for (int i = 0; i < (int)boot[40]; i++) {
+        uint64_t pc = (uint64_t)boot[41 + i]; int os = i == (int)boot[38];
+        uint64_t c0 = now_ns();
+        uint64_t r = nx_guest_call(pc, os ? self : 0, 0, 0);
+        int rss, swp; nx_rss_mb(&rss, &swp);
+        LOG("start %d/%d: %s%s returned %#llx after %.0f ms (process %d MB resident)", i + 1, (int)boot[40], nx_where(pc, w, sizeof w), os ? " (nnosInitialize)" : "", (unsigned long long)r, (now_ns() - c0) / 1e6, rss);
+    }
+    LOG("start: entering nnMain at %s", nx_where((uint64_t)boot[39], w, sizeof w));
+    uint64_t io[8] = {0, self, 0, 0, 0, (uint64_t)boot[39], sp};
+    nx_js_guest_run(io);
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     if (argc < 5) die("usage: p4 <exefs dir> <translator> <helpers> <loader> [seconds]");
     g_secs = argc > 5 ? atoi(argv[5]) : 120;
@@ -63,22 +83,13 @@ int main(int argc, char **argv) {
     memset((void *)(uintptr_t)STAGING, 0, at - STAGING);
     printf("loaded and relocated in %.0f ms; start list of %d calls, nnMain at %#llx\n", (now_ns() - t0) / 1e6, (int)boot[40], (unsigned long long)boot[39]);
     if (!boot[39]) die("no nnMain in the modules");
-    uint32_t self = svc_thread_main_init();
-    nx_note_thread((uint64_t)boot[39]);
-    uint64_t sp = nx_mem_main_stack(1 << 20);
-    nx_js_guest_setup((double)sp);
+    // the cached units are in the registry: every worker gets them compiled before a guest thread runs on it. The game's
+    // main thread therefore runs on a pthread started now, not on this one (which was running, and got none)
+    nx_units_distribute();
     { pthread_t wd; pthread_create(&wd, NULL, watchdog, NULL); }
-    char w[64];
-    for (int i = 0; i < (int)boot[40]; i++) {
-        uint64_t pc = (uint64_t)boot[41 + i]; int os = i == (int)boot[38];
-        uint64_t c0 = now_ns();
-        uint64_t r = nx_guest_call(pc, os ? self : 0, 0, 0);
-        int rss, swp; nx_rss_mb(&rss, &swp);
-        LOG("start %d/%d: %s%s returned %#llx after %.0f ms (process %d MB resident)", i + 1, (int)boot[40], nx_where(pc, w, sizeof w), os ? " (nnosInitialize)" : "", (unsigned long long)r, (now_ns() - c0) / 1e6, rss);
-    }
-    LOG("start: entering nnMain at %s", nx_where((uint64_t)boot[39], w, sizeof w));
-    uint64_t io[8] = {0, self, 0, 0, 0, (uint64_t)boot[39], sp};
-    nx_js_guest_run(io);
+    pthread_t gm; pthread_attr_t ga; pthread_attr_init(&ga); pthread_attr_setstacksize(&ga, 1 << 20);
+    if (pthread_create(&gm, &ga, guest_main, boot)) die("pthread_create (guest main thread)");
+    pthread_join(gm, NULL);
     nx_boot_report("nnMain returned");
     emscripten_force_exit(0);
 }

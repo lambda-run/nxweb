@@ -53,6 +53,8 @@ int nx_owner_lookup(double name);
 int nx_owner_call(int code, double ctx);
 void nx_owner_stats(double out);
 void nx_owner_serve(double slot);
+void nx_units_share(int up_to, double cell);      // main thread: compile the registry's units once and post them to the workers
+void nx_units_distribute(void);                   // kernel/nx_proc.c: the same, and wait until what is published now has been posted
 void nx_js_stopped(double why);
 int nx_owner_stub(int id);
 void nx_owner_stub_name(int id, double out, int n);
