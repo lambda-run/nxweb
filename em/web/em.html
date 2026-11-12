@@ -134,13 +134,17 @@ function start(file) {
     var o = globalThis.NXOWNER; if (!o) return;
     var now = performance.now(), n = o.presents, threads = 0;
     try { threads = window.Module.nxLiveThreads ? window.Module.nxLiveThreads() : 0; } catch (e) {}
-    var dN = n - last, dT = now - lastT, fps = dN * 1000 / dT; last = n; lastT = now;
+    var last0 = last, dN = n - last, dT = now - lastT, fps = dN * 1000 / dT; last = n; lastT = now;
     // where a frame's time goes, per frame over the last second: the owner thread's part (nxweb's recorder answering NVN
     // calls, of it the replayer's WebGPU work; nn::fs) and the rest, which is guest code and waiting
     // the callers' side of the owner: every guest thread's time from wanting the request slot to having its answer
     // (waiting behind other threads for the slot + the hand-over and the owner's work), summed over threads
     var M0 = window.Module, slot = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     try { if (M0._nx_slot_stats) { if (!window.nxSlotBuf) window.nxSlotBuf = M0._malloc(96); M0._nx_slot_stats(window.nxSlotBuf); slot = Array.from(new Float64Array(M0.HEAPU8.buffer, window.nxSlotBuf, 11)); } } catch (e) {}
+    var tsplit = "", coresBusy = -1;
+    try { if (M0._nx_thread_split) { if (!window.nxSplitBuf) window.nxSplitBuf = M0._malloc(1024); coresBusy = M0._nx_thread_split(window.nxSplitBuf, 1024, n - last0, 0);
+        var u8s = M0.HEAPU8, e0 = window.nxSplitBuf, e1 = e0; while (u8s[e1] && e1 < e0 + 1023) e1++; tsplit = new TextDecoder().decode(u8s.slice(e0, e1)); } } catch (e) {}
+    window.nxem.threadsRunning = +coresBusy.toFixed(2); window.nxem.threadSplit = tsplit;
     var gd = [0, 0, 0, 0];
     try { if (M0._nx_gfx_stats) { if (!window.nxGfxBuf) window.nxGfxBuf = M0._malloc(32); M0._nx_gfx_stats(window.nxGfxBuf); gd = Array.from(new Float64Array(M0.HEAPU8.buffer, window.nxGfxBuf, 4)); } } catch (e) {}
     var g = o.gfx, cur = { gd: gd, gl: o.glStats ? [o.glStats.served, o.glStats.execMs] : [0, 0], nvnNs: o.hostNs, gpuMs: g ? g.times.execMs : 0, fsNs: o.stats.fsNs, calls: o.hostCalls + o.stats.fsCalls, slot: slot }, split = "";
@@ -157,7 +161,7 @@ function start(file) {
     window.nxem.presents = n; window.nxem.threads = threads; window.nxem.fps = fps; window.nxem.label = rtLabel(threads);
     if (n > 0 && !window.nxem.reason && window.nxem.state !== "aborted" && window.nxem.state !== "exited") { window.nxem.state = "running"; $("stage").textContent = "running"; }
     $("rt").textContent = rtLabel(threads);
-    $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads) + split;
+    $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads) + split + (coresBusy >= 0 ? " · guest threads running at once " + coresBusy.toFixed(2) + " · per frame ms: " + tsplit : "");
   }, 1000);
 }
 </script>

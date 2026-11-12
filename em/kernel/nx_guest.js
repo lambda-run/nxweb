@@ -51,12 +51,14 @@ addToLibrary({
 
   // the `translate` import of this worker's core: called through table slot 0 when the pc map has no function for pc,
   // or when it names a slot this worker has not filled yet (every empty slot holds the same trampoline)
-  $nxTranslate__deps: ['$nxNeed', '$nxPcMap', 'nx_translate'],
+  $nxTranslate__deps: ['$nxNeed', '$nxPcMap', 'nx_translate', 'nx_acc_add'],
   $nxTranslate: function(t, pcBig) {
     const pc = Number(BigInt.asUintN(64, pcBig));
     let idx = nxPcMap(pc);
     if (idx > 1 && (t.table.get(idx) !== t.tramp || nxNeed(t, idx))) return idx;
+    const tr0 = performance.now();
     idx = _nx_translate(pc);   // behind the translator's lock: what it returns is published
+    _nx_acc_add(3, (performance.now() - tr0) * 1e6);
     if (idx <= 1) throw new Error('no translatable code at pc 0x' + pc.toString(16));
     if (!nxNeed(t, idx)) throw new Error('the unit of table slot ' + idx + ' (pc 0x' + pc.toString(16) + ') is not in the registry');
     return idx;
@@ -158,16 +160,18 @@ addToLibrary({
   // put into the memory (owner/owner.ts GFX_MOD), over the shared memory. Its imports: gfx_exec (the replayer), the
   // stub of an entry point and more table memory are the owner's, asked through the lock holder's request words at
   // NXG; a callback into guest code runs here, on the calling thread. Addresses are i64 in this build (nx.abi).
-  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'nx_core_out', 'malloc'],
+  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'nx_gfx_flush_ns', 'nx_core_out', 'malloc'],
   $nxGfx: function() {
     const G = 0x1FF1F000, MOD = 0x1FF20000, s = (G + 8) / 4, f = G / 8, t0 = performance.now();
     const mod = new WebAssembly.Module(HEAPU8.slice(MOD, MOD + HEAPU32[(G + 40) / 4]));
     const ask = (kind, a, b) => {
+      const w0 = performance.now();
       HEAP32[s + 1] = kind; HEAPF64[f + 2] = a; HEAPF64[f + 3] = b;
       Atomics.store(HEAP32, s, 1); Atomics.notify(HEAP32, s);
       for (let spin = 0; Atomics.load(HEAP32, s) !== 2; spin++) if (spin > 4000) { if (spin === 4001) _nx_core_out(); Atomics.wait(HEAP32, s, 1, 5); }   // (a flush is a millisecond or more: the thread's virtual core is free meanwhile)
       const r = HEAPF64[f + 4];
       Atomics.store(HEAP32, s, 0);
+      _nx_gfx_flush_ns((performance.now() - w0) * 1e6);
       return r;
     };
     const blk = _malloc(48), pages = HEAPU8.length / 65536;

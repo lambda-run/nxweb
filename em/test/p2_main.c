@@ -197,6 +197,8 @@ int main(int argc, char **argv) {
         }
         printf("MARK end\n"); fflush(stdout); usleep(700000);
     }
+    { double nx_thread_split(double, int, double, int); char sp[900]; double c = nx_thread_split((double)(uintptr_t)sp, sizeof sp, 0, 1);
+      printf("thread time accounting (kernel/nx_proc.c), per second over the whole run: %.2f guest threads running at once; %s\n", c, sp); }
     printf(g_fail ? "P2 FAIL\n" : "P2 PASS\n");
     fflush(stdout);
     emscripten_force_exit(g_fail);

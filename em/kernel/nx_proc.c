@@ -152,10 +152,50 @@ void nx_svc_counts(char *out, size_t n) {
 }
 
 // ---- where each guest thread is, for the report: the pc at its last slice end, and the host call it is inside
-static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32_t handle; } g_trk[64];
+// Where each guest thread's wall-clock time goes (nx_acc_add; the page's status line and the harness print the main
+// thread's and the busiest others' per frame: a sum over threads hides the critical path). Guest code is what is left
+// of the wall clock. The categories from A_WAIT0 on are time the thread did not run: "host cores busy" is the rest.
+enum { A_GFX_CALL, A_HLE, A_SVC, A_TRANSLATE, A_WAIT0, A_SLEEP = A_WAIT0, A_WAITSYNC, A_LOCK, A_CV, A_ADDR, A_GFX_LOCK, A_FLUSH, A_OWNER, A_FS, A_N };
+static const char *const g_acc_name[A_N] = {"NVN", "host", "svc", "translate", "sleep/yield", "wait-sync", "lock", "condvar", "wait-addr", "NVN-lock", "flush", "owner", "fs"};
+enum { NTRK = 256 };
+static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32_t handle; _Atomic uint64_t acc[A_N], born; uint64_t seen[2][A_N], seen_at[2], seen_slices[2]; char name[28]; } g_trk[NTRK];
 static _Atomic int g_ntrk; static __thread int t_trk = -1;
+static int trk(void);
+int thr_name_of(pthread_t pt, char *out, size_t n);
+EMSCRIPTEN_KEEPALIVE void nx_acc_add(int cat, double ns) { if (cat >= 0 && cat < A_N && ns > 0) atomic_fetch_add_explicit(&g_trk[trk()].acc[cat], (uint64_t)ns, memory_order_relaxed); }
+// out: one line. frames: presents in the interval (0: per second). Called from one thread at a time (the page's status timer, the harness's progress)
+EMSCRIPTEN_KEEPALIVE double nx_thread_split(double out_, int n, double frames, int who) {   // who: 0 the page's status timer, 1 the progress line (each has its own "since last time")
+    char *out = (char *)(uintptr_t)out_; size_t o = 0; uint64_t now = nx_now_ns(); double busy_all = 0, wall_all = 0;
+    struct { int i; double busy, wall, d[A_N]; } top[4] = {{-1}, {-1}, {-1}, {-1}};
+    for (int i = 0; i < g_ntrk && i < NTRK; i++) {
+        uint64_t born = g_trk[i].born, at = g_trk[i].seen_at[who] ? g_trk[i].seen_at[who] : born; if (!born || now <= at) continue;
+        double wall = (double)(now - at), blocked = 0, d[A_N];
+        for (int c = 0; c < A_N; c++) { uint64_t v = g_trk[i].acc[c]; d[c] = (double)(v - g_trk[i].seen[who][c]); g_trk[i].seen[who][c] = v; if (c >= A_WAIT0) blocked += d[c]; }
+        g_trk[i].seen_at[who] = now;
+        { uint64_t sl = g_trk[i].slices; double any = 0; for (int c = 0; c < A_N; c++) any += d[c];   // a pool worker without a guest thread (or a thread that has exited) did nothing at all: not counted
+          int idle = any == 0 && sl == g_trk[i].seen_slices[who]; g_trk[i].seen_slices[who] = sl; if (idle) continue; }
+        double busy = wall > blocked ? wall - blocked : 0; busy_all += busy; wall_all = wall > wall_all ? wall : wall_all;
+        int slot = g_trk[i].handle == 0x1001 ? 0 : -1;
+        if (slot < 0) for (int k = 1; k < 4; k++) if (top[k].i < 0 || busy > top[k].busy) { for (int j = 3; j > k; j--) top[j] = top[j - 1]; slot = k; break; }
+        if (slot >= 0) { top[slot].i = i; top[slot].busy = busy; top[slot].wall = wall; memcpy(top[slot].d, d, sizeof d); }
+    }
+    double per = frames > 0 ? frames : wall_all / 1e9; if (per <= 0) per = 1;
+    for (int k = 0; k < 4 && o + 200 < (size_t)n; k++) {
+        if (top[k].i < 0) continue;
+        double other = 0; for (int c = 0; c < A_N; c++) other += top[k].d[c];
+        o += (size_t)snprintf(out + o, (size_t)n - o, "%s%s: guest %.1f", k ? " | " : "", g_trk[top[k].i].name[0] ? g_trk[top[k].i].name : "?", (top[k].wall > other ? top[k].wall - other : 0) / 1e6 / per);
+        for (int c = 0; c < A_N && o + 40 < (size_t)n; c++) if (top[k].d[c] / 1e6 / per >= 0.05) o += (size_t)snprintf(out + o, (size_t)n - o, " %s %.1f", g_acc_name[c], top[k].d[c] / 1e6 / per);
+    }
+    if (o < (size_t)n) out[o] = 0;
+    return wall_all > 0 ? busy_all / wall_all : 0;   // guest threads running at once, on average: host cores busy with them
+}
 uint32_t thr_cur_handle(void);
-static int trk(void) { if (t_trk < 0) { t_trk = atomic_fetch_add(&g_ntrk, 1) & 63; } g_trk[t_trk].handle = thr_cur_handle(); return t_trk; }
+static int trk(void) {
+    if (t_trk < 0) { t_trk = atomic_fetch_add(&g_ntrk, 1) & (NTRK - 1); g_trk[t_trk].born = nx_now_ns(); }
+    uint32_t h = thr_cur_handle();
+    if (g_trk[t_trk].handle != h || !g_trk[t_trk].name[0]) { g_trk[t_trk].handle = h; char nm[96] = ""; thr_name_of(pthread_self(), nm, sizeof nm); snprintf(g_trk[t_trk].name, sizeof g_trk[t_trk].name, "%s", nm); }
+    return t_trk;
+}
 EMSCRIPTEN_KEEPALIVE void nx_note_pc(double pc) { int k = trk(); g_trk[k].pc = (uint64_t)pc; g_trk[k].slices++; nx_core_yield(); }   // a slice end: a waiting thread of this core gets it
 
 // ---- the last SVCs and host calls of each thread (as nxweb's fault report keeps them): dumped for the thread that aborts
@@ -336,16 +376,18 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     }
     { void nx_yield_reset(void); nx_yield_reset(); }   // a thread that makes host calls between its yields is working
     int k = trk(); g_trk[k].in_host = (int)id + 1;
+    uint64_t hc0 = nx_now_ns(); int hcat = A_HLE;
     int direct = own > 0 ? g_stub_direct[id] : -1;
     if (!direct) { direct = nx_gfx_enabled() ? nx_owner_stub_direct((int)id) : 0; g_stub_direct[id] = direct = direct ? direct : -1; }
-    if (direct > 0) nx_gfx_direct(direct, regs);
-    else if (own > 0 && own >> 24 == 1 && nx_fs_enabled()) { owner_serve_start(); nx_core_release(); nx_fs_direct(own & 0xFFFFFF, regs); }
-    else if (own > 0) { if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
+    if (direct > 0) { hcat = -1; nx_gfx_direct(direct, regs); }   // (it accounts for itself: the call, the lock, the flush)
+    else if (own > 0 && own >> 24 == 1 && nx_fs_enabled()) { hcat = A_FS; owner_serve_start(); nx_core_release(); nx_fs_direct(own & 0xFFFFFF, regs); }
+    else if (own > 0) { hcat = own >> 24 == 1 ? A_FS : A_OWNER; if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
                    nx_owner_do(own, regs); }
     else if (e && !(e->flags & NX_HLE_HAND)) { if (nx_core_excl()) nx_core_release();   // (host code may wait in ways the kernel does not see: the audio renderer's host call never returns, nnsocketPoll sleeps. Its core is free meanwhile)
                                                e->thunk(regs); }   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;
+    if (hcat >= 0) atomic_fetch_add_explicit(&g_trk[k].acc[hcat], nx_now_ns() - hc0, memory_order_relaxed);
     nx_ring_note(1, (int)id, in, regs[0], in[0] == regs[0] ? regs[30] : regs[30]);
     nx_core_ensure();   // back to guest code
 }
@@ -385,7 +427,7 @@ static void smaps_report(void) {
     LOG("memory by mapping: linear memory %ld MB; executable (compiled code) %ld MB; anonymous >= 64 MB: %ld MB in %d; 1..64 MB: %ld MB in %d; < 1 MB: %ld MB in %d; files %ld MB", lin >> 10, exec >> 10, big >> 10, nbig, mid >> 10, nmid, small >> 10, nsmall, file >> 10);
 }
 static void trk_dump(void) {
-    for (int i = 0; i < g_ntrk && i < 64; i++) {
+    for (int i = 0; i < g_ntrk && i < NTRK; i++) {
         char w[64]; int h = g_trk[i].in_host;
         LOG("  thread %#x: %llu slices of translated code, last slice ended at %s%s%s", g_trk[i].handle, (unsigned long long)g_trk[i].slices, nx_where(g_trk[i].pc, w, sizeof w), h ? "; inside host call " : "", h ? g_stub_name[h - 1] : "");
     }
@@ -406,7 +448,7 @@ void nx_progress(void) {
           LOG("[RED] STALL: end of the thread list");
       } }
     struct nx_stats s; nx_get_stats(&s); char w[64] = "?"; uint64_t sl = 0; int h = 0;
-    for (int i = 0; i < g_ntrk && i < 64; i++) if (g_trk[i].handle == 0x1001) { nx_where(g_trk[i].pc, w, sizeof w); sl = g_trk[i].slices; h = g_trk[i].in_host; }
+    for (int i = 0; i < g_ntrk && i < NTRK; i++) if (g_trk[i].handle == 0x1001) { nx_where(g_trk[i].pc, w, sizeof w); sl = g_trk[i].slices; h = g_trk[i].in_host; }
     int rss, swp; nx_rss_mb(&rss, &swp);
     LOG("memory: process %d MB resident (of it the linear memory %d MB) + %d MB swapped; guest: alias region %llu MB mapped, heap %llu MB set; translated wasm %llu MB", rss, linear_rss_mb(), swp, (unsigned long long)(nx_mem_alias_mapped() >> 20), (unsigned long long)(nx_mem_heap_size() >> 20), (unsigned long long)(s.unit_bytes >> 20));
     { extern _Atomic uint64_t nx_svc_by_num[128], nx_stat_yield_parks; uint64_t nx_stat_yield_floor = nx_stat_yield_parks; static uint64_t prev[128]; int top[3] = {0, 0, 0}; uint64_t d[128];
@@ -428,6 +470,8 @@ void nx_progress(void) {
       char cs[64]; if (cores >= 0) snprintf(cs, sizeof cs, "%.2f host cores busy", cores); else snprintf(cs, sizeof cs, "host CPU not known here (a page cannot ask)");
       LOG("since the last line: %s; polling threads parked %llu times, %.1f ms in all (NX_POLL_PARK_US)", cs, (unsigned long long)(a - pp), (b - pn) / 1e6);
       pp = a; pn = b; cpu0 = cpu >= 0 ? (uint64_t)cpu : 0; wall0 = wall; }
+    { static double pres0; char sp[900]; double cores = nx_thread_split((double)(uintptr_t)sp, sizeof sp, os[7] - pres0, 1); pres0 = os[7];
+      LOG("guest threads: %.2f running at once on average since the last line; ms per frame (per second when none), the main thread then the three busiest: %s", cores, sp); }
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }
@@ -470,7 +514,7 @@ void nx_boot_report(const char *why) {
         if (!g_stub_calls[i] || g_stub_owner[i] > 0 || (pass == 0) != (g_stub_ent[i] == NULL)) continue;
         if (pass == 0) { LOG("  not ported: %s x%u", g_stub_name[i], g_stub_calls[i]); n++; }
     }
-    for (int i = 0; i < g_ntrk && i < 64; i++) {
+    for (int i = 0; i < g_ntrk && i < NTRK; i++) {
         char w[64]; int h = g_trk[i].in_host;
         LOG("  thread %#x: %llu slices of translated code, last slice ended at %s%s%s", g_trk[i].handle, (unsigned long long)g_trk[i].slices, nx_where(g_trk[i].pc, w, sizeof w), h ? "; inside host call " : "", h ? g_stub_name[h - 1] : "");
     }

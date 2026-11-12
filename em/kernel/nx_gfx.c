@@ -20,7 +20,8 @@
 #define GL_ON ((_Atomic uint32_t *)(uintptr_t)(NXG + 44))
 static uint32_t g_depth;   // the holder's
 static _Atomic uint64_t g_calls, g_ns, g_contended, g_lock_ns;
-static __thread uint32_t t_me;
+static __thread uint32_t t_me; static __thread uint64_t t_flush_ns;
+EMSCRIPTEN_KEEPALIVE void nx_gfx_flush_ns(double ns) { t_flush_ns += (uint64_t)ns; }   // kernel/nx_guest.js: the time a flush waited for the owner
 uint64_t nx_now_ns(void);
 void nx_core_release(void);
 void nx_js_gfx_call(int id, double args);
@@ -65,6 +66,8 @@ void nx_gfx_direct(int code, uint64_t *regs) {
     nx_js_gfx_call(id, (double)(uintptr_t)a);
     nx_gfx_unlock();
     if (abi & 16) { regs[38] = a[8]; regs[39] = 0; } else regs[0] = a[16];
+    { void nx_acc_add(int, double); uint64_t t2 = nx_now_ns(), fl = t_flush_ns; t_flush_ns = 0;   // (kernel/nx_proc.c: 0 NVN, 9 NVN-lock, 10 flush)
+      nx_acc_add(9, (double)(t1 - t0)); nx_acc_add(10, (double)fl); nx_acc_add(0, (double)(t2 - t1 > fl ? t2 - t1 - fl : 0)); }
     atomic_fetch_add_explicit(&g_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_ns, nx_now_ns() - t0, memory_order_relaxed); atomic_fetch_add_explicit(&g_lock_ns, t1 - t0, memory_order_relaxed);
 }
 // The recorder's callback into guest code (gfx_guest_call: the command memory callbacks), on the thread that is in the
