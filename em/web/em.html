@@ -21,6 +21,8 @@
 <script>
 // The Emscripten runtime's page: nxnative's C under real threads, nxweb's translator, file system, recorder and
 // WebGPU replayer. ?ndve=off: without nxweb's stand-in for the movie upscaler (on by default: ?ndve=bypass is accepted too).
+// ?logto=<url>: live log and status to a receiver. ?shaderlog=1: the shader store's line per shader. No memory limit
+// applies in a browser (the harness's own is for Node in the shared VM, where it can read the process's size).
 // ?secs=N: how long the harness runs before it prints its report (default: a day).
 // ?auto=1: start at once with the game the nxweb page was last given (its stored file handle), when the browser still
 // grants reading it without a click ("allow on every visit").
@@ -28,15 +30,25 @@ var RT_KIND = "C/C++ (nxnative) → Emscripten";
 var rtLabel = function (threads) { return "rt " + RT_KIND + " · " + (navigator.gpu ? "WebGPU" : "no WebGPU") + " · " + threads + " real threads"; };
 var $ = function (id) { return document.getElementById(id); }, q = new URLSearchParams(location.search);
 var lines = [], red = 0;
+var feed = [], stopped = "", stamp = "";
 var say = function (s) {
+  if (!q.get("shaderlog") && /^\[owner\] shader [0-9a-f]+ (arrived|is not in)/.test(s)) return;   // the shader store's line per shader: ?shaderlog=1
+  feed.push(s);
   var d = document.createElement("div"); d.textContent = s; if (/\[RED\]/.test(s)) { d.className = "red"; red++; }
   var l = $("log"); l.appendChild(d); if (l.childNodes.length > 600) l.removeChild(l.firstChild); l.scrollTop = l.scrollHeight;
   lines.push(s); if (lines.length > 2000) lines.shift();
   console.log(s);
 };
-window.nxem = { lines: lines, state: "idle", presents: 0, threads: 0, fps: 0, label: rtLabel(0), red: function () { return red; } };
+window.nxem = { lines: lines, state: "idle", reason: "", presents: 0, threads: 0, fps: 0, label: rtLabel(0), red: function () { return red; } };
 $("rt").textContent = rtLabel(0);
-fetch("build.json").then(function (r) { return r.json(); }).then(function (b) { $("stamp").textContent = "em " + b.rev + " · " + b.built; }, function () {});
+fetch("build.json").then(function (r) { return r.json(); }).then(function (b) { stamp = "em " + b.rev + " · " + b.built; $("stamp").textContent = stamp; }, function () {});
+// ?logto=<url>: new log lines to <url>/append/em.live.log and the status to <url>/em.live.status.json every 3 s (the
+// receiver of the nxweb page's ?logto=, /ctl/recv.mjs)
+if (q.get("logto")) setInterval(function () {
+  var u = q.get("logto").replace(/\/$/, ""), n = window.nxem;
+  if (feed.length) { var body = feed.join("\n") + "\n"; feed = []; fetch(u + "/append/em.live.log", { method: "POST", body: body }).catch(function () {}); }
+  fetch(u + "/em.live.status.json", { method: "POST", body: JSON.stringify({ at: new Date().toISOString(), build: stamp, state: n.state, reason: n.reason, frame: n.presents, fps: Math.round(n.fps * 10) / 10, threads: n.threads, label: n.label, red: red }) }).catch(function () {});
+}, 3000);
 if (!crossOriginIsolated) say("[RED] page: not cross-origin isolated: no shared memory, the runtime cannot start");
 addEventListener("error", function (e) { say("[RED] page error: " + e.message); });
 addEventListener("unhandledrejection", function (e) { say("[RED] rejection: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason)); });
@@ -72,9 +84,10 @@ function start(file) {
   window.Module = {
     arguments: ["/exefs", "/rt/translator64.shared.wasm", "/rt/helpers64.shared.wasm", "/rt/loader64.wasm", q.get("secs") || "86400"],
     print: say, printErr: say,
-    onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; },
+    onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; if (!window.nxem.reason) Module.nxStopped("abort() in host code: " + w); },
+    nxStopped: function (why) { if (window.nxem.reason) return; window.nxem.reason = why; $("stage").textContent = "stopped: " + why; $("stage").style.color = "#f66"; },
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
-    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", stage: function (t) { $("stage").textContent = t; window.nxem.state = t; } },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
   };
   var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s);
   // input: the keyboard and the first controller, as the nxweb page maps them (web/main.ts): Z = A, X = B, C = X, V = Y,
@@ -109,7 +122,7 @@ function start(file) {
     try { threads = window.Module.nxLiveThreads ? window.Module.nxLiveThreads() : 0; } catch (e) {}
     var fps = (n - last) * 1000 / (now - lastT); last = n; lastT = now;
     window.nxem.presents = n; window.nxem.threads = threads; window.nxem.fps = fps; window.nxem.label = rtLabel(threads);
-    if (n > 0 && window.nxem.state !== "aborted" && window.nxem.state !== "exited") { window.nxem.state = "running"; $("stage").textContent = "running"; }
+    if (n > 0 && !window.nxem.reason && window.nxem.state !== "aborted" && window.nxem.state !== "exited") { window.nxem.state = "running"; $("stage").textContent = "running"; }
     $("rt").textContent = rtLabel(threads);
     $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads);
   }, 1000);

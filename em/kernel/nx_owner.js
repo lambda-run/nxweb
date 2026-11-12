@@ -46,6 +46,11 @@ addToLibrary({
     };
     serve();
   },
+  // why the harness stopped, to the page (its status line and live status); runs on the main thread
+  nx_js_stopped__proxy: 'sync',
+  nx_js_stopped__sig: 'vd',
+  nx_js_stopped__deps: ['$UTF8ToString'],
+  nx_js_stopped: function(why) { if (Module.nxStopped) Module.nxStopped(UTF8ToString(why)); },
   nx_owner_stats__proxy: 'sync',
   nx_owner_stats__sig: 'vd',
   nx_owner_stats: function(out) { const s = globalThis.NXOWNER && globalThis.NXOWNER.stats; if (!s) return;

@@ -2,14 +2,16 @@
 // Each worker keeps ONE instance of nxweb's translated code: its own function table, its own core module instance
 // (the CPU state is that instance's wasm globals) and its own instance of every unit, all on the one shared memory
 // (Emscripten's wasmMemory). Table indices are the same in every worker, so the pc map in the memory serves all.
-// NXA64 is nxweb's src/glue/a64_host.ts + rt_layout.ts, bundled unchanged (build_p2.sh) and included as --pre-js.
+// nxLoadA64() gives nxweb's src/glue/a64_host.ts, rt_layout.ts and loader glue, bundled unchanged (build.py) as a
+// --pre-js. Only the translator thread's realm runs it: the script is part of every worker's source, and every guest
+// thread is a worker, so what a guest thread needs of it (where the pc map is) comes from the shared memory instead.
 addToLibrary({
   $NX: { t: null, host: null, published: 0 },   // pcs >= 0xFFFFFF00 return to the embedder: 0xFFFFFFF0 = thread exit, 0xFFFFFFC0 = return from a host call
 
   // the pc map (two levels; nxweb src/a64/README.md) read from the shared memory: pc -> table index, 0 = not translated
-  $nxPcMap__deps: ['$NX', 'nx_is64'],
+  $nxPcMap__deps: ['$NX', 'nx_is64', 'nx_pcmap_base'],
   $nxPcMap: function(pc) {
-    const lay = NXA64.A64, page = Math.floor(pc / 65536);
+    const lay = NX.lay || (NX.lay = { pcmapBase: _nx_pcmap_base() }), page = Math.floor(pc / 65536);
     if (!_nx_is64()) return HEAPU32[(HEAPU32[(lay.pcmapBase + page * 4) >>> 2] + (pc % 65536 & 0xFFFC)) >>> 2];
     if (pc >= HEAPU8.length) return 0;   // memory64: the first level has 8-byte entries and covers the memory
     return HEAPU32[(Number(HEAPU64[lay.pcmapBase / 8 + page]) + (pc % 65536 & 0xFFFC)) / 4];
@@ -139,10 +141,12 @@ addToLibrary({
   },
 
   // ---- the translator thread's realm
-  nx_js_tr_init__deps: ['$NX', 'nx_mod_set', 'nx_is64', 'malloc', '$nxLoadGame'],
+  nx_js_tr_init__deps: ['$NX', 'nx_mod_set', 'nx_is64', 'nx_pcmap_set', 'malloc', '$nxLoadGame'],
   nx_js_tr_init__sig: 'vpipiddp',
   nx_js_tr_init: function(tr, trLen, hlp, hlpLen, codeLo, codeSize, boot) {
     const stop = (what) => () => { throw new Error('the translator realm does not run guest code (' + what + ')'); };
+    const NXA64 = nxLoadA64();
+    _nx_pcmap_set(NXA64.A64.pcmapBase);
     const host = new NXA64.A64Host(HEAPU8.slice(tr, tr + trLen), HEAPU8.slice(hlp, hlp + hlpLen), {
       memory: wasmMemory, shared: true, layout: Object.assign({}, NXA64.A64, { codeRegionLo: codeLo }),
       mem64: !!_nx_is64(), memoryMaxPages: wasmMemory.buffer.byteLength / 65536,   // no growth: the maximum is the size
@@ -282,7 +286,7 @@ addToLibrary({
   // nninitInitializeSdkModule, nninitStartup, _init_libc2, each module's DT_INIT).
   $nxLoadGame__deps: ['$NX', 'nx_module_add', 'nx_stub_set', 'nx_stub_base_set', 'nx_hle_name_count', 'nx_hle_name_at', 'nx_hle_name_flags', 'malloc', 'free', '$UTF8ToString', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxLoadGame: function(host, B) {
-    const A = NXA64, D = HEAPF64, pages = wasmMemory.buffer.byteLength / 65536;
+    const A = nxLoadA64(), D = HEAPF64, pages = wasmMemory.buffer.byteLength / 65536;
     const cstr = (s) => { const n = lengthBytesUTF8(s) + 1, p = _malloc(n); stringToUTF8(s, p, n); return p; };
     const env = { memory: wasmMemory, memory_size: () => pages, memory_grow: (n) => n ? -1 : pages, debug_string: () => {}, abort: () => { throw new Error('abort in the loader module'); },
                   log: (p, n) => err('[loader] ' + new TextDecoder().decode(HEAPU8.slice(p, p + n))) };

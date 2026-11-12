@@ -53,6 +53,7 @@ int nx_owner_lookup(double name);
 int nx_owner_call(int code, double ctx);
 void nx_owner_stats(double out);
 void nx_owner_serve(double slot);
+void nx_js_stopped(double why);
 int nx_owner_stub(int id);
 void nx_owner_stub_name(int id, double out, int n);
 

@@ -93,6 +93,9 @@ EMSCRIPTEN_KEEPALIVE void nx_mod_set(int which, double p, uint32_t len) { g_wmod
 EMSCRIPTEN_KEEPALIVE double nx_mod_ptr(int which) { return (double)(uintptr_t)g_wmod[which].p; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_mod_len(int which) { return g_wmod[which].len; }
 EMSCRIPTEN_KEEPALIVE int nx_is64(void) { return sizeof(void *) == 8; }
+static std::atomic<double> g_pcmap_base{0};   // where the translator's pc map is (nxweb's layout), for the guest threads' lookups
+EMSCRIPTEN_KEEPALIVE void nx_pcmap_set(double base) { g_pcmap_base.store(base); }
+EMSCRIPTEN_KEEPALIVE double nx_pcmap_base(void) { return g_pcmap_base.load(); }
 void nx_get_stats(struct nx_stats *out) { out->translate_ns = g_translate_ns; out->translate_calls = g_translate_calls; out->unit_bytes = g_unit_bytes; }
 void nx_translator_start(const uint8_t *tr, uint32_t tr_len, const uint8_t *hlp, uint32_t hlp_len, uint64_t code_lo, uint64_t code_size, double *boot) {
     g_translator.start(tr, tr_len, hlp, hlp_len, code_lo, code_size, boot);

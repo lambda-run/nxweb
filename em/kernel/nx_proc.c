@@ -262,10 +262,13 @@ void nx_progress(void) {
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }
 
+char g_stop_why[400];   // the reason in full, when the caller of nx_boot_report has more than its short one (a guest fault's message)
 // ---- what a boot run reports when it ends (by time, by a fault, by the guest)
 void svc_thread_dump(void);
 void nx_boot_report(const char *why) {
     static _Atomic int once; if (atomic_exchange(&once, 1)) return;
+    LOG("[RED] STOPPED: %s (%.1f s after the start)", g_stop_why[0] ? g_stop_why : why, (now_ns() - g_t0_ns) / 1e9);   // the reason first: the dump below is long
+    nx_js_stopped((double)(uintptr_t)(g_stop_why[0] ? g_stop_why : why));
     smaps_report();
     nx_tr_job(5, 0); { double os[12] = {0}; os[11] = 1; nx_owner_stats((double)(uintptr_t)os); }   // where the JS side's memory is
     if (getenv("NX_CACHE")) nx_tr_job(4, 0);   // keep what this run translated
@@ -291,4 +294,5 @@ void nx_boot_report(const char *why) {
         LOG("  thread %#x: %llu slices of translated code, last slice ended at %s%s%s", g_trk[i].handle, (unsigned long long)g_trk[i].slices, nx_where(g_trk[i].pc, w, sizeof w), h ? "; inside host call " : "", h ? g_stub_name[h - 1] : "");
     }
     svc_thread_dump();
+    LOG("[RED] STOPPED: %s", g_stop_why[0] ? g_stop_why : why);   // and last, where a log that scrolled still shows it
 }

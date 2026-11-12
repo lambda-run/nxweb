@@ -85,16 +85,25 @@ def guest(B, mem):
         nm = subprocess.check_output(["llvm-nm", f"{B}/mt.{v}.elf"], text=True)
         open(f"{B}/mt.{v}.add3", "w").write([l.split()[0] for l in nm.splitlines() if l.endswith(" guest_add3")][0] + "\n")
 
+def lazy_bundle(path, name, loader):
+    """A bundle esbuild wrote as `var NAME = (() => {...})();` becomes a function that makes it on first call: the script
+    is in every worker's source, and a worker that never calls the function neither runs nor compiles the bundle."""
+    s = open(path).read(); head = f"var {name} = (() => {{"
+    if head not in s: sys.exit(f"build: {path}: not the bundle shape expected ({head})")
+    s = s.replace('"use strict";\n', "", 1).replace(head, f"var {name}; function {loader}() {{ if ({name}) return {name}; {name} = (() => {{", 1)
+    open(path, "w").write(s.rstrip() + f"\nreturn {name}; }}\n")
+
 def nxweb_parts(B, mem):
     """nxweb's glue this track imports as it is (translator host, layout, loader, the wasm64 calling adapter, the shared
     rewrite), bundled into one script; the translator and helpers as nxweb built them."""
     open(f"{B}/a64_entry.ts", "w").write(f'export {{ A64Host }} from "{W}/src/glue/a64_host.ts";\nexport {{ A64, HOST_END, STUBS, range }} from "{W}/src/glue/rt_layout.ts";\n'
         f'export {{ Loader }} from "{W}/src/loader/host/loader.mts";\nexport {{ instantiate }} from "{W}/src/glue/wasm_abi.ts";\nexport {{ sharedBuild }} from "{W}/src/glue/wasm_shared.ts";\n')
     sh([f"{W}/node_modules/.bin/esbuild", f"{B}/a64_entry.ts", "--bundle", "--format=iife", "--global-name=NXA64", f"--outfile={B}/a64_host.js", "--log-level=warning"])
+    lazy_bundle(f"{B}/a64_host.js", "NXA64", "nxLoadA64")
     x = "64" if mem == 64 else ""
     for n in ("translator", "helpers"): sh(["cp", f"{WB}/runtime/{n}{x}.shared.wasm", f"{B}/{n}.shared.wasm"])
     if mem == 64: sh(["cp", f"{WB}/runtime/loader64.wasm", f"{B}/loader64.wasm"])
-    open(f"{B}/nxweb.rev", "w").write(subprocess.run(["git", "-C", W, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout)
+    open(f"{B}/nxweb.rev", "w").write(subprocess.run(["git", "-c", "safe.directory=*", "-C", W, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout)
 
 # nxnative's HLE files that compile for wasm64 today (tools/hle_inventory.py); thread.c is replaced by kernel/nx_proc.c
 HLE_HOST = ("hle_account hle_audren hle_codec hle_codec_video hle_count hle_fpslock hle_friends hle_glslc hle_guestthread hle_haptics hle_hid hle_mii hle_misc "
@@ -149,6 +158,7 @@ def p4():
     objs = compile_all(KERNEL_C() + SEAM + [f"{R}/test/p4_boot.c"], 64) + hle()
     # the owner realm: nxweb's fs glue, container reader and RomFS device, bundled as they are (node)
     sh([f"{W}/node_modules/.bin/esbuild", f"{R}/owner/owner_node.ts", "--bundle", "--platform=node", "--format=iife", "--global-name=NXOWN", f"--outfile={B}/owner.js", "--log-level=warning"])
+    lazy_bundle(f"{B}/owner.js", "NXOWN", "nxLoadOwn")
     open(f"{B}/owner_pre.js", "w").write(open(f"{B}/owner.js").read() + open(f"{R}/owner/owner_pre.js").read())
     link(objs, f"{B}/p4.js", 64, ["-sERROR_ON_UNDEFINED_SYMBOLS=0", "--js-library", f"{R}/kernel/nx_guest.js", "--js-library", f"{R}/kernel/nx_owner.js", "--pre-js", f"{B}/a64_host.js", "--pre-js", f"{B}/owner_pre.js", f"-sGLOBAL_BASE={14 << 30}", f"-sINITIAL_MEMORY={16 << 30}",
                                   "-sNODERAWFS=1", "-sENVIRONMENT=node,worker", "-sPTHREAD_POOL_SIZE=8", "-sEXPORTED_FUNCTIONS=_main,_malloc,_free", "-sSTACK_SIZE=1048576"])
@@ -159,13 +169,14 @@ def page():
     nxweb_parts(B, 64)
     objs = compile_all(KERNEL_C() + SEAM + [f"{R}/test/p4_boot.c"], 64) + hle()
     sh([f"{W}/node_modules/.bin/esbuild", f"{R}/owner/owner_web.ts", "--bundle", "--platform=browser", "--format=iife", "--global-name=NXOWN", f"--outfile={B}/owner.js", "--log-level=warning"])
+    lazy_bundle(f"{B}/owner.js", "NXOWN", "nxLoadOwn")
     open(f"{B}/owner_pre.js", "w").write(open(f"{B}/owner.js").read() + open(f"{R}/owner/owner_pre_web.js").read())
     link(objs, f"{B}/em.js", 64, ["-sERROR_ON_UNDEFINED_SYMBOLS=0", "--js-library", f"{R}/kernel/nx_guest.js", "--js-library", f"{R}/kernel/nx_owner.js", "--pre-js", f"{B}/a64_host.js", "--pre-js", f"{B}/owner_pre.js",
                                   f"-sGLOBAL_BASE={14 << 30}", f"-sINITIAL_MEMORY={16 << 30}", "-sENVIRONMENT=web,worker", "-sPTHREAD_POOL_SIZE=8", "-sFORCE_FILESYSTEM=1",
                                   "-sEXPORTED_FUNCTIONS=_main,_malloc,_free", "-sEXPORTED_RUNTIME_METHODS=FS", "-sSTACK_SIZE=1048576"])
     sh(["cp", f"{R}/web/em.html", f"{B}/index.html"])
     import json, time
-    rev = subprocess.run(["git", "-C", W, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    rev = subprocess.run(["git", "-c", "safe.directory=*", "-C", W, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     open(f"{B}/build.json", "w").write(json.dumps({"rev": rev, "built": time.strftime("%Y-%m-%d %H:%M")}))
     # the page is served by the nxweb page's server, under /em/ (the one directory of the main checkout's build output this track writes)
     dest = os.environ.get("NXEM_SERVE", "/mnt/build/web/em"); os.makedirs(dest, exist_ok=True)

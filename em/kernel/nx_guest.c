@@ -27,6 +27,7 @@ EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
     thr_svc_enter(regs, regs[32]);
     if (!svc_thread(num, regs) && !nx_svc_other(num, regs)) {
         LOG("[RED] svc %#x at pc %#llx (x0=%#llx x1=%#llx x2=%#llx): not implemented", num, (unsigned long long)regs[32], (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2]);
+        { extern char g_stop_why[400]; snprintf(g_stop_why, 400, "svc %#x at pc %#llx is not implemented", num, (unsigned long long)regs[32]); }
         nx_boot_report("an SVC that is not implemented"); die("svc %#x", num);
     }
     thr_svc_leave();
@@ -36,6 +37,8 @@ EMSCRIPTEN_KEEPALIVE void nx_guest_fault(double pc, double what_) {
     const char *what = (const char *)(uintptr_t)what_;
     module_t *m = module_of((void *)(uintptr_t)pc);
     LOG("[RED] guest fault at pc %#llx (%s+%#llx): %s", (unsigned long long)pc, m ? m->name : "?", (unsigned long long)(m ? (uint64_t)pc - (uint64_t)(uintptr_t)m->base : 0), what);
+    { extern char g_stop_why[400];
+      snprintf(g_stop_why, 400, "guest fault at pc %#llx (%s+%#llx): %s", (unsigned long long)pc, m ? m->name : "?", (unsigned long long)(m ? (uint64_t)pc - (uint64_t)(uintptr_t)m->base : 0), what); }
     nx_boot_report("a guest fault");
     emscripten_force_exit(3);
 }
