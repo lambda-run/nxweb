@@ -188,19 +188,20 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
   });
 
   // ---- shared memory: a misaligned atomic access ----
-  test("an exclusive load at a misaligned address: performed on an unshared memory; on a shared one (RuntimeOptions.shared) the wasm atomic traps and the fault names the guest pc in a red line", async () => {
-    // mov x1, sp; sub x1, x1, #0x3f; ldxr x0, [x1]; mov x0, #0; ret
-    const words = [0x910003E1, 0xD100FC21, 0xC85F7C20, 0xD2800000, 0xD65F03C0], image = new Uint8Array(words.length * 4);
+  test("exclusives and an LSE add at a misaligned address: performed on an unshared memory and on a shared one (RuntimeOptions.shared: under the translator's lock, counted, one informational line, no fault)", async () => {
+    // mov x1, sp; sub x1, x1, #0x3f; mov w3, #5; str w3, [x1]; ldxr w2, [x1]; add w2, w2, #1; stxr w4, w2, [x1]; ldadd w3, w5, [x1]; ldr w6, [x1]; sub w0, w6, #11; add w0, w0, w4; ret
+    const words = [0x910003E1, 0xD100FC21, 0x528000A3, 0xB9000023, 0x885F7C22, 0x11000442, 0x88047C22, 0xB8230025, 0xB9400026, 0x51002CC0, 0x0B040000, 0xD65F03C0], image = new Uint8Array(words.length * 4);
     words.forEach((w, i) => new DataView(image.buffer).setUint32(4 * i, w, true));
-    const rt = new Runtime(env.mods), base: number = (rt as any).nextBase, at = base + 8;
+    const rt = new Runtime(env.mods), base: number = (rt as any).nextBase;
     ok(rt.loadFlat(image, { base, entry: base, stack_top: base + 0x20000 }), "load failed");
     const r = rt.run(), shared = !!rt.opts.shared;
-    if (!shared) { eq(r.stop?.kind, "exit", "unshared: the program runs to its end: " + rt.red.join(" | ")); return ["unshared memory: ldxr at sp - 0x3f is performed, the program exits"]; }
-    eq([r.stop?.kind, r.stop?.fault?.kind], ["fault", "trap"], "shared: the stop");
-    eq(Number(r.stop!.fault!.pc), at, "shared: the fault's pc is the ldxr");
-    const line = rt.red.find(l => l.includes("an atomic access at a misaligned address") && l.includes("guest pc 0x" + at.toString(16)));
-    ok(!!line, "shared: a red line that names the misaligned atomic access and its guest pc: " + rt.red.join(" | "));
-    return ["shared memory: " + line!.slice(0, 200)];
+    eq([r.stop?.kind, Number(r.stop?.code ?? -1)], ["exit", 0], "the program runs to its end with 5 + 1 + 5 at sp - 0x3f and a successful stxr: " + rt.red.join(" | "));
+    const line = rt.logs.find(l => l.includes("atomic accesses") && l.includes("misaligned address"));
+    if (!shared) { ok(!line && rt.stats.misalignedAtomics === 0, "unshared: nothing to count or say"); return ["unshared memory: plain accesses, the program exits with 0"]; }
+    eq(rt.stats.misalignedAtomics, 3, "shared: ldxr, stxr and ldadd took the lock path");
+    ok(!!line && !line!.includes("[RED]"), "shared: one informational line: " + rt.logs.filter(l => /misaligned/.test(l)).join(" | "));
+    eq(rt.logs.filter(l => l.includes("misaligned address")).length, 1, "shared: said once");
+    return ["shared memory: 3 accesses on the lock path, exit 0; " + line!.slice(0, 120)];
   });
 
   // ---- the poll back-off ----

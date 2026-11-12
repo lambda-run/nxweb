@@ -6,7 +6,7 @@ import * as L from "./log";
 import { Inst } from "../kit/machine";
 import { GFX_PIPELINE, GfxPipelineE, GfxPipelineS } from "../kit/gen/tables";
 import { hostRec, H_PIPELINE_CREATE } from "./hostops";
-import { arenaAlloc } from "./arena";
+import { arenaBig } from "./arena";
 
 export const PK_vs: usize = 0;             // u16 library id of the vertex shader
 export const PK_fs: usize = 2;             // u16 library id of the fragment shader
@@ -35,10 +35,10 @@ export const PK_stream: usize = 248;       // vs_st[16]
 export const PK_vin: usize = 376;           // u64: 2 bits a location: the class of the bound attribute format (0 float, 1 sint, 2 uint)
 export const PK_SIZE: usize = 384;
 
-const N: u32 = 2048;                       // entries, a power of two; the table is open-addressed by the key's hash
+const N: u32 = 16384;                      // entries, a power of two; the table is open-addressed by the key's hash
 const E_SIZE: usize = 408;                 // key, +384 Inst, +400 u32 hash, +404 u32 used
 let TAB: usize = 0;
-export function pipelineInit(): void { TAB = arenaAlloc(<usize>N * E_SIZE); }
+export function pipelineInit(): void { TAB = arenaBig(<usize>N * E_SIZE); }
 let count: u32 = 0;
 let lastRed: i32 = -1;
 
@@ -62,7 +62,7 @@ export function pipelineGet(): i32 {
   for (let probe: u32 = 0; probe < N; probe++, i = (i + 1) & (N - 1)) {
     const e = entry(i);
     if (!load<u32>(e, 404)) {
-      if (count >= N - N / 4) { if (lastRed != -2) { lastRed = -2; L.redLine("pipeline cache full (1536 pipelines): the draw is skipped"); } return -1; }
+      if (count >= N - N / 4) { if (lastRed != -2) { lastRed = -2; L.redLine("pipeline cache full (12288 pipelines): the draw is skipped"); } return -1; }
       memory.copy(e, KEY, PK_SIZE); store<u32>(e, h, 400); store<u32>(e, 1, 404); count++;
       const m = instOf(i); m.init(GFX_PIPELINE, i);
       m.step(GfxPipelineE.Request);

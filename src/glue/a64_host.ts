@@ -96,10 +96,10 @@ const L1_BYTES = 0x40000, LEAF = 0x10000;
 const GB4 = 0x1_0000_0000;
 export const MEM64_MAX_PAGES = 262144;   // 16 GB: what V8 gives a 64-bit memory
 const num = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;   // a wasm64 export's usize result
-export const A64_CACHE_VERSION = 16;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
+export const A64_CACHE_VERSION = 17;   // bump when the translator's output changes (a unit cached before an instruction was added holds `unimpl` calls in its place); test/a64/cache_stamp.mts fails when src/a64 changed without a bump
 // the C library functions src/a64/libc.ts implements, by op number (index 0 unused)
 export const LIBC_OPS = ["", "memcpy", "memmove", "memset", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp"];
-const PAIR_LOCK_BYTES = 16;           // the end of the helpers' range: the lock word of 16-byte CASPs on a shared memory (src/a64/int.ts casp)
+const PAIR_LOCK_BYTES = 16;           // the end of the helpers' range, on a shared memory: the lock word of 16-byte CASPs and of misaligned atomic accesses (src/a64/int.ts casp, slowEnter), and 8 bytes on the count of the latter
 
 export class A64Host {
   static readonly TRAMPOLINE = 0;
@@ -198,6 +198,9 @@ export class A64Host {
   }
 
   private u8(): Uint8Array { return new Uint8Array(this.memory.buffer); }
+  // Shared memory: how many atomic accesses (exclusive, acquire / release, LSE) were made at a misaligned address so
+  // far, by every thread on this memory. Those take the lock path of src/a64/int.ts instead of a wasm atomic instruction.
+  get misalignedAtomics(): number { return this.opts.shared ? Atomics.load(new Uint32Array(this.memory.buffer, this.lay.helpersEnd - PAIR_LOCK_BYTES + 8, 1), 0) : 0; }
   // The scratch blocks of the k-th further instance of the helpers on this memory (k from 0): 128 bytes each, taken
   // downwards from the pair lock at the end of the helpers' range. 0: no room, or helpers built before setScratch.
   helperScratch(k: number): number {

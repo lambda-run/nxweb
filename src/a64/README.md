@@ -147,8 +147,33 @@ released at the latest when the limit is reached.
 (needs the threads feature; use the `.shared.wasm` translator and helpers). LDXR/LDAXR are atomic loads, STXR is
 `atomic.rmw.cmpxchg` against the value the load saw (after the address check), LDAR/STLR are atomic loads/stores.
 A 128-bit STXP is two exchanges with a roll-back of the first when the second loses (not atomic as a pair).
-Atomic accesses trap on a misaligned address. DMB and DSB are `atomic.fence` (on an unshared memory, and for ISB,
-nothing). CPU state stays in per-instance globals, so each Worker has its own.
+DMB and DSB are `atomic.fence` (on an unshared memory, and for ISB, nothing). CPU state stays in per-instance
+globals, so each Worker has its own.
+
+*Misaligned atomic accesses.* A wasm atomic instruction traps on an address that is not a multiple of its size; ARM
+performs an exclusive, acquire/release or LSE access there (a real game keeps a 32-bit LSE counter at an odd address
+in a packed structure). Every atomic access wider than a byte therefore tests the address at run time
+(`addr & (size - 1)`, `misal` in `int.ts`; 7 for both CASP forms): aligned, the wasm atomic instruction as above;
+misaligned, the unshared sequence (plain unaligned loads and stores) between `slowEnter` and `slowLeave`: plain
+probing loads (an unmapped or guarded address traps before the lock is taken, never under it), an atomic add to a
+32-bit count (`A64Host.misalignedAtomics`, the word 8 bytes after the lock), then the pair lock, a compare-exchange
+spin on one aligned word shared by the whole memory. Under the lock: LDXR/LDAXR/LDXP read the value(s) the monitor
+keeps; STXR/STLXR/STXP compare with them and store (value-compare as in the aligned form, and a misaligned pair is
+atomic as a pair here); LDAR/LDAPR/LDAPUR load and STLR/STLUR store; the LSE forms load, compute and store; CAS and
+CASP compare and store. Nothing under the lock calls out or can trap, so it is always released.
+What this gives: any two misaligned atomic accesses, of any class and any size, on any Workers, are atomic against
+each other (and against an aligned 16-byte CASP, which takes the same lock); bytes outside the access are never
+written, so neighbouring fields updated by aligned atomics or plain stores are safe (`test/a64/lse_threads.ts
+--misaligned`). What it does not give: an *aligned* wasm atomic does not take the lock, so an aligned atomic access
+by another thread that overlaps the bytes of a misaligned one (the same bytes addressed at another, aligned address,
+or a narrower aligned access into them, e.g. a byte CAS on one byte of a misaligned word) can land between the
+locked load and store and be lost; so can a plain store, which is a race on hardware too. Programs address one
+atomic object at one address and size, so every access to a misaligned object is misaligned and locked; closing the
+rest would put a flag test and the global lock on every aligned atomic of the program once one misaligned access was
+seen, which the game that needed this would then pay on all of its atomics. Also outside the lock: the kernel's
+`cas32` on a misaligned lock or arbiter word (`src/kernel/base.ts`, plain compare and store), and a host thread that
+is stopped for good inside the few instructions of the locked section (a Worker terminated there) leaves the lock
+taken. The lock is global: heavy use of misaligned atomics from many threads contends on one cache line.
 
 **cntpct as a yield point (`cntYield: true`, default off).** `mrs xN, cntpct_el0 / cntvct_el0` becomes: write back,
 `pc` = the instruction itself, call `cntpct`, pc check, reload, then use the returned value. The embedder may park:
@@ -215,7 +240,7 @@ module's `memory.grow` / `memory.size`.
 
 *Limits.* Static data of the translator and helpers must be below 4 GB (`--memoryBase` is a u32 in asc); a unit's
 side table and the translation window assume a function is smaller than 4 GB; V8 gives a 64-bit memory at most 16 GB.
-Atomic accesses (shared memory) take the same i64 address and trap when misaligned, as in memory32.
+Atomic accesses (shared memory) take the same i64 address, with the same lock path when misaligned as in memory32.
 
 *Cost* (same machine, same run, modes interleaved; `npm run a64:mem64:speed`, the 75 guests, 276 M guest
 instructions): see Status. In short, 5 to 8 % more run time under Node 22 (V8 12.4, explicit bounds checks), about
@@ -525,7 +550,7 @@ Behavioural differences:
   madd is fused (x64 with FMA3, arm64); with `fma` off the translator emits unfused code. The
   non-default-FPCR path (`softfp.ts`) is integer arithmetic and does not depend on it.
 - Unshared memory: exclusives are compare-and-store, fine for one thread at a time. Shared: see above
-  (STXP 64-bit pair not atomic as a pair; atomic forms trap on misaligned addresses, where ARM's LDAR/STLR do not).
+  (an aligned STXP 64-bit pair is not atomic as a pair; atomic accesses at misaligned addresses run under the pair lock, with the limits given there).
   A 16-byte CASP is atomic against other 16-byte CASPs (the pair lock), not against an STXP pair or two single-word
   atomics on the same words. The helpers' scratch blocks (`hlp.vop`) are static data of the one memory by default; a further
   instance of the helpers on the same memory (a helper Worker of the runtime, `src/glue/rt_helpers.ts`) is given

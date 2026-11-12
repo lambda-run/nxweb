@@ -529,8 +529,13 @@ function storeInt(rt: i32, size: u32, off: u32 = 0): void {
 // LSE atomics (ARMv8.1) and RCPC (ARMv8.3 LDAPR, ARMv8.4 LDAPUR / STLUR). One guest instruction is one step of the
 // translated code, so on an unshared memory (one host thread) a plain load, compute and store is atomic. On a shared
 // memory they are the wasm atomic instructions: rmw add / and / or / xor / xchg, cmpxchg for CAS, and a load +
-// cmpxchg loop for the four min / max forms, which wasm has no instruction for. Like the exclusives there, an atomic
-// access traps on an address that is not aligned to its size.
+// cmpxchg loop for the four min / max forms, which wasm has no instruction for.
+// A wasm atomic instruction traps on an address that is not a multiple of its size; ARM performs the access (a game
+// keeps a 32-bit LSE counter at an odd address inside a packed structure). So on a shared memory every atomic access
+// wider than a byte tests the address first (`misal`): aligned, the wasm atomic instruction; misaligned, the plain
+// unaligned load / compute / store of the unshared code under one global spin lock (the pair lock word, `slowEnter`
+// / `slowLeave`). Every misaligned atomic access of every class (exclusives, acquire / release, LSE) takes that
+// lock, so they are atomic against each other; the limits are in README.md (shared memory).
 // i64 atomic opcode (after 0xFE) for an access of `size`, from the i32 full-width opcode of the family
 // @ts-ignore
 @inline function aop(base: u32, size: u32): u32 { return size == 3 ? base + 1 : base + 4 + size; }
@@ -544,6 +549,21 @@ function atom(base: u32, size: u32): void { b(0xFE); b(aop(base, size)); b(size)
 function zext(size: u32): void { if (size < 3) { i64c(size == 0 ? 0xFF : size == 1 ? 0xFFFF : 0xFFFFFFFF); b(0x83); } }
 function sext(size: u32): void { if (size < 3) b(0xC2 + size); }
 
+function lockAddr(): void { if (M64) i64c(<i64>pairLock); else i32c(<i32>pairLock); }
+// stack: -> i32, nonzero when the address in local `a` is not a multiple of `mask + 1`
+function misal(a: u32, mask: u32): void { lget(a); b(0xA7); i32c(<i32>mask); b(0x71); }
+// The misaligned path of an atomic access of `n` consecutive units of `size` at local `a`. Plain loads first: an
+// access that would trap (unmapped, below the guard) does so before the lock is taken, never under it. Then the
+// counter of such accesses (the word 8 bytes after the lock: A64Host.misalignedAtomics) and the lock itself, a
+// compare-exchange spin on an aligned word; nothing between slowEnter and slowLeave calls out or can trap.
+function slowEnter(a: u32, size: u32, n: i32 = 1): void {
+  for (let i = 0; i < n; i++) { lget(a); if (i) { i64c(<i64>i << size); b(0x7C); } aw(); mem(ldOp(size)); b(0x1A); }
+  if (M64) i64c(<i64>pairLock + 8); else i32c(<i32>pairLock + 8);
+  i32c(1); b(0xFE); b(0x1E); b(2); b(0); b(0x1A);
+  b(0x03); b(0x40); lockAddr(); i32c(0); i32c(1); b(0xFE); b(0x48); b(2); b(0); b(0x0D); b(0); b(0x0B);
+}
+function slowLeave(): void { lockAddr(); i32c(0); b(0xFE); b(0x17); b(2); b(0); }
+
 // CAS / CASA / CASL / CASAL (b, h, w, x): if [Xn|SP] == Rs then [Xn|SP] = Rt; Rs = the value read
 function cas(insn: u32): bool {
   let size = insn >>> 30;
@@ -553,7 +573,18 @@ function cas(insn: u32): bool {
   getXsp(rn, true); lset(a);
   getX(rs, true); zext(size); lset(e);
   getX(rt, true); lset(n);
-  if (optShared) { lget(a); aw(); lget(e); lget(n); atom(AT_CMPXCHG, size); }
+  if (optShared && size) {
+    misal(a, (1 << size) - 1);
+    b(0x04); b(0x40);
+    slowEnter(a, size);
+    lget(a); aw(); mem(ldOp(size)); ltee(old); lget(e); b(0x51);
+    b(0x04); b(0x40); lget(a); aw(); lget(n); mem(stOp(size)); b(0x0B);
+    slowLeave();
+    b(0x05);
+    lget(a); aw(); lget(e); lget(n); atom(AT_CMPXCHG, size); lset(old);
+    b(0x0B);
+    lget(old);
+  } else if (optShared) { lget(a); aw(); lget(e); lget(n); atom(AT_CMPXCHG, size); }
   else {
     lget(a); aw(); mem(ldOp(size)); ltee(old); lget(e); b(0x51);
     b(0x04); b(0x40); lget(a); aw(); lget(n); mem(stOp(size)); b(0x0B);
@@ -562,7 +593,6 @@ function cas(insn: u32): bool {
   setX(rs, true);
   return true;
 }
-function lockAddr(): void { if (M64) i64c(<i64>pairLock); else i32c(<i32>pairLock); }
 // CASP / CASPA / CASPL / CASPAL (w, x pairs): compare Rs:Rs+1 with the two words at [Xn|SP], store Rt:Rt+1 when equal
 function casp(insn: u32): bool {
   let x = ((insn >> 30) & 1) != 0;
@@ -581,8 +611,25 @@ function casp(insn: u32): bool {
     lget(a); aw(); lget(n1); mem(stOp(size));
     lget(a); i64c(step); b(0x7C); aw(); lget(n2); mem(stOp(size));
     b(0x0B);
-  } else if (!x) {
-    // two words are one 64-bit compare-exchange (the pair is 8-byte aligned, as the instruction requires)
+    lget(o1); setX(rs, true); lget(o2); setX(rs + 1, true);
+    return true;
+  }
+  // shared memory. Both aligned forms need the pair's address to be a multiple of 8 (one 64-bit compare-exchange, or
+  // two 64-bit words under the lock); any other address takes the misaligned path: the plain sequence under the lock.
+  misal(a, 7);
+  b(0x04); b(0x40);
+  slowEnter(a, size, 2);
+  lget(a); aw(); mem(ldOp(size)); lset(o1);
+  lget(a); i64c(step); b(0x7C); aw(); mem(ldOp(size)); lset(o2);
+  lget(o1); lget(e1); b(0x51); lget(o2); lget(e2); b(0x51); b(0x71);
+  b(0x04); b(0x40);
+  lget(a); aw(); lget(n1); mem(stOp(size));
+  lget(a); i64c(step); b(0x7C); aw(); lget(n2); mem(stOp(size));
+  b(0x0B);
+  slowLeave();
+  b(0x05);
+  if (!x) {
+    // two words are one 64-bit compare-exchange
     lget(a); aw(); lget(e1); lget(e2); i64c(32); b(0x86); b(0x84); lget(n1); lget(n2); i64c(32); b(0x86); b(0x84); atom(AT_CMPXCHG, 3);
     ltee(o1); i64c(32); b(0x88); lset(o2);
     lget(o1); i64c(0xFFFFFFFF); b(0x83); lset(o1);
@@ -590,7 +637,7 @@ function casp(insn: u32): bool {
     // 16 bytes cannot be one wasm atomic operation: every such CASP runs under one lock (a word in the translator's
     // part of the memory, taken with a compare-exchange spin), so two of them never interleave and a pair is never
     // half exchanged. The words themselves are read and written with atomic instructions. An access that would trap
-    // (unmapped or misaligned) does so in the two loads before the lock is taken.
+    // (unmapped) does so in the two loads before the lock is taken.
     lget(a); aw(); atom(AT_LOAD, 3); b(0x1A); lget(a); i64c(8); b(0x7C); aw(); atom(AT_LOAD, 3); b(0x1A);
     b(0x03); b(0x40); lockAddr(); i32c(0); i32c(1); b(0xFE); b(0x48); b(2); b(0); b(0x0D); b(0); b(0x0B);
     lget(a); aw(); atom(AT_LOAD, 3); lset(o1);
@@ -602,6 +649,7 @@ function casp(insn: u32): bool {
     b(0x0B);
     lockAddr(); i32c(0); b(0xFE); b(0x17); b(2); b(0);
   }
+  b(0x0B);
   lget(o1); setX(rs, true); lget(o2); setX(rs + 1, true);
   return true;
 }
@@ -613,7 +661,9 @@ function atomicMem(insn: u32): bool {
   let a = t64(A), v = t64(0), old = t64(1);
   if (o3 && opc == 4) {   // LDAPR: load-acquire (RCpc)
     if ((insn & 0x00C00000) != 0x00800000 || rs != 31) return false;
-    getXsp(rn, true); aw(); if (optShared) atom(AT_LOAD, size); else mem(ldOp(size));
+    getXsp(rn, true);
+    if (optShared && size) { lset(a); atomLoad(a, size, old); lget(old); }
+    else { aw(); if (optShared) atom(AT_LOAD, size); else mem(ldOp(size)); }
     setX(rt, true);
     return true;
   }
@@ -623,6 +673,24 @@ function atomicMem(insn: u32): bool {
   getX(rs, true); if (k == 1) { i64c(-1); b(0x85); }
   if (k >= 4 && k <= 5) sext(size); else if (k >= 6 && k <= 7) zext(size);
   lset(v);
+  let slow = optShared && size != 0;
+  if (slow) {
+    // misaligned: the unshared sequence under the lock
+    misal(a, (1 << size) - 1);
+    b(0x04); b(0x40);
+    slowEnter(a, size);
+    lget(a); aw(); mem(ldOp(size)); lset(old);
+    lget(a); aw();
+    if (k == 8) lget(v);
+    else if (k < 4) { lget(old); lget(v); b(k == 0 ? 0x7C : k == 1 ? 0x83 : k == 2 ? 0x85 : 0x84); }
+    else {
+      let so = t64(2);
+      lget(old); if (k < 6) sext(size); ltee(so); lget(v); lget(so); lget(v); b(k == 4 ? 0x55 : k == 5 ? 0x53 : k == 6 ? 0x56 : 0x54); b(0x1B);
+    }
+    mem(stOp(size));
+    slowLeave();
+    b(0x05);
+  }
   if (k >= 4 && k <= 7) {
     let cmp: u32 = k == 4 ? 0x55 : k == 5 ? 0x53 : k == 6 ? 0x56 : 0x54;   // gt_s lt_s gt_u lt_u
     let so = t64(2);
@@ -631,10 +699,11 @@ function atomicMem(insn: u32): bool {
     lget(old); if (k < 6) sext(size); ltee(so); lget(v); lget(so); lget(v); b(cmp); b(0x1B);
     if (optShared) { atom(AT_CMPXCHG, size); lget(old); b(0x52); b(0x0D); b(0); b(0x0B); }
     else mem(stOp(size));
-    lget(old);
+    if (!slow) lget(old);
   } else if (optShared) {
     lget(a); aw(); lget(v);
     atom(k == 0 ? AT_ADD : k == 1 ? AT_AND : k == 2 ? AT_XOR : k == 3 ? AT_OR : AT_XCHG, size);
+    if (slow) lset(old);
   } else {
     lget(a); aw(); mem(ldOp(size)); lset(old);
     lget(a); aw();
@@ -642,8 +711,28 @@ function atomicMem(insn: u32): bool {
     mem(stOp(size));
     lget(old);
   }
+  if (slow) { b(0x0B); lget(old); }
   setX(rt, true);
   return true;
+}
+// Acquire / release loads and stores on a shared memory, size > 0, address in local `a`: the wasm atomic instruction
+// when aligned, the plain access under the lock when not (so that it cannot land inside another thread's misaligned
+// load / compute / store, and a load never sees half of a misaligned store).
+function atomLoad(a: u32, size: u32, to: u32): void {
+  misal(a, (1 << size) - 1);
+  b(0x04); b(0x40);
+  slowEnter(a, size); lget(a); aw(); mem(ldOp(size)); lset(to); slowLeave();
+  b(0x05);
+  lget(a); aw(); atom(AT_LOAD, size); lset(to);
+  b(0x0B);
+}
+function atomStore(a: u32, size: u32, from: u32): void {
+  misal(a, (1 << size) - 1);
+  b(0x04); b(0x40);
+  slowEnter(a, size); lget(a); aw(); lget(from); mem(stOp(size)); slowLeave();
+  b(0x05);
+  lget(a); aw(); lget(from); atom(AT_STORE, size);
+  b(0x0B);
 }
 // LDAPUR / STLUR (ARMv8.4 RCPC2): release store and acquire loads with an unscaled offset
 function rcpc2(insn: u32): bool {
@@ -652,6 +741,15 @@ function rcpc2(insn: u32): bool {
   let imm: i64 = sx((insn >> 12) & 0x1FF, 9);
   if ((opc == 2 && size == 3) || (opc == 3 && size >= 2)) return false;
   getXsp(rn, true); if (imm) { i64c(imm); b(0x7C); }
+  if (optShared && size) {
+    let a = t64(A), v = t64(0);
+    lset(a);
+    if (opc == 0) { getX(rt, true); lset(v); atomStore(a, size, v); return true; }
+    atomLoad(a, size, v); lget(v);
+    if (opc >= 2) { sext(size); if (opc == 3) zext(2); }
+    setX(rt, true);
+    return true;
+  }
   aw();
   if (opc == 0) { getX(rt, true); if (optShared) atom(AT_STORE, size); else mem(stOp(size)); return true; }
   if (optShared) atom(AT_LOAD, size); else mem(ldOp(size));
@@ -672,6 +770,13 @@ function exclusive(insn: u32): bool {
     if (o1) return cas(insn);
     getXsp(rn, true);
     if (!optShared) { if (L) loadInt(rt, size, false, true); else storeInt(rt, size); return true; }
+    if (size) {
+      let v = t64(0);
+      lset(a);
+      if (L) { atomLoad(a, size, v); lget(v); setX(rt, true); }
+      else { getX(rt, true); lset(v); atomStore(a, size, v); }
+      return true;
+    }
     aw();
     if (L) { b(0xFE); b(ald); b(size); moff(0); setX(rt, true); }
     else { getX(rt, true); b(0xFE); b(ast); b(size); moff(0); }
@@ -682,6 +787,23 @@ function exclusive(insn: u32): bool {
   if (o1 && size < 2) return casp(insn);
   let step: i64 = <i64>1 << size;
   getXsp(rn, true); lset(a);
+  if (L && optShared && size) {
+    let v = t64(0), v2 = t64(1);
+    lget(a); gset(G_EXADDR);
+    misal(a, (1 << size) - 1);
+    b(0x04); b(0x40);
+    slowEnter(a, size, o1 ? 2 : 1);
+    lget(a); aw(); mem(ld); lset(v);
+    if (o1) { lget(a); i64c(step); b(0x7C); aw(); mem(ld); lset(v2); }
+    slowLeave();
+    b(0x05);
+    lget(a); aw(); b(0xFE); b(ald); b(size); moff(0); lset(v);
+    if (o1) { lget(a); i64c(step); b(0x7C); aw(); b(0xFE); b(ald); b(size); moff(0); lset(v2); }
+    b(0x0B);
+    lget(v); gset(G_EXVAL); lget(v); setX(rt, true);
+    if (o1) { lget(v2); gset(G_EXVAL2); lget(v2); setX(rt2, true); }
+    return true;
+  }
   if (L) {
     lget(a); gset(G_EXADDR);
     lget(a); aw(); if (optShared) { b(0xFE); b(ald); b(size); moff(0); } else mem(ld);
@@ -700,20 +822,40 @@ function exclusive(insn: u32): bool {
     if (o1) { getX(rt2, true); lset(s2); }
     lget(a); gget(G_EXADDR); b(0x51);
     b(0x04); b(T_I32);
-    lget(a); aw(); gget(G_EXVAL); lget(s1); b(0xFE); b(acx); b(size); moff(0); gget(G_EXVAL); b(0x51);
-    b(0x05); i32c(0); b(0x0B);
-    lset(ok);
-    if (o1) {
-      // second word; a pair cannot be one atomic operation: if the second exchange loses, the first is put back
-      lget(ok);
+    if (size) {
+      // misaligned: the compare with the value(s) the load saw and the store(s), under the lock (a pair is atomic here)
+      misal(a, (1 << size) - 1);
+      b(0x04); b(T_I32);
+      slowEnter(a, size, o1 ? 2 : 1);
+      lget(a); aw(); mem(ld); gget(G_EXVAL); b(0x51);
+      if (o1) { lget(a); i64c(step); b(0x7C); aw(); mem(ld); gget(G_EXVAL2); b(0x51); b(0x71); }
+      ltee(ok);
       b(0x04); b(0x40);
-      lget(a); i64c(step); b(0x7C); aw(); gget(G_EXVAL2); lget(s2); b(0xFE); b(acx); b(size); moff(0); gget(G_EXVAL2); b(0x52);
-      b(0x04); b(0x40);
-      lget(a); aw(); lget(s1); gget(G_EXVAL); b(0xFE); b(acx); b(size); moff(0); b(0x1A);
-      i32c(0); lset(ok);
+      lget(a); aw(); lget(s1); mem(st);
+      if (o1) { lget(a); i64c(step); b(0x7C); aw(); lget(s2); mem(st); }
       b(0x0B);
+      slowLeave();
+      lget(ok);
+      b(0x05);
+    }
+    lget(a); aw(); gget(G_EXVAL); lget(s1); b(0xFE); b(acx); b(size); moff(0); gget(G_EXVAL); b(0x51);
+    if (size) {
+      if (o1) {
+        // second word; an aligned pair cannot be one atomic operation: if the second exchange loses, the first is put back
+        ltee(ok);
+        b(0x04); b(0x40);
+        lget(a); i64c(step); b(0x7C); aw(); gget(G_EXVAL2); lget(s2); b(0xFE); b(acx); b(size); moff(0); gget(G_EXVAL2); b(0x52);
+        b(0x04); b(0x40);
+        lget(a); aw(); lget(s1); gget(G_EXVAL); b(0xFE); b(acx); b(size); moff(0); b(0x1A);
+        i32c(0); lset(ok);
+        b(0x0B);
+        b(0x0B);
+        lget(ok);
+      }
       b(0x0B);
     }
+    b(0x05); i32c(0); b(0x0B);
+    lset(ok);
     i64c(-1); gset(G_EXADDR);
     lget(ok); b(0x45); b(0xAD); setX(rs, true);
     return true;

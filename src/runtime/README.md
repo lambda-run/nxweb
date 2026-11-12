@@ -152,10 +152,12 @@ that every module, the glue and the page work with a `SharedArrayBuffer` behind 
   LDAR/STLR and the LSE instructions wasm atomics, DMB a fence. `optionsKey()` contains the option (and, in memory64,
   the declared maximum), so the mode has its own entries in the translation cache: the first run in the mode
   translates everything again, and the normal mode's entries are untouched.
-- **Misaligned atomics.** ARM performs an exclusive or LSE access at an address that is not a multiple of its
-  size; a wasm atomic traps. The fault is a trap fault with the guest pc: `an atomic access at a misaligned
-  address: the instruction 0x… at guest pc 0x… (… through xN = 0x…): ARM performs it, the wasm atomics of the
-  shared-memory mode trap`. Nothing emulates the access: a program that does this does not run in the mode.
+- **Misaligned atomics.** ARM performs an exclusive, acquire/release or LSE access at an address that is not a
+  multiple of its size; a wasm atomic traps. The translator tests the alignment and runs such an access as a plain
+  load / compute / store under one global spin lock (`src/a64/README.md`, shared memory, with what that does and
+  does not make atomic). `stats.misalignedAtomics` counts them (every thread on the memory, read at the end of a
+  `run`), and the first time one is seen the log has one line, `runtime: the guest makes atomic accesses … at a
+  misaligned address`. It is not a fault.
 - **Browser APIs.** `TextDecoder.decode`, `crypto.getRandomValues`, `Blob`, `Response` and message clones to a
   `BroadcastChannel` refuse a view on a SharedArrayBuffer; the glue already copied at those places (`.slice()` of a
   typed array on a shared buffer is an ordinary one). WebCodecs chunks and the OPFS access handle now get a copy
@@ -169,7 +171,7 @@ that every module, the glue and the page work with a `SharedArrayBuffer` behind 
   (`tools/modes.mjs`): `npm run rt:test:shared`, `kernel:test:shared`, `hle:test:shared`. In the mode the runtime
   runner's `TextDecoder` refuses shared views like a browser's. Measured under Node 24: `rt:test` 61/61 in
   [32s] and [64s] (as unshared), `hle:test` 106/106 in [32s], [64s], [64his], `kernel:test` the same results as unshared in
-  all three; one runtime case makes an `ldxr` at a misaligned address and checks the red line and its pc.
+  all three; one runtime case makes an `ldxr` / `stxr` and an `ldadd` at a misaligned address and checks the result, the count and the line.
 
 Limits: one Worker (a second thread on the memory would need its own core instance, table and units, and a kernel
 that locks: none of that exists); 128-bit `STXP` is two exchanges with a roll-back, not one atomic pair; the

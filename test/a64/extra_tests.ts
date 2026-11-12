@@ -570,6 +570,90 @@ export function runExtraTests(m: Mods, cfg: ExtraConfig = {}): TestResult[] {
     return `${atomics} wasm atomic instructions`;
   });
 
+  // ---- atomic accesses at a misaligned address: ARM performs them, a wasm atomic instruction traps, so the shared
+  // code takes the lock path (src/a64/int.ts misal / slowEnter). The unshared code (plain accesses) is the reference:
+  // the same program on the same memory and registers must leave the same registers and bytes behind in both.
+  {
+    // every class at [x0], access size 1 << size (size 1..3)
+    const single = (size: number) => {
+      const z = (w: number) => ((size << 30) | w) >>> 0;
+      const lse = (opc: number, rs: number, rt: number, o3 = 0) => z(0x38E00000 | rs << 16 | o3 << 15 | opc << 12 | rt);   // ...AL forms
+      const w: number[] = [];
+      for (let k = 0; k < 8; k++) w.push(lse(k, 1 + 2 * k, 2 + 2 * k));     // ldadd ldclr ldeor ldset ldsmax ldsmin ldumax ldumin: x1 -> x2 ... x15 -> x16
+      w.push(lse(0, 17, 18, 1));                                             // swp x17 -> x18
+      w.push(z(0x08E0FC00 | 19 << 16 | 20));                                 // casal x19, x20: fails (x19 is not the value)
+      w.push(z(0x08DFFC00 | 21));                                            // ldar x21
+      w.push(z(0x08E0FC00 | 21 << 16 | 20));                                 // casal x21, x20: exchanges
+      w.push(z(0x085F7C00 | 22), 0x910006D6, z(0x08007C00 | 23 << 16 | 22)); // ldxr x22; add x22, x22, #1; stxr w23, x22: stores, w23 = 0
+      w.push(z(0x08007C00 | 24 << 16 | 22));                                 // stxr w24, x22: no monitor, w24 = 1
+      w.push(z(0x085FFC00 | 25), lse(0, 1, 26, 1), z(0x0800FC00 | 27 << 16 | 25)); // ldaxr x25; swp x1 -> x26; stlxr w27, x25: the value changed, w27 = 1
+      w.push(z(0x089FFC00 | 3), z(0x38BFC000 | 28));                         // stlr x3; ldapr x28
+      w.push(z(0x19000000 | 5), z(0x19400000 | 29));                         // stlur x5, [x0]; ldapur x29, [x0]
+      w.push(lse(0, 7, 31));                                                 // stadd x7 (LDADD with Rt = 31)
+      w.push(RET);
+      return w;
+    };
+    // the pair forms at [x0] (size 2: two words, 3: two doublewords)
+    const pair = (size: number) => {
+      const sz = size - 2, w: number[] = [];
+      const ldxp = (rt: number, rt2: number) => (0x887F0000 | sz << 30 | rt2 << 10 | rt) >>> 0, stxp = (rs: number, rt: number, rt2: number) => (0x88200000 | sz << 30 | rs << 16 | rt2 << 10 | rt) >>> 0;
+      const casp = (rs: number, rt: number) => (0x0860FC00 | sz << 30 | rs << 16 | rt) >>> 0;
+      w.push(ldxp(1, 2), stxp(3, 4, 5), stxp(6, 4, 5));          // ldxp x1, x2; stxp w3, x4, x5 (stores); stxp w6 (no monitor)
+      w.push(casp(8, 10));                                       // caspal x8, x9, x10, x11: fails
+      w.push(ldxp(12, 13), casp(12, 14), ldxp(16, 17));          // ldxp x12, x13; caspal x12, x13, x14, x15: exchanges; ldxp x16, x17
+      w.push(ldxp(18, 19), casp(12, 14), stxp(20, 4, 5));        // ldxp; a CASP that fails leaves the values: stxp w20 stores
+      w.push(ldxp(21, 22), (0x089FFC00 | size << 30 | 23) >>> 0, stxp(24, 4, 5), RET);   // ldxp; stlr x23 changes the first word; stxp w24 fails
+      return w;
+    };
+    const run = (shared: boolean, prog: number[], off: number) => {
+      const t = mk(m, { shared });
+      t.put(BASE, prog); t.host.addCode(BASE, prog.length * 4);
+      const u8 = new Uint8Array(t.memory.buffer, DATA + 0x1000 - 64, 128);
+      let seed = 0xC0FFEE ^ (off * 2654435761); const rnd = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 16 & 0xFF;
+      for (let i = 0; i < 128; i++) u8[i] = rnd();
+      for (let r = 1; r <= 29; r++) { let v = 0n; for (let i = 0; i < 8; i++) v = v << 8n | BigInt(rnd()); t.c["x" + r].value = v; }
+      const addr = DATA + 0x1000 + off;
+      t.call(BASE, [BigInt(addr)]);
+      const regs: string[] = []; for (let r = 0; r <= 29; r++) regs.push(BigInt.asUintN(64, t.c["x" + r].value).toString(16));
+      return { regs: regs.join(" "), bytes: Array.from(u8, x => x.toString(16).padStart(2, "0")).join(""), lock: new Uint32Array(t.memory.buffer, LAYOUT.helpersEnd - 16, 1)[0], slow: t.host.misalignedAtomics, t };
+    };
+    // offsets from a 4 KiB page boundary: 1, 2, 3 and others inside a word; -1, -3, -7 cross the page; 5, 6, 7 cross an 8-byte boundary
+    const offs = [0, 1, 2, 3, 4, 5, 6, 7, 9, -1, -2, -3, -5, -7, -9, -15];
+    for (const [what, prog, sizes] of [["exclusive, acquire/release and LSE accesses (LDADD..LDUMIN, SWP, CAS, LDXR/STXR, LDAXR/STLXR, LDAR/STLR, LDAPR, LDAPUR/STLUR)", single, [1, 2, 3]], ["the pair forms (LDXP/STXP, CASP)", pair, [2, 3]]] as const)
+      test(`atomic accesses at misaligned addresses on a shared memory, ${what}: the lock path gives what the unshared code gives, at ${sizes.map(z => 8 << z).join(", ")} bits`, () => {
+        let cases = 0, slow = 0, aligned = 0;
+        for (const size of sizes) for (const off of offs) {
+          const p = prog(size), a = run(false, p, off), b = run(true, p, off), tag = `size ${1 << size}, offset ${off}`;
+          eq(`${tag}: registers x0..x29`, b.regs, a.regs); eq(`${tag}: memory`, b.bytes, a.bytes);
+          eq(`${tag}: the lock word afterwards`, b.lock, 0);
+          const mis = (off & ((prog === pair ? 8 : 1 << size) - 1)) !== 0;
+          if (mis ? b.slow === 0 : b.slow !== 0) throw new Error(`${tag}: ${b.slow} accesses took the lock path`);
+          if (prog === single) {   // a few results stated outright, not only compared
+            eq(`${tag}: stxr after ldxr (w23)`, b.t.c.x23.value, 0n); eq(`${tag}: stxr without a monitor (w24)`, b.t.c.x24.value, 1n); eq(`${tag}: stlxr after the value changed (w27)`, b.t.c.x27.value, 1n);
+            const mask = (1n << BigInt(8 << size)) - 1n;
+            eq(`${tag}: ldapr reads what stlr stored`, BigInt.asUintN(64, b.t.c.x28.value), BigInt.asUintN(64, b.t.c.x3.value) & mask);
+          } else { eq(`${tag}: stxp after ldxp (w3)`, b.t.c.x3.value, 0n); eq(`${tag}: stxp after a failed CASP (w20)`, b.t.c.x20.value, 0n); eq(`${tag}: stxp after a store to the first word (w24)`, b.t.c.x24.value, 1n); }
+          cases++; slow += b.slow; if (!mis) aligned++;
+        }
+        return `${cases} address cases (${aligned} aligned: wasm atomics only), ${slow} accesses on the lock path; offsets ${offs.join(" ")} from a page boundary`;
+      });
+    test("a misaligned 32-bit LDADD counter (the game's `ldadd w9, w8, [x8]` shape) on a shared memory: 1000 additions at an odd address across a page boundary, neighbours untouched, and a fault under way leaves the lock free", () => {
+      const t = mk(m, { shared: true });
+      // 00 ldadd w1, w3, [x0]; subs x2, x2, #1; b.ne 00; ldr w0, [x0]; ret       14 mov x4, #-0x1000; ldaddal w1, w3, [x4]; ret
+      t.put(BASE, [0xB8210003, 0xF1000442, 0x54FFFFC1, 0xB9400000, RET, 0x9281FFE4, 0xB8E10083, RET]);
+      t.host.addCode(BASE, 32, { entries: [BASE, BASE + 0x14] });
+      const at = DATA + 0x2000 - 3, u8 = new Uint8Array(t.memory.buffer, at - 4, 12); u8.fill(0xAA);
+      new DataView(t.memory.buffer).setUint32(at, 0xFFFFFF00, true);
+      eq("the counter", t.call(BASE, [BigInt(at), 3n, 1000n]), BigInt((0xFFFFFF00 + 3000) >>> 0));
+      eq("the bytes around it", [0, 1, 2, 3, 8, 9, 10, 11].map(i => u8[i].toString(16)).join(""), "aa".repeat(8));
+      eq("accesses on the lock path", t.host.misalignedAtomics, 1000);
+      let err = ""; try { t.call(BASE + 0x14, [0n, 1n]); } catch (e) { err = String(e); }
+      if (!/out of bounds/.test(err)) throw new Error("an unmapped misaligned address: expected a memory trap, got: " + err);
+      eq("the lock word after the trap", new Uint32Array(t.memory.buffer, LAYOUT.helpersEnd - 16, 1)[0], 0);
+      return "1000 additions exact; an unmapped address traps before the lock is taken";
+    });
+  }
+
   // ---- DotProd (ARMv8.2): SDOT / UDOT, vector and by element, 4S and 2S
   test("DotProd: SDOT / UDOT loops (vector, by element), 2S forms clear the upper half, Rd = Rn", () => {
     const t = mk(m);

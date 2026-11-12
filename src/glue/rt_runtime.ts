@@ -266,7 +266,7 @@ export class Runtime {
   private idleSamples = 0;
   private idleAt = -1e9;
   private hotCallers = new Map<number, Map<string, number>>();   // pc -> "x30,[x29+8]" -> times   // pc at the end of each time slice that ran to its end -> times
-  stats = { slices: 0, svcs: 0, hostCalls: 0, runMs: 0, grows: 0, entries: 0, moduleLoads: 0, moduleUnloads: 0, finiCalls: 0, clockParks: 0 };
+  stats = { slices: 0, svcs: 0, hostCalls: 0, runMs: 0, grows: 0, entries: 0, moduleLoads: 0, moduleUnloads: 0, finiCalls: 0, clockParks: 0, misalignedAtomics: 0 };
   disposed = false;
 
   private out: Uint8Array[] = [];
@@ -1473,6 +1473,7 @@ export class Runtime {
       if (c.budget.value < 0) k.kernel_preempt(ctx);
     }
     if (this.hp && (this.state as State) === "Stopped") this.hpStopAll();
+    if (this.opts.shared) this.noteMisaligned();
     this.stats.runMs += performance.now() - t0;
     return { state: this.state, stop: this.stop };
   }
@@ -1483,16 +1484,24 @@ export class Runtime {
     this.faultNow(FAULT.host, "a guest thread waits for something outside the guest (a GPU completion, a frame); run() cannot wait for it, use runAsync()", 0n, this.lastCtx, true);
     return null;
   }
+  // Shared memory: guest atomic accesses at a misaligned address are performed under a lock instead of a wasm atomic
+  // instruction (src/a64/README.md, shared memory). stats.misalignedAtomics counts them (all threads on the memory);
+  // the first time any is seen, one line says so.
+  private misalSaid = false;
+  private noteMisaligned(): void {
+    const n = this.a64.misalignedAtomics;
+    if (!n) return;
+    this.stats.misalignedAtomics = n;
+    if (this.misalSaid) return;
+    this.misalSaid = true;
+    this.log("runtime: the guest makes atomic accesses (exclusive, acquire/release or LSE) at a misaligned address: wasm atomics trap there, so these run as a plain load / compute / store under the translator's lock (stats.misalignedAtomics counts them)");
+  }
   // What a trap in translated code most likely was, from the instruction at the exact pc
   private trapText(message: string, pc: number | undefined, ctx: number): string {
-    // shared-memory mode: the exclusives, LDAR/STLR and the LSE instructions are wasm atomics, which trap on an address
-    // that is not a multiple of the access size; hardware performs them (V8: "operation does not support unaligned accesses")
-    if (/unaligned|misaligned|alignment/i.test(message)) {
-      if (pc === undefined) return `an atomic access at a misaligned address (guest pc unknown: the trap is not in translated code): ARM performs it, the wasm atomics of the shared-memory mode trap (${message})`;
-      const insn = this.dv().getUint32(pc, true), base = (insn >>> 5) & 31, rn = base === 31 ? "sp" : "x" + base;
-      return `an atomic access at a misaligned address: the instruction ${hex(insn)} at guest pc ${hex(pc)} (an exclusive, acquire/release or LSE access through ${rn} = ` +
-        `${hex(this.dv().getBigUint64(ctx + base * 8, true))}${this.opts.preciseFaults === 2 ? "" : " as last written back"}): ARM performs it, the wasm atomics of the shared-memory mode trap (${message})`;
-    }
+    // shared-memory mode: translated code no longer traps on a misaligned atomic access (src/a64/int.ts takes a lock
+    // path there; see noteMisaligned). What is left is an atomic instruction of the runtime's own modules.
+    if (/unaligned|misaligned|alignment/i.test(message))
+      return `a wasm atomic instruction at a misaligned address${pc === undefined ? "" : ` (guest pc ${hex(pc)})`}: translated guest code tests the alignment and does not trap, so this is in the runtime's own code (${message})`;
     if (pc === undefined || !/out of bounds/.test(message)) return message;
     const dv = this.dv(), insn = dv.getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
     if (!isMem) return message;
