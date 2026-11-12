@@ -44,6 +44,7 @@ PLAIN svcStartThread, 0x09
 PLAIN svcExitThread, 0x0A
 PLAIN svcSleepThread, 0x0B
 PLAIN svcSignalEvent, 0x11
+PLAIN svcSetThreadActivity, 0x32  // (Handle thread, u32 activity: 1 paused)
 PLAIN svcClearEvent, 0x12
 PLAIN svcCloseHandle, 0x16
 PLAIN svcResetSignal, 0x17

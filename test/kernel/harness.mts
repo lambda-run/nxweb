@@ -23,7 +23,7 @@ export const WASM = join(ROOT, "build", "kernel", M64 ? "kernel64.wasm" : "kerne
 
 export function build(): void {
   mkdirSync(dirname(WASM), { recursive: true });
-  const args = ["--runtime", "stub", "-O2", "--initialMemory", "1536"];
+  const args = ["--runtime", "stub", "-O2", "--initialMemory", "1536", "--enable", "threads"];   // threads: base.ts cas32 is a wasm atomic
   buildPair("src/kernel/index.ts", join("build", "kernel", "kernel.wasm"), args, { args64: [...args, "--importMemory"] });
   writeStamp(join(ROOT, "build", "kernel", "kernel.wasm")); writeStamp(join(ROOT, "build", "kernel", "kernel64.wasm"));
 }

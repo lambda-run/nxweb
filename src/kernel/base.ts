@@ -77,5 +77,14 @@ export function debugString(ptr: usize, len: i32): void { hostDebugString(ptr, l
 @inline export function ld64(addr: u64): u64 { return load<u64>(<usize>addr); }
 // @ts-ignore: decorator
 @inline export function st32(addr: u64, v: u32): void { store<u32>(<usize>addr, v); }
+// Compare and store a lock or arbiter word. Atomic against guest code that runs at the same time on a helper Worker
+// (RuntimeOptions.helpers: user-mode lock code is exclusives, which the shared-memory translator makes wasm atomics);
+// with everything on one thread it is the compare and the store it always was. A wasm atomic traps on a misaligned
+// address, where hardware and the plain form do not: such a word keeps the plain form.
+// @ts-ignore: decorator
+@inline export function cas32(addr: u64, expect: u32, v: u32): bool {
+  if (addr & 3) { if (load<u32>(<usize>addr) != expect) return false; store<u32>(<usize>addr, v); return true; }
+  return atomic.cmpxchg<u32>(<usize>addr, expect, v) == expect;
+}
 // @ts-ignore: decorator
 @inline export function st64(addr: u64, v: u64): void { store<u64>(<usize>addr, v); }

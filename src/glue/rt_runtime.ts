@@ -7,6 +7,7 @@ import { instantiate, addrBits } from "./wasm_abi.ts";
 import { svcLine, placeOf, frameLines, SVC_REC, type CodeRange } from "./fault_lines.ts";
 import { Loader, HOST_UNRESOLVED, type LoaderExports, type LoadedSet, type ModuleInfo } from "../loader/host/loader.mts";
 import { RANGES, HOST_END, GUEST, STUBS, A64, GUARD_BASE, STAGING, range } from "./rt_layout.ts";
+import { HelperPool, EXIT, EXIT_NAMES, type HelperSpawn, type HelperExit } from "./rt_helpers.ts";
 import { SPACE, writeKernelCfg, layoutFor, getDefaultSpace, type ProcessLayout } from "./rt_process.ts";
 
 export interface RuntimeModules {
@@ -41,6 +42,15 @@ export interface RuntimeOptions {
   // and helpers.shared.wasm, or their 64 forms) and the translator generates its shared form (exclusives and LSE as
   // wasm atomics). Everything still runs on this one thread. Default false.
   shared?: boolean;
+  // Helper Workers (README "Helper Workers"; rt_helpers.ts): this many Workers run the translated code of
+  // compute-bound guest threads beside this one, over the shared memory. Needs `shared`, the wall clock and
+  // helperSpawn (the embedder makes the Workers: a page's `new Worker(...)`, Node's worker_threads); anything missing
+  // is one red line and the run goes on without helpers. Default 0: nothing of it exists.
+  helpers?: number;
+  helperSpawn?: HelperSpawn;
+  helperMinUnits?: number;            // a thread goes out when its running average of budget units per exit (SVC, host call, slice end) is at least this (default 20000)
+  helperSlices?: number;              // slices a helper runs on end before it gives the thread back unasked (default 64)
+  helperCheck?: boolean;              // tests: kernel_check() after every exit taken from a helper (a red line when it is not 0)
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
   // Guest loads and stores below GUARD_BASE (the host area but the two ranges the guest is handed pointers into:
@@ -372,7 +382,8 @@ export class Runtime {
     this.core = this.a64.core;
     this.a64.keepBytes = !!opts.cache;
     // every stub pc maps to one thunk that calls hostCall(); the stub region is inside the pc map, outside the code window
-    const thunk = new WebAssembly.Instance(new WebAssembly.Module(THUNK), { env: { host_call: () => this.hostCall() } }).exports.f;
+    const thunkModule = new WebAssembly.Module(THUNK);
+    const thunk = new WebAssembly.Instance(thunkModule, { env: { host_call: () => this.hostCall() } }).exports.f;
     this.thunk = this.a64.table.length;
     this.a64.table.grow(1);
     this.a64.table.set(this.thunk, thunk);
@@ -382,6 +393,7 @@ export class Runtime {
     const regs = new WebAssembly.Instance(new WebAssembly.Module(regsModule(m64, shared ? (m64 ? MEM64_MAX_PAGES : 65536) : 0) as BufferSource), { env: { memory: this.memory }, core: g } as WebAssembly.Imports).exports as any;
     this.regs = !m64 ? regs : { args_x: (p: number) => regs.args_x(BigInt(p)), args_xd: (p: number) => regs.args_xd(BigInt(p)), set_d0: regs.set_d0 };
     this.argsPtr = this.r.rt_nvn_args(this.r.rt_ctx_scratch());
+    if (this.opts.helpers) this.hpStart(thunkModule);
   }
   private regs!: { args_x(ptr: number): void; args_xd(ptr: number): void; set_d0(bits: bigint): void };
   private argsPtr = 0;
@@ -431,7 +443,7 @@ export class Runtime {
     return all;
   }
   stdout(): string { return dec.decode(this.stdoutBytes()); }
-  get units(): number { return Number(this.r.rt_clock_units()); }   // budget units executed (finished slices)
+  get units(): number { return Number(this.r.rt_clock_units()) + this.hpUnits; }   // budget units executed (finished slices; with helpers, also theirs)
   guestNs(): bigint { return this.k.kernel_guest_ns(); }
 
   // ---- host function registry ----
@@ -782,7 +794,7 @@ export class Runtime {
     return this.k.kernel_guest_ticks();
   }
   // Hold or release a freeze reason of the guest clock (0 hold, 1 background, 2 keyboard: src/kernel/README.md)
-  freezeClock(reason: number, on: boolean): void { this.k.kernel_clock_freeze(reason, on ? 1 : 0); this.wake?.(); }
+  freezeClock(reason: number, on: boolean): void { this.k.kernel_clock_freeze(reason, on ? 1 : 0); if (this.hp) this.hpClock(); this.wake?.(); }
   private sleepMs(ms: number): void {
     if (ms <= 0) return;
     try {
@@ -960,6 +972,7 @@ export class Runtime {
     c.save_ctx(ctx);
     this.tick();
     if (n === 0x01 || n === 0x04 || n === 0x05 || n === 0x08 || n === 0x2C || n === 0x2D) this.spOk.clear();
+    if (this.hp !== null && (n === 0x32 || n === 0x33 || n === 0x0F)) this.hpSync(n, ctx);
     const closing = n === 0x16 && this.closeHooks.length ? this.dv().getUint32(ctx, true) : 0;
     const act = this.k.kernel_svc(n, ctx);
     if (closing) for (const fn of this.closeHooks) fn(closing);
@@ -1154,6 +1167,7 @@ export class Runtime {
     if (this.disposed) return;
     if (this.state !== "Stopped" && this.state !== "Empty") throw new Error(`runtime: dispose() in state ${this.state}; kill() first`);
     this.disposed = true;
+    if (this.hp) { this.hpStopAll(); this.hp.terminate(); this.a64.onUnit = this.a64.onDropping = this.a64.onSlots = null; }
     for (const fn of this.disposers.splice(0)) { try { fn(); } catch (e) { this.log(`[RED] runtime: a dispose step failed: ${e instanceof Error ? e.message : e}`); } }
     for (const ev of this.threadEvent.values()) { this.k.kernel_handle_close(ev.r); this.k.kernel_handle_close(ev.w); }
     this.threadEvent.clear(); this.exts = []; this.pending.clear();
@@ -1177,6 +1191,8 @@ export class Runtime {
           const wall = this.opts.clock === "wall", now = wall ? this.wallNs() : 0n;
           for (const e of this.exts) if (e.done && !e.signaled) { if (!wall || e.at <= now) res(); else timer(res, Number(e.at - now) / 1e6); }
           if (this.pauseAsked || this.state === "Stopped") res();
+          // a thread out on a helper comes back: its exit is served at once, not at the timer
+          if (this.hp && this.hp.busyCount) { const w = this.hp.waitAsync(); if (w) w.then(res); else res(); }
         }
       });
       this.wake = null;
@@ -1266,6 +1282,7 @@ export class Runtime {
     let slices = 0;
     for (;;) {
       if (this.pauseAsked || (limit.slices !== undefined && slices >= limit.slices) || (limit.ms !== undefined && performance.now() - t0 >= limit.ms)) {
+        if (this.hp) this.hpRecallAll();   // a paused process has every thread's context here
         r.rt_pause(); this.pauseAsked = false;
         break;
       }
@@ -1292,7 +1309,25 @@ export class Runtime {
           if (ext.next > now) { const room = (ext.next - now + BigInt(this.opts.nsPerUnit) - 1n) / BigInt(this.opts.nsPerUnit); if (room < BigInt(budget)) budget = Number(room); }
         }
       }
-      const ctx: number = k.kernel_schedule();
+      const hp = this.hp;
+      const ctx: number = hp === null ? k.kernel_schedule() : this.hpNext();
+      if (hp !== null && !ctx) {
+        if (this.hpFault) { this.hpReportFault(); break; }
+        if (this.stopFlag || k.kernel_stop_reason()) { this.finish(); break; }
+        if (hp.busyCount) {
+          // nothing to run here while threads run on helpers: until one comes back, or the next deadline
+          let until = BigInt.asUintN(64, k.kernel_next_timeout());
+          if (dl < until) until = dl;
+          if (ext.nextDone !== 0n && ext.nextDone < until) until = ext.nextDone;
+          let ms = until === FOREVER ? 50 : Math.min(50, Number(until - this.wallNs()) / 1e6);
+          if (limit.ms !== undefined) ms = Math.min(ms, limit.ms - (performance.now() - t0));
+          if (limit.async) { this.stats.runMs += performance.now() - t0; return { state: this.state, idle: true, wakeMs: Math.max(0, ms) }; }
+          const w0 = performance.now();
+          hp.wait(ms);
+          this.hpStats.waitMs += performance.now() - w0;
+          continue;
+        }
+      }
       if (!ctx) {
         if (k.kernel_stop_reason()) { this.finish(); break; }
         // every thread waits: time moves to the next deadline
@@ -1330,7 +1365,9 @@ export class Runtime {
       r.rt_clock_slice_begin(budget);
       slices++; this.stats.slices++;
       let trap: unknown;
+      const hx = hp === null ? 0 : this.stats.svcs + this.stats.hostCalls, ht = hp === null ? 0 : performance.now();
       try { c.run(); } catch (e) { trap = e ?? new Error("unknown exception"); }
+      if (hp !== null) this.hpNote(this.curIndex, budget - Math.max(0, c.budget.value as number), this.stats.svcs + this.stats.hostCalls - hx, performance.now() - ht);
       this.ticked(wall ? r.rt_clock_set(this.wallNs()) : r.rt_clock_slice_end(c.budget.value));
       if (trap === undefined) {
         const p = c.pc.value as bigint;
@@ -1381,6 +1418,7 @@ export class Runtime {
       if (!this.stackOk(ctx)) break;
       if (c.budget.value < 0) k.kernel_preempt(ctx);
     }
+    if (this.hp && (this.state as State) === "Stopped") this.hpStopAll();
     this.stats.runMs += performance.now() - t0;
     return { state: this.state, stop: this.stop };
   }
@@ -1444,8 +1482,9 @@ export class Runtime {
     else { this.r.rt_exit(code); this.stop = { kind: "exit", code }; }
   }
   // At the end of a slice: the stack pointer must be in mapped memory (linear memory has no guard pages)
-  private stackOk(ctx: number): boolean {
-    const sp64: bigint = BigInt.asUintN(64, this.core.sp.value), inSpace = sp64 < this.addrEnd, sp = inSpace ? Number(sp64) : 0, ok = this.spOk.get(this.curIndex);
+  private stackOk(ctx: number): boolean { return this.stackOkAt(ctx, this.curIndex, BigInt.asUintN(64, this.core.sp.value)); }
+  private stackOkAt(ctx: number, index: number, sp64: bigint): boolean {
+    const inSpace = sp64 < this.addrEnd, sp = inSpace ? Number(sp64) : 0, ok = this.spOk.get(index);
     if (inSpace && ok && sp > ok.lo && sp <= ok.hi) return true;
     const q = this.r.rt_query_ptr();
     this.k.kernel_query_memory(sp64 - 1n, q);
@@ -1454,7 +1493,296 @@ export class Runtime {
       this.faultNow(FAULT.stack, `sp=${hex(sp64)} is in unmapped memory (free range ${hex(lo)}..${hex(lo + size)})`, sp64, ctx);
       return false;
     }
-    this.spOk.set(this.curIndex, { lo, hi: lo + size });
+    this.spOk.set(index, { lo, hi: lo + size });
     return true;
+  }
+  // ---- helper Workers (RuntimeOptions.helpers; the mechanism is rt_helpers.ts, the policy is here) ----
+  // A thread the kernel made Running on core c may spend slices on a helper: the helper owns its context block from
+  // hpDispatch to the exit record, the kernel passes core c by meanwhile (kernel_core_out), and every exit is served
+  // here as the same event is in run(): an SVC by kernel_svc on the block, a slice end by kernel_preempt, a host call,
+  // an exit pc or a parked counter read by running the thread here, a missing unit by translating it, a trap by the
+  // fault report.
+  private hp: HelperPool | null = null;
+  private hpQueue: number[] = [];                 // cores whose thread came back and has its next scheduling point here
+  private hpOut = 0;                              // bit c: core c's thread is out
+  private hpHold = 0;                             // > 0: no thread goes out (every helper is being called back)
+  private hpFault: HelperExit | null = null;      // the first fault a helper reported: run() stops with it
+  private hpNo = new Map<number, number>();       // thread index -> handle: target of SetThreadActivity / GetThreadContext3, never out
+  private hpThreads = new Map<number, { handle: number; avg: number; cool: number; tls: number; jobs: number; mainUnits: number; mainMs: number; outUnits: number[]; outMs: number[] }>();
+  private hpExits: number[] = new Array(EXIT_NAMES.length).fill(0);
+  private hpMinUnits = 20000;
+  private hpMaxSlices = 64;
+  private hpSw2: boolean | undefined;
+  private hpClockKey = "";
+  private hpCore = -1;
+  private hpUnits = 0;                            // budget units executed on helpers
+  hpStats = { jobs: 0, recalls: 0, calledBack: 0, checks: 0, waitMs: 0 };
+  static readonly HP_COOL = 8;                    // slices a thread stays here after a host call brought it back
+
+  private hpStart(thunkModule: WebAssembly.Module): void {
+    const o = this.opts, n = Math.max(0, Math.min(16, Math.floor(o.helpers ?? 0)));
+    if (!n) return;
+    const why = !o.shared ? "the memory is not shared (RuntimeOptions.shared; the page: ?shared=1)" : o.clock !== "wall" ? "the clock is the deterministic one (helpers run on the wall clock)"
+      : !o.helperSpawn ? "the embedder gave no helperSpawn" : typeof Atomics === "undefined" ? "there is no Atomics" : "";
+    const scratch: number[] = [];
+    for (let k = 0; k < n; k++) scratch.push(this.a64.helperScratch(k));
+    const noRoom = !why && scratch.some(a => !a) ? "helpers.wasm has no setScratch or no room for the helpers' scratch blocks (rebuild: npm run rt:build)" : "";
+    if (why || noRoom) { this.log(`[RED] runtime: helpers: ${n} asked for, none started: ${why || noRoom}`); return; }
+    if (o.helperMinUnits !== undefined) this.hpMinUnits = o.helperMinUnits;
+    if (o.helperSlices !== undefined) this.hpMaxSlices = Math.max(1, o.helperSlices);
+    const hp = this.hp = new HelperPool({ n, spawn: o.helperSpawn!, a64: this.a64, thunkModule, thunk: this.thunk, pcYield: PC_YIELD, scratch });
+    this.a64.onUnit = (u, mod) => {
+      hp.publish(u.tableBase, u.pcs.length, mod);
+      // a helper that is out must have table slots for every index the pc map can now hold
+      for (let h = 0; h < hp.n; h++) if (hp.busy(h) && this.a64.table.length > hp.cap(h)) this.hpCallBack(h);
+    };
+    this.a64.onDropping = () => this.hpRecallAll();
+    this.a64.onSlots = (base, len) => hp.cleared(base, len);
+    this.log(`runtime: helpers: ${n} Workers for compute-bound guest threads (a thread goes out at ${this.hpMinUnits} budget units per exit or more)`);
+  }
+  // resolves when every helper has started (or failed, which is a red line); the run loop does not need it
+  async helpersReady(timeoutMs = 20000): Promise<number> {
+    const hp = this.hp;
+    if (!hp) return 0;
+    const end = performance.now() + timeoutMs;
+    while (hp.readyCount + hp.failed.length < hp.n && performance.now() < end) await new Promise(res => setTimeout(res, 2));
+    for (const k of hp.failed) this.log(`[RED] runtime: helper ${k} did not start: ${hp.failText(k)}`);
+    return hp.readyCount;
+  }
+  get helperCount(): number { return this.hp ? this.hp.n : 0; }
+  private hpStat(index: number) {
+    let st = this.hpThreads.get(index);
+    if (!st) this.hpThreads.set(index, st = { handle: 0, avg: 0, cool: 0, tls: 0, jobs: 0, mainUnits: 0, mainMs: 0, outUnits: [], outMs: [] });
+    return st;
+  }
+  // a slice of thread `index` ran here: `units` budget units with `exits` SVCs and host calls in them
+  private hpNote(index: number, units: number, exits: number, ms: number): void {
+    const st = this.hpStat(index);
+    st.avg = st.avg * 0.75 + (units / (exits + 1)) * 0.25;
+    if (st.cool > 0) st.cool--;
+    st.mainUnits += units; st.mainMs += ms;
+  }
+  // May the thread whose context block is ctx spend its next slices on a helper? Measured, not named: its running
+  // average of budget units per exit. Leaves its core in hpCore.
+  private hpEligible(ctx: number, index: number): boolean {
+    if (this.hpHold || this.flat || this.nested) return false;
+    const st = this.hpThreads.get(index);
+    if (!st || st.avg < this.hpMinUnits || st.cool > 0) return false;
+    const info = this.threadInfo(index), dv = this.dv(), handle = dv.getUint32(info + 28, true);
+    if (st.handle !== handle) {   // the thread record went to another thread: it earns its own average
+      const fresh = st.handle === 0;
+      st.handle = handle; st.tls = Number(dv.getBigUint64(ctx + 0x120, true));
+      if (!fresh) { st.avg = 0; st.cool = 0; return false; }
+    }
+    if (this.hpNo.get(index) === handle) return false;
+    const pc = dv.getBigUint64(ctx + 0x100, true);
+    if ((pc >= PC_SPECIAL && pc <= PC_SPECIAL_END) || (pc >= BigInt(STUBS.base) && pc < BigInt(HOST_END))) return false;   // an exit pc, a host function's stub
+    this.hpCore = dv.getInt32(info + 24, true);
+    return this.hpCore >= 0 && this.hpCore < 31;
+  }
+  // The guest clock for counter reads on helpers: its lag while it runs, nothing while it stands (a read comes here)
+  private hpClock(): void {
+    const k = this.k, reasons: number = k.kernel_clock_reasons();
+    if (this.hpSw2 === undefined) { const ns = BigInt.asUintN(64, k.kernel_guest_ns()); if (ns > 100000n) this.hpSw2 = BigInt.asUintN(64, k.kernel_guest_ticks()) === ns / 32n; }
+    const valid = !reasons && this.hpSw2 !== undefined, lag: bigint = valid ? BigInt.asIntN(64, k.kernel_host_time_of(0n)) : 0n, key = `${valid},${lag}`;
+    if (key === this.hpClockKey) return;
+    this.hpClockKey = key;
+    this.hp!.setClock(valid, lag, !!this.hpSw2, performance.timeOrigin + this.wallStart);
+  }
+  private hpDispatch(h: number, ctx: number, index: number, first: number): void {
+    const core = this.hpCore, st = this.hpStat(index);
+    this.k.kernel_core_out(core, 1); this.hpOut |= 1 << core;
+    this.hpClock();
+    st.jobs++; this.hpStats.jobs++;
+    this.hp!.dispatch(h, ctx, core, index, this.opts.budget, first, this.hpMaxSlices, this.r.rt_clock_set(this.wallNs()));
+  }
+  // The scheduling point of run() with helpers: serve what came back, give threads out, and return the context of a
+  // thread to run here (0: none; hpFault and stopFlag say why when it is not "every other thread waits or is out").
+  private hpNext(): number {
+    const hp = this.hp!, k = this.k;
+    for (;;) {
+      this.hpDrain();
+      if (this.hpFault || this.stopFlag) return 0;
+      let ctx = 0;
+      while (!ctx && this.hpQueue.length) { const c = this.hpQueue.shift()!; if (!((this.hpOut >> c) & 1)) ctx = k.kernel_schedule_core(c); }
+      if (!ctx) ctx = k.kernel_schedule();
+      // a thread that is out gives way as it would at a slice end here: a ready thread of its core that is as good
+      for (let h = 0; h < hp.n; h++) if (hp.busy(h) && !hp.slotOf(h).recalled && k.kernel_core_contended(hp.slotOf(h).core)) { hp.recall(h); this.hpStats.recalls++; }
+      if (!ctx) return 0;
+      const index: number = k.kernel_thread_of_ctx(ctx), h = hp.idle();
+      if (h < 0 || !this.hpEligible(ctx, index)) return ctx;
+      this.hpDispatch(h, ctx, index, 0);
+    }
+  }
+  private hpDrain(): void {
+    const hp = this.hp!;
+    hp.mark();
+    for (let h = 0; h < hp.n; h++) if (hp.done(h)) this.hpServe(h);
+  }
+  // An exit record: the thread is Running on its core and its context block is ours again
+  private hpServe(h: number): void {
+    const hp = this.hp!, k = this.k, x = hp.take(h), ctx = x.ctx, st = this.hpStat(x.index);
+    k.kernel_core_out(x.core, 0); this.hpOut &= ~(1 << x.core);
+    this.hpExits[x.reason]++;
+    st.outUnits[h] = (st.outUnits[h] ?? 0) + x.units; st.outMs[h] = (st.outMs[h] ?? 0) + x.runMs; this.hpUnits += x.units;
+    if (x.nowNs > 0n) this.r.rt_clock_set(x.nowNs);   // counter reads on the helper: guest time never steps back for the thread
+    if (x.reason !== EXIT.needUnit) st.avg = st.avg * 0.75 + x.units * 0.25;
+    switch (x.reason) {
+      case EXIT.svc: {
+        const act = this.hpSvc(x.aux, ctx);
+        if (act === ACT_CONTINUE) this.hpBack(x); else if (act !== ACT_SWITCH) this.stopFlag = true;
+        break;
+      }
+      case EXIT.budget:
+        if (!this.stackOkAt(ctx, x.index, BigInt.asUintN(64, this.dv().getBigUint64(ctx + 31 * 8, true)))) { this.hpFault = x; break; }   // (reported there: the process is Stopped)
+        if (x.left < 0) k.kernel_preempt(ctx);
+        this.hpQueue.unshift(x.core);
+        break;
+      case EXIT.counter: if (this.hpCounter(ctx)) this.hpBack(x); else this.hpQueue.push(x.core); break;
+      case EXIT.needUnit: {
+        // as onTranslate, for a pc in a loaded module's text; anything else is that function's to report, here
+        const p = x.pc < this.addrEnd ? Number(x.pc) : -1;
+        let ok = false;
+        if (p >= 0 && p % 4 === 0 && this.inText(p) && !x.again) { try { if (this.a64.getPcMap(p) <= 1) this.a64.translateUnit([x.pc]); ok = true; } catch { /* onTranslate reports it */ } }
+        if (ok) this.hpBack(x); else this.hpQueue.push(x.core);
+        break;
+      }
+      case EXIT.hostCall: st.cool = Runtime.HP_COOL; this.hpQueue.push(x.core); break;
+      case EXIT.pc: this.hpQueue.push(x.core); break;
+      default: this.hpFault ??= x;
+    }
+    if (this.opts.helperCheck) { this.hpStats.checks++; const bad: number = k.kernel_check(); if (bad) this.log(`[RED] runtime: kernel_check() = ${bad} after the ${EXIT_NAMES[x.reason]} exit of thread #${x.index} from helper ${h}`); }
+  }
+  // the thread goes on: on the helper it came from when it may, else its core has its next scheduling point here
+  private hpBack(x: HelperExit): void {
+    const hp = this.hp!;
+    if (!this.hpFault && !this.stopFlag && hp.idle() >= 0 && this.hpEligible(x.ctx, x.index)) {
+      this.hpDispatch(hp.state(x.helper) === 1 && !hp.busy(x.helper) ? x.helper : hp.idle(), x.ctx, x.index, x.left > 0 ? x.left : 0);
+    } else this.hpQueue.push(x.core);
+  }
+  // svc() for a thread whose registers are in its context block (pc = the instruction after the svc)
+  private hpSvc(n: number, ctx: number): number {
+    this.stats.svcs++;
+    this.tick();
+    if (n === 0x01 || n === 0x04 || n === 0x05 || n === 0x08 || n === 0x2C || n === 0x2D) this.spOk.clear();
+    if (n === 0x32 || n === 0x33 || n === 0x0F) this.hpSync(n, ctx);
+    const closing = n === 0x16 && this.closeHooks.length ? this.dv().getUint32(ctx, true) : 0;
+    const act: number = this.k.kernel_svc(n, ctx);
+    if (closing) for (const fn of this.closeHooks) fn(closing);
+    return act;
+  }
+  // SetThreadActivity, GetThreadContext3 and SetThreadCoreMask act on another thread's saved context or move it
+  // between cores: every thread is called back first (what each was doing is served before this SVC), and the
+  // target of the first two never goes out again.
+  private hpSync(n: number, ctx: number): void {
+    if (n !== 0x0F) {
+      const handle = this.dv().getUint32(ctx + (n === 0x33 ? 8 : 0), true), index: number = this.k.kernel_thread_index(handle);
+      if (index >= 0) this.hpNo.set(index, this.dv().getUint32(this.threadInfo(index) + 28, true));
+    }
+    this.hpRecallAll();
+  }
+  // `mrs xt, cntpct_el0` of a thread whose registers are in its context block. False: the clock stands (the thread
+  // parks on it, here) or the instruction is not that read.
+  private hpCounter(ctx: number): boolean {
+    if (this.flat) return false;
+    this.tick();
+    if (this.k.kernel_clock_reasons() & 2) return false;
+    const dv = this.dv(), pc = Number(dv.getBigUint64(ctx + 0x100, true));
+    if (pc < 0 || pc + 4 > dv.byteLength) return false;
+    const insn = dv.getUint32(pc, true), rt = insn & 31, sel = (insn >>> 5) & 7;
+    if (((insn & 0xFFFFFF00) >>> 0) !== 0xD53BE000 || (sel !== 1 && sel !== 2)) return false;   // mrs xt, cntpct_el0 / cntvct_el0
+    if (rt !== 31) dv.setBigUint64(ctx + rt * 8, BigInt.asUintN(64, this.k.kernel_guest_ticks()), true);
+    dv.setBigUint64(ctx + 0x100, BigInt(pc + 4), true);
+    return true;
+  }
+  // Helper h gives its thread back now: asked, waited for (a slice at most), served
+  private hpCallBack(h: number): void {
+    const hp = this.hp!;
+    if (!hp.busy(h)) return;
+    this.hpHold++;
+    try {
+      hp.recall(h); this.hpStats.calledBack++;
+      const end = performance.now() + 20000;
+      while (!hp.done(h)) {
+        if (performance.now() > end) throw new Error(`runtime: helper ${h} did not give thread #${hp.slotOf(h).index} back within 20 s`);
+        hp.mark();
+        if (!hp.done(h)) hp.wait(20);
+      }
+      this.hpServe(h);
+    } finally { this.hpHold--; }
+  }
+  private hpRecallAll(): void {
+    const hp = this.hp;
+    if (!hp || !hp.busyCount) return;
+    this.hpHold++;
+    try {
+      for (let h = 0; h < hp.n; h++) hp.recall(h);
+      for (let h = 0; h < hp.n; h++) this.hpCallBack(h);
+    } finally { this.hpHold--; }
+  }
+  // The process stopped (an exit, a fault, kill()): the helpers end their slices and the records are dropped
+  private hpStopAll(): void {
+    const hp = this.hp;
+    if (!hp || !hp.busyCount) return;
+    for (let h = 0; h < hp.n; h++) hp.recall(h);
+    const end = performance.now() + 20000;
+    for (let h = 0; h < hp.n; h++) {
+      if (!hp.busy(h)) continue;
+      while (!hp.done(h) && performance.now() < end) { hp.mark(); if (!hp.done(h)) hp.wait(20); }
+      if (!hp.done(h)) { this.log(`[RED] runtime: helper ${h} did not end its slice of thread #${hp.slotOf(h).index} within 20 s of the stop`); continue; }
+      const x = hp.take(h);
+      this.k.kernel_core_out(x.core, 0); this.hpOut &= ~(1 << x.core);
+      this.hpExits[x.reason]++;
+    }
+  }
+  // A fault on a helper, reported as run() reports the same fault of a thread that ran here
+  private hpReportFault(): void {
+    const x = this.hpFault!, ctx = x.ctx;
+    this.hpFault = null;
+    if ((this.state as State) === "Stopped") return;   // (the stack check reported it)
+    if (x.reason === EXIT.unimpl) this.faultNow(FAULT.unimplemented, `instruction word ${hex(x.aux >>> 0)} at ${hex(x.aux64)}`, BigInt(x.aux >>> 0), ctx, true);
+    else if (x.reason === EXIT.brk) this.faultNow(FAULT.brk, `brk #${hex(x.aux)} at ${hex(x.aux64)}`, BigInt(x.aux), ctx, true);
+    else if (x.reason === EXIT.trap) {
+      const at = x.frame ? this.a64.faultAt(x.frame.funcPc, x.frame.offset) : undefined;
+      if (at) this.dv().setBigUint64(ctx + 0x100, BigInt(at.pc), true);
+      this.faultNow(FAULT.trap, this.trapText(x.text, at?.pc, ctx), 0n, ctx, !!at);
+    }
+    else if (x.reason === EXIT.stack) this.faultNow(FAULT.trap, "the wasm stack is exhausted (" + x.text + ")", 0n, ctx, false);
+    else this.faultNow(FAULT.host, x.text || `helper ${x.helper}: exit reason ${x.reason}`, 0n, ctx, false);
+  }
+  // What the helpers did, for the report: totals, each helper, exits by reason, and each guest thread's share of the
+  // time spent in translated code with where it ran
+  helperTotals(): { mainMs: number; helperMs: number[]; jobs: number } {
+    const helperMs: number[] = [];
+    let mainMs = 0;
+    for (const st of this.hpThreads.values()) { mainMs += st.mainMs; st.outMs.forEach((v, h) => { helperMs[h] = (helperMs[h] ?? 0) + (v ?? 0); }); }
+    for (let h = 0; h < (this.hp?.n ?? 0); h++) helperMs[h] ??= 0;
+    return { mainMs, helperMs, jobs: this.hpStats.jobs };
+  }
+  helperExits(): Record<string, number> { const r: Record<string, number> = {}; EXIT_NAMES.forEach((nm, i) => { if (nm && this.hpExits[i]) r[nm] = this.hpExits[i]; }); return r; }
+  // per guest thread: ms of translated code here and on each helper
+  helperThreads(): { index: number; name: string; mainMs: number; helperMs: number[]; jobs: number }[] {
+    return [...this.hpThreads].map(([index, st]) => ({ index, name: this.threadName(st.tls), mainMs: st.mainMs, helperMs: Array.from(st.outMs, v => v ?? 0), jobs: st.jobs }));
+  }
+  helperLines(max = 12): string[] {
+    const hp = this.hp;
+    if (!hp) return [];
+    const el = performance.now() - hp.t0, t = this.helperTotals(), s = this.hpStats, total = t.mainMs + t.helperMs.reduce((a, v) => a + v, 0);
+    const out = [`${hp.n} helper Workers (${hp.readyCount} started); ${s.jobs} slices given out, ${s.recalls} asked back for a waiting thread, ${s.calledBack} called back and waited for; a thread goes out at ${this.hpMinUnits} budget units per exit`,
+      `guest time in translated code: ${total.toFixed(0)} ms = this Worker ${t.mainMs.toFixed(0)} ms + helpers ${(total - t.mainMs).toFixed(0)} ms (${total ? (100 * (total - t.mainMs) / total).toFixed(1) : "0"}%); this Worker waited ${s.waitMs.toFixed(0)} ms for helpers with nothing to run`];
+    for (let h = 0; h < hp.n; h++) {
+      const q = hp.stats(h);
+      out.push(`  helper ${h}: ${q.jobs} jobs, ${q.busyMs.toFixed(0)} ms busy, ${Math.max(0, el - q.busyMs).toFixed(0)} ms idle (${(100 * q.busyMs / (el || 1)).toFixed(1)}% busy of ${el.toFixed(0)} ms); ${q.units} units instantiated in ${q.instMs.toFixed(0)} ms`);
+    }
+    out.push("  exits from helpers by reason: " + (EXIT_NAMES.map((nm, i) => this.hpExits[i] ? `${nm} ${this.hpExits[i]}` : "").filter(v => v).join(", ") || "none"));
+    const rows = [...this.hpThreads].map(([i, st]) => ({ i, st, ms: st.mainMs + st.outMs.reduce((a, v) => a + (v ?? 0), 0) })).filter(r => r.ms > 0).sort((a, b) => b.ms - a.ms);
+    if (rows.length) out.push("  by guest thread (share of that time; where it ran):");
+    for (const { i, st, ms } of rows.slice(0, max)) {
+      if (!st.tls) { const c = Number(this.k.kernel_thread_ctx(i)); if (c) st.tls = Number(this.dv().getBigUint64(c + 0x120, true)); }
+      const nm = this.threadName(st.tls), where = [`main ${st.mainMs.toFixed(0)} ms`, ...Array.from(st.outMs, (v, h) => v ? `helper ${h} ${v.toFixed(0)} ms` : "").filter(v => v)];
+      out.push(`  ${(100 * ms / (total || 1)).toFixed(1).padStart(5)}% thread #${i}${nm ? ` "${nm}"` : ""}: ${where.join(", ")}; ${st.jobs} slices out, ${st.avg.toFixed(0)} units per exit${this.hpNo.has(i) ? ", kept here (SetThreadActivity target)" : ""}`);
+    }
+    if (rows.length > max) out.push(`  (${rows.length - max} more threads)`);
+    return out;
   }
 }

@@ -5,7 +5,7 @@ import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { kLock, kUnlock, ACT_CONTINUE, ACT_SWITCH, ACT_STOP, FOREVER, WAITERS_BIT, guestOk, ld32, lineStart, lineEnd, puts, putx } from "./base";
 import { handlesInit, handlesUsed, handlesCountEvents, eventsLive, evRefs, O_THREAD, O_EVENT_R, O_EVENT_W, MAX_EVENTS, hPeek, hNew } from "./handle";
 import { KThread, thr, MAX_THREADS, MAX_CORES, coreCount, threadsInit, threadNew, threadOfCtx, threadsAlive, threadObjects, WK_LOCK, WK_SYNC } from "./thread";
-import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent, schedPreemptHold, schedSvcBegin } from "./sched";
+import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent, schedPreemptHold, schedSvcBegin, schedCoreOut, schedContended } from "./sched";
 import { syncInit, expire, nextDeadline, wakeClockWaiters } from "./sync";
 import { clockInit, clockSetNow, clockFreeze, clockReasons, guestNs, guestTicks, hostTimeOf, entropySeed, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
@@ -102,6 +102,11 @@ export function kernel_schedule_core(core: i32): usize {
   kUnlock();
   return t != null ? t.ctx : 0;
 }
+// Helper Workers (RuntimeOptions.helpers): core `core`'s current thread is out on a helper (on 1) or back (0). While
+// out, kernel_schedule passes the core by; the thread stays Running and its context block is the helper's.
+export function kernel_core_out(core: i32, on: i32): void { kLock(); schedCoreOut(core, on != 0); kUnlock(); }
+// 1: the core's current thread would give way at a slice end (the embedder recalls it from its helper)
+export function kernel_core_contended(core: i32): i32 { return schedContended(core) ? 1 : 0; }
 // The thread's time slice ran out (`budget` reached 0; its context is saved): threads of its priority on its core
 // take turns. Then call kernel_schedule.
 export function kernel_preempt(ctx: usize): void {

@@ -119,6 +119,13 @@ export class A64Host {
   cacheHits = 0;          // units instantiated from the translation cache
   readonly mem64: boolean;
   coreModule!: WebAssembly.Module;   // the core module, compiled: another thread on the same shared memory instantiates its own (its own CPU state)
+  helpersModule!: WebAssembly.Module;   // ... and its own instance of the helpers (with scratch blocks of its own: helperScratch)
+  // Helper Workers (src/glue/rt_helpers.ts) keep their own table and unit instances at the same indices. onUnit: a unit
+  // was compiled and instantiated here and its pcs are about to enter the pc map. onDropping: translations are about
+  // to be dropped (no other thread may be in translated code); onSlots: these table slots were cleared.
+  onUnit: ((u: A64Unit, mod: WebAssembly.Module) => void) | null = null;
+  onDropping: (() => void) | null = null;
+  onSlots: ((base: number, len: number) => void) | null = null;
   private tr: any;
   private l1Bytes = L1_BYTES;   // the pc map's first level
   private span = GB4;           // the guest addresses it covers
@@ -145,7 +152,7 @@ export class A64Host {
     const hmod = helpersWasm instanceof WebAssembly.Module ? helpersWasm : new WebAssembly.Module(helpersWasm);
     if (this.memory.buffer.byteLength < lay.pcmapEnd) throw new Error("a64: the memory does not reach the end of the a64 layout");
     const hlp = new WebAssembly.Instance(hmod, { env }).exports as any;
-    this.hlp = hlp;
+    this.hlp = hlp; this.helpersModule = hmod;
     this.tr = new WebAssembly.Instance(mod, { env }).exports;
     const bits = this.tr.addrBits?.() ?? 32;
     if (bits !== (m64 ? 64 : 32))
@@ -185,12 +192,20 @@ export class A64Host {
     }).exports as unknown as CoreExports;
     // the wasm64 core takes the context pointer as an i64: `core` keeps taking a number
     this.core = !m64 ? coreX : { ...coreX, save_ctx: (p: number) => (coreX.save_ctx as any)(BigInt(p)), load_ctx: (p: number) => (coreX.load_ctx as any)(BigInt(p)) };
-    const { staticBase: _b, staticEnd: _e, memory: _m, libcStat: _s, libcGuard: _g, ...hfuncs } = hlp;
+    const { staticBase: _b, staticEnd: _e, memory: _m, libcStat: _s, libcGuard: _g, setScratch: _sc, SCRATCH_BYTES: _sb, ...hfuncs } = hlp;
     this.unitImports = { cpu: coreX as any, hlp: hfuncs, env: { memory: this.memory, table: this.table, ...opts.imports } };
     (this.core.excl_addr as WebAssembly.Global).value = -1n;
   }
 
   private u8(): Uint8Array { return new Uint8Array(this.memory.buffer); }
+  // The scratch blocks of the k-th further instance of the helpers on this memory (k from 0): 128 bytes each, taken
+  // downwards from the pair lock at the end of the helpers' range. 0: no room, or helpers built before setScratch.
+  helperScratch(k: number): number {
+    const a = this.lay.helpersEnd - PAIR_LOCK_BYTES - 128 * (k + 1);
+    return this.hlp.setScratch && a >= ((num(this.hlp.staticEnd()) + 15) & ~15) ? a : 0;
+  }
+  // what a further thread's instances need to know: the pc map's place and form, the guard
+  get layoutInfo(): { pcmapBase: number; span: number; guardBase: number } { return { pcmapBase: this.lay.pcmapBase, span: this.span, guardBase: this.opts.guardBase ?? 0 }; }
   // an address-valued translator option: an i64 parameter of the wasm64 build
   private setAddr(id: number, v: number): void { if (this.mem64) this.tr.setOptAddr(id, BigInt(v)); else this.tr.setOpt(id, v); }
   // is this pc one of the embedder's special values (0xFFFF_FF00 .. 0xFFFF_FFFF: thread exit, yield)? In memory32
@@ -333,6 +348,7 @@ export class A64Host {
   }
   private freeSlots: { base: number; len: number }[] = [];   // table ranges of units that were dropped whole
   private dropTranslations(lo: number, hi: number): void {
+    this.onDropping?.();
     this.clearPcMap(lo, hi);
     for (let k = this.units.length - 1; k >= 0; k--) {
       const u = this.units[k];
@@ -341,7 +357,7 @@ export class A64Host {
       if (inside === 0) continue;
       for (let i = 0; i < u.pcs.length; i++) {
         const pc = u.pcs[i];
-        if (pc !== 0xFFFFFFFF && pc >= lo && pc < hi) { this.table.set(u.tableBase + i, null); if (this.byFunc.get(pc) === u) this.byFunc.delete(pc); }
+        if (pc !== 0xFFFFFFFF && pc >= lo && pc < hi) { this.table.set(u.tableBase + i, null); if (this.byFunc.get(pc) === u) this.byFunc.delete(pc); if (inside !== n) this.onSlots?.(u.tableBase + i, 1); }
       }
       if (inside === n) {
         // the whole unit is gone: its table slots are free for the next unit (a module loaded and unloaded again
@@ -349,6 +365,7 @@ export class A64Host {
         this.units.splice(k, 1);
         for (let i = 0; i < u.pcs.length; i++) this.table.set(u.tableBase + i, null);
         this.freeSlots.push({ base: u.tableBase, len: u.pcs.length });
+        this.onSlots?.(u.tableBase, u.pcs.length);
       }
     }
     for (const pc of [...this.cache.keys()]) if (pc >= lo && pc < hi) this.cache.delete(pc);
@@ -425,6 +442,7 @@ export class A64Host {
     });
     const u: A64Unit = { tableBase: base, pcs, side, bytes: this.keepBytes ? bytes : null, insns, cached };
     this.units.push(u);
+    this.onUnit?.(u, mod);
     for (let i = 0; i < pcs.length; i++) {
       const pc = pcs[i];
       if (pc === 0xFFFFFFFF) continue;          // stub: stays on the trampoline path
@@ -450,7 +468,17 @@ export class A64Host {
     const line = stack.split("\n").find(l => /f_[0-9a-f]+\b.*wasm-function\[/.test(l));
     const m = line ? /f_([0-9a-f]+)\b.*wasm-function\[\d+\]:0x([0-9a-f]+)/.exec(line) : null;
     if (!m) return undefined;
-    const funcPc = parseInt(m[1], 16), offset = parseInt(m[2], 16);
+    return this.faultAt(parseInt(m[1], 16), parseInt(m[2], 16));
+  }
+  // the same from the two numbers of that frame (another thread's trap: it sends them, the side tables are here)
+  static frameOf(e: unknown): { funcPc: number; offset: number } | undefined {
+    const stack = (e as { stack?: string } | null)?.stack;
+    if (typeof stack !== "string") return undefined;
+    const line = stack.split("\n").find(l => /f_[0-9a-f]+\b.*wasm-function\[/.test(l));
+    const m = line ? /f_([0-9a-f]+)\b.*wasm-function\[\d+\]:0x([0-9a-f]+)/.exec(line) : null;
+    return m ? { funcPc: parseInt(m[1], 16), offset: parseInt(m[2], 16) } : undefined;
+  }
+  faultAt(funcPc: number, offset: number): A64Fault | undefined {
     const unit = this.byFunc.get(funcPc);
     if (!unit) return undefined;
     const s = unit.side;

@@ -176,6 +176,52 @@ that locks: none of that exists); 128-bit `STXP` is two exchanges with a roll-ba
 browser side (WebGPU uploads, OPFS, WebCodecs, the audio worklet's direct transport, a 16 GB shared reservation in
 Chromium) is not covered by the Node suites.
 
+### Helper Workers (`helpers: N`, default 0; the page's `?helpers=N` with `?shared=1`)
+
+Real parallelism for the guest threads that only compute, and nothing else moves: the kernel, the take-over table,
+graphics, files and audio keep their state in per-instance wasm globals, so they exist once, on the runtime's Worker.
+A helper Worker (`src/glue/rt_helpers.ts`; `rt_helper_worker.ts` in the page, `test/runtime/helper_node.ts` under
+Node) has its own function table, its own core instance (the CPU state), its own instance of the a64 helpers (with
+scratch blocks of its own) and, lazily, its own instance of every translated unit at the same table indices, all on
+the shared memory. It never calls the kernel, a host function or the translator.
+
+- **A job.** A thread the kernel made Running on core c may spend its next slices on a helper: the runtime posts
+  {context block, budget} into a mailbox (one SharedArrayBuffer, `Atomics.wait` / `notify`), the helper does
+  `load_ctx`, runs slice after slice, and gives the thread back with `save_ctx` and an exit record: an SVC, a host
+  function's stub, a counter read while the guest clock stands, a pc it has no unit for, an exit pc, a trap, or a
+  slice end at which it was asked back (or 64 slices). Until then the context block is the helper's and the kernel
+  passes core c by (`kernel_core_out`); the thread stays Running.
+- **Serving an exit** is what `run()` does for the same event: `kernel_svc` on the context block (the thread goes
+  out again when the SVC returned "continue"), `kernel_preempt` and the stack check at a slice end, translate and
+  publish for a missing unit, the same fault report for a trap (the helper sends the trap's wasm frame, the side
+  tables are here). A host call, an exit pc and a parked counter read run the thread here.
+- **The unit registry.** `A64Host.onUnit` posts {module, table base, count} to every helper when a unit is
+  installed; a job names how many registry messages its helper must have handled before it runs. A helper's empty
+  table slots hold the trampoline, so the first call of a function instantiates its unit there. Dropping
+  translations (`removeCode`) calls every thread back first.
+- **Who goes out** is measured: a running average of budget units per exit (SVCs, host calls, slice ends) of at
+  least `helperMinUnits` (20000), not while the thread cools down after a host call brought it back, never the
+  target of SetThreadActivity / GetThreadContext3 (those and SetThreadCoreMask call every thread back before the
+  kernel acts), never inside a guest callback. A thread that is out is asked back when a ready thread of its core is
+  at least as good (`kernel_core_contended`), which is the preemption it would get here.
+- **The kernel's lock words.** User-mode lock code now runs beside the kernel, so the kernel's compare-and-store
+  of a lock or arbiter word is a wasm atomic (`src/kernel/base.ts` `cas32`; the kernel is built with
+  `--enable threads`, valid on an unshared memory too).
+- **Time.** The wall clock only. A counter read on a helper is answered there from the lag the runtime publishes
+  (`performance.timeOrigin + performance.now()` on both sides), never earlier than the job's start.
+- **Stopping.** A pause calls every thread back; an exit, a fault and `kill()` wait for the helpers' slices to end
+  (a slice at most) and drop the records. `run({ async })` returns `idle` while only helpers run and `runAsync`
+  wakes on the next exit (`Atomics.waitAsync`); a synchronous `run()` blocks on the mailbox.
+- **What it says.** `helperLines()` (the report's "helper Workers" section): guest time in translated code here
+  and on each helper, each helper's busy and idle time, exits by reason, and each guest thread's share with where
+  it ran. The page's status split adds `guest code: main … ms, helper k … ms (… % busy)` per frame.
+- **Tests.** `npm run rt:test:helpers` ([32s], [64s], [64his]): four compute threads with 0, 1 and 3 helpers, a
+  mutex / condition variable ping-pong and a contended counter with `kernel_check` after every exit, units
+  translated on both sides while a helper runs, a trap's report, pause / exit / kill during a slice.
+
+Limits: not tried in a browser; a guest data race is now a real one; MapMemory copies while helpers run; `STXP`
+pairs as above; without the option nothing of this exists (no Worker, no mailbox, the same run loop).
+
 ### Memory safety of the host area (the guard: on by default)
 
 Linear memory has no page protection, so a guest write below 0x0800_0000 would land in the kernel's, the loader's or

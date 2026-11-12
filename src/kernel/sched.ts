@@ -38,7 +38,7 @@ export function schedInit(priorityInheritance: bool, eightCores: bool, wakeHando
   for (let c = 0; c < MAX_CORES; c++) { setCur(c, -1); store<u8>(RESCHED + <usize>c, 0); }
   memory.fill(HOLD, 0, <usize>MAX_THREADS * 4); memory.fill(HOLDN, 0, <usize>MAX_THREADS);
   seq = 0; cursor = 0; effDirty = true; inherit = priorityInheritance;
-  ncores = eightCores ? 8 : 4; setCoreCount(ncores); handoff = wakeHandoff; nwoke = 0; holds = 0;
+  ncores = eightCores ? 8 : 4; setCoreCount(ncores); handoff = wakeHandoff; nwoke = 0; holds = 0; outMask = 0;
 }
 // @ts-ignore: decorator
 @inline function holdOf(i: i32): i32 { return load<i32>(HOLD + (<usize>i << 2)); }
@@ -155,11 +155,12 @@ export function scheduleNext(): KThread | null {
   for (let pass = 0; pass < 2; pass++) {
     for (let i = 0; i < ncores; i++) {
       const c = (cursor + i) % ncores;
+      if ((outMask >> c) & 1) continue;   // its thread is out on a helper
       const t = scheduleCore(c);
       if (t != null) { cursor = (c + 1) % ncores; return t; }
     }
     // nothing to run but threads that stand back (the one they stand back for cannot run either): they go on
-    if (!holds) break;
+    if (!holds || outMask) break;   // (a thread out on a helper still runs: those that stand back for it wait)
     for (let i = 0; i < MAX_THREADS; i++) unhold(i);
   }
   return null;
@@ -168,6 +169,25 @@ export function scheduleNext(): KThread | null {
 // Depth of guest callbacks run inside host functions (kernel_preempt_hold): such a thread cannot give up its core, so
 // a better thread made ready meanwhile waits for the callback's first SVC after it returns (RESCHED stays set)
 let preemptHold: i32 = 0;
+// Cores whose current thread is out on a helper Worker (bit c; RuntimeOptions.helpers, src/glue/rt_helpers.ts): the
+// embedder gave the thread's context block away, so the core is not scheduled until it has it back
+// (kernel_core_out). 0 unless the embedder uses helpers: nothing below changes then.
+let outMask: u32 = 0;
+export function schedCoreOut(c: i32, on: bool): void { if (c < 0 || c >= ncores) return; if (on) outMask |= <u32>1 << c; else outMask &= ~(<u32>1 << c); }
+// Would core c's current thread give way at its next scheduling point (a slice end)? A ready thread of its core that
+// is at least as good waits, or a hand-off is counting slices. The embedder then asks the helper for the thread.
+export function schedContended(c: i32): bool {
+  const i = c >= 0 && c < ncores ? cur(c) : -1;
+  if (i < 0) return true;
+  const t = thr(i);
+  if (!t.used || t.state != KthreadS.Running || holds) return true;
+  computeEff();
+  for (let k = 0; k < MAX_THREADS; k++) {
+    const u = thr(k);
+    if (u.used && u != t && u.state == KthreadS.Runnable && u.runCore == c && u.eff <= t.eff) return true;
+  }
+  return false;
+}
 export function schedPreemptHold(on: bool): void { preemptHold += on ? 1 : (preemptHold > 0 ? -1 : 0); }
 export function schedMustSwitch(t: KThread): bool {
   if (t.state != KthreadS.Running) return true;

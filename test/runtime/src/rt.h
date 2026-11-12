@@ -19,6 +19,7 @@ Result svcStartThread(Handle h);
 void svcExitThread(void) __attribute__((noreturn));
 void svcSleepThread(s64 ns);
 Result svcSignalEvent(Handle h);
+Result svcSetThreadActivity(Handle h, u32 paused);
 Result svcClearEvent(Handle h);
 Result svcCloseHandle(Handle h);
 Result svcResetSignal(Handle h);

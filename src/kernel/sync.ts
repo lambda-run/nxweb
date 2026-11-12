@@ -3,7 +3,7 @@
 // The kernel never blocks: a wait puts the thread in Waiting with its deadline and the SVC returns "switch"; the
 // result is written into the thread's saved context when the wait ends.
 import { KthreadS, KthreadE } from "../kit/gen/tables";
-import { R_TIMEOUT, WAITERS_BIT, FOREVER, ld32, st32 } from "./base";
+import { R_TIMEOUT, WAITERS_BIT, FOREVER, ld32, st32, cas32 } from "./base";
 import { KThread, thr, MAX_THREADS, threadFree, threadOfHandle, WK_LOCK, WK_CONDVAR, WK_ADDRESS, WK_SYNC, WK_SLEEP, WK_CLOCK } from "./thread";
 import { O_THREAD, O_EVENT_R, hType, hObj, evRetain, evRelease, evSignaled } from "./handle";
 import { schedReady, schedLeft, schedChanged } from "./sched";
@@ -102,9 +102,10 @@ export function lockHandoff(addr: u64): void {
 // A signalled condition waiter takes its lock: at once when it is free, else it sets the waiters bit and becomes a
 // lock waiter, behind those already waiting at its priority
 function lockAcquireFor(t: KThread): void {
-  const addr = t.waddr, v = ld32(addr);
-  if (v == 0) { st32(addr, t.wtag); wake(t, 0); return; }
-  st32(addr, v | WAITERS_BIT);
+  const addr = t.waddr;
+  let v = ld32(addr);
+  while (!cas32(addr, v, v == 0 ? t.wtag : v | WAITERS_BIT)) v = ld32(addr);   // (user mode may take or mark the lock meanwhile)
+  if (v == 0) { wake(t, 0); return; }
   const owner = threadOfHandle(v & ~WAITERS_BIT, null);
   t.wowner = owner != null ? owner.index : -1;
   t.wseq = ++wseq;

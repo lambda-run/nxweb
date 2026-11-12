@@ -2,7 +2,7 @@
 // from it and results written to it. Result codes and register conventions are nxnative's (hle_thread.c, hle_svc.c).
 import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { R_OK, R_OUT_OF_RES, R_BAD_MEMORY, R_BAD_HANDLE, R_TIMEOUT, R_CANCELLED, R_OUT_OF_RANGE, R_BAD_STATE, WAITERS_BIT,
-  guestOk, ld32, ld64, st32, st64, lineStart, lineEnd, puts, putx, putu, putc, debugString } from "./base";
+  guestOk, ld32, ld64, st32, st64, cas32, lineStart, lineEnd, puts, putx, putu, putc, debugString } from "./base";
 import { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION, hNew, hType, hObj, hPeek, hFree, evNew, evRelease, evSignaled, evSet, evRetain } from "./handle";
 import { KThread, thr, MAX_THREADS, coreCount, threadNew, threadFree, threadOfHandle, threadsAlive, C_SP, C_PC, C_NZCV, C_FPCR, C_FPSR, C_TPIDR, C_V,
   WK_LOCK, WK_CONDVAR, WK_ADDRESS, WK_SYNC, WK_SLEEP, WK_CLOCK } from "./thread";
@@ -314,11 +314,14 @@ export function svc(t: KThread, n: i32): void {
     case 0x34: {  // WaitForAddress(x0 address, w1 type, x2 value, x3 timeout)
       const type = <i32>x1, val = <i32>x2;
       if (!guestOk(x0, type == 3 ? 8 : 4)) { r = R_BAD_MEMORY; break; }
-      const v = ld32(x0);
       // 0 wait if less than, 1 decrement and wait if less than, 2 wait if equal, 3 wait if the 64-bit value is equal
-      const ok = type == 3 ? ld64(x0) == x2 : type == 2 ? <i32>v == val : <i32>v < val;
+      let ok = false;
+      for (;;) {
+        const v = ld32(x0);
+        ok = type == 3 ? ld64(x0) == x2 : type == 2 ? <i32>v == val : <i32>v < val;
+        if (!ok || type != 1 || cas32(x0, v, v - 1)) break;
+      }
       if (!ok) { r = R_BAD_STATE; break; }
-      if (type == 1) st32(x0, v - 1);
       t.waddr = x0;
       r = block(t, WK_ADDRESS, <i64>x3);
       break;
@@ -333,8 +336,7 @@ export function svc(t: KThread, n: i32): void {
           if (cnt <= 0) nv = nw > 0 ? val - 2 : val + 1;
           else nv = nw == 0 ? val + 1 : nw <= cnt ? val - 1 : val;
         }
-        if (ld32(x0) != <u32>val) { r = R_BAD_STATE; break; }
-        st32(x0, <u32>nv);
+        if (!cas32(x0, <u32>val, <u32>nv)) { r = R_BAD_STATE; break; }
       }
       addressSignal(x0, cnt);
       break;

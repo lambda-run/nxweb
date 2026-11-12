@@ -29,11 +29,11 @@ export function build(o: { a64?: boolean } = {}): void {
   if (stale.length && !process.env.RT_KIT_KEEP) throw new Error(stale.map(b => `[RED] rt:build: ${b} (run \`npm run kit:diagrams\`)`).join("\n"));
   if (stale.length) console.error(`[RED] rt:build: the kit's generated tables are out of date (${stale.length} files); RT_KIT_KEEP is set, building from them as they are`);
   mkdirSync(OUT, { recursive: true });
-  const shared = (src: string, out: string, base: number, opt: string) =>
-    buildPair(src, join("build", "runtime", out), ["--runtime", "stub", opt, "--importMemory", "--zeroFilledMemory", "--memoryBase", String(base)]);
+  const shared = (src: string, out: string, base: number, opt: string, more: string[] = []) =>
+    buildPair(src, join("build", "runtime", out), ["--runtime", "stub", opt, "--importMemory", "--zeroFilledMemory", "--memoryBase", String(base), ...more]);
   shared("src/runtime/index.ts", "rt.wasm", range("rt static").lo, "-O2");
   shared("src/loader/index.ts", "loader.wasm", range("loader static").lo, "-O3");
-  shared("src/kernel/index.ts", "kernel.wasm", range("kernel static").lo, "-O2");
+  shared("src/kernel/index.ts", "kernel.wasm", range("kernel static").lo, "-O2", ["--enable", "threads"]);   // threads: src/kernel/base.ts cas32 is a wasm atomic (valid on an unshared memory too)
   // the graphics recorder with its static data in the runtime's range (the gfx owner's flags otherwise; its own
   // build, build/gfx/gfx.wasm, sits at 64 KB, which is the runtime core's range here)
   try { buildPair("src/gfx/index.ts", "build/runtime/gfx.wasm", ["--runtime", "stub", "-O2", "--importMemory", "--memoryBase", String(range("gfx static").lo)]); }

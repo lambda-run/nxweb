@@ -527,8 +527,9 @@ Behavioural differences:
 - Unshared memory: exclusives are compare-and-store, fine for one thread at a time. Shared: see above
   (STXP 64-bit pair not atomic as a pair; atomic forms trap on misaligned addresses, where ARM's LDAR/STLR do not).
   A 16-byte CASP is atomic against other 16-byte CASPs (the pair lock), not against an STXP pair or two single-word
-  atomics on the same words. The helpers' scratch blocks (`hlp.vop`) are static data of the one memory: threads of
-  several Workers must not run them at the same time (the runtime runs every guest thread in one Worker).
+  atomics on the same words. The helpers' scratch blocks (`hlp.vop`) are static data of the one memory by default; a further
+  instance of the helpers on the same memory (a helper Worker of the runtime, `src/glue/rt_helpers.ts`) is given
+  blocks of its own with `setScratch(base)` (`A64Host.helperScratch(k)`: 128 bytes each below the pair lock).
 - After a wasm trap the registers cached in locals are lost unless `preciseFaults: 2` is on; the fault pc is exact
   either way. The stack-frame format is V8's (Node, Chromium); other engines get `undefined` from `faultFromError`.
 - No self-modifying-code detection: the embedder calls `removeCode`/`addCode` (or `invalidate()`) when code changes.

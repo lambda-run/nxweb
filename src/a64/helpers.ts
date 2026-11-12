@@ -648,7 +648,10 @@ function initSbox(): void {
   store<u8>(SBOX, 0x63); store<u8>(ISBOX + 0x63, 0);
   sboxReady = true;
 }
-const TMP = memory.data(64);
+// Scratch blocks of vop: static data of the one memory by default. A second instance of this module on the same shared
+// memory (a helper Worker running translated code: src/glue/rt_helpers.ts) gets blocks of its own with setScratch,
+// so that two instances never share them.
+let TMP: usize = memory.data(64);
 function aes(op: i32, a: v128, b: v128): v128 {
   if (!sboxReady) initSbox();
   let S = TMP, D = TMP + 16;
@@ -853,10 +856,13 @@ function qshl(x: i64, s: i32, bits: i32, U: bool, round: bool, sat: bool): i64 {
   }
 }
 
-const PA: usize = memory.data(16);
-const PB: usize = memory.data(16);
-const PC: usize = memory.data(16);
-const PR: usize = memory.data(16);
+let PA: usize = memory.data(16);
+let PB: usize = memory.data(16);
+let PC: usize = memory.data(16);
+let PR: usize = memory.data(16);
+export const SCRATCH_BYTES: i32 = 128;
+// This instance's scratch blocks are the SCRATCH_BYTES at base (16-byte aligned, the caller's for good)
+export function setScratch(base: usize): void { TMP = base; PA = base + 64; PB = base + 80; PC = base + 96; PR = base + 112; }
 // vector helper. op low byte selects the operation, bits 8..9 = size, bit 10 = U, bit 11 = flag, bits 12.. extra
 export function vop(op: i32, a: v128, b: v128, c: v128): v128 {
   let k = op & 0xFF, sz = (op >> 8) & 3, U = ((op >> 10) & 1) != 0, fl = ((op >> 11) & 1) != 0;

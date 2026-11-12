@@ -50,6 +50,7 @@ async function buildWebFiles(): Promise<void> {
   copyFileSync(join(ROOT, "web", "index.html"), join(WEB, "index.html"));
   buildPreparePage();   // the game-folder intake (web/prepare.html) is a frame of the page
   buildSync({ entryPoints: ["src/glue/rt_shader_worker.ts"], bundle: true, format: "esm", outfile: "build/web/shader_worker.js", logLevel: "warning", absWorkingDir: ROOT });
+  buildSync({ entryPoints: ["src/glue/rt_helper_worker.ts"], bundle: true, format: "iife", outfile: "build/web/helper_worker.js", logLevel: "warning", absWorkingDir: ROOT });   // ?helpers=N (RuntimeOptions.helpers)
   // (and the same modules built for a 64-bit memory, which the worker fetches only for a process that needs them)
   for (const n of ["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"]) for (const m of ["", "64"]) copyFileSync(join(OUT, n + m + ".wasm"), join(WEB, "wasm", n + m + ".wasm"));
   // the translator's shared builds, for the page's ?shared=1 (the other modules' shared form is made in the page: src/glue/wasm_shared.ts)
