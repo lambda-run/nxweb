@@ -18,7 +18,7 @@ void dm_thread_native_wait(int entering);
 
 _Noreturn void nx_die(const char *what) { die("%s", what); }
 void nx_log(const char *line) { LOG("%s", line); }
-uint64_t nx_now_ns(void) { return now_ns(); }
+uint64_t nx_now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }   // for the port's own measurements: the raw clock (the guest's is nx_mono_ns, one shared word)
 void nx_native_wait(int entering) { dm_thread_native_wait(entering); }
 
 // ---- SVC entry: regs is the thread's context block (nxweb docs/CONTRACT.md: x0..x30 at +0, sp +0xF8, pc +0x100)

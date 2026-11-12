@@ -454,6 +454,7 @@ void nx_boot_report(const char *why) {
       LOG("recorder on the calling thread: %.0f NVN calls, %.2f us each, of it %.2f us getting the lock; %.0f times a thread slept for the lock%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[0] ? g[3] / 1e3 / g[0] : 0.0, g[2], nx_gfx_enabled() ? "" : " (off: every NVN call goes to the owner)"); }
     { void nx_fs_stats(double); double g[3] = {0}; nx_fs_stats((double)(uintptr_t)g);
       LOG("fs module on the calling thread: %.0f nn::fs calls, %.1f us each (the storage's time included), %.0f waited for the storage%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[2], nx_fs_enabled() ? "" : " (off: every nn::fs call goes to the owner)"); }
+    { extern _Atomic uint64_t nx_mono_bumps; LOG("guest clock: %llu reads found the host's clock not ahead of the last value handed out (same step, or behind another thread's) and got that value + 32 ns", (unsigned long long)nx_mono_bumps); }
     LOG("owner slot: %llu requests; waiting for the slot %.1f us each, request to answer %.1f us each (the modules' own time is in the two lines above)", (unsigned long long)g_slot_n,
         g_slot_n ? g_slot_queue_ns / 1e3 / g_slot_n : 0.0, g_slot_n ? g_slot_serve_ns / 1e3 / g_slot_n : 0.0);
     int n = 0;
