@@ -6,6 +6,7 @@
 // The cache blobs (browser only) are nxweb's translation cache entries for the real game: the Chrome gate's second half.
 #include "dm.h"
 #include "nx_port.h"
+#include "nx_guest.h"
 #include <stdatomic.h>
 #include <emscripten.h>
 #include <emscripten/stack.h>
@@ -14,16 +15,8 @@
 #include <emscripten/threading.h>
 
 uint32_t svc_thread_main_init(void);
-void nx_translator_start(const uint8_t *tr, uint32_t tr_len, const uint8_t *hlp, uint32_t hlp_len, uint64_t code_lo, uint64_t code_size);
-void nx_js_guest_run(uint64_t *io);
-void nx_js_thread_stats(double *out);
-void nx_js_thread_prepare(double *out);
-int nx_js_cache_publish(const char *url, double max_pages, double *out);
-void nx_set_table_cap(uint32_t n);
-void nx_note_thread(uint64_t entry);
 extern struct nx_seen { uint64_t entry; int js_tid; uintptr_t pt; } nx_seen[]; extern _Atomic int nx_nseen;
-extern _Atomic uint64_t nx_stat_translate_ns, nx_stat_translate_calls, nx_stat_unit_bytes, nx_stat_svcs;
-uint32_t nx_unit_count(void);
+extern _Atomic uint64_t nx_stat_svcs;
 
 #ifdef __wasm64__   // memory64: the guest linked, and everything it touches, above 4 GB
 #define BASE 0x180000000ull
@@ -110,8 +103,9 @@ int main(int argc, char **argv) {
     // warm-up: translates what the guest reaches (lazily, from whichever thread gets there first)
     r = run(2, 1000, 0, &ms); CHECK(r == 2000, "warm-up counter %llu", (unsigned long long)r);
     run(2, 1000, 1, &ms); run(2, 1000, 2, &ms);
-    printf("translated on demand: %u units, %llu bytes of wasm, %llu requests to the translator thread, %.1f ms in it\n", nx_unit_count(), (unsigned long long)nx_stat_unit_bytes,
-           (unsigned long long)nx_stat_translate_calls, nx_stat_translate_ns / 1e6);
+    struct nx_stats ns; nx_get_stats(&ns);
+    printf("translated on demand: %u units, %llu bytes of wasm, %llu requests to the translator thread, %.1f ms in it\n", nx_unit_count(), (unsigned long long)ns.unit_bytes,
+           (unsigned long long)ns.translate_calls, ns.translate_ns / 1e6);
 
     // a host call into guest code (what hle_bind_system_event does with nn::os::CreateSystemEvent)
     r = nx_guest_call(add3, 5, 7, 11); CHECK(r == 5 + 14 + 33, "nx_guest_call(guest_add3) = %llu", (unsigned long long)r);
@@ -169,6 +163,7 @@ int main(int argc, char **argv) {
             units += n; tot_bytes += o[0]; tot_funcs += o[1];
         }
         printf("registry: %u units, %.1f MB of wasm, %.0f functions from the game's translation cache\n", nx_unit_count(), tot_bytes / 1048576, tot_funcs);
+        nx_set_table_cap((uint32_t)tot_funcs + (1u << 19));   // what a worker that starts from now on sizes its table to
         int nthr = many > 0 ? many : 4;
         for (int k = 1; k <= nthr && units; k++) {
             pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 1 << 20);
