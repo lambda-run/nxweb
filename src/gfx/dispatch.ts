@@ -114,6 +114,12 @@ function texRelease(t: usize): void {
   T.texFree(serial);
   store<u64>(hostRec(H_TEX_DESTROY, 16), serial, 8);
 }
+let pkgRed = false;
+// The channel swizzle as the game reads it back: what TextureBuilderSetSwizzle set, the identity R G B A (2 3 4 5) otherwise (as nxnative tex_swz)
+function swizzleOut(set: bool, w: u32, a: usize): void {
+  if (!set) w = 2 | 3 << 3 | 4 << 6 | 5 << 9;
+  for (let i: usize = 0; i < 4; i++) { const q = P(a, 1 + i); if (q) store<i32>(q, <i32>((w >> (<u32>i * 3)) & 7)); }
+}
 function textureInitialize(t: usize, b: usize): u64 {
   if (load<u32>(t) == O.MAGIC_TEX && T.texEntry(load<u64>(t, O.TEX_serial))) texRelease(t);   // initialized again without Finalize
   memory.fill(t, 0, O.TEX_SIZE);
@@ -126,6 +132,11 @@ function textureInitialize(t: usize, b: usize): u64 {
   texLayout(t + O.TEX_d, t + O.TEX_L);
   const mem = pool ? load<u64>(pool, O.POOL_mem) : 0;
   store<u64>(t, mem ? mem + off : 0, O.TEX_mem);
+  // TextureBuilderSetPackagedTextureData: the packaged texels are in CPU memory, and NVN copies them into the texture's storage here (as nxnative; the
+  // storage is then what every other packaged texture's is, and the content scan uploads it)
+  const pkg = <usize>load<u64>(b, O.TB_pkg_data), pkgSize = <usize>load<u64>(t, O.TEX_L + O.TL_size);
+  if (pkg && mem && pkgSize) memory.copy(<usize>(mem + off), pkg, pkgSize);
+  else if (pkg && !pkgRed) { pkgRed = true; L.redLine("TextureBuilderSetPackagedTextureData on a texture with no storage (or a format with no layout): the data is not copied"); }
   const serial = T.texNew();
   store<u64>(t, serial, O.TEX_serial);
   if (serial) {
@@ -309,6 +320,9 @@ export function call(fn: i32, a: usize): u64 {
       store<i32>(b, l ? <i32>load<u8>(l) + 1 : 0, O.TB_d + O.TD_pkg_block_h);
       return 0;
     }
+    case F.nvnTextureBuilderSetPackagedTextureData: store<u64>(P(a, 0), X(a, 1), O.TB_pkg_data); return 0;
+    case F.nvnTextureBuilderGetSwizzle: swizzleOut((load<u8>(P(a, 0), O.TB_bits) & 1) != 0, load<u16>(P(a, 0), O.TB_swz), a); return 0;
+    case F.nvnTextureGetSwizzle: swizzleOut((load<u8>(P(a, 0), O.TEX_bits) & 1) != 0, load<u16>(P(a, 0), O.TEX_swz), a); return 0;
     case F.nvnTextureBuilderSetSwizzle: {
       const b = P(a, 0);
       store<u8>(b, load<u8>(b, O.TB_bits) | 1, O.TB_bits);
