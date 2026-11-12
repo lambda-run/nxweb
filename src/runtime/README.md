@@ -125,8 +125,54 @@ and none; in Chromium a runtime is created and loaded in 15 ms growing and 8 ms 
 because it keeps addresses above the memory's size trapping. `RuntimeOptions.reserve4g` switches.
 What is not free: `kernel_init` initializes one kit instance per alias page, 8 MB touched and about 5 ms per process.
 
-**Not `shared`.** The memory is not a SharedArrayBuffer: the translator has shared builds
-(`translator.shared.wasm`, atomics for exclusives) but the runtime runs every guest thread in one Worker.
+**Not `shared` by default.** The memory is not a SharedArrayBuffer unless the embedder asks (next section): the
+runtime runs every guest thread in one Worker either way.
+
+### Shared memory (`shared: true`, default off; the page's `?shared=1`)
+
+The first step towards guest cores as Workers, and nothing more: the whole runtime as it is (one Worker, one core
+instance, cooperative guest threads, the same scheduler) on a **shared** `WebAssembly.Memory`, with the translator's
+shared code generation (`src/a64/README.md`, "Shared memory"). No speed-up is expected from it; what it shows is
+that every module, the glue and the page work with a `SharedArrayBuffer` behind the memory.
+
+- **The memory.** memory32: `new WebAssembly.Memory({ initial, maximum: 65536, shared: true })`; memory64:
+  `makeMemory64({ ..., maximum: MEM64_MAX_PAGES, shared: true })`. A shared memory has its maximum reserved as
+  address space when it is made (4 GB, 16 GB) and never moves; it still grows on demand, and after a grow
+  `memory.buffer` is a new, longer SharedArrayBuffer while the old one stays valid at its old length (the glue makes
+  its views from `memory.buffer` at each use, as before).
+- **The modules.** A module links to a shared memory only when its own memory declaration says shared with a
+  sufficient maximum. For rt, kernel, loader, gfx, fs, hle and audio that declaration is the only difference of
+  an `asc --sharedMemory --maximumMemory N --enable threads` build (the stub runtime uses no atomics), so their shared
+  form is not a second build: `src/glue/wasm_shared.ts` `sharedBuild(bytes, maxPages)` rewrites the limits of the
+  normal binary where it is loaded (the page, the test harnesses), for an imported memory and for one the module
+  defines. The translator and helpers are the asc-built `translator.shared.wasm` / `helpers.shared.wasm` (and
+  `…64.shared.wasm`); the core, the units and the runtime's small register module are generated shared. A set that
+  does not match the option fails at once with a `runtime: rt.wasm does not link to the … memory` error.
+- **The translator.** `shared: true` reaches `A64Host`: LDXR/STXR are an atomic load and a compare-exchange,
+  LDAR/STLR and the LSE instructions wasm atomics, DMB a fence. `optionsKey()` contains the option (and, in memory64,
+  the declared maximum), so the mode has its own entries in the translation cache: the first run in the mode
+  translates everything again, and the normal mode's entries are untouched.
+- **Misaligned atomics.** ARM performs an exclusive or LSE access at an address that is not a multiple of its
+  size; a wasm atomic traps. The fault is a trap fault with the guest pc: `an atomic access at a misaligned
+  address: the instruction 0x… at guest pc 0x… (… through xN = 0x…): ARM performs it, the wasm atomics of the
+  shared-memory mode trap`. Nothing emulates the access: a program that does this does not run in the mode.
+- **Browser APIs.** `TextDecoder.decode`, `crypto.getRandomValues`, `Blob`, `Response` and message clones to a
+  `BroadcastChannel` refuse a view on a SharedArrayBuffer; the glue already copied at those places (`.slice()` of a
+  typed array on a shared buffer is an ordinary one). WebCodecs chunks and the OPFS access handle now get a copy
+  when the view is shared (`unshared()`, `fs_dev_opfs.ts`), although both are specified to take one. WebGPU's
+  `queue.writeBuffer` / `writeTexture` are specified to take shared views and get them uncopied (uploads are the
+  hot path); the page checks one `writeBuffer` when the mode starts and says in red when the browser refuses it.
+  The audio device takes its `direct` transport (the worklet reads the module's ring in the process memory itself).
+- **The page.** `?shared=1`, only when `crossOriginIsolated` (the page's server sends COOP/COEP); otherwise one red
+  line and the normal mode. The options line of the report starts with `shared memory (?shared=1)`.
+- **Tests.** `NX_SHARED=1` (or a mode name with `s`: `NX_MEM=32s`) runs a suite's memory modes on a shared memory
+  (`tools/modes.mjs`): `npm run rt:test:shared`, `kernel:test:shared`, `hle:test:shared`. In the mode the runtime
+  runner's `TextDecoder` refuses shared views like a browser's.
+
+Limits: one Worker (a second thread on the memory would need its own core instance, table and units, and a kernel
+that locks: none of that exists); 128-bit `STXP` is two exchanges with a roll-back, not one atomic pair; the
+browser side (WebGPU uploads, OPFS, WebCodecs, the audio worklet's direct transport, a 16 GB shared reservation in
+Chromium) is not covered by the Node suites.
 
 ### Memory safety of the host area (the guard: on by default)
 
@@ -266,7 +312,8 @@ tests.
 verdict names (Chromium's behaviour when a tab commits 9 GB, a `RangeError` from the grow or the tab killed, is
 not measured: this machine has 15 GB and the tests touch pages sparsely); `fs:browser` and `audio:browser` (the
 module-level device tests) run in memory32 only, their modules being covered in the mode by `rt:browser`; a shared
-64-bit memory (the audio worklet's direct transport, guest cores as Workers) is untried; and everything in the next
+64-bit memory is tried under Node only ("Shared memory" above; the audio worklet's direct transport and guest cores
+as Workers are not); and everything in the next
 paragraph.
 
 **What a Switch 2 title needs beyond memory** (read from nxnative's notes on The Legend of Zelda: Ocarina of Time,

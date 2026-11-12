@@ -6,6 +6,7 @@
 // picture. Completions keep submission order (a picture's planes are copied asynchronously). Works in a window and
 // in a Worker.
 import { VCODEC, VCODEC_NAME, av1Inspect, vp8Key, vp9Key, type Av1Seq, type VideoBackend, type VideoPicture, type VideoSink } from "./video_host.ts";
+import { unshared } from "./wasm_shared.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 interface Dec {
@@ -137,7 +138,7 @@ export class WebCodecsVideo implements VideoBackend {
       if (!this.make(st, codec)) return 2;
     }
     try {
-      st.d.decode(new (globalThis as any).EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: Number(seq), data: packet }));   // copies the packet
+      st.d.decode(new (globalThis as any).EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: Number(seq), data: unshared(packet) }));   // copies the packet (unshared: the packet lies in the guest's memory, which may be a shared one)
     } catch (e) {
       this.red(st, `a packet was refused (${e}): no picture until the next key frame`);
       st.configured = "";

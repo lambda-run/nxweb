@@ -86,7 +86,7 @@ export class Loader {
 
   private get u8(): Uint8Array { return new Uint8Array(this.x.memory.buffer); }
   private get dv(): DataView { return new DataView(this.x.memory.buffer); }
-  error(): string { return this.dec.decode(this.u8.subarray(this.x.ld_error_ptr(), this.x.ld_error_ptr() + this.x.ld_error_len())); }
+  error(): string { return this.dec.decode(this.u8.slice(this.x.ld_error_ptr(), this.x.ld_error_ptr() + this.x.ld_error_len())); /* a copy: the memory may be a shared one, which TextDecoder refuses */ }
   private check(rc: number): number {
     if (rc < 0) throw new LoaderError(rc, this.error() || `loader error ${rc}`);
     return rc;
@@ -97,7 +97,7 @@ export class Loader {
     this.u8.set(b, this.scratch);
     return [this.scratch, b.length];
   }
-  private str(ptr: number, len: number): string { return this.dec.decode(this.u8.subarray(ptr, ptr + len)); }
+  private str(ptr: number, len: number): string { return this.dec.decode(this.u8.slice(ptr, ptr + len)); }
 
   // ---- host functions ----
   // The host implements `name`. forced: it wins over every module's definition; otherwise it only fills imports no

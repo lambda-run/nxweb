@@ -57,7 +57,7 @@ export function dynSymbols(image: Uint8Array): DynSymbol[] {
     if (at === str || at >= strEnd) continue;
     let z = at;
     while (z < strEnd && image[z] !== 0) z++;
-    out.push({ name: td.decode(image.subarray(at, z)), defined: dv.getUint16(e + 6, true) !== 0 });
+    out.push({ name: td.decode(image.slice(at, z)), defined: dv.getUint16(e + 6, true) !== 0 });
   }
   return out;
 }

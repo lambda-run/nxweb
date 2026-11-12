@@ -2,6 +2,7 @@
 // opened once with a synchronous access handle (opening is asynchronous, so a mount pends; every read, write and
 // flush after that is synchronous). RomFS images are Blobs / Files (BlobDevice).
 import { DEV, FS_KIND, MemDevice, BlobDevice, type FsDevice, type FsStorage } from "./fs_host.ts";
+import { unshared } from "./wasm_shared.ts";
 
 // The parts of FileSystemSyncAccessHandle used here
 interface SyncHandle {
@@ -12,15 +13,18 @@ interface SyncHandle {
   close(): void;
 }
 
+const isShared = (v: Uint8Array) => typeof SharedArrayBuffer !== "undefined" && v.buffer instanceof SharedArrayBuffer;
 export class OpfsDevice implements FsDevice {
   private h: SyncHandle;
   constructor(h: SyncHandle) { this.h = h; }
   size(): number { return this.h.getSize(); }
   readSync(off: number, dst: Uint8Array): number {
+    // a view on a shared memory (RuntimeOptions.shared): through a buffer of its own, for a browser whose access handle refuses it
+    if (isShared(dst)) { const t = new Uint8Array(dst.length); try { if (this.h.read(t, { at: off }) !== t.length) return DEV.IO; } catch { return DEV.IO; } dst.set(t); return DEV.OK; }
     try { return this.h.read(dst, { at: off }) === dst.length ? DEV.OK : DEV.IO; } catch { return DEV.IO; }
   }
   write(off: number, src: Uint8Array): number {
-    try { return this.h.write(src, { at: off }) === src.length ? DEV.OK : DEV.NO_SPACE; }
+    try { return this.h.write(unshared(src), { at: off }) === src.length ? DEV.OK : DEV.NO_SPACE; }
     catch (e) { return (e as { name?: string }).name === "QuotaExceededError" ? DEV.NO_SPACE : DEV.IO; }
   }
   flush(): number { try { this.h.flush(); return DEV.OK; } catch { return DEV.IO; } }

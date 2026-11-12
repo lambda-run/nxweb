@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { test, Kernel, Thread, R, ACT, L, WAITERS, CUR_THREAD } from "./harness.mts";
 
-const SVC = { Start: 0x09, Exit: 0x0A, Sleep: 0x0B, GetPrio: 0x0C, SetPrio: 0x0D, Core: 0x10, Signal: 0x11, Clear: 0x12, Close: 0x16, Reset: 0x17, Wait: 0x18, Cancel: 0x19,
+const SVC = { Start: 0x09, SetMask: 0x0F, Exit: 0x0A, Sleep: 0x0B, GetPrio: 0x0C, SetPrio: 0x0D, Core: 0x10, Signal: 0x11, Clear: 0x12, Close: 0x16, Reset: 0x17, Wait: 0x18, Cancel: 0x19,
   Lock: 0x1A, Unlock: 0x1B, CvWait: 0x1C, CvSignal: 0x1D, Activity: 0x32, WaitAddr: 0x34, SignalAddr: 0x35, CreateEvent: 0x45 };
 const FOREVER = -1n;
 const handles = (k: Kernel, ...hs: number[]) => { const a = k.alloc(4 * Math.max(hs.length, 1)); hs.forEach((h, i) => k.w32(a + 4 * i, h)); return a; };
@@ -463,6 +463,85 @@ test("t_preempt: a woken higher-priority thread on the signaller's core runs bef
     assert.equal(m.result, 0);
     k.check();
   }
+});
+
+// Ocarina of Time's movie (Switch 2). The player's thread (core 5, priority 45) registers its video frames, which wakes
+// the movie library's event thread (priority 44 as the main thread, cores 0..2: it queues on core 0 behind the main
+// thread) to give them to the decoder, and then calls VideoDecoder::Start. Started first, the library drops both
+// frames: "finalized: 12 packets, 0 pictures". With four cores the player queued on core 0 below both; with eight,
+// the wake hand-off keeps that order whatever the other cores do
+test("wake hand-off (eight cores): a thread that wakes a better one elsewhere stands back until it has blocked, cores 0..2 all busy", () => {
+  const k = new Kernel({ flags: 8 }), m = k.main, e = k.event();
+  const player = k.thread(45, 0, { start: false });
+  assert.equal(k.call(m, SVC.SetMask, player.handle, 0xFFFFFFFF, 0x20), 0);
+  k.svc(m, SVC.Start, player.handle);
+  const lib = k.thread(44, 0, { start: false });
+  assert.equal(k.call(m, SVC.SetMask, lib.handle, 0xFFFFFFFF, 0b111), 0);
+  k.svc(m, SVC.Start, lib.handle);
+  const busy1 = k.thread(44, 1), busy2 = k.thread(44, 2);
+  k.x.kernel_preempt(m.ctx);                                     // the main thread's slice ends: its equal gets core 0
+  assert.equal(wait(k, lib, [e.r], FOREVER), ACT.SWITCH);
+  k.run(m); k.run(busy1); k.run(busy2); k.run(player);
+  assert.deepEqual([m, busy1, busy2, player, lib].map(t => t.state), ["Running", "Running", "Running", "Running", "Waiting"]);
+  // the wake: the player's SVC succeeds and gives up its core
+  assert.equal(k.svc(player, SVC.Signal, e.w), ACT.SWITCH);
+  assert.equal(player.result, 0);
+  assert.deepEqual([lib.state, lib.info.runCore], ["Runnable", 0]);
+  // cores 0..2 never block: the player does not run, however often the cores take their turns
+  for (let i = 0; i < 12; i++) { const t = k.schedule()!; assert.ok(t === m || t === busy1 || t === busy2, `turn ${i}`); }
+  assert.equal(player.state, "Runnable");
+  // the main thread's slice ends: the event thread gets core 0, and still the player waits while it runs
+  k.x.kernel_preempt(m.ctx);
+  const seen = new Set<Thread>(); for (let i = 0; i < 6; i++) seen.add(k.schedule()!);
+  assert.ok(seen.has(lib) && !seen.has(player));
+  assert.equal(lib.state, "Running");
+  assert.equal(k.svc(lib, SVC.Core), ACT.CONTINUE);
+  // it blocks again (its work is done): now the player goes on
+  assert.equal(k.svc(lib, SVC.Clear, e.w), ACT.CONTINUE);
+  assert.equal(wait(k, lib, [e.r], FOREVER), ACT.SWITCH);
+  const after = new Set<Thread>(); for (let i = 0; i < 6; i++) after.add(k.schedule()!);
+  assert.ok(after.has(player));
+  assert.equal(k.svc(player, SVC.Core), ACT.CONTINUE);
+  k.check();
+});
+
+test("wake hand-off: only for a better thread, ended by its yield, its exit or 4 of its slices; nothing waits when nothing else can run; four cores have none", () => {
+  const k = new Kernel({ flags: 8 }), m = k.main, e = k.event(), e2 = k.event();
+  const player = k.thread(45, 5), better = k.thread(40, 1), equal = k.thread(45, 2);
+  assert.equal(wait(k, better, [e.r], FOREVER), ACT.SWITCH);
+  assert.equal(wait(k, equal, [e2.r], FOREVER), ACT.SWITCH);
+  k.run(m); k.run(player);
+  assert.equal(k.svc(player, SVC.Signal, e2.w), ACT.CONTINUE, "an equal one elsewhere runs beside the waker");
+  assert.equal(k.svc(player, SVC.Signal, e.w), ACT.SWITCH);
+  // 4 slices of the woken thread
+  for (let n = 0; n < 4; n++) {
+    k.run(better);
+    for (let i = 0; i < 6; i++) assert.notEqual(k.schedule(), player);
+    assert.equal(player.state, "Runnable", `slice ${n}`);
+    k.x.kernel_preempt(better.ctx);
+  }
+  k.run(player); assert.equal(player.state, "Running");
+  // its yield
+  assert.equal(k.svc(better, SVC.Clear, e.w), ACT.CONTINUE);
+  assert.equal(wait(k, better, [e.r], FOREVER), ACT.SWITCH);
+  assert.equal(k.svc(player, SVC.Signal, e.w), ACT.SWITCH);
+  k.run(better); k.svc(better, SVC.Sleep, 0);
+  k.run(player); assert.equal(player.state, "Running");
+  // its exit
+  assert.equal(k.svc(better, SVC.Clear, e.w), ACT.CONTINUE);
+  assert.equal(wait(k, better, [e.r], FOREVER), ACT.SWITCH);
+  assert.equal(k.svc(player, SVC.Signal, e.w), ACT.SWITCH);
+  k.run(better); assert.equal(k.svc(better, SVC.Exit), ACT.SWITCH);
+  k.run(player); assert.equal(player.state, "Running");
+  k.check();
+  // eight cores without it (flag 16), and four cores: no hand-off
+  const kn = new Kernel({ flags: 24 }), en = kn.event(), wn = kn.thread(45, 5), bn = kn.thread(40, 1);
+  assert.equal(wait(kn, bn, [en.r], FOREVER), ACT.SWITCH);
+  assert.equal(kn.svc(wn, SVC.Signal, en.w), ACT.CONTINUE);
+  const k4 = new Kernel(), e4 = k4.event(), w4 = k4.thread(45, 2), b4 = k4.thread(40, 1);
+  assert.equal(wait(k4, b4, [e4.r], FOREVER), ACT.SWITCH);
+  assert.equal(k4.svc(w4, SVC.Signal, e4.w), ACT.CONTINUE);
+  k4.check();
 });
 
 test("t_preempt: equal-priority, other-core, migratable and paused peers do not hold the signaller", () => {

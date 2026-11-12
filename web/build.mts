@@ -52,6 +52,8 @@ async function buildWebFiles(): Promise<void> {
   buildSync({ entryPoints: ["src/glue/rt_shader_worker.ts"], bundle: true, format: "esm", outfile: "build/web/shader_worker.js", logLevel: "warning", absWorkingDir: ROOT });
   // (and the same modules built for a 64-bit memory, which the worker fetches only for a process that needs them)
   for (const n of ["rt", "kernel", "loader", "translator", "helpers", "gfx", "fs", "hle", "audio"]) for (const m of ["", "64"]) copyFileSync(join(OUT, n + m + ".wasm"), join(WEB, "wasm", n + m + ".wasm"));
+  // the translator's shared builds, for the page's ?shared=1 (the other modules' shared form is made in the page: src/glue/wasm_shared.ts)
+  for (const n of ["translator", "helpers"]) for (const m of ["", "64"]) copyFileSync(join(OUT, n + m + ".shared.wasm"), join(WEB, "wasm", n + m + ".shared.wasm"));
   copyFileSync(join(GUESTS, "tone.nso"), join(WEB, "demo", "tone.nso"));   // the audio demo
   // the in-page shader translator (the Ryujinx translator as WebAssembly, naga): only when tools/shaders built it
   rmSync(join(WEB, "shaders"), { recursive: true, force: true });

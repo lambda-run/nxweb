@@ -1,14 +1,27 @@
-// The scheduler: NCORES virtual cores, each running its highest-priority ready thread, first come first served among
+// The scheduler: four virtual cores, or eight (kernel flag 8; MAX_CORES sizes the tables), each running its highest-priority ready thread, first come first served among
 // equals. The rest of the kernel talks to it only through the functions exported here, and all state is per core, so
 // a later phase can run each core on its own Worker (scheduleCore(c) per Worker) without changing the callers.
 //
 // Green threads today: one host thread calls scheduleNext(), which gives the cores turns in rotation. A thread that
 // is Running is its core's current thread; it stays Running while other cores have their turn.
 import { KthreadS, KthreadE } from "../kit/gen/tables";
-import { KThread, thr, MAX_THREADS, NCORES, runCoreOf, WK_LOCK } from "./thread";
+import { KThread, thr, MAX_THREADS, MAX_CORES, coreCount, setCoreCount, runCoreOf, WK_LOCK } from "./thread";
 
-const CUR: usize = memory.data(NCORES * 4);   // per core: the index of its current thread, -1 none
-const RESCHED: usize = memory.data(NCORES);   // per core: its ready set or a priority changed since it last chose
+const CUR: usize = memory.data(32);      // MAX_CORES * 4. per core: the index of its current thread, -1 none
+const RESCHED: usize = memory.data(8);   // MAX_CORES. per core: its ready set or a priority changed since it last chose
+// The wake hand-off (eight cores only). A thread whose SVC made a better thread ready on another core stands back until
+// that thread has blocked, yielded or exited (or used HOLD_SLICES slices): what the woken thread does first is done
+// before the waker goes on, as when both queue on one core. On hardware the woken thread's core runs it at once, beside
+// the waker; with green threads the waker would otherwise finish its slice first. Ocarina of Time's movie player
+// (core 5, priority 45) registers its video frames, which wakes the movie library's event thread (priority 44, cores
+// 0..2) to give them to the decoder, and then calls VideoDecoder::Start: started first, the library drops both frames
+// (subsdk0+0x44bc, +0x450c) and no picture ever comes. nxnative has the same rule for threads of one core
+// (hle_thread.c dm_yield_to_core_peers); its threads of different cores do run side by side.
+const HOLD: usize = memory.data(1024);   // MAX_THREADS * 4. per thread: 1 + the index of the thread it stands back for, 0 none
+const HOLDN: usize = memory.data(256);   // MAX_THREADS. ... and the slices that thread may still use before the hold ends
+const WOKE: usize = memory.data(32);     // the threads the current SVC made ready
+const HOLD_SLICES: u8 = 4;
+let nwoke: i32 = 0, holds: i32 = 0, handoff: bool = false, ncores: i32 = 4;
 let seq: u64 = 0;
 let cursor: i32 = 0;
 let effDirty: bool = true;
@@ -21,27 +34,54 @@ let inherit: bool = true;
 // @ts-ignore: decorator
 @inline function flag(c: i32): void { store<u8>(RESCHED + <usize>c, 1); }
 
-export function schedInit(priorityInheritance: bool): void {
-  for (let c = 0; c < NCORES; c++) { setCur(c, -1); store<u8>(RESCHED + <usize>c, 0); }
+export function schedInit(priorityInheritance: bool, eightCores: bool, wakeHandoff: bool): void {
+  for (let c = 0; c < MAX_CORES; c++) { setCur(c, -1); store<u8>(RESCHED + <usize>c, 0); }
+  memory.fill(HOLD, 0, <usize>MAX_THREADS * 4); memory.fill(HOLDN, 0, <usize>MAX_THREADS);
   seq = 0; cursor = 0; effDirty = true; inherit = priorityInheritance;
+  ncores = eightCores ? 8 : 4; setCoreCount(ncores); handoff = wakeHandoff; nwoke = 0; holds = 0;
 }
+// @ts-ignore: decorator
+@inline function holdOf(i: i32): i32 { return load<i32>(HOLD + (<usize>i << 2)); }
+function unhold(i: i32): void {
+  if (!holdOf(i)) return;
+  store<i32>(HOLD + (<usize>i << 2), 0); holds--;
+  flag(thr(i).runCore);
+}
+// t stands back for a thread that is still ready
+function held(t: KThread): bool {
+  const h = holdOf(t.index);
+  if (!h) return false;
+  const u = thr(h - 1);
+  if (u.used && u.ready && load<u8>(HOLDN + <usize>t.index)) return true;
+  unhold(t.index);
+  return false;
+}
+// u blocked, yielded or exited: those that stood back for it go on
+function holdersGo(u: KThread): void {
+  for (let i = 0; i < MAX_THREADS && holds > 0; i++) if (holdOf(i) == u.index + 1) unhold(i);
+}
+// An SVC begins: the threads it makes ready are noted for the hand-off
+export function schedSvcBegin(): void { nwoke = 0; }
 // Something the choice depends on changed (a priority, a lock wait, a core mask)
-export function schedChanged(): void { effDirty = true; for (let c = 0; c < NCORES; c++) flag(c); }
+export function schedChanged(): void { effDirty = true; for (let c = 0; c < ncores; c++) flag(c); }
 
 // t became Runnable (started, woken, resumed): to the back of its priority on its core
 export function schedReady(t: KThread): void {
   t.rqSeq = ++seq; t.runCore = runCoreOf(t); t.yieldAny = false;
   effDirty = true; flag(t.runCore);
+  if (handoff && nwoke < 8) { store<i32>(WOKE + (<usize>nwoke << 2), t.index); nwoke++; }
 }
 // t yielded: behind the threads of its priority. any = YieldToAnyThread: lower-priority threads of the core get a turn
 export function schedYield(t: KThread, any: bool): void {
   t.rqSeq = ++seq; t.yieldAny = any;
   flag(t.runCore);
+  if (holds) holdersGo(t);
 }
 // t stopped being ready (it blocked, exited or was paused)
 export function schedLeft(t: KThread): void {
   if (cur(t.runCore) == t.index) setCur(t.runCore, -1);
   effDirty = true; flag(t.runCore);
+  if (holds) { unhold(t.index); holdersGo(t); }
 }
 
 // Effective priorities. A thread waiting for a lock lends its priority to the lock's owner (and through it to the
@@ -72,6 +112,7 @@ function pickLocal(c: i32): KThread | null {
   for (let i = 0; i < MAX_THREADS; i++) {
     const t = thr(i);
     if (!t.used || !t.ready || t.runCore != c) continue;
+    if (holds && held(t)) continue;
     if (t.yieldAny) { if (better(t, stoodBack)) stoodBack = t; }
     else if (better(t, best)) best = t;
   }
@@ -84,6 +125,7 @@ function steal(c: i32): KThread | null {
     const t = thr(i);
     if (!t.used || t.state != KthreadS.Runnable || t.runCore == c || !((t.mask >> c) & 1)) continue;
     if (pickLocal(t.runCore) == t) continue;   // its core is about to run it
+    if (holds && held(t)) continue;
     if (better(t, best)) best = t;
   }
   if (best != null) { flag(best.runCore); best.runCore = c; }
@@ -110,10 +152,15 @@ export function scheduleCore(c: i32): KThread | null {
 }
 // Green threads: the next core in rotation that has a thread to run
 export function scheduleNext(): KThread | null {
-  for (let i = 0; i < NCORES; i++) {
-    const c = (cursor + i) % NCORES;
-    const t = scheduleCore(c);
-    if (t != null) { cursor = (c + 1) % NCORES; return t; }
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < ncores; i++) {
+      const c = (cursor + i) % ncores;
+      const t = scheduleCore(c);
+      if (t != null) { cursor = (c + 1) % ncores; return t; }
+    }
+    // nothing to run but threads that stand back (the one they stand back for cannot run either): they go on
+    if (!holds) break;
+    for (let i = 0; i < MAX_THREADS; i++) unhold(i);
   }
   return null;
 }
@@ -126,25 +173,46 @@ export function schedMustSwitch(t: KThread): bool {
   if (t.state != KthreadS.Running) return true;
   if (preemptHold) return false;
   const c = t.runCore;
-  if (!load<u8>(RESCHED + <usize>c)) return false;
-  computeEff();
-  if (pickLocal(c) != t) return true;
-  store<u8>(RESCHED + <usize>c, 0);
+  if (load<u8>(RESCHED + <usize>c)) {
+    computeEff();
+    if (pickLocal(c) != t) return true;
+    store<u8>(RESCHED + <usize>c, 0);
+  }
+  if (nwoke) {
+    // the hand-off: the best of the better threads this SVC made ready elsewhere acts before t goes on
+    computeEff();
+    let best: KThread | null = null;
+    for (let k = 0; k < nwoke; k++) {
+      const u = thr(load<i32>(WOKE + (<usize>k << 2)));
+      if (u.used && u.ready && u != t && u.eff < t.eff && (best == null || u.eff < best.eff)) best = u;
+    }
+    nwoke = 0;
+    if (best != null) {
+      if (!holdOf(t.index)) holds++;
+      store<i32>(HOLD + (<usize>t.index << 2), best.index + 1); store<u8>(HOLDN + <usize>t.index, HOLD_SLICES);
+      flag(c);
+      return true;
+    }
+  }
   return false;
 }
 // t's time slice ran out: threads of its priority on its core take turns
 export function schedSliceEnded(t: KThread): void {
   if (t.state != KthreadS.Running) return;
+  if (holds) for (let i = 0; i < MAX_THREADS; i++) if (holdOf(i) == t.index + 1) {   // a slice of the thread they stand back for is used
+    const n = load<u8>(HOLDN + <usize>i);
+    if (n <= 1) unhold(i); else store<u8>(HOLDN + <usize>i, n - 1);
+  }
   computeEff();
   for (let i = 0; i < MAX_THREADS; i++) {
     const u = thr(i);
-    if (u.used && u != t && u.state == KthreadS.Runnable && u.runCore == t.runCore && u.eff == t.eff) {
+    if (u.used && u != t && u.state == KthreadS.Runnable && u.runCore == t.runCore && u.eff == t.eff && !(holds && held(u))) {
       t.m.step(KthreadE.Preempt); t.rqSeq = ++seq; flag(t.runCore);
       return;
     }
   }
 }
-export function schedCurrent(c: i32): i32 { return c >= 0 && c < NCORES ? cur(c) : -1; }
+export function schedCurrent(c: i32): i32 { return c >= 0 && c < ncores ? cur(c) : -1; }
 // Any thread ready on any core
 export function schedAnyReady(): bool {
   for (let i = 0; i < MAX_THREADS; i++) if (thr(i).used && thr(i).ready) return true;

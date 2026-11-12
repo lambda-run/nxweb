@@ -21,6 +21,10 @@ export interface RuntimeOptions {
   // runAsync's timer (default setTimeout). A browser fires a hidden page's timers rarely (once a minute after five minutes), which leaves guest
   // threads that sleep or wait with a timeout almost stopped while frames still come: an embedder that runs unwatched gives a timer of its own
   timer?: (fn: () => void, ms: number) => void;
+  // 8: the Switch 2's eight virtual cores and the kernel's wake hand-off (src/kernel/sched.ts); default 4. A Switch 2 game
+  // pins threads to cores 4 and 5, which with four cores queue on core 0 behind the main thread
+  cores?: 4 | 8;
+  wakeHandoff?: boolean;              // false: eight cores without the hand-off (to compare)
   budget?: number;                    // budget units per time slice (function entries + backward branches); default 100000
   clock?: "deterministic" | "wall";   // deterministic (default): guest time is a function of executed budget
   nsPerUnit?: number;                 // deterministic clock: ns per budget unit (default 100)
@@ -32,6 +36,11 @@ export interface RuntimeOptions {
   // layoutFor(want, { mem64: true })), or to place any process anywhere in 16 GB. Default: what `mods` were built
   // for (their address tables say), so handing over the wasm64 set is enough.
   mem64?: boolean;
+  // The linear memory is a shared one (a SharedArrayBuffer behind it; src/runtime/README.md, "Shared memory"): `mods`
+  // is then the shared set (wasm_shared.ts sharedBuild of rt, kernel, loader, gfx, fs, hle, audio; translator.shared.wasm
+  // and helpers.shared.wasm, or their 64 forms) and the translator generates its shared form (exclusives and LSE as
+  // wasm atomics). Everything still runs on this one thread. Default false.
+  shared?: boolean;
   log?: (line: string) => void;       // every log line (kernel, loader, runtime, host functions); red lines start "[RED] "
   maxInsns?: number; maxFuncs?: number; depthLimit?: number; tailCalls?: boolean; fma?: boolean; nanFix?: boolean;   // translator
   // Guest loads and stores below GUARD_BASE (the host area but the two ranges the guest is handed pointers into:
@@ -146,12 +155,14 @@ const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0,
 //   args_x(ptr)    x0..x7 to ptr              args_xd(ptr)   and the low 64 bits of v0..v7 to ptr + 64
 //   set_d0(bits)   v0 = { bits, 0 }
 // m64: the memory is a 64-bit one, the pointer an i64
-function regsModule(m64: boolean): Uint8Array {
+function regsModule(m64: boolean, sharedMax = 0): Uint8Array {
   const str = (t: string) => [t.length, ...Array.from(t, c => c.charCodeAt(0))];
   const leb = (v: number) => { const n: number[] = []; do { let b = v & 0x7F; v >>>= 7; if (v) b |= 0x80; n.push(b); } while (v); return n; };
   const sec = (id: number, body: number[]) => [id, ...leb(body.length), ...body];
   const types = [2, 0x60, 1, 0x7F, 0, 0x60, 1, 0x7E, 0];                       // (i32)->(), (i64)->()
-  const imports: number[] = [17, ...str("env"), ...str("memory"), 2, m64 ? 4 : 0, 0];
+  // sharedMax: the memory is a shared one with this maximum (pages); the import must say both
+  const lebBig = (v: number) => { const n: number[] = []; do { let b = v % 128; v = Math.floor(v / 128); if (v) b |= 0x80; n.push(b); } while (v); return n; };
+  const imports: number[] = [17, ...str("env"), ...str("memory"), 2, (m64 ? 4 : 0) | (sharedMax ? 3 : 0), 0, ...(sharedMax ? lebBig(sharedMax) : [])];
   for (let i = 0; i < 8; i++) imports.push(...str("core"), ...str("x" + i), 3, 0x7E, 1);
   for (let i = 0; i < 8; i++) imports.push(...str("core"), ...str("v" + i), 3, 0x7B, 1);
   const fx: number[] = [], fd: number[] = [];
@@ -165,6 +176,10 @@ function regsModule(m64: boolean): Uint8Array {
     ...sec(10, [3, ...body(fx), ...body([...fx, ...fd]), ...body(setd)])]);
 }
 const hex = (v: number | bigint) => "0x" + v.toString(16);
+// What `shared` is for a Runtime made without the option (false). A test runner's switch for a whole process (NX_SHARED,
+// tools/modes.mjs), like rt_process.ts setDefaultSpace: the cases make their Runtimes without knowing the mode.
+let defaultShared = false;
+export function setDefaultShared(on: boolean): void { defaultShared = on; }
 // The constants NVN2's own nvnDeviceGetInteger answers (nxnative dm_sdk_nvn2_item): the driver is compiled into the game's sdk, and its
 // switch over the items loads w0 with the major first, then jumps through a byte table (mov w0, #231 / adr / adrp + add / ldrb / add,
 // lsl #2 / br, with cmp wN, #<last item> before it). A case that is a constant is mov w0, #v; b. Returns item -> value for those cases
@@ -279,7 +294,7 @@ export class Runtime {
 
   constructor(mods: RuntimeModules, opts: RuntimeOptions = {}) {
     const given = Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)) as RuntimeOptions;   // an option given as undefined is not given
-    this.opts = { budget: 100000, clock: "deterministic", nsPerUnit: 100, mainStackSize: GUEST.mainStackSize, ...given };
+    this.opts = { budget: 100000, clock: "deterministic", nsPerUnit: 100, mainStackSize: GUEST.mainStackSize, shared: defaultShared, ...given };
     if (opts.codeBase !== undefined) this.nextBase = opts.codeBase;
     // One memory for everything. It starts as the host area and grows on demand (the kernel grows it for the heap,
     // stacks and thread-local slots; ensure() for images), up to the 4 GB a wasm32 memory can have.
@@ -290,8 +305,10 @@ export class Runtime {
     const layout = opts.layout ?? (space.codeBase !== undefined && space.codeBase !== SPACE.codeBase && !!space.mem64 === m64 ? layoutFor({}, space) : undefined);
     if (layout?.mem64 && !m64) throw new Error("runtime: the process layout is one for a 64-bit memory; the Runtime needs mem64 and the wasm64 modules");
     if (layout && opts.codeBase === undefined) this.nextBase = layout.codeBase;
-    if (m64) { this.m64 = makeMemory64({ initial: HOST_END / 65536, maximum: MEM64_MAX_PAGES }); this.memory = this.m64.memory; }
-    else this.memory = new WebAssembly.Memory({ initial: this.opts.reserve4g ? 65536 : HOST_END / 65536, maximum: 65536 });
+    const shared = !!this.opts.shared;
+    if (shared && typeof SharedArrayBuffer === "undefined") throw new Error("runtime: `shared` needs SharedArrayBuffer (a cross-origin isolated page, or Node)");
+    if (m64) { this.m64 = makeMemory64({ initial: HOST_END / 65536, maximum: MEM64_MAX_PAGES, shared }); this.memory = this.m64.memory; }
+    else this.memory = new WebAssembly.Memory({ initial: this.opts.reserve4g ? 65536 : HOST_END / 65536, maximum: 65536, shared });
     this.addrEnd = m64 ? BigInt(MEM64_MAX_PAGES) * 65536n : 0x1_0000_0000n;
     // addresses are numbers on this side of every module (wasm_abi.ts)
     const log = (ptr: number, len: number) => this.log(this.str(ptr, len));
@@ -302,7 +319,13 @@ export class Runtime {
     };
     this.env = env;
     this.memImports = this.m64 ? this.m64.imports() : {};
-    this.r = instantiate(mods.rt, { env }, { mem64: m64, name: "rt.wasm" });
+    try { this.r = instantiate(mods.rt, { env }, { mem64: m64, name: "rt.wasm" }); }
+    catch (e) {
+      // the memory and the module set must agree about `shared` (the engine's own message names neither)
+      if (e instanceof WebAssembly.LinkError) throw new Error(`runtime: rt.wasm does not link to the ${shared ? "shared" : "unshared"} memory (${e.message}); ` +
+        (shared ? "`shared: true` needs the shared set: wasm_shared.ts sharedBuild of each module, translator.shared.wasm, helpers.shared.wasm" : "the modules are the shared set: pass `shared: true`"));
+      throw e;
+    }
     const lx = instantiate<LoaderExports>(mods.loader, { env }, { mem64: m64, name: "loader.wasm" });
     this.k = instantiate(mods.kernel, { env }, { mem64: m64, name: "kernel.wasm" });
     this.r.rt_init();
@@ -313,6 +336,7 @@ export class Runtime {
     if (layout) {
       const p = this.r.rt_scratch_ptr() + 2048;
       writeKernelCfg(this, p, layout);
+      if (this.opts.cores === 8) { const dv = this.dv(); dv.setBigUint64(p + 112, dv.getBigUint64(p + 112, true) | (this.opts.wakeHandoff === false ? 24n : 8n), true); }   // kernel flags 8, 16
       if (this.k.kernel_init(p) !== 0) throw new Error("runtime: kernel_init refused the process layout: " + this.red.join("; "));
       this.stackRegion = layout.stackBase;
       this.codeEnd = layout.codeBase + layout.codeSize;
@@ -331,7 +355,7 @@ export class Runtime {
     } else if (this.k.kernel_init(0) !== 0) throw new Error("runtime: kernel_init refused the default layout");
 
     this.a64 = new A64Host(mods.translator, mods.helpers, {
-      memory: this.memory, mem64: m64,
+      memory: this.memory, mem64: m64, ...(shared ? { shared: true, memoryMaxPages: m64 ? MEM64_MAX_PAGES : 65536 } : {}),
       // the entry bitmap covers the first 256 MB of the code region, wherever the layout puts it
       layout: layout && layout.codeBase !== A64.codeRegionLo ? { ...A64, codeRegionLo: layout.codeBase } : A64,
       maxInsns: opts.maxInsns, maxFuncs: opts.maxFuncs, depthLimit: opts.depthLimit, tailCalls: opts.tailCalls, fma: opts.fma, nanFix: opts.nanFix,
@@ -355,7 +379,7 @@ export class Runtime {
     this.a64.fillPcMap(STUBS.base, STUBS.cap, this.thunk);
     const g: Record<string, unknown> = {};
     for (let i = 0; i < 8; i++) { g["x" + i] = this.core["x" + i]; g["v" + i] = this.core["v" + i]; }
-    const regs = new WebAssembly.Instance(new WebAssembly.Module(regsModule(m64) as BufferSource), { env: { memory: this.memory }, core: g } as WebAssembly.Imports).exports as any;
+    const regs = new WebAssembly.Instance(new WebAssembly.Module(regsModule(m64, shared ? (m64 ? MEM64_MAX_PAGES : 65536) : 0) as BufferSource), { env: { memory: this.memory }, core: g } as WebAssembly.Imports).exports as any;
     this.regs = !m64 ? regs : { args_x: (p: number) => regs.args_x(BigInt(p)), args_xd: (p: number) => regs.args_xd(BigInt(p)), set_d0: regs.set_d0 };
     this.argsPtr = this.r.rt_nvn_args(this.r.rt_ctx_scratch());
   }
@@ -1369,6 +1393,14 @@ export class Runtime {
   }
   // What a trap in translated code most likely was, from the instruction at the exact pc
   private trapText(message: string, pc: number | undefined, ctx: number): string {
+    // shared-memory mode: the exclusives, LDAR/STLR and the LSE instructions are wasm atomics, which trap on an address
+    // that is not a multiple of the access size; hardware performs them (V8: "operation does not support unaligned accesses")
+    if (/unaligned|misaligned|alignment/i.test(message)) {
+      if (pc === undefined) return `an atomic access at a misaligned address (guest pc unknown: the trap is not in translated code): ARM performs it, the wasm atomics of the shared-memory mode trap (${message})`;
+      const insn = this.dv().getUint32(pc, true), base = (insn >>> 5) & 31, rn = base === 31 ? "sp" : "x" + base;
+      return `an atomic access at a misaligned address: the instruction ${hex(insn)} at guest pc ${hex(pc)} (an exclusive, acquire/release or LSE access through ${rn} = ` +
+        `${hex(this.dv().getBigUint64(ctx + base * 8, true))}${this.opts.preciseFaults === 2 ? "" : " as last written back"}): ARM performs it, the wasm atomics of the shared-memory mode trap (${message})`;
+    }
     if (pc === undefined || !/out of bounds/.test(message)) return message;
     const dv = this.dv(), insn = dv.getUint32(pc, true), isMem = ((insn >>> 25) & 5) === 4, base = (insn >>> 5) & 31;
     if (!isMem) return message;

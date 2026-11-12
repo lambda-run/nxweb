@@ -18,7 +18,7 @@
 // the readers convert them as md_nv12 / md_rgba do. A pool a native image handle was asked for also gets each
 // picture as RGBA in the game's pool memory (16 KB aligned, 64-byte stride), where nvnTextureInitializeFromNativeImage
 // makes its linear texture.
-import { X, W, P, X8, stackArg, guestSym, guestCall1, guestCall2, hostAlloc, zero, ls, ps, pz, pu, px, le, red, log } from "./base";
+import { X, W, P, X8, stackArg, guestSym, guestCall1, guestCall2, hostAlloc, zero, ls, ps, pc, pz, pu, px, le, red, log } from "./base";
 import { seBind, seSignal, seClear } from "./sysevent";
 
 // The embedder's decoder (HleEnv.video). codec: 0 VP8, 1 VP9, 2 H.264, 3 AV1. Writes its name (at most cap bytes)
@@ -92,6 +92,25 @@ const TMP: usize = memory.data(128, 4);
 let genCounter: u32 = 0;
 let poolLogs: u32 = 0, nativeLogs: u32 = 0, rgbaRegionRed = false, nv12RegionRed = false, hdrRed = false, encRed = false, syncRed = false, sptFullRed = false, picFullRed = false;
 let nativeWrites: u64 = 0;
+// The first calls of a decoder's life in the order they came, as one line (the first TR_DECS decoders): what the client
+// registered, acquired, released and asked before and after Start, and where the first pictures went
+const TR_CAP: i32 = 440, TR_DECS: u32 = 3;
+const TR: usize = memory.data(464);   // TR_CAP + 24
+let trLen: i32 = 0, trOn = false, trDecs: u32 = 0;
+function trFlush(): void {
+  if (!trOn) return;
+  trOn = false;
+  ls(); ps("[codec] the decoder's first calls: "); for (let k = 0; k < trLen; k++) pc(load<u8>(TR + <usize>k)); le();
+}
+// tag, a number (none: -1) and a mark (0: none)
+function tr(tag: string, n: i32, mark: u32): void {
+  if (!trOn) return;
+  for (let k = 0, m = tag.length; k < m; k++) { store<u8>(TR + <usize>trLen, <u8>tag.charCodeAt(k)); trLen++; }
+  if (n >= 0) { if (n >= 100) n = 99; if (n >= 10) { store<u8>(TR + <usize>trLen, <u8>(48 + n / 10)); trLen++; } store<u8>(TR + <usize>trLen, <u8>(48 + n % 10)); trLen++; }
+  if (mark) { store<u8>(TR + <usize>trLen, <u8>mark); trLen++; }
+  store<u8>(TR + <usize>trLen, 32); trLen++;
+  if (trLen >= TR_CAP) trFlush();
+}
 let drainAt: u32 = 0;   // what drain() was called for: 0 a released buffer, 1 a picture that arrived, 2 a packet
 let fnDestroy: u64 = 0, fnTryWait: u64 = 0, fnHolder: u64 = 0;
 
@@ -100,7 +119,7 @@ export function cvInit(): void {
   zero(HELD, <usize>(NDEC * CV_HOLD) * 16); zero(INFL, <usize>(NDEC * CV_HOLD) * 16); zero(POOLS, <usize>NPOOL * 40); zero(POOLPICS, <usize>(NPOOL * POOL_IMGS) * 4);
   zero(PICS, <usize>NPIC * 40); zero(SPT, <usize>NSPT * 8);
   poolLogs = 0; nativeLogs = 0; rgbaRegionRed = false; nv12RegionRed = false; hdrRed = false; encRed = false; syncRed = false; sptFullRed = false; picFullRed = false;
-  nativeWrites = 0; drainAt = 0; genCounter = 0; initLogged = false; fnDestroy = 0; fnTryWait = 0; fnHolder = 0;
+  nativeWrites = 0; drainAt = 0; genCounter = 0; trLen = 0; trOn = false; trDecs = 0; initLogged = false; fnDestroy = 0; fnTryWait = 0; fnHolder = 0;
 }
 function sdkFns(): void {   // looked up until found
   if (!fnDestroy) fnDestroy = guestSym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
@@ -354,6 +373,7 @@ function drain(id: u32, took: bool, before: u32): void {
     } else { b.w = 0; b.h = 0; b.ts = 0; b.eos = 1; d.eosPending = 0; }
     if (b.eos) { ls(); ps("[codec] "); name(id); ps(" decoder "); pu(id); ps(": end of stream after "); pu(d.pictures); ps(" pictures"); le(); }
     b.filled = 1; b.filledGen = b.gen;
+    tr("fill", <i32>i, 0);
     sptFire(id, i);
   }
   if (d.sFillRel + d.sFillDone >= CV_PACE) pace(id);
@@ -426,6 +446,7 @@ function decInit(t: usize, codec: u32, w: u32, h: u32, fin: u32, fout: u32): u64
   for (let i: u32 = 0; i < NBUF; i++) zero(changetype<usize>(buf(id, i)), BSZ);
   const d = dec(id);
   d.used = 1; d.codec = codec; d.w = w; d.h = h; d.gen = ++genCounter;
+  if (trDecs < TR_DECS) { trFlush(); trDecs++; trLen = 0; trOn = true; }
   const n = cvOpen(id, codec, w, h, NAME, 32);
   d.backend = n > 0 ? 1 : 0;
   d.event = <u64>(t + CV_EVENT_OFF);
@@ -443,6 +464,7 @@ function decFin(t: usize): u64 {
   const d = dec(id);
   if (d.backend) cvClose(id);
   for (let k: u32 = 0; k < d.nheld; k++) picFree(held(id, k).pic);
+  tr("fin", -1, 0); trFlush();
   if (d.sFillRel + d.sFillDone) pace(id);
   ls(); ps("[codec] "); name(id); ps(" decoder "); pu(id); ps(" finalized: "); pu(d.submits); ps(" packets, "); pu(d.pictures); ps(" pictures"); if (d.black) { ps(", "); pu(d.black); ps(" of them video black"); } le();
   d.nheld = 0; d.ninfl = 0; d.used = 0; d.gen = ++genCounter;
@@ -456,6 +478,7 @@ function decReg(t: usize, i: u32, pl: usize, pidx: u32): u64 {
   if (!id || i >= NBUF) { ls(); ps("[RED] nn::codec::Register…DecoderBuffer index "); pu(i); le(); return R(ERR_DEC); }
   const d = dec(id), b = buf(id, i);
   b.pool = poolOf(pl); b.pidx = pidx; b.reg = 1; b.filled = 0; b.gen = 0; b.filledGen = 0;
+  tr("reg", <i32>i, 0);
   if (d.fcount < NFIFO) { store<u32>(fifoAt(id, (d.fhead + d.fcount) % NFIFO), i); d.fcount++; }
   else { ls(); ps("[RED] nn::codec: acquirable queue full at register "); pu(i); le(); }
   return 0;
@@ -485,6 +508,7 @@ function decReset(t: usize): u64 {
   const d = dec(id);
   for (let k: u32 = 0; k < d.nheld; k++) picFree(held(id, k).pic);
   d.nheld = 0; d.ninfl = 0; d.eosPending = 0; d.eosAt = 0; d.gen = ++genCounter;
+  tr("reset", -1, 0);
   if (d.backend) cvReset(id, d.gen);
   if (d.event) seSignal(<usize>d.event);
   return 0;
@@ -493,6 +517,7 @@ function decStart(t: usize): u64 {
   const id = decOf(t);
   if (!id) return R(ERR_DEC);
   const d = dec(id);
+  tr("START", -1, 0);
   if (d.event && load_(id) < CV_READY) seSignal(<usize>d.event);
   return 0;
 }
@@ -504,10 +529,12 @@ function decSubmit(out: usize, t: usize, data: usize, size: u64, ts: i64, eos: b
     if (d.busyLogs++ < 4) { ls(); ps("nn::codec "); name(id); ps(": busy (result 3603), a packet refused with "); pu(d.nheld); ps(" pictures waiting for a released buffer and "); pu(d.ninfl); ps(" packets decoding"); le(); }
     if (d.event) seClear(<usize>d.event);
     d.sBusy++;
+    tr("busy", -1, 0);
     return R(BUSY);
   }
   const seq = ++d.submits, gen = d.gen;
   d.sSub++;
+  tr("sub", -1, 0);
   if (size && data) {
     let r: i32 = 0;
     if (d.backend) {
@@ -536,8 +563,9 @@ function decAcq(idx: usize, sync: usize, t: usize): u64 {
   const id = decOf(t);
   if (!id) return R(ERR_DEC);
   const d = dec(id);
-  if (!d.fcount) return R(NONE);
+  if (!d.fcount) { tr("acq", -1, 0x21); return R(NONE); }
   const i = load<u32>(fifoAt(id, d.fhead)); d.fhead = (d.fhead + 1) % NFIFO; d.fcount--;
+  tr("acq", <i32>i, 0);
   if (idx) store<u32>(idx, i);
   if (sync) { store<u32>(sync, CV_SYNC); store<u32>(sync, id, 4); store<u32>(sync, i, 8); store<u32>(sync, buf(id, i).gen, 12); }
   return 0;
@@ -547,6 +575,7 @@ function decRel(t: usize, i: u32): u64 {
   if (!id || i >= NBUF || !buf(id, i).reg) { ls(); ps("[RED] nn::codec::Release…DecoderOutputBuffer index "); pu(i); le(); return 0; }
   const d = dec(id), b = buf(id, i), before = load_(id);
   b.gen++; b.filled = 0; d.sRel++;
+  tr("rel", <i32>i, 0);
   if (d.pcount < NBUF) { store<u32>(pendAt(id, (d.phead + d.pcount) % NBUF), i); d.pcount++; }
   if (d.fcount < NFIFO) { store<u32>(fifoAt(id, (d.fhead + d.fcount) % NFIFO), i); d.fcount++; }
   else { ls(); ps("[RED] nn::codec: acquirable queue full at release "); pu(i); le(); }
@@ -557,6 +586,7 @@ function decProps(w: usize, h: usize, cw: usize, ch: usize, ts: usize, eos: usiz
   const id = decOf(t);
   if (!id || i >= NBUF) return R(ERR_DEC);
   const b = buf(id, i);
+  tr("props", <i32>i, b.filled ? 0 : 0x21);   // !: not filled, 3604
   if (!b.filled) return R(NONE);
   if (w) store<u16>(w, <u16>b.w); if (cw) store<u16>(cw, <u16>b.w);
   if (h) store<u16>(h, <u16>b.h); if (ch) store<u16>(ch, <u16>b.h);
@@ -701,7 +731,9 @@ export function h_spt_request(a: usize): u64 {
   while (k < NSPT && load<u64>(SPT + (<usize>k << 3))) k++;
   if (k == NSPT) { if (!sptFullRed) { sptFullRed = true; red("nn::syncpt: more than 64 armed events: signalled at once"); } store<u32>(e + 0x44, 0); seSignal(e); return 0; }
   store<u64>(SPT + (<usize>k << 3), <u64>e);
-  if (syncReached(e + 0x48)) { sptUnarm(e); seSignal(e); }
+  const reached = syncReached(e + 0x48);
+  tr("fence", load<u32>(e + 0x48) == CV_SYNC ? <i32>load<u32>(e + 0x50) : -1, reached ? 0x2b : 0);   // +: reached at the request
+  if (reached) { sptUnarm(e); seSignal(e); }
   return 0;
 }
 export function h_spt_cancel(a: usize): u64 { const e = P(a, 0); if (e) { sptUnarm(e); seClear(e); } return 0; }

@@ -4,7 +4,7 @@ import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { R_OK, R_OUT_OF_RES, R_BAD_MEMORY, R_BAD_HANDLE, R_TIMEOUT, R_CANCELLED, R_OUT_OF_RANGE, R_BAD_STATE, WAITERS_BIT,
   guestOk, ld32, ld64, st32, st64, lineStart, lineEnd, puts, putx, putu, putc, debugString } from "./base";
 import { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION, hNew, hType, hObj, hPeek, hFree, evNew, evRelease, evSignaled, evSet, evRetain } from "./handle";
-import { KThread, thr, MAX_THREADS, NCORES, threadNew, threadFree, threadOfHandle, threadsAlive, C_SP, C_PC, C_NZCV, C_FPCR, C_FPSR, C_TPIDR, C_V,
+import { KThread, thr, MAX_THREADS, coreCount, threadNew, threadFree, threadOfHandle, threadsAlive, C_SP, C_PC, C_NZCV, C_FPCR, C_FPSR, C_TPIDR, C_V,
   WK_LOCK, WK_CONDVAR, WK_ADDRESS, WK_SYNC, WK_SLEEP, WK_CLOCK } from "./thread";
 import { schedReady, schedYield, schedLeft, schedChanged, schedMoved } from "./sched";
 import { PENDING, block, wake, lockHandoff, condSignal, addressWaiters, addressSignal, wakeSyncWaiters, syncOpen, syncClose, syncSignaled,
@@ -243,9 +243,9 @@ export function svc(t: KThread, n: i32): void {
       if (c == -2) { s.core = 0; s.mask = 1; } else if (x2) s.mask = x2;
       // an ideal core outside the new mask moves to the mask's lowest core, as on Horizon
       if (s.mask && (s.core < 0 || s.core > 63 || !((s.mask >> s.core) & 1))) s.core = <i32>ctz<u64>(s.mask);
-      if (s.mask && !(s.mask & ((<u64>1 << <u64>NCORES) - 1)) && !farMaskRed) {
+      if (s.mask && !(s.mask & ((<u64>1 << <u64>coreCount()) - 1)) && !farMaskRed) {
         farMaskRed = true;
-        lineStart("[RED] svc SetThreadCoreMask: mask "); putx(s.mask); puts(" names none of the "); putu(NCORES); puts(" virtual cores: the thread queues on core 0, behind every better thread there"); lineEnd();
+        lineStart("[RED] svc SetThreadCoreMask: mask "); putx(s.mask); puts(" names none of the "); putu(coreCount()); puts(" virtual cores: the thread queues on core 0, behind every better thread there"); lineEnd();
       }
       schedMoved(s);
       break;

@@ -8,7 +8,8 @@ import { RtGfx } from "../src/glue/rt_gfx.ts";
 import { GfxHost } from "../src/glue/gfx_host.ts";
 import { RtInput, KEYBOARD, type PadState } from "../src/glue/rt_input.ts";
 import { demoShaders } from "../test/runtime/gfx_cases.ts";
-import { webCacheStore, hasMemory64 } from "../src/glue/a64_host.ts";
+import { webCacheStore, hasMemory64, MEM64_MAX_PAGES } from "../src/glue/a64_host.ts";
+import { sharedBuild } from "../src/glue/wasm_shared.ts";
 import { RtShaders, workerTranslator, webShaderStore, type ShaderTranslator } from "../src/glue/rt_shaders.ts";
 import { RtFs } from "../src/glue/rt_fs.ts";
 import { RtAudio } from "../src/glue/rt_audio.ts";
@@ -55,7 +56,7 @@ const requestDevice = async (): Promise<any> => {
 // The modules built for a 64-bit memory (wasm/<name>64.wasm), fetched and compiled when the first process needs them:
 // a game whose profile does not fit a 32-bit memory (rt_process.ts layoutChoice; the hand-off's options say so), or
 // any program when the page was opened with ?mem64=1 (for measuring the mode)
-let mods64: Promise<RuntimeModules> | undefined;
+let mods64: Promise<RuntimeModules> | undefined, sharedGpuChecked = false;
 const forceMem64 = new URLSearchParams(self.location?.search ?? "").get("mem64") === "1";
 const precise = ({ "1": 1, "2": 2 } as const)[new URLSearchParams(self.location?.search ?? "").get("precise") ?? ""];
 // ?ndve=bypass: a bilinear stand-in for nn::ndve's movie network when its dispatches cannot run (diagnostic, src/glue/ndve.ts)
@@ -64,6 +65,8 @@ const ndve = new URLSearchParams(self.location?.search ?? "").get("ndve") === "b
 // (runs that nobody watches: the development loop). Off by default: a watched picture should follow the display
 const timerPace = new URLSearchParams(self.location?.search ?? "").get("pace") === "timer";
 // (a browser also slows a hidden page's timers: the 16 ms are counted by messages to this Worker itself, which it does not slow)
+const coresArg = new URLSearchParams(self.location?.search ?? "").get("cores");   // ?cores=8: eight virtual cores and the wake hand-off (RuntimeOptions.cores); ?cores=8n: without the hand-off
+const cores8 = coresArg === "8" || coresArg === "8n";
 const noShortTimer = new URLSearchParams(self.location?.search ?? "").get("yield") === "timeout";   // ?yield=timeout: the old run-loop timer, to compare
 const spinChannel = new MessageChannel();
 // One list of waiting callbacks, looked at on every message while it is not empty (several may wait at once: the frame clock and the run loop)
@@ -89,6 +92,24 @@ const dumpFailed = shaderDump ? (b: { key: string; control: Uint8Array; code: Ui
   new DataView(body.buffer).setUint32(0, b.control.length, true); body.set(b.control, 4); body.set(b.code, 4 + b.control.length);
   void fetch(`${shaderDump}/sh-${b.key}.bin`, { method: "POST", body }).catch(() => {});
 } : undefined;
+// ?shared=1: the shared-memory mode (RuntimeOptions.shared; src/runtime/README.md, "Shared memory"): the same one
+// Worker and cooperative guest threads on a shared WebAssembly.Memory, with the translator's atomics. Only on a
+// cross-origin isolated page (SharedArrayBuffer); otherwise one log line and the normal mode.
+const sharedAsked = new URLSearchParams(self.location?.search ?? "").get("shared") === "1";
+const sharedMem = sharedAsked && (self as any).crossOriginIsolated === true && typeof SharedArrayBuffer !== "undefined";
+let modsShared: Promise<RuntimeModules> | undefined, modsShared64: Promise<RuntimeModules> | undefined;
+// the shared set: the modules' memory declared shared (wasm_shared.ts), the translator's own shared builds
+function modulesShared(m64: boolean): Promise<RuntimeModules> {
+  const make = async () => {
+    const x = m64 ? "64" : "", max = m64 ? MEM64_MAX_PAGES : 65536;
+    const bytes = async (f: string) => { const r = await fetch(`wasm/${f}`); if (!r.ok) throw new Error(`wasm/${f}: HTTP ${r.status}`); return new Uint8Array(await r.arrayBuffer()); };
+    const mod = async (n: string) => WebAssembly.compile(sharedBuild(await bytes(`${n}${x}.wasm`), max) as unknown as BufferSource);
+    const tr = async (n: string) => WebAssembly.compile(await bytes(`${n}${x}.shared.wasm`) as unknown as BufferSource);
+    const [r, kernel, loader, g, fsm, hlem, aud, translator, helpers] = await Promise.all([...["rt", "kernel", "loader", "gfx", "fs", "hle", "audio"].map(mod), tr("translator"), tr("helpers")]);
+    return { rt: r, kernel, loader, translator, helpers, gfx: g, fs: fsm, hle: hlem, audio: aud };
+  };
+  return m64 ? (modsShared64 ??= make()) : (modsShared ??= make());
+}
 function modules64(): Promise<RuntimeModules> {
   return mods64 ??= (async () => {
     const mod = async (n: string) => WebAssembly.compileStreaming(fetch(`wasm/${n}64.wasm`));
@@ -106,6 +127,8 @@ async function init() {
   try { if ((await fetch("shaders/xlate_wasm/_framework/dotnet.js", { method: "HEAD" })).ok && (await fetch("shaders/nx_naga.wasm", { method: "HEAD" })).ok)
     shaderTranslator = workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href, subgroups: GfxHost.hasSubgroups(device) }); } catch { /* none */ }
   log("page: runtime modules compiled; " + gpuInfo);
+  if (sharedAsked) log(sharedMem ? "page: shared-memory mode (?shared=1): each process gets a shared WebAssembly.Memory and the translator's atomic code; still one Worker (no speed-up expected); the translated-code cache of this mode is its own (first run translates again)"
+    : `[RED] page: ?shared=1 was asked for but this page ${typeof SharedArrayBuffer === "undefined" ? "has no SharedArrayBuffer" : "is not cross-origin isolated (crossOriginIsolated is false: it needs Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp)"}; running in the normal mode`);
 }
 const ready = init().catch(e => log("[RED] page: " + (e?.message ?? e)));
 
@@ -155,9 +178,20 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
     try { if (!hasMemory64()) throw new Error("this browser has no 64-bit WebAssembly memory"); set = await modules64(); }
     catch (e: any) { log(`[RED] page: this program needs the 64-bit memory mode and it cannot be had here (${e?.message ?? e})`); rt = undefined as any; status(); return; }
   }
-  const me = rt = new Runtime(set, { timer: timerPace ? spinTimer : noShortTimer ? undefined : shortTimer, clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
+  let shared = false;
+  if (sharedMem) {
+    try { set = await modulesShared(mem64); shared = true; }
+    catch (e: any) { log(`[RED] page: the shared-memory modules could not be loaded (${e?.message ?? e}); running in the normal mode`); }
+  }
+  // WebGPU's queue writes are specified to take views of a shared buffer; said once, in red when this browser refuses them
+  if (shared && device && !sharedGpuChecked) {
+    sharedGpuChecked = true;
+    try { const b = device.createBuffer({ size: 8, usage: 0x08 }); device.queue.writeBuffer(b, 0, new Uint8Array(new SharedArrayBuffer(8))); b.destroy(); log("page: shared-memory mode: WebGPU takes views of the shared memory (queue.writeBuffer checked)"); }
+    catch (e: any) { log(`[RED] page: shared-memory mode: this browser's WebGPU refuses a view of a SharedArrayBuffer (${e?.message ?? e}): buffer and texture uploads from guest memory will fail`); }
+  }
+  const me = rt = new Runtime(set, { shared, cores: cores8 ? 8 : 4, wakeHandoff: coresArg !== "8n", timer: timerPace ? spinTimer : noShortTimer ? undefined : shortTimer, clock: "wall", guard, preciseFaults: precise, log: l => log(l), cache: typeof caches !== "undefined" ? webCacheStore() : undefined,
     layout, mainStackSize: game?.mainStackSize, cutsKey: game?.cutsKey });
-  optionsNote = (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
+  optionsNote = (shared ? "shared memory (?shared=1), " : "") + (mem64 ? `64-bit memory mode${game?.choice?.mem64 ? ` (the profile does not fit 4 GB: ${game.choice.sentence})` : " (asked for with ?mem64=1)"}, ` : "") + `wall clock, budget ${me.opts.budget}, host-area guard ${guard ? "on" + (guardAuto ? " (turned on because the run before this one ended in a fault)" : "") : "off"}` +
     (game ? `; layout from the profile (${game.layout.fit}): heap ${(game.layout.heapSize / 2 ** 30).toFixed(2)} GB, alias ${(game.layout.aliasSize / 2 ** 30).toFixed(2)} GB, pool ${(game.layout.appPool / 2 ** 30).toFixed(2)} GB` : "; the default layout");
   for (const n of game?.notes ?? []) log("page: " + n);
   faultSeen = false;

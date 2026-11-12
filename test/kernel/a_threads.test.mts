@@ -194,8 +194,13 @@ test("SleepThread(-2), YieldToAnyThread: a lower-priority thread of the core get
 
 // Ocarina of Time (Switch 2) pins its movie player's thread with nn::os::SetThreadCoreMask(thread, -1, 0x20): core 5,
 // one priority below the main thread. With four virtual cores it queued on core 0 and ran only while the main thread waited
-test("scheduler: a thread pinned to core 5 of eight runs beside a better thread on core 0", () => {
-  const k = new Kernel(), m = k.main;
+test("scheduler: a thread pinned to core 5 of eight (kernel flag 8) runs beside a better thread on core 0; of four, behind it", () => {
+  const k4 = new Kernel(), p4 = k4.thread(45, 0);
+  assert.equal(k4.call(k4.main, SVC.SetMask, p4.handle, 0xFFFFFFFF, 0x20), 0);
+  assert.deepEqual([p4.info.runCore, k4.schedule(), k4.schedule(), p4.state], [0, k4.main, k4.main, "Runnable"]);
+  assert.equal(k4.red.length, 1);
+  const k = new Kernel({ flags: 8 }), m = k.main;
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7, 8].map(c => k.x.kernel_core_current(c)), [-1, -1, -1, -1, -1, -1, -1, -1, -1]);
   const player = k.thread(45, 0, { start: false });
   assert.equal(k.call(m, SVC.SetMask, player.handle, 0xFFFFFFFF, 0x20), 0);
   assert.deepEqual([player.info.core, player.info.mask], [5, 0x20n]);
@@ -206,7 +211,7 @@ test("scheduler: a thread pinned to core 5 of eight runs beside a better thread 
   assert.deepEqual(seen.map(t => t === m ? "main" : t === player ? "player" : "?").sort(), ["main", "main", "player", "player"], "the cores take turns: the main thread never blocked");
   assert.notEqual(seen[0], seen[1]);
   assert.deepEqual([m.state, player.state], ["Running", "Running"]);
-  assert.equal(k.x.kernel_core_current(5), player.index);
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7].map(c => k.x.kernel_core_current(c)), [m.index, -1, -1, -1, -1, player.index, -1, -1], "the per-core tables hold eight cores");
   assert.equal(k.call(player, SVC.Core), 5);
   // a mask that names no core of the eight still queues on core 0
   const far = k.thread(45, 0);

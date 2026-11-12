@@ -141,15 +141,20 @@ export function threadNew(entry: u64, arg: u64, stackTop: u64, prio: i32, core: 
   t.m.step(KthreadE.Create);
   return t;
 }
-// Eight, as the Switch 2 has: a game written for it pins threads to cores 4 and 5 (Ocarina of Time's movie player:
-// nn::os::SetThreadCoreMask(thread, -1, 0x20)). With four, such a thread queued on core 0 behind the main thread,
-// which has the better priority and is rarely idle here, so it ran only while the main thread waited for the GPU.
-export const NCORES: i32 = 4;   // 8 (the Switch 2) made the movie decoder deadlock: back to 4 until that is understood
+// The most virtual cores (the Switch 2's eight); a process has four unless it is made with kernel flag 8 (coreCount).
+// A game written for the Switch 2 pins threads to cores 4 and 5 (Ocarina of Time's movie player:
+// nn::os::SetThreadCoreMask(thread, -1, 0x20)). With four cores such a thread queues on core 0 behind the main thread,
+// which has the better priority and is rarely idle here, so it runs only while the main thread waits for the GPU.
+// MAX_CORES sizes the scheduler's tables only: the number of cores a process has is `cores` (4 by default)
+export const MAX_CORES: i32 = 8;
+let cores: i32 = 4;
+export function coreCount(): i32 { return cores; }
+export function setCoreCount(n: i32): void { cores = n; }
 // The virtual core a thread queues on: its ideal core when its mask allows it and the core exists, else the lowest
 // core of its mask that exists, else core 0
 export function runCoreOf(t: KThread): i32 {
-  if (t.core < NCORES && ((t.mask >> t.core) & 1)) return t.core;
-  for (let c = 0; c < NCORES; c++) if ((t.mask >> c) & 1) return c;
+  if (t.core < cores && ((t.mask >> t.core) & 1)) return t.core;
+  for (let c = 0; c < cores; c++) if ((t.mask >> c) & 1) return c;
   return 0;
 }
 // Give the slot back: after handle close, exit and the last synchronization wait reference (nxnative thr_free)

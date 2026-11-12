@@ -4,6 +4,7 @@
 // Works in a window and in a Worker; needs a secure context. See src/audio/README.md, "Opus", for when this is used
 // and when the SDK's own software decoder is.
 import { AudioHost, OPUS_PENDING, type OpusBackend } from "./audio_host.ts";
+import { unshared } from "./wasm_shared.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 interface Dec { d: any; rate: number; ch: number; pending: number[]; ts: number; gen: number }
@@ -34,7 +35,7 @@ export class WebCodecsOpus implements OpusBackend {
     const st = this.decs.get(dec);
     if (!st || st.d.state !== "configured") return -2;
     try {
-      st.d.decode(new (globalThis as any).EncodedAudioChunk({ type: "key", timestamp: st.ts, data: packet }));   // copies the packet
+      st.d.decode(new (globalThis as any).EncodedAudioChunk({ type: "key", timestamp: st.ts, data: unshared(packet) }));   // copies the packet (unshared: it lies in the module's memory, which may be a shared one)
     } catch { return -2; }
     st.ts += 20000;
     st.pending.push(req);

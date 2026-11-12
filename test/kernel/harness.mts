@@ -1,6 +1,7 @@
 // The kernel's test harness: fresh instances of build/kernel/kernel.wasm (its own memory is the guest memory) and a
 // scripted guest: each test says which thread makes which SVC, the harness puts the arguments in that thread's
 // context block, calls kernel_svc and reads the results back. No translator is involved.
+import { sharedBuild } from "../../src/glue/wasm_shared.ts";
 import { readFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { loadDefs, KIT_DIR, type MachineDef } from "../../src/kit/host/defs.mts";
@@ -16,6 +17,7 @@ export const ROOT = join(KIT_DIR, "..", "..");
 // kernel truncated to 32 bits would land on untouched pages 4 GB lower.
 export const MODE = process.env.NX_MEM ?? "32";
 export const M64 = MODE !== "32";
+export const SHARED = process.env.NX_SHARED === "1";
 export const HI = MODE === "64hi" ? 0x1_8000_0000 : 0;
 export const WASM = join(ROOT, "build", "kernel", M64 ? "kernel64.wasm" : "kernel.wasm");
 
@@ -126,9 +128,10 @@ export class Kernel {
   get red(): string[] { return this.logs.filter(l => l.startsWith("[RED] ")); }
 
   constructor(o: Options = {}) {
-    module ??= new WebAssembly.Module(readFileSync(WASM));
+    // NX_SHARED=1: the same binary with its memory declared shared (src/glue/wasm_shared.ts), on a shared memory
+    module ??= new WebAssembly.Module(SHARED ? sharedBuild(readFileSync(WASM), M64 ? MEM64_MAX_PAGES : 65536) : readFileSync(WASM));
     // addresses are numbers on this side in every mode (src/glue/wasm_abi.ts)
-    const mem = M64 ? makeMemory64({ initial: 1536, maximum: MEM64_MAX_PAGES }) : null;
+    const mem = M64 ? makeMemory64({ initial: 1536, maximum: MEM64_MAX_PAGES, shared: SHARED }) : null;
     const bytes = (p: number, n: number) => new Uint8Array(this.x.memory.buffer).slice(p, p + n);
     this.x = instantiate<KernelExports>(module, { env: {
       ...(mem ? { memory: mem.memory, ...mem.imports() } : {}),

@@ -11,6 +11,9 @@ import { NodeStorage } from "../../src/glue/fs_dev_node.ts";
 import { checkBuilt } from "../../src/runtime/host/build.mts";
 import { rmSync } from "node:fs";
 import { setDefaultSpace } from "../../src/glue/rt_process.ts";
+import { setDefaultShared } from "../../src/glue/rt_runtime.ts";
+import { sharedBuild } from "../../src/glue/wasm_shared.ts";
+import { MEM64_MAX_PAGES } from "../../src/glue/a64_host.ts";
 
 export { ROOT, OUT, build };
 export const GUESTS = join(OUT, "guests");
@@ -143,10 +146,26 @@ export function buildBig(): boolean {
 // there (test/a64/guests/out_hi, built by test/a64/guests/build_hi.py).
 export const MODE = process.env.NX_MEM ?? "32";
 export const HI_BASE = 0x1_8000_0000;
+export const SHARED = process.env.NX_SHARED === "1";
+// Node's TextDecoder takes a view on a SharedArrayBuffer, a browser's throws: in the shared mode the runner is as
+// strict as the browser, so that a decode of a view of the runtime's memory fails here too
+export function strictSharedViews(): void {
+  const decode = TextDecoder.prototype.decode;
+  TextDecoder.prototype.decode = function (this: TextDecoder, input?: any, o?: any): string {
+    const buf = input && (ArrayBuffer.isView(input) ? input.buffer : input);
+    if (buf instanceof SharedArrayBuffer) throw new TypeError("TextDecoder.decode: the provided view is on a SharedArrayBuffer (a browser refuses it)");
+    return decode.call(this, input, o);
+  };
+}
 export function loadEnv(): MoreEnv {
   checkBuilt();   // none of the modules was built from other kit tables
   const m64 = MODE !== "32", hi = MODE === "64hi";
-  const mod = (n: string) => new WebAssembly.Module(readFileSync(join(OUT, n + (m64 ? "64" : "") + ".wasm")));
+  // NX_SHARED=1: every Runtime on a shared memory (RuntimeOptions.shared) with the shared set of modules
+  const max = m64 ? MEM64_MAX_PAGES : 65536;
+  const mod = (n: string) => SHARED
+    ? new WebAssembly.Module(n === "translator" || n === "helpers" ? readFileSync(join(OUT, n + (m64 ? "64" : "") + ".shared.wasm")) : sharedBuild(readFileSync(join(OUT, n + (m64 ? "64" : "") + ".wasm")), max))
+    : new WebAssembly.Module(readFileSync(join(OUT, n + (m64 ? "64" : "") + ".wasm")));
+  if (SHARED) { setDefaultShared(true); strictSharedViews(); }
   if (hi) {
     setDefaultSpace({ mem64: true, codeBase: HI_BASE });
     if (!existsSync(join(ROOT, "test", "a64", "guests", "out_hi", "hello.O0.json"))) run("python3", [join(ROOT, "test", "a64", "guests", "build_hi.py")]);

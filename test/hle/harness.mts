@@ -1,6 +1,7 @@
 // The hle tests' harness: fresh instances of build/hle/hle.wasm through the same glue the runtime uses
 // (src/glue/hle_host.ts), with a fake outside: the module's own memory is the guest memory, kernel events are a map,
 // clocks are variables, the "guest functions" a take-over calls back are JavaScript functions at made-up addresses.
+import { sharedBuild } from "../../src/glue/wasm_shared.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { KIT_DIR } from "../../src/kit/host/defs.mts";
@@ -14,6 +15,7 @@ export const ROOT = join(KIT_DIR, "..", "..");
 // blocks, strings, the SDK objects the take-overs fill, host-allocated blocks) and its code addresses above 4 GB.
 export const MODE = process.env.NX_MEM ?? "32";
 export const M64 = MODE !== "32";
+export const SHARED = process.env.NX_SHARED === "1";
 export const HI = MODE === "64hi" ? 0x1_8000_0000 : 0;
 export const WASM = join(ROOT, "build", "hle", M64 ? "hle64.wasm" : "hle.wasm");
 export const NXNATIVE = process.env.NXNATIVE ?? "/home/user/nxnative";
@@ -77,7 +79,8 @@ export class Hle {
   private growBy: (pages: number) => void;
 
   constructor(o: { cover?: boolean } = {}) {
-    module ??= new WebAssembly.Module(readFileSync(WASM));
+    // NX_SHARED=1: the same binary with its memory declared shared (src/glue/wasm_shared.ts), on a shared memory
+    module ??= new WebAssembly.Module(SHARED ? sharedBuild(readFileSync(WASM), M64 ? MEM64_MAX_PAGES : 65536) : readFileSync(WASM));
     const t = this;
     const env: HleEnv = {
       log: l => { t.logs.push(l); if (process.env.HLE_TEST_LOG) console.log("    | " + l); },
@@ -124,7 +127,7 @@ export class Hle {
       jitCodeWritten: (rx, off, size) => { t.jit.written.push([rx, off, size]); },
       jitFree: rx => { t.jit.freed.push(rx); },
     };
-    const mem = M64 ? makeMemory64({ initial: 64, maximum: MEM64_MAX_PAGES }) : null;
+    const mem = M64 ? makeMemory64({ initial: 64, maximum: MEM64_MAX_PAGES, shared: SHARED }) : null;
     this.host = mem ? new HleHost(module, env, mem.memory, mem.imports()) : new HleHost(module, env);
     this.growBy = pages => { if (mem) mem.grow(pages); else this.host.memory.grow(pages); };
     const end = HI + Math.ceil(this.host.x.hle_static_end() / 0x10000) * 0x10000;

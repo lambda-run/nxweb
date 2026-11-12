@@ -4,8 +4,8 @@ export * from "../kit/exports";
 import { KthreadS, KthreadE } from "../kit/gen/tables";
 import { kLock, kUnlock, ACT_CONTINUE, ACT_SWITCH, ACT_STOP, FOREVER, WAITERS_BIT, guestOk, ld32, lineStart, lineEnd, puts, putx } from "./base";
 import { handlesInit, handlesUsed, handlesCountEvents, eventsLive, evRefs, O_THREAD, O_EVENT_R, O_EVENT_W, MAX_EVENTS, hPeek, hNew } from "./handle";
-import { KThread, thr, MAX_THREADS, NCORES, threadsInit, threadNew, threadOfCtx, threadsAlive, threadObjects, WK_LOCK, WK_SYNC } from "./thread";
-import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent, schedPreemptHold } from "./sched";
+import { KThread, thr, MAX_THREADS, MAX_CORES, coreCount, threadsInit, threadNew, threadOfCtx, threadsAlive, threadObjects, WK_LOCK, WK_SYNC } from "./thread";
+import { schedInit, schedReady, scheduleNext, scheduleCore, schedMustSwitch, schedSliceEnded, schedCurrent, schedPreemptHold, schedSvcBegin } from "./sched";
 import { syncInit, expire, nextDeadline, wakeClockWaiters } from "./sync";
 import { clockInit, clockSetNow, clockFreeze, clockReasons, guestNs, guestTicks, hostTimeOf, entropySeed, REASON_BACKGROUND } from "./clock";
 import * as mem from "./mem";
@@ -20,18 +20,20 @@ export const KERNEL_ACT_STOP: i32 = ACT_STOP;
 const F_MAP_LIMIT: u64 = 1;    // maps past the application pool fail (nxnative profile key mem_map_limit)
 const F_SWITCH2: u64 = 2;      // the system counter runs at 31.25 MHz
 const F_NO_INHERIT: u64 = 4;   // lock owners do not inherit their waiters' priority
+const F_CORES8: u64 = 8;       // eight virtual cores (the Switch 2's), not four, with the wake hand-off (sched.ts)
+const F_NO_HANDOFF: u64 = 16;  // ... without the wake hand-off
 
 // Start a process. cfg = 0: the default layout and values. Else a block of 16 little-endian u64:
 //   +0 code base, +8 code size, +16 thread-local base, +24 size, +32 heap base, +40 heap region size, +48 stack base,
 //   +56 stack region size, +64 alias base, +72 alias region size, +80 application pool, +88 used memory reported
 //   beside the heap, +96 system resource size, +104 program id, +112 flags (1 map limit, 2 Switch 2 counter,
-//   4 no priority inheritance), +120 process id (0 = 0x50)
+//   4 no priority inheritance, 8 eight virtual cores with the wake hand-off, 16 no hand-off), +120 process id (0 = 0x50)
 // Returns 0, or a layout error (mem.ts E_LAYOUT_*), with a red line.
 export function kernel_init(cfg: usize): i32 {
   kLock();
   const flags: u64 = cfg ? load<u64>(cfg, 112) : 0;
   handlesInit(); threadsInit(); syncInit(); ringInit();
-  schedInit(!(flags & F_NO_INHERIT));
+  schedInit(!(flags & F_NO_INHERIT), (flags & F_CORES8) != 0, (flags & (F_CORES8 | F_NO_HANDOFF)) == F_CORES8);
   clockInit((flags & F_SWITCH2) != 0);
   procInit(cfg ? load<u64>(cfg, 104) : 0, cfg ? load<u64>(cfg, 120) : 0);
   const e = mem.memInit(cfg, (flags & F_MAP_LIMIT) != 0);
@@ -74,6 +76,7 @@ export function kernel_svc(n: i32, ctx: usize): i32 {
       act = ACT_SWITCH;
     } else {
       ringEnter(t, n);
+      schedSvcBegin();
       svc(t, n);
       ringLeave(t, t.waitKind != 0, stopReason != STOP_NONE || !t.used || t.exited);
       act = stopReason != STOP_NONE ? ACT_STOP : schedMustSwitch(t) ? ACT_SWITCH : ACT_CONTINUE;
@@ -94,7 +97,7 @@ export function kernel_schedule(): usize {
 // One core's scheduling point (for an embedder that runs each virtual core on its own host thread)
 export function kernel_schedule_core(core: i32): usize {
   kLock();
-  const t = stopReason == STOP_NONE && core >= 0 && core < NCORES ? scheduleCore(core) : null;
+  const t = stopReason == STOP_NONE && core >= 0 && core < coreCount() ? scheduleCore(core) : null;
   if (t != null) ringResume(t);
   kUnlock();
   return t != null ? t.ctx : 0;
@@ -265,7 +268,7 @@ export function kernel_alias_leaves(what: i32): u32 { return what ? mem.aliasLea
 const REFS: usize = memory.data(8192);   // MAX_EVENTS * 4
 export function kernel_check(): i32 {
   // 1x: each core has at most one Running thread, and it is the core's current one
-  for (let c = 0; c < NCORES; c++) {
+  for (let c = 0; c < MAX_CORES; c++) {
     let n = 0;
     for (let i = 0; i < MAX_THREADS; i++) {
       const t = thr(i);

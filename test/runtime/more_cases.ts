@@ -186,6 +186,22 @@ export function moreCases(env: MoreEnv, gpu: Gpu | undefined): MoreCase[] {
     return lines;
   });
 
+  // ---- shared memory: a misaligned atomic access ----
+  test("an exclusive load at a misaligned address: performed on an unshared memory; on a shared one (RuntimeOptions.shared) the wasm atomic traps and the fault names the guest pc in a red line", async () => {
+    // mov x1, sp; sub x1, x1, #0x3f; ldxr x0, [x1]; mov x0, #0; ret
+    const words = [0x910003E1, 0xD100FC21, 0xC85F7C20, 0xD2800000, 0xD65F03C0], image = new Uint8Array(words.length * 4);
+    words.forEach((w, i) => new DataView(image.buffer).setUint32(4 * i, w, true));
+    const rt = new Runtime(env.mods), base: number = (rt as any).nextBase, at = base + 8;
+    ok(rt.loadFlat(image, { base, entry: base, stack_top: base + 0x20000 }), "load failed");
+    const r = rt.run(), shared = !!rt.opts.shared;
+    if (!shared) { eq(r.stop?.kind, "exit", "unshared: the program runs to its end: " + rt.red.join(" | ")); return ["unshared memory: ldxr at sp - 0x3f is performed, the program exits"]; }
+    eq([r.stop?.kind, r.stop?.fault?.kind], ["fault", "trap"], "shared: the stop");
+    eq(Number(r.stop!.fault!.pc), at, "shared: the fault's pc is the ldxr");
+    const line = rt.red.find(l => l.includes("an atomic access at a misaligned address") && l.includes("guest pc 0x" + at.toString(16)));
+    ok(!!line, "shared: a red line that names the misaligned atomic access and its guest pc: " + rt.red.join(" | "));
+    return ["shared memory: " + line!.slice(0, 200)];
+  });
+
   // ---- stop and start again ----
   if (env.haveGfxGuests && env.mods.gfx) test(`restart (${gpu ? "WebGPU" : "null replayer"}): the cube demo is started, stopped by the embedder and started again, 5 times; kernel threads end, graphics objects are released, memory use stays level`, async () => {
     // count the GPU objects alive through the device

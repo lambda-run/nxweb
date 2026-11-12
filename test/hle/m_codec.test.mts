@@ -191,6 +191,9 @@ test("nn::codec pacing line: whether pictures waited for the game's buffers or b
   m.rel(1);
   assert.equal(m.props(1).ts, 200n);
   h.call(by("h_cv_av1fin"), m.t);
+  // the first calls, in order (!: 3604 or none, +: a fence reached at its request)
+  const calls = h.logs.find(l => l.startsWith("[codec] the decoder's first calls: ")) ?? "";
+  assert.match(calls, /: (reg\d+ )+.*START rel0 sub fill0 props0 sub rel1 fill1 props1 fin $/, calls);
   assert.ok(h.logs.includes("[codec] AV1 decoder 1 pacing over 2 pictures: 2 packets taken, 0 refused busy, 2 buffers released; 1 pictures were waiting for their buffer, 1 buffers for their picture; at most 1 pictures waiting, 1 packets decoding"), h.logs.filter(l => l.includes("pacing")).join("\n"));
 });
 

@@ -57,13 +57,16 @@ QueryMemory the MemoryInfo it wrote). Every entry takes the kernel lock
 
 ## Scheduler and threads
 
-Eight virtual cores (the Switch 2's count; a Switch application uses 0..2): a thread queues on its ideal core (or the
-lowest core of its mask); a mask that names no core of the eight queues on core 0. Each core runs its ready
+Four virtual cores, or eight with kernel flag 8 (the Switch 2's count: its games pin threads to cores 4 and 5): a
+thread queues on its ideal core (or the lowest core of its mask); a mask that names no core there is queues on core 0. Each core runs its ready
 thread of best priority; equals run in the order they became ready; a preempted thread keeps its place. `SleepThread`
 0 / -1 go behind the equals, -2 lets a lower priority have one turn. `kernel_preempt` rotates equals. An idle core
 takes a waiting thread whose mask allows it. A wake or start of a better thread on the caller's core makes the
 caller's SVC return SWITCH, which is nxnative's "same-core handoff" as a consequence of the scheduler instead of a
 wait loop. A Running thread is its core's current thread; green threads give the cores turns (`kernel_schedule`).
+With eight cores a thread whose SVC made a better thread ready on another core stands back (it leaves its core, still
+ready) until that thread has blocked, yielded, exited or used four slices: the wake hand-off (`sched.ts` HOLD), which
+keeps the order two such threads have when they share a core. Kernel flag 16 turns it off.
 Lock owners inherit the priority of their waiters for scheduling only (`eff`); GetThreadPriority reports what the
 guest set. Thread contexts, the handle table (0x1000 + slot, lowest free first), ids from 0x51, the ThreadLocalRegion
 fields (+0x110 thread id, +0x1F8 thread object) and the wait order (priority, then arrival) are nxnative's.
@@ -130,7 +133,7 @@ the end every thread finishes and nothing leaks.
   `kLock` must become a real lock; `sched.ts` already keeps its state per core.
 - Linear memory is never given back: unmapped pages and a shrunk heap stay resident (they read zero when mapped again).
 - O(threads) scans in the scheduler and the wait queues (256 threads at most); no per-thread CPU time; no core 3 in
-  GetInfo's core mask (7, as nxnative) though the scheduler has eight cores.
+  GetInfo's core mask (7, as nxnative) though the scheduler has four or eight cores.
 - Not implemented (answer 0 with `[RED] svc 0xNN unimplemented`): IPC beyond the stubs, shared and transfer memory,
   code memory, process and debug SVCs. SetHeapSize does not check Horizon's 2 MB multiple, WaitForAddress an unknown
   type, CreateThread its priority or core, CloseHandle an invalid handle (all as nxnative).
