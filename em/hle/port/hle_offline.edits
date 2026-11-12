@@ -1,0 +1,5 @@
+# hle_offline.c: PlayReport::Send is written in ARM64 assembly there (it returns through x8). The body is the hand thunk's
+# (hle/hand/hle_offline.inc); the function stays for the table entry that names it.
+[
+ ('__attribute__((naked)) static void h_prepo_Send(void) { __asm__("str xzr, [x8]\\n    ret"); }', 'static void h_prepo_Send(void) { }'),
+]

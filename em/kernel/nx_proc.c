@@ -158,10 +158,14 @@ void nx_svc_counts(char *out, size_t n) {
 enum { A_GFX_CALL, A_HLE, A_SVC, A_TRANSLATE, A_WAIT0, A_SLEEP = A_WAIT0, A_WAITSYNC, A_LOCK, A_CV, A_ADDR, A_GFX_LOCK, A_FLUSH, A_OWNER, A_FS, A_N };
 static const char *const g_acc_name[A_N] = {"NVN", "host", "svc", "translate", "sleep/yield", "wait-sync", "lock", "condvar", "wait-addr", "NVN-lock", "flush", "owner", "fs"};
 enum { NTRK = 256 };
-static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32_t handle; _Atomic uint64_t acc[A_N], born; uint64_t seen[2][A_N], seen_at[2], seen_slices[2]; char name[28]; } g_trk[NTRK];
+static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32_t handle; _Atomic uint64_t acc[A_N], born; uint64_t seen[2][A_N], seen_at[2], seen_slices[2]; double pend[2]; int pend_cat[2]; _Atomic int cur_cat; _Atomic uint64_t cur_t0; char name[28]; } g_trk[NTRK];
 static _Atomic int g_ntrk; static __thread int t_trk = -1;
 static int trk(void);
 int thr_name_of(pthread_t pt, char *out, size_t n);
+// An SVC or host call that may wait begins / ends: what it has taken so far counts in the interval it is in, not only
+// when it returns (a thread that waits through a whole interval would otherwise look as if it ran guest code)
+void nx_acc_begin(int cat, uint64_t t0) { int k = trk(); atomic_store_explicit(&g_trk[k].cur_t0, t0, memory_order_relaxed); atomic_store_explicit(&g_trk[k].cur_cat, cat + 1, memory_order_relaxed); }
+void nx_acc_end(void) { atomic_store_explicit(&g_trk[trk()].cur_cat, 0, memory_order_relaxed); }
 EMSCRIPTEN_KEEPALIVE void nx_acc_add(int cat, double ns) { if (cat >= 0 && cat < A_N && ns > 0) atomic_fetch_add_explicit(&g_trk[trk()].acc[cat], (uint64_t)ns, memory_order_relaxed); }
 // out: one line. frames: presents in the interval (0: per second). Called from one thread at a time (the page's status timer, the harness's progress)
 EMSCRIPTEN_KEEPALIVE double nx_thread_split(double out_, int n, double frames, int who) {   // who: 0 the page's status timer, 1 the progress line (each has its own "since last time")
@@ -170,7 +174,11 @@ EMSCRIPTEN_KEEPALIVE double nx_thread_split(double out_, int n, double frames, i
     for (int i = 0; i < g_ntrk && i < NTRK; i++) {
         uint64_t born = g_trk[i].born, at = g_trk[i].seen_at[who] ? g_trk[i].seen_at[who] : born; if (!born || now <= at) continue;
         double wall = (double)(now - at), blocked = 0, d[A_N];
-        for (int c = 0; c < A_N; c++) { uint64_t v = g_trk[i].acc[c]; d[c] = (double)(v - g_trk[i].seen[who][c]); g_trk[i].seen[who][c] = v; if (c >= A_WAIT0) blocked += d[c]; }
+        for (int c = 0; c < A_N; c++) { uint64_t v = g_trk[i].acc[c]; d[c] = (double)(v - g_trk[i].seen[who][c]); g_trk[i].seen[who][c] = v; }
+        if (g_trk[i].pend[who] > 0) { d[g_trk[i].pend_cat[who]] -= g_trk[i].pend[who]; if (d[g_trk[i].pend_cat[who]] < 0) d[g_trk[i].pend_cat[who]] = 0; g_trk[i].pend[who] = 0; }   // (what the last reading already counted of a call that has returned since, or is still going on)
+        { int cc = atomic_load_explicit(&g_trk[i].cur_cat, memory_order_relaxed) - 1; uint64_t c0 = atomic_load_explicit(&g_trk[i].cur_t0, memory_order_relaxed);
+          if (cc >= 0 && cc < A_N && c0 && now > c0) { double sofar = (double)(now - c0), part = (double)(now - (c0 > at ? c0 : at)); d[cc] += part; g_trk[i].pend[who] = sofar; g_trk[i].pend_cat[who] = cc; } }
+        for (int c = A_WAIT0; c < A_N; c++) blocked += d[c];
         g_trk[i].seen_at[who] = now;
         { uint64_t sl = g_trk[i].slices; double any = 0; for (int c = 0; c < A_N; c++) any += d[c];   // a pool worker without a guest thread (or a thread that has exited) did nothing at all: not counted
           int idle = any == 0 && sl == g_trk[i].seen_slices[who]; g_trk[i].seen_slices[who] = sl; if (idle) continue; }
@@ -379,6 +387,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
     uint64_t hc0 = nx_now_ns(); int hcat = A_HLE;
     int direct = own > 0 ? g_stub_direct[id] : -1;
     if (!direct) { direct = nx_gfx_enabled() ? nx_owner_stub_direct((int)id) : 0; g_stub_direct[id] = direct = direct ? direct : -1; }
+    if (direct <= 0) nx_acc_begin(own > 0 ? (own >> 24 == 1 ? A_FS : A_OWNER) : A_HLE, hc0);
     if (direct > 0) { hcat = -1; nx_gfx_direct(direct, regs); }   // (it accounts for itself: the call, the lock, the flush)
     else if (own > 0 && own >> 24 == 1 && nx_fs_enabled()) { hcat = A_FS; owner_serve_start(); nx_core_release(); nx_fs_direct(own & 0xFFFFFF, regs); }
     else if (own > 0) { hcat = own >> 24 == 1 ? A_FS : A_OWNER; if (own >> 24 == 1) nx_core_release();   // nn::fs is a service on the console: the caller's core is free while it is served
@@ -387,7 +396,7 @@ EMSCRIPTEN_KEEPALIVE void nx_host_call(double ctx_) {
                                                e->thunk(regs); }   // (one that needs a hand-written thunk answers 0 until it has it)
     else { atomic_fetch_add_explicit(&g_host_unported, 1, memory_order_relaxed); regs[0] = 0; }
     g_trk[k].in_host = 0;
-    if (hcat >= 0) atomic_fetch_add_explicit(&g_trk[k].acc[hcat], nx_now_ns() - hc0, memory_order_relaxed);
+    if (hcat >= 0) { nx_acc_end(); atomic_fetch_add_explicit(&g_trk[k].acc[hcat], nx_now_ns() - hc0, memory_order_relaxed); }
     nx_ring_note(1, (int)id, in, regs[0], in[0] == regs[0] ? regs[30] : regs[30]);
     nx_core_ensure();   // back to guest code
 }

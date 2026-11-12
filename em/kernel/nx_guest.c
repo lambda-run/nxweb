@@ -93,7 +93,8 @@ EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
     uint64_t *regs = (uint64_t *)(uintptr_t)regs_;
     atomic_fetch_add_explicit(&nx_stat_svcs, 1, memory_order_relaxed);
     if (num >= 0 && num < 128) atomic_fetch_add_explicit(&nx_svc_by_num[num], 1, memory_order_relaxed);
-    uint64_t a0 = nx_now_ns();
+    uint64_t a0 = nx_now_ns(); int acat = num == 0x0B ? 4 : num == 0x18 ? 5 : num == 0x1A ? 6 : num == 0x1C ? 7 : num == 0x34 ? 8 : 2;   // (the categories of kernel/nx_proc.c: 2 svc, 4 sleep/yield, 5 wait-sync, 6 lock, 7 condvar, 8 wait-addr)
+    { void nx_acc_begin(int, uint64_t); if (acat != 2) nx_acc_begin(acat, a0); }
     yield_or_wake(num, regs);
     if (num == 0x0B || num == 0x0A) nx_core_release();   // a sleep, a yield, the end of the thread: its core is free meanwhile
     uint64_t in_[3] = {regs[0], regs[1], regs[2]}, lr_ = regs[30];
@@ -106,8 +107,8 @@ EMSCRIPTEN_KEEPALIVE void nx_svc(int num, double regs_) {
     thr_svc_leave();
     { void nx_ring_note(int, int, const uint64_t *, uint64_t, uint64_t); if (num != 0x0B) nx_ring_note(0, num, in_, regs[0], lr_); }   // (yields and sleeps would fill the ring)
     nx_core_ensure();   // back to guest code: on a core again (a yield queues behind whoever waited for it)
-    { void nx_acc_add(int, double);   // (the categories of kernel/nx_proc.c: 2 svc, 4 sleep/yield, 5 wait-sync, 6 lock, 7 condvar, 8 wait-addr)
-      nx_acc_add(num == 0x0B ? 4 : num == 0x18 ? 5 : num == 0x1A ? 6 : num == 0x1C ? 7 : num == 0x34 ? 8 : 2, (double)(nx_now_ns() - a0)); }
+    { void nx_acc_add(int, double), nx_acc_end(void); if (acat != 2) nx_acc_end();
+      nx_acc_add(acat, (double)(nx_now_ns() - a0)); }
 }
 
 EMSCRIPTEN_KEEPALIVE void nx_guest_fault(double pc, double what_, double ctx_) {

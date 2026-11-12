@@ -108,7 +108,7 @@ def nxweb_parts(B, mem):
 
 # nxnative's HLE files that compile for wasm64 today (tools/hle_inventory.py); thread.c is replaced by kernel/nx_proc.c
 HLE_HOST = ("hle_account hle_audren hle_codec hle_codec_video hle_count hle_fpslock hle_friends hle_glslc hle_guestthread hle_haptics hle_hid hle_mii hle_misc "
-            "hle_net hle_nvdrv hle_oe hle_oodle hle_os hle_ro hle_sdk16 hle_sdkinit hle_sf hle_swkbd hle_table hle_time hle_touch hle_uecvar hle_web").split()
+            "hle_net hle_nvdrv hle_oe hle_offline hle_oodle hle_os hle_ro hle_sdk16 hle_sdkinit hle_sf hle_swkbd hle_table hle_time hle_touch hle_uecvar hle_web").split()
 HLE_GFX = ["hle_nv", "hle_vi"]
 def hle():
     """nxnative's HLE files, unedited, each as a generated translation unit with its argument thunks (tools/gen_hle.py),
