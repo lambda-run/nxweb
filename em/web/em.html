@@ -18,10 +18,10 @@
 <div id="wrap"><canvas id="screen" width="1280" height="720"></canvas><div id="fps"></div></div>
 <div style="color:#888;margin-top:4px">keys: Z = A · X = B · C = X · V = Y · Enter = + · Backspace = − · Q / E = L / R · arrows or WASD = left stick · IJKL = right stick · or a controller</div>
 <div id="log"></div>
-<script src="audio.js"></script><!-- the audio device's page side (web/audio_page.ts): status line, "click for sound" -->
 <script>
 // The Emscripten runtime's page: nxnative's C under real threads, nxweb's translator, file system, recorder and
 // WebGPU replayer. ?ndve=off: without nxweb's stand-in for the movie upscaler (on by default: ?ndve=bypass is accepted too).
+// ?pace=timer: display frames from a message timer, never requestAnimationFrame (a hidden page uses the timer anyway).
 // ?logto=<url>: live log and status to a receiver. ?shaderlog=1: the shader store's line per shader. No memory limit
 // applies in a browser (the harness's own is for Node in the shared VM, where it can read the process's size).
 // ?secs=N: how long the harness runs before it prints its report (default: a day).
@@ -88,7 +88,7 @@ function start(file) {
     onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; if (!window.nxem.reason) Module.nxStopped("abort() in host code: " + w); },
     nxStopped: function (why) { if (window.nxem.reason) return; window.nxem.reason = why; $("stage").textContent = "stopped: " + why; $("stage").style.color = "#f66"; },
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
-    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
   };
   var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s);
   // input: the keyboard and the first controller, as the nxweb page maps them (web/main.ts): Z = A, X = B, C = X, V = Y,

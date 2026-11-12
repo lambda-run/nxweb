@@ -20,6 +20,7 @@ export interface PageSide {
   stage: (text: string) => void;
   modulesList: string[];                                 // the code modules to load, in order
   nativeImage: OwnerConfig["nativeImage"];
+  pace: string | null;                                   // 'timer': never requestAnimationFrame
   ndve: boolean;                                         // nxweb's stand-in for nn::ndve's movie upscaler (GfxHost.ndveBypass): its dispatches cannot run on WebGPU yet
 }
 
@@ -54,10 +55,27 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   try { device = await requestDevice(); } catch (e) { gpuInfo = `no WebGPU device (${(e as Error).message}): the null replayer`; }
   log("page: " + gpuInfo);
   if (device) log(p.ndve ? "page: ndve=bypass: nxweb's bilinear stand-in shows the movie pictures in place of nn::ndve's upscaler (the default here; ?ndve=off for the game's own dispatches)" : "page: ndve=off: the game's own nn::ndve dispatches (the movie stays black where WebGPU cannot run them)");
+  // The display frame the replayer paces acquire / present by. requestAnimationFrame stops in a hidden tab or a
+  // background window, and a hidden page's timers are slowed too, so the 16 ms are counted by messages the page sends
+  // itself (as nxweb's ?pace=timer does): always with ?pace=timer, and whenever the document is hidden; a visible page
+  // uses requestAnimationFrame with the timer behind it (50 ms) in case it is hidden while it waits.
+  const ch = new MessageChannel(), waiting: { at: number; fn: () => void }[] = [];
+  ch.port1.onmessage = () => {
+    const now = performance.now();
+    for (let i = waiting.length - 1; i >= 0; i--) if (waiting[i].at <= now) { const x = waiting[i]; waiting.splice(i, 1); x.fn(); }
+    if (waiting.length) ch.port2.postMessage(0);
+  };
+  const spinTimer = (fn: () => void, ms: number) => { waiting.push({ at: performance.now() + ms, fn }); if (waiting.length === 1) ch.port2.postMessage(0); };
+  const nextFrame = () => new Promise<void>(res => {
+    if (p.pace === "timer" || document.hidden) { spinTimer(res, 16); return; }
+    let done = false; const fin = () => { if (!done) { done = true; res(); } };
+    requestAnimationFrame(fin); spinTimer(fin, 50);
+  });
+  log(p.pace === "timer" ? "page: pace=timer: display frames from a 16 ms message timer (not requestAnimationFrame)" : "page: display frames from requestAnimationFrame while the page is visible, from a 16 ms message timer while it is hidden (?pace=timer: always the timer)");
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
     tree, prep, fsModule, gfxModule, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
-    gfx: device ? { ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame: () => new Promise(res => requestAnimationFrame(res)), requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
+    gfx: device ? { ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");
   const { owner, exefs } = await startOwner(memory, c);
