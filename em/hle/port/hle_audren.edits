@@ -1,0 +1,6 @@
+# Edits build.py applies to nxnative's hle_audren.c after tools/port_gcalls.py (each `old` exactly once).
+[
+ # a guest function that returns a 16-byte struct (x0, x1): not a case of NXG
+ ("span_t sp = NXG(gen20, sys, *(uint8_t **)(sys + 0xf8), *(size_t *)(sys + 0x100));",
+  "span_t sp; sp.p = (__typeof__(sp.p))(uintptr_t)nx_guest_calln((uint64_t)(uintptr_t)gen20, 3, (uint64_t)(uintptr_t)sys, (uint64_t)(uintptr_t)*(uint8_t **)(sys + 0xf8), (uint64_t)*(size_t *)(sys + 0x100)); sp.n = (__typeof__(sp.n))nx_guest_x1();"),
+]

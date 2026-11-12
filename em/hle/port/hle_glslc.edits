@@ -1,0 +1,5 @@
+# hle_glslc.c after tools/port_gcalls.py: a guest function that returns a 16-byte struct of four 32-bit words (x0, x1).
+[
+ ("glslc_version_t r = NXG0(get);",
+  "glslc_version_t r; { uint64_t lo = nx_guest_calln((uint64_t)(uintptr_t)get, 0), hi = nx_guest_x1(); r.w[0] = (uint32_t)lo; r.w[1] = (uint32_t)(lo >> 32); r.w[2] = (uint32_t)hi; r.w[3] = (uint32_t)(hi >> 32); }"),
+]

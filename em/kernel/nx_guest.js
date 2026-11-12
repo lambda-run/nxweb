@@ -112,18 +112,20 @@ addToLibrary({
     c.sp.value = BigInt(sp); c.tpidr.value = BigInt(_nx_tls()); c.tpidrro.value = BigInt(_nx_tlr()); c.excl_addr.value = BigInt(-1);
   },
 
-  // A host call into guest code on the calling guest thread (nested inside whatever that thread was doing, an SVC included).
-  nx_guest_call__deps: ['$nxThread', 'malloc', 'free'],
-  nx_guest_call__sig: 'jjjjj',
-  nx_guest_call: function(pc, a0, a1, a2) {
-    const t = nxThread(), c = t.core, save = _malloc(0x400);
+  // A host call into guest code on the calling guest thread (nested inside whatever that thread was doing, an SVC or a
+  // host call included): a[0..n-1] -> x0.., a[8] = pc; the function's x0 comes back in a[0]. The caller's registers
+  // are saved and restored around it (the callee-saved ones must survive for the host function's caller).
+  nx_js_guest_callv__deps: ['$nxThread'],
+  nx_js_guest_callv__sig: 'vpi',
+  nx_js_guest_callv: function(a, n) {
+    const t = nxThread(), c = t.core, save = t.enter(), q = a / 8;
     t.save(save);
-    c.x0.value = a0; c.x1.value = a1; c.x2.value = a2; const RET = BigInt(0xFFFFFFC0);
-    c.x30.value = RET; c.pc.value = pc;
+    for (let i = 0; i < n; i++) c['x' + i].value = HEAPU64[q + i];
+    const RET = BigInt(0xFFFFFFC0);
+    c.x30.value = RET; c.pc.value = HEAPU64[q + 8];
     t.runTo(RET);
-    const r = c.x0.value;
-    t.load(save); _free(save);
-    return r;
+    HEAPU64[q] = c.x0.value; HEAPU64[q + 1] = c.x1.value;
+    t.load(save); t.depth--;
   },
 
   // ---- the translator thread's realm

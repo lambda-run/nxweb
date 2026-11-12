@@ -58,6 +58,7 @@ void nx_owner_stub_name(int id, double out, int n);
 void nx_js_guest_run(uint64_t *io);               // io: x0..x4, pc, sp in; x0 out. Returns when the guest reaches the exit pc
 void nx_js_tr_init(const uint8_t *tr, uint32_t tr_len, const uint8_t *hlp, uint32_t hlp_len, double code_lo, double code_size, double *boot);
 double nx_js_tr_job(int kind, double arg);
+void nx_js_guest_callv(uint64_t *a, int n);       // a[0..7] arguments, a[8] pc; a[0] = the result
 void nx_js_guest_setup(double sp);                // a fresh CPU state for the calling thread: sp, tpidr, tpidrro
 int nx_js_tid(void);
 void nx_js_thread_stats(double *out);

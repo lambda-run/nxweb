@@ -1,0 +1,5 @@
+# hle_haptics.c after tools/port_gcalls.py: `output` is a host callback that takes a struct by value, never a guest function.
+[
+ ("    if (output) NXG(output, states[p]);", "    if (output) output(states[p]);"),
+ ("if (changed >> p & 1) NXG(output, states[p]);", "if (changed >> p & 1) output(states[p]);"),
+]

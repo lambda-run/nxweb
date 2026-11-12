@@ -1,6 +1,0 @@
-# Edits build.py applies to a copy of nxnative's hle_os.c (anchored: each `old` must occur exactly once).
-# A guest function is not a C function pointer here: calls of one go through nx_guest_call (kernel/nx_guest.js).
-[
- ("    return g_sa_big_align && size >= 0x10000 ? g_sa_alloc_al(self, size, 0x10000) : g_sa_alloc(self, size);",
-  "    return (void *)(uintptr_t)(g_sa_big_align && size >= 0x10000 ? nx_guest_call((uint64_t)(uintptr_t)g_sa_alloc_al, (uint64_t)(uintptr_t)self, size, 0x10000)\n                                                                 : nx_guest_call((uint64_t)(uintptr_t)g_sa_alloc, (uint64_t)(uintptr_t)self, size, 0));"),
-]

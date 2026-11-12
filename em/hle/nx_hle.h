@@ -83,3 +83,35 @@ static inline void nx_ret_f64(uint64_t *ctx, double d) { uint8_t *v = (uint8_t *
 #define NX_CHK_P(T) _Static_assert(NX_CLS_(T) == 5 && sizeof(__typeof__(T)) == 8, "gen_hle: not a pointer: " #T)
 #define NX_CHK_F(T) _Static_assert(NX_CLS_(T) == 8 && sizeof(__typeof__(T)) == 4, "gen_hle: not a float: " #T)
 #define NX_CHK_D(T) _Static_assert(NX_CLS_(T) == 8 && sizeof(__typeof__(T)) == 8, "gen_hle: not a double: " #T)
+
+// ---- calls through function pointers (tools/port_gcalls.py rewrites `f(a, b)` to `NXG(f, a, b)` in the HLE files)
+// A guest function is an address in a loaded module or the stub region (>= 16 MB); a C function pointer of this module
+// is a small table index. A guest call takes up to 8 integer / pointer arguments; a floating-point argument does not compile.
+#ifndef NX_GCALLS
+#define NX_GCALLS
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint64_t nx_guest_calln(uint64_t pc, int n, ...);
+uint64_t nx_guest_x1(void);                           // x1 of the calling thread's last guest call (a 16-byte struct result)    // kernel/nx_guest.c: run the guest function on the calling guest thread, return its x0
+__attribute__((error("a floating-point argument in a call of a guest function: write this call by hand"))) uint64_t nx_gcall_float_arg(void);
+#ifdef __cplusplus
+}
+#endif
+#define NX_IS_GUEST(f) ((uint64_t)(uintptr_t)(f) >= 0x1000000ull)
+#define NX_A(x) _Generic((x), float: nx_gcall_float_arg(), double: nx_gcall_float_arg(), default: (uint64_t)(x))
+#define NX_N(...) NX_N_(__VA_ARGS__, 8, 7, 6, 5, 4, 3, 2, 1)
+#define NX_N_(a, b, c, d, e, f, g, h, n, ...) n
+#define NX_M1(a) NX_A(a)
+#define NX_M2(a, ...) NX_A(a), NX_M1(__VA_ARGS__)
+#define NX_M3(a, ...) NX_A(a), NX_M2(__VA_ARGS__)
+#define NX_M4(a, ...) NX_A(a), NX_M3(__VA_ARGS__)
+#define NX_M5(a, ...) NX_A(a), NX_M4(__VA_ARGS__)
+#define NX_M6(a, ...) NX_A(a), NX_M5(__VA_ARGS__)
+#define NX_M7(a, ...) NX_A(a), NX_M6(__VA_ARGS__)
+#define NX_M8(a, ...) NX_A(a), NX_M7(__VA_ARGS__)
+#define NX_CAT(a, b) NX_CAT_(a, b)
+#define NX_CAT_(a, b) a##b
+#define NXG(f, ...) (NX_IS_GUEST(f) ? (__typeof__((f)(__VA_ARGS__)))nx_guest_calln((uint64_t)(uintptr_t)(f), NX_N(__VA_ARGS__), NX_CAT(NX_M, NX_N(__VA_ARGS__))(__VA_ARGS__)) : (f)(__VA_ARGS__))
+#define NXG0(f) (NX_IS_GUEST(f) ? (__typeof__((f)()))nx_guest_calln((uint64_t)(uintptr_t)(f), 0) : (f)())
+#endif
