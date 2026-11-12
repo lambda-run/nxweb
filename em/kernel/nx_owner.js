@@ -28,6 +28,7 @@ addToLibrary({
   // moment before going back to the event loop: calls come in bursts, and a burst then costs no wake-up per call.
   nx_owner_serve__proxy: 'sync',
   nx_owner_serve__sig: 'vd',
+  nx_owner_serve__deps: ['nx_gfx_ring'],
   nx_owner_serve: function(slot) {
     const s = slot / 4, own = globalThis.NXOWNER;
     const serve = () => {
@@ -64,6 +65,10 @@ addToLibrary({
       }
     }; flush(); };
     watch(0x1FF1F000 / 4 + 2); watch(0x1FF1F100 / 4 + 2);
+    // and on the ring of batches handed over without waiting (kernel/nx_gfx.c): its counter moves with every batch
+    if (globalThis.NXGFXRING) { const c = globalThis.NXGFXRING / 4 + 2;
+      const ring = () => { for (;;) { const cur = Atomics.load(HEAP32, c); own.svc(); if (Atomics.load(HEAP32, c) !== cur) continue; const w = Atomics.waitAsync(HEAP32, c, cur); if (w.async) { w.value.then(ring); return; } } };
+      ring(); }
   },
   // Compiled modules for the workers. What the translation cache published before any guest thread runs is compiled
   // once here on the main thread and handed to every worker in ONE message, which a worker takes in while it is in its

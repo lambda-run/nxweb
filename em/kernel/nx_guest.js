@@ -161,7 +161,7 @@ addToLibrary({
   // put into the memory (owner/owner.ts GFX_MOD), over the shared memory. Its imports: gfx_exec (the replayer), the
   // stub of an entry point and more table memory are the owner's, asked through the lock holder's request words at
   // NXG; a callback into guest code runs here, on the calling thread. Addresses are i64 in this build (nx.abi).
-  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'nx_gfx_flush_ns', 'nx_core_out', 'malloc'],
+  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'nx_gfx_flush_ns', 'nx_gfx_ring', 'nx_gfx_ring_bytes', 'nx_core_out', 'malloc'],
   $nxGfx: function() {
     const G = 0x1FF1F000, MOD = 0x1FF20000, s = (G + 8) / 4, f = G / 8, t0 = performance.now();
     const mod = new WebAssembly.Module(HEAPU8.slice(MOD, MOD + HEAPU32[(G + 40) / 4]));
@@ -180,7 +180,28 @@ addToLibrary({
       memory: wasmMemory, memory_size: () => pages, memory_grow: (n) => n ? -1 : pages,
       log: (p, n) => err(new TextDecoder().decode(HEAPU8.slice(Number(p), Number(p) + n))),
       abort: () => { throw new Error('abort in the gfx module'); },
-      gfx_exec: (p, n) => { ask(0, Number(p), n >>> 0); },
+      // The end of a submission (the batch's last record is H_FLUSH, 22) goes into the ring and the call returns: the lock
+      // is not held while the owner's replayer works. A batch with texels in the recorder's scratch area (H_TEX_DATA, 24)
+      // or one flushed in the middle of a submission (before the recorder writes guest memory) waits as before; the
+      // owner runs what is in the ring first, so the order of the stream is kept.
+      gfx_exec: (p, n) => { p = Number(p); n >>>= 0;
+        const R = NX.ring || (NX.ring = _nx_gfx_ring()), r = R / 4, size = NX.ringBytes || (NX.ringBytes = _nx_gfx_ring_bytes());
+        if (HEAP32[r + 3] === 1 && n >= 8) {
+          let last = 0, ok = true;
+          for (let q = p; q < p + n;) { const op = HEAPU32[q / 4], sz = HEAPU32[q / 4 + 1]; if (op === 24 || sz < 8) { ok = false; break; } last = op; q += sz; }
+          if (ok && last === 22) {
+            const need = 8 + Math.ceil(n / 8) * 8, head = Atomics.load(HEAP32, r); let tail = Atomics.load(HEAP32, r + 1), at = -1;
+            if (tail >= head) { if (tail + need <= size - 8) at = tail; else if (need < head) { HEAPU32[(R + 16 + tail) / 4] = 0xFFFFFFFF; at = 0; } }
+            else if (tail + need < head) at = tail;
+            if (at >= 0) {
+              HEAPU32[(R + 16 + at) / 4] = n; HEAPU32[(R + 16 + at) / 4 + 1] = 0; HEAPU8.copyWithin(R + 16 + at + 8, p, p + n);
+              Atomics.store(HEAP32, r + 1, at + need); Atomics.add(HEAP32, r + 2, 1); Atomics.notify(HEAP32, r + 2);
+              NX.ringPuts = (NX.ringPuts || 0) + 1;
+              return;
+            }
+          }
+        }
+        ask(0, p, n); },
       gfx_proc_address: (id) => BigInt(ask(1, id, 0)),
       gfx_arena_more: (n) => ask(2, n >>> 0, 0),
       gfx_guest_call: (fn, a0, a1, a2, a3) => { const q = blk / 8, v = [fn, a0, a1, a2, a3]; for (let i = 0; i < 5; i++) HEAPU64[q + i] = BigInt.asUintN(64, v[i]); _nx_gfx_guest_call(blk); return HEAPU64[q]; },

@@ -92,6 +92,14 @@ EMSCRIPTEN_KEEPALIVE void nx_gfx_guest_call(double blk_) {
 // out: calls answered on the calling thread, their time in ns (lock wait included), times a thread had to sleep for the lock, ns getting the lock
 EMSCRIPTEN_KEEPALIVE void nx_gfx_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)atomic_load(&g_calls); o[1] = (double)atomic_load(&g_ns); o[2] = (double)atomic_load(&g_contended); o[3] = (double)atomic_load(&g_lock_ns); o[4] = (double)atomic_load(&g_lf_calls); }
 
+// ---- batches handed to the owner without waiting (kernel/nx_guest.js gfx_exec, owner/owner.ts drainRing; NX_GFX_ASYNC=1)
+// The ring: int32 [0] where the owner reads, [1] where the lock holder writes, [2] a counter the owner sleeps on, [3] 1 = on;
+// from +16 the entries { u32 bytes (0xFFFFFFFF: go to the start), u32 0, the batch, padded to 8 }.
+#define RING_BYTES (16u << 20)
+static _Alignas(16) uint8_t g_gfx_ring[16 + RING_BYTES];
+EMSCRIPTEN_KEEPALIVE double nx_gfx_ring(void) { return (double)(uintptr_t)g_gfx_ring; }
+EMSCRIPTEN_KEEPALIVE double nx_gfx_ring_bytes(void) { return (double)RING_BYTES; }
+
 // ---- nxweb's fs module the same way (owner/owner.ts NXF): nn::fs calls run in the calling thread's instance under the
 // module's lock; the storage (the dev_* imports) is the owner's, asked through the lock holder's request words, and a
 // call whose storage answer is not there yet waits on its context block's cell, which the owner's completion sets.

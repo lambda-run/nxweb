@@ -44,7 +44,7 @@ export interface OwnerConfig {
   fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
   gfxModule: WebAssembly.Module;
   fsShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };    // the same for fsModule
-  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean };   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
+  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean };   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
   saves: FsStorage;
   programId: bigint;
   scratch: number;                      // 8 KB of the memory nothing else uses
@@ -225,7 +225,27 @@ export class Owner {
     return true;
   }
   // the requests of the threads that hold a module's lock (they are inside the module, waiting): true when one was served
-  svc(): boolean { const a = this.gfxSvc(), b = this.fsSvc(); return a || b; }
+  svc(): boolean { const d = this.drainRing(), a = this.gfxSvc(), b = this.fsSvc(); return d || a || b; }
+  // The batches guest threads left in the ring (kernel/nx_guest.js gfx_exec), in order. While one runs the replayer may
+  // call into the recorder, which takes the lock: lock() says what happens when the holder waits for the owner then.
+  private draining = false; ringStats = { batches: 0, ms: 0, borrowed: 0 };
+  drainRing(): boolean {
+    const R = (globalThis as any).NXGFXRING as number | undefined;
+    if (!R || this.draining || !this.gfx) return false;
+    const i32 = new Int32Array(this.memory.buffer, R, 4), u32 = new Uint32Array(this.memory.buffer);
+    if (Atomics.load(i32, 0) === Atomics.load(i32, 1)) return false;
+    this.draining = true; const t0 = performance.now(); let n = 0;
+    try {
+      for (let head = Atomics.load(i32, 0); head !== Atomics.load(i32, 1); ) {
+        const len = u32[(R + 16 + head) / 4];
+        if (len === 0xFFFFFFFF) { head = 0; Atomics.store(i32, 0, 0); continue; }
+        try { this.gfx.env.gfx_exec(R + 16 + head + 8, len); } catch (e) { this.log(`[RED] owner: a batch from the ring failed: ${(e as Error).stack ?? e}`); }
+        head += 8 + Math.ceil(len / 8) * 8; Atomics.store(i32, 0, head); n++;
+      }
+    } finally { this.draining = false; }
+    this.ringStats.batches += n; this.ringStats.ms += performance.now() - t0;
+    return n > 0;
+  }
   // ---- the recorder's lock, owner side. The owner cannot block, so it spins, and while it does it serves the request
   // of the thread that holds the lock (that thread is inside the recorder, waiting for gfx_exec). While such a request
   // is served the recorder is the holder's: what the replayer calls of it then needs no lock (`lent`).
@@ -234,7 +254,13 @@ export class Owner {
   lock(): void {
     if (this.glDepth++ || this.lent) return;
     const g = this.gl; this.glStats.locks++;
-    while (Atomics.compareExchange(g, 0, 0, 1) !== 0) { this.glStats.spins++; this.svc(); }
+    while (Atomics.compareExchange(g, 0, 0, 1) !== 0) {
+      // a batch from the ring is running and the replayer wants the recorder, whose lock a guest thread holds while it
+      // waits for the owner (a flush that must wait): that thread is not in the recorder's code now, so the recorder is
+      // used as it is; its request is answered when the ring is empty, which keeps the stream's order
+      if (this.draining && Atomics.load(g, 2) === 1) { this.ringStats.borrowed++; return; }
+      this.glStats.spins++; this.svc();
+    }
     this.glHeld = true; this.glAt = performance.now();
   }
   unlock(): void {
@@ -245,7 +271,8 @@ export class Owner {
   // The lock holder's request, if there is one: true when one was served
   private gfxSvc(): boolean {
     const g = this.gl;
-    if (!g || Atomics.load(g, 2) !== 1) return false;
+    if (!g || this.draining || Atomics.load(g, 2) !== 1) return false;
+    this.drainRing();   // what was handed over before this request comes first
     const f = this.glf, env = this.gfx!.env, was = this.lent, t0 = performance.now(); let r = 0;
     this.lent = true;
     try {
@@ -283,8 +310,8 @@ export class Owner {
     this.gfx = new RtGfx(rt as any, c.gfxModule, { unpaced: !o.device, shaderWait: false, wrapExports, ...o, onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
     if (c.nativeImage) this.gfx.nativeImageOf = c.nativeImage;
     const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
-    host.account = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
-    host.exec = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return exec(p, n); };
+    host.account = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
+    host.exec = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; return exec(p, n); };   // (the owner's own flushes too come after what is in the ring)
     if (sh?.direct && sh.plain && sh.lockFree !== false) {
       try {
         const x: any = this.gfx.x, u8 = new Uint8Array(this.memory.buffer), n = x.nvn_count();
@@ -296,6 +323,7 @@ export class Owner {
         this.log(`owner: recorder audit (tools/gfx_audit.mjs, ${t.cases} cases): ${t.free} entry points reach no module state and ${t.room} recording commands reach it only through the record allocator's slow path: guest threads call those without the recorder's lock (the second kind while the command buffer has 32 KB of room)`);
       } catch (e) { this.log(`[RED] owner: recorder audit failed, every direct call stays under the lock: ${(e as Error).message}`); }
     }
+    if (sh?.direct && sh.asyncSubmit && (globalThis as any).NXGFXRING) { new Int32Array(this.memory.buffer, (globalThis as any).NXGFXRING, 4)[3] = 1; this.log("owner: a guest thread's submission is handed to the replayer through a ring and does not wait for it (asyncsubmit)"); }
     if (sh?.direct) { Atomics.store(this.gl, 11, 1); this.log(`owner: the recorder's ${sh.globals.length} globals are in the memory at 0x${GFX_GLOBALS.toString(16)}: every guest thread calls it in its own instance under one lock; the owner keeps the replayer (gfx_exec) and the calls that wait or pace`); }
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
@@ -393,6 +421,7 @@ export class Owner {
     this.hostCalls++;
     const cpu = this.fast ?? (this.fast = this.cpu(ctx)); cpu.q = ctx / 8;
     let r: any;
+    this.drainRing();
     this.lock();   // a handler is one step of the recorder for the other threads, as it was when every call came here
     try { r = this.rt.handlers[h](cpu); } finally { this.unlock(); }
     if (r && r.__wait) { this.hostPending++; new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0; this.arm(ctx, this.cpu(ctx), r); return PENDING; }
