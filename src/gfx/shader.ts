@@ -42,6 +42,11 @@ export const BL_WORD: u8 = 0, BL_OR: u8 = 1, BL_SAMPLER_ID: u8 = 3;
 // (sreg & 15)-th distinct live handle among the u32 at byte off + soff * i of the range bound there (soff 0: that one word); the handle it took (0xffffffff: none)
 // is word sreg >> 4 of the table the recorder writes into driver segment c2 at C2_POOL, where the shader looks its handle up
 export const BL_POOL: u8 = 4;
+// kind BL_POOL_AT, in the low 3 bits of the kind byte: as BL_POOL, but only record i of the table is read, and `pad` has bit k set when the word 4 (k + 1) bytes
+// after `off` in the record holds a handle too (BL_POOL has it as well). i is uniform data, said by a helper entry { u8 flags; u8 ubo0 | ubo1 << 4; u16 off0; u16 off1 }
+// at RF_blh index (kind >> 3), a texture slot the shader does not use: i = word(ubo0, off0) [& 0xfffff: flags 1] + (flags 8: word(ubo1, off1) [& 0xfffff: flags 2]);
+// flags 4: i = 0 unless the first word's top two bits are 0b10
+export const BL_POOL_AT: u8 = 5;
 export const C2_POOL: usize = 0x980;
 // Memory read through addresses the shader loads (src/shaders/spv.ts globalMemory; lower.ts emitGmem)
 export const RF_gmem: usize = 400;      // u32: bits 0..7 how many addresses (0: none), bits 8..15 how many ranges the module declares for them (storage slots 32 + j)

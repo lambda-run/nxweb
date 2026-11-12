@@ -24,7 +24,7 @@ export interface Reflection {
   ubos: number[];                                                        // game uniform slots read
   // `handle`: a bindless texture. `slot` is then only where its binding is; the host reads the handle (texture ID | sampler ID << 20) from the word at byte
   // `offset` of game uniform slot `ubo` at each draw; `sampler`: a second word ORed in, or a constant sampler ID (src/gfx/README.md "Bindless textures")
-  textures: { slot: number; dim: "2d" | "2d-array" | "cube" | "3d" | "cube-array"; depth: boolean; handle?: { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } } | { sbuf: number; offset: number; stride: number; index: number; entry: number } }[];   // the second form: a slot of a pool texture (pool.ts)
+  textures: { slot: number; dim: "2d" | "2d-array" | "cube" | "3d" | "cube-array"; depth: boolean; handle?: { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } } | { sbuf: number; offset: number; stride: number; index: number; entry: number; columns?: number; at?: { terms: { ubo: number; offset: number; mask: boolean }[]; guard: boolean } } }[];   // the second form: a slot of a pool texture (pool.ts)
   attributes?: number[];                                                 // vertex: locations read
   outputs?: number[];                                                    // fragment: colour targets written
   fixup: boolean;                                                        // vertex: reads the position fix-up at @group(2) @binding(0)

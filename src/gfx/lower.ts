@@ -20,7 +20,7 @@ import { GFX_PASS, GfxPassE, GfxPassS } from "../kit/gen/tables";
 import * as O from "./obj";
 import * as H from "./hostops";
 import { dpoolBase, texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
-import { progShader, progMissingKey, progMissingKeys, libKey, watched, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID, BL_POOL, C2_POOL, RF_gmem, RF_gmem_ptr } from "./shader";
+import { progShader, progMissingKey, progMissingKeys, libKey, watched, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID, BL_POOL, BL_POOL_AT, C2_POOL, RF_gmem, RF_gmem_ptr } from "./shader";
 import { gmemFind, gmemStart, gmemSize, GMEM_MAX_BYTES } from "./gmem";
 import { fmtClass, fmtCanon, fmtTwin } from "./fmt";
 import * as PK from "./pipeline";
@@ -269,7 +269,7 @@ function uboWord(st: u32, reg: u32, off: u32): u32 {
 function slotHandle(st: u32, rf: usize, slot: u32): u64 {
   if (!((load<u32>(rf, RF_bl) >> slot) & 1)) return texHandle(st, slot);
   const e = rf + RF_blh + (<usize>slot << 3), kind = load<u8>(e);
-  if (kind == BL_POOL) return poolHandle(st, e, false);
+  if (<u8>(kind & 7) >= BL_POOL) return poolHandle(st, rf, e, false);
   let h = uboWord(st, load<u8>(e, 1), load<u16>(e, 2));
   if (kind == BL_OR) h |= uboWord(st, load<u8>(e, 4), load<u16>(e, 6));
   let tid = <u64>(h & 0xfffff), sid = <u64>(h >> 20);
@@ -291,27 +291,42 @@ function handleSerial(h: u64): u64 {
 // read as it was before; a table with more live textures than the shader has slots leaves the later ones reading 0 (red, once)
 const POOLH: usize = memory.data(64);        // the handles of the last table walked, as the game wrote them
 let poolN: u32 = 0, poolMore = false, poolAddr: u64 = 0, poolSize: u64 = 0, poolKey: u64 = 0, poolStamp: u32 = 0xffffffff, poolTexBase: i32 = 0;
-function poolWalk(st: u32, reg: u32, off: u32, stride: u32): u32 {
+// e: the slot's RF_blh entry in the shader's record rf. BL_POOL_AT: the shader reads one record, whose index is uniform data (the entry's helper says which
+// words: a material's texture reference plus a base); only that record's handles are taken
+let poolRec: u32 = 0;
+function poolWalk(st: u32, rf: usize, e: usize): u32 {
+  const kind = load<u8>(e), reg = <u32>load<u8>(e, 1), off = <u32>load<u16>(e, 2), cols = <u32>load<u8>(e, 5), stride = <u32>load<u16>(e, 6);
   if (reg >= 16) return 0;
+  let rec: u32 = 0xffffffff;
+  if (<u8>(kind & 7) == BL_POOL_AT) {
+    const a = rf + RF_blh + (<usize>(kind >> 3) << 3), fl = <u32>load<u8>(a), w0 = uboWord(st, load<u8>(a, 1) & 15, load<u16>(a, 2));
+    rec = fl & 1 ? w0 & 0xfffff : w0;
+    if (fl & 8) { const w1 = uboWord(st, load<u8>(a, 1) >> 4, load<u16>(a, 4)); rec += fl & 2 ? w1 & 0xfffff : w1; }
+    if ((fl & 4) && (w0 & 0xc0000000) != 0x80000000) rec = 0;
+    if (rec == 0xffffffff) rec = 0xfffffffe;
+  }
   const b = SSBO + (<usize>(st * 16 + reg) << 4), addr = load<u64>(b), size = load<u64>(b, 8);
-  const key = <u64>off | <u64>stride << 16 | <u64>reg << 32 | <u64>st << 40, stamp = nDraws + nSkipped + nDispatches;   // one walk a draw: each ends by counting itself
-  if (stamp == poolStamp && key == poolKey && addr == poolAddr && size == poolSize && texBase == poolTexBase) return poolN;
-  poolStamp = stamp; poolKey = key; poolAddr = addr; poolSize = size; poolTexBase = texBase; poolN = 0; poolMore = false;
+  const key = <u64>off | <u64>stride << 16 | <u64>reg << 32 | <u64>st << 40 | <u64>cols << 48, stamp = nDraws + nSkipped + nDispatches;   // one walk a draw: each ends by counting itself
+  if (stamp == poolStamp && key == poolKey && rec == poolRec && addr == poolAddr && size == poolSize && texBase == poolTexBase) return poolN;
+  poolStamp = stamp; poolKey = key; poolRec = rec; poolAddr = addr; poolSize = size; poolTexBase = texBase; poolN = 0; poolMore = false;
   if (!addr) return 0;
-  for (let o: u64 = off, i = 0; o + 4 <= size && i < 65536; o += stride, i++) {
-    const h = load<u32>(<usize>addr + <usize>o), tid = h & 0xfffff;
-    if (tid && handleSerial(<u64>tid + <u64>texBase)) {
+  const one = rec != 0xffffffff || !stride;
+  for (let o: u64 = one && stride ? <u64>off + <u64>stride * <u64>rec : off, i = 0; o + 4 <= size && i < 65536 && !poolMore; o += stride, i++) {
+    for (let k: u64 = 0, m: u32 = (cols << 1) | 1; m && o + k + 4 <= size; k += 4, m >>= 1) {
+      if (!(m & 1)) continue;
+      const h = load<u32>(<usize>addr + <usize>(o + k)), tid = h & 0xfffff;
+      if (!tid || !handleSerial(<u64>tid + <u64>texBase)) continue;
       let j: u32 = 0;
       while (j < poolN && load<u32>(POOLH + (<usize>j << 2)) != h) j++;
       if (j == poolN) { if (poolN < 16) { store<u32>(POOLH + (<usize>j << 2), h); poolN++; } else { poolMore = true; break; } }
     }
-    if (!stride) break;
+    if (one) break;
   }
   return poolN;
 }
 // The handle of a pool slot (its RF_blh entry e): with the pools' bases added, as slotHandle gives it, or raw as the shader compares it (0xffffffff: the slot is empty)
-function poolHandle(st: u32, e: usize, raw: bool): u64 {
-  const j = <u32>load<u8>(e, 4) & 15, n = poolWalk(st, load<u8>(e, 1), load<u16>(e, 2), load<u16>(e, 6));
+function poolHandle(st: u32, rf: usize, e: usize, raw: bool): u64 {
+  const j = <u32>load<u8>(e, 4) & 15, n = poolWalk(st, rf, e);
   if (j >= n) return raw ? 0xffffffff : 0;
   const h = load<u32>(POOLH + (<usize>j << 2));
   if (raw) return h;
@@ -323,16 +338,17 @@ function poolHandle(st: u32, e: usize, raw: bool): u64 {
 function hasPool(id: i32): bool { return id >= 0 && load<u32>(libRefl(id), RF_bl) != 0 && ((load<u32>(libRefl(id), RF_ubo) >> 18) & 1) != 0; }
 // The table of a shader's pool slots in its c2 block d: word (sreg >> 4) = the handle that slot holds
 function poolTable(st: u32, rf: usize, d: usize): void {
-  let m = load<u32>(rf, RF_bl), slots: u32 = 0;
+  let m = load<u32>(rf, RF_bl), slots: u32 = 0, walked: u32 = 0;
   for (let i: usize = 0; i < 16; i++) store<u32>(d + C2_POOL + (i << 2), 0xffffffff);
   for (let slot: u32 = 0; m; slot++, m >>= 1) {
     if (!(m & 1)) continue;
     const e = rf + RF_blh + (<usize>slot << 3);
-    if (load<u8>(e) != BL_POOL) continue;
-    store<u32>(d + C2_POOL + (<usize>(load<u8>(e, 4) >> 4) << 2), <u32>poolHandle(st, e, true)); slots++;
+    if (<u8>(load<u8>(e) & 7) < BL_POOL) continue;
+    if (<u8>(load<u8>(e) & 7) == BL_POOL) walked++;
+    store<u32>(d + C2_POOL + (<usize>(load<u8>(e, 4) >> 4) << 2), <u32>poolHandle(st, rf, e, true)); slots++;
   }
-  // every pool of a shader has as many slots, and one pool is what games have: the last table walked is then this shader's
-  if (slots && (poolMore || poolN > slots) && once(48)) { L.red("a pool texture's table names "); L.u(poolN); L.str(poolMore ? " or more" : ""); L.str(" live textures and its shader has "); L.u(slots); L.str(" slots for them: the others read 0"); L.end(); }
+  // told of a shader with one walked pool (the last table walked is then its own); a pool read at one record has a slot a handle
+  if (slots && walked == slots && (poolMore || poolN > slots) && once(48)) { L.red("a pool texture's table names "); L.u(poolN); L.str(poolMore ? " or more" : ""); L.str(" live textures and its shader has "); L.u(slots); L.str(" slots for them: the others read 0"); L.end(); }
 }
 function isTarget(serial: u64): bool {
   for (let i = 0; i < 9; i++) if (load<u64>(RT + <usize>i * RT_E) == serial) return true;
@@ -544,7 +560,7 @@ function emitTexs(st: u32, id: i32, from: u32 = 0xff): void {
     const h = slotHandle(from, rf, slot), e = texDesc(<u32>(h & 0xfffff)), serial = handleSerial(h);
     if (serial) contentNeed(serial);       // may upload it now
     const r = H.hostRec(H.H_TEX, 48);
-    if (!serial && load<u8>(rf + RF_blh + (<usize>slot << 3)) != BL_POOL && once(7)) { L.red("a draw samples texture ID "); L.u(h & 0xfffff); L.str(" (stage "); L.u(st); L.str(" slot "); L.u(slot); L.str("), which names no live texture: it reads as empty"); L.end(); }
+    if (!serial && <u8>(load<u8>(rf + RF_blh + (<usize>slot << 3)) & 7) < BL_POOL && once(7)) { L.red("a draw samples texture ID "); L.u(h & 0xfffff); L.str(" (stage "); L.u(st); L.str(" slot "); L.u(slot); L.str("), which names no live texture: it reads as empty"); L.end(); }
     store<u32>(r, st, 8); store<u32>(r, slot, 12); store<u64>(r, serial, 16);
     const hasView = serial != 0 && load<u8>(e, TDE_has_view) != 0;
     store<u32>(r, (st < 2 && snapped(serial) ? 1 : 0) | (hasView ? 2 : 0), 24); store<u32>(r, <u32>(h >> 20) & 0xfff, 28);

@@ -617,6 +617,22 @@ function arrayedFetchTypes(c: Ctx) {
   if (!c.m.insts.some(i => i.op === Op.TypeImage && i.w[4] === 1) || !c.m.insts.some(i => i.op === 95 || i.op === 98 || i.op === 99)) return;   // OpImageFetch, OpImageRead, OpImageWrite
   for (const t of c.m.insts.filter(i => i.op === Op.TypeInt && i.w[1] === 32)) c.intern(Op.TypeVector, [t.w[0], 2], c.firstFunction(), false);
 }
+// 4e. A size query's component the texture's type does not have: Maxwell's TXQ answers width, height and depth or layers for any texture, and the translator
+// extracts component 2 of a 2D texture's two-component size when the shader asks for it (SPIR-V that is not valid; naga: OutOfBoundsIndex). A texture declared 2D
+// (the type the translator fell back to, or the real one) has depth 1 and one layer: that component reads 1
+function sizeQueryPast(c: Ctx) {
+  const sizes = new Map<number, number>();   // result of OpImageQuerySizeLod / OpImageQuerySize -> its components
+  let n = 0;
+  for (const i of c.m.insts) if (i.op === 103 || i.op === 104) { const t = c.def.get(i.w[0]); sizes.set(i.w[1], t && t.op === Op.TypeVector ? t.w[2] : 1); }
+  for (const i of c.m.insts) {
+    if (i.op !== Op.CompositeExtract || i.w.length !== 4 || !sizes.has(i.w[2]) || i.w[3] < sizes.get(i.w[2])!) continue;
+    const t = c.def.get(i.w[0]);
+    if (!t || t.op !== Op.TypeInt) continue;
+    const one = c.intern(Op.Constant, [i.w[0], 1], c.firstFunction(), true).id;
+    i.op = 83 /* OpCopyObject */; i.w = [i.w[0], i.w[1], one]; n++;
+  }
+  if (n) c.notes.push(`${n} size quer${n === 1 ? "y" : "ies"} of a component the texture's declared type has not (depth or layers of a 2D texture): read as 1`);
+}
 // Uniform variables no instruction of a function names (the translator declares the support buffer in every shader)
 function dropUnreferenced(c: Ctx) {
   const f = c.firstFunction(), used = new Set<number>();
@@ -1127,6 +1143,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   privatizeBoundSizes(c); c.index();
   helperInvocation(c); c.index();
   arrayedFetchTypes(c); c.index();
+  sizeQueryPast(c); c.index();
   const posVar = perVertex(c); c.index();
   const pools = (opts.bindings ?? "nxweb") === "nxweb" ? poolTextures(c, stage, opts.sbufs ?? [], opts.mesh?.kind) : undefined; c.index();
   const samplerOf = splitSamplers(c); c.index();

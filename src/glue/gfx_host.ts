@@ -88,7 +88,9 @@ const uboKey = (st: number, i: number) => i < 16 ? st * 16 + i : 256 + st * 8 + 
 export interface TextureHandle { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } }
 // A slot of a pool texture (src/shaders/pool.ts): the recorder gives it the `index`-th distinct live handle among the words at byte `offset` + `stride` * i of the
 // range bound at storage slot `sbuf` of the stage, and writes the handle it gave into word `entry` of the table in the c2 block (src/gfx/lower.ts poolHandle)
-export interface PoolTextureHandle { sbuf: number; offset: number; stride: number; index: number; entry: number }
+// `columns`: bit k = the word 4 (k + 1) bytes on in each record is a handle too. `at`: only record i is read, i = the sum of the terms (words of the stage's uniform
+// slots, `mask`: the low 20 bits), 0 when `guard` and the first word's top two bits are not 0b10
+export interface PoolTextureHandle { sbuf: number; offset: number; stride: number; index: number; entry: number; columns?: number; at?: { terms: { ubo: number; offset: number; mask: boolean }[]; guard: boolean } }
 export interface GfxHostOptions {
   canvas?: any;
   log?: (line: string) => void;
@@ -373,10 +375,11 @@ export class GfxHost {
     const c1 = info.extra?.find(e => e.kind === "c1")?.data, c1Data = c1 ? Uint8Array.from(c1.match(/../g) ?? [], h => parseInt(h, 16)) : undefined;
     new Uint8Array(this.memory.buffer, r, 424).fill(0);
     let depth = 0, bindless = 0;
+    const poolAux = new Map<string, number>();   // a pool's record index (its `at`) -> the RF_blh entry that says it
     for (const t of info.textures ?? []) {
       const h = t.handle;
       if (!h) continue;
-      if ("sbuf" in h) { if (!this.poolSlot(dv, r, t.slot, h, keyHex)) return -1; bindless |= 1 << t.slot; continue; }
+      if ("sbuf" in h) { if (!this.poolSlot(dv, r, t.slot, h, keyHex, poolAux, new Set((info.textures ?? []).map(x => x.slot)))) return -1; bindless |= 1 << t.slot; continue; }
       // the record's entry of the slot (src/gfx/shader.ts RF_blh): kind, uniform slot, byte offset; the sampler's uniform slot and offset, or its ID
       const word = (w: { ubo: number; offset: number }) => Number.isInteger(w.ubo) && w.ubo >= 0 && w.ubo < 14 && Number.isInteger(w.offset) && w.offset >= 0 && w.offset < 65536 && w.offset % 4 === 0;
       const sm: any = h.sampler, id = sm && "id" in sm;
@@ -431,13 +434,31 @@ export class GfxHost {
   // the fragment input only (as the game's two stages have it). The vertex module for this fragment shader: its outputs take the fragment inputs'
   // interpolation. null when the shader's own module already agrees
   // The record's entry of a pool slot (src/gfx/shader.ts RF_blh, kind BL_POOL = 4): storage slot, byte offset, index | entry << 4, stride
-  private poolSlot(dv: DataView, r: number, slot: number, h: PoolTextureHandle, keyHex: string): boolean {
-    const int = (v: number, below: number) => Number.isInteger(v) && v >= 0 && v < below;
-    if (!int(slot, 32) || !int(h.sbuf, 16) || !int(h.offset, 65536) || h.offset % 4 || !int(h.stride, 65536) || h.stride % 4 || !int(h.index, 16) || !int(h.entry, 16)) {
-      this.log(`[RED] shader ${keyHex}: texture slot ${slot} is a pool slot the replayer cannot read (${JSON.stringify(h)}; storage slots 0..15, offset and stride in words below 65536, 16 slots): not registered`); return false;
+  private poolSlot(dv: DataView, r: number, slot: number, h: PoolTextureHandle, keyHex: string, aux: Map<string, number>, used: Set<number>): boolean {
+    const int = (v: number, below: number) => Number.isInteger(v) && v >= 0 && v < below, at = h.at, cols = h.columns ?? 0;
+    const bad = (why: string) => { this.log(`[RED] shader ${keyHex}: texture slot ${slot} is a pool slot the replayer cannot read (${JSON.stringify(h)}; ${why}): not registered`); return false; };
+    if (!int(slot, 32) || !int(h.sbuf, 16) || !int(h.offset, 65536) || h.offset % 4 || !int(h.stride, 65536) || h.stride % 4 || !int(h.index, 16) || !int(h.entry, 16) || !int(cols, 256))
+      return bad("storage slots 0..15, offset and stride in words below 65536, 16 slots, 8 more columns");
+    let kind = 4;
+    if (at) {
+      const t = at.terms ?? [];
+      if (t.length < 1 || t.length > 2 || t.some(w => !int(w.ubo, 14) || !int(w.offset, 65536) || w.offset % 4)) return bad("a record index of one or two words of uniform slots 0..13 below 64 KB");
+      // the helper entry: a texture slot's entry the shader's textures leave free (from the top), shared by the slots with the same index
+      const key = JSON.stringify(at);
+      let a = aux.get(key);
+      if (a === undefined) {
+        const taken = new Set(aux.values());
+        for (a = 31; a >= 0 && (used.has(a) || taken.has(a)); a--);
+        if (a < 0) return bad("no texture slot is free for its record index");
+        aux.set(key, a);
+        const e = r + 144 + a * 8;
+        dv.setUint8(e, (t[0].mask ? 1 : 0) | (t[1]?.mask ? 2 : 0) | (at.guard ? 4 : 0) | (t[1] ? 8 : 0)); dv.setUint8(e + 1, t[0].ubo | (t[1]?.ubo ?? 0) << 4);
+        dv.setUint16(e + 2, t[0].offset, true); dv.setUint16(e + 4, t[1]?.offset ?? 0, true);
+      }
+      kind = 5 | a << 3;
     }
     const e = r + 144 + slot * 8;
-    dv.setUint8(e, 4); dv.setUint8(e + 1, h.sbuf); dv.setUint16(e + 2, h.offset, true); dv.setUint8(e + 4, h.index | h.entry << 4); dv.setUint16(e + 6, h.stride, true);
+    dv.setUint8(e, kind); dv.setUint8(e + 1, h.sbuf); dv.setUint16(e + 2, h.offset, true); dv.setUint8(e + 4, h.index | h.entry << 4); dv.setUint8(e + 5, cols); dv.setUint16(e + 6, h.stride, true);
     return true;
   }
   private interpModule(vsId: number, fsId: number): GPU | null {

@@ -316,7 +316,7 @@ void main() { wb.w[gl_GlobalInvocationID.x] = rb.r[gl_GlobalInvocationID.x] + 1u
 await test("SPIR-V pass: a pool texture (the whole pools indexed by a handle of a storage buffer's record table) becomes slots the recorder fills, each read a switch over them", () => {
   const d = mkdtempSync(join(tmpdir(), "nxpool-"));
   try {
-    const src = (handle: string) => `#version 450
+    const src = (handle: string, second = "") => `#version 450
 layout(location = 0) flat in int light;
 layout(location = 1) in vec3 at;
 layout(location = 0) out vec4 o;
@@ -326,12 +326,15 @@ layout(binding = 1) uniform sampler2D fp_t_tcb_8;
 layout(binding = 2) uniform texture2D fp_t2ds_cb0_40000000[1048576];
 layout(binding = 3) uniform samplerShadow fp_s_cb0_40000000[4096];
 void main() {
+  uint w = floatBitsToUint(fp_c3.data[8].z), i = mix(0u, (w & 0xfffffu) + floatBitsToUint(fp_c3.data[46].w), (w & 0xc0000000u) == 0x80000000u);
   uint h = ${handle};
   float lit = texture(sampler2DShadow(fp_t2ds_cb0_40000000[min(h & 0xfffffu, 1048575u)], fp_s_cb0_40000000[min(h >> 20, 4095u)]), at);
-  o = texture(fp_t_tcb_8, at.xy) * lit + fp_c3.data[2];
+${second && `  uint g = ${second};
+  lit += texture(sampler2DShadow(fp_t2ds_cb0_40000000[min(g & 0xfffffu, 1048575u)], fp_s_cb0_40000000[min(g >> 20, 4095u)]), at);
+`}  o = texture(fp_t_tcb_8, at.xy) * lit + fp_c3.data[2];
 }
 `;
-    const fix = (handle: string) => { const f = join(d, "pool.frag"); writeFileSync(f, src(handle)); return fixForWgsl(glslToSpv(f), { sbufs: [{ binding: 6, cb_slot: 0, cb_offset: 0x520 / 4 }] }); };
+    const fix = (handle: string, second = "") => { const f = join(d, "pool.frag"); writeFileSync(f, src(handle, second)); return fixForWgsl(glslToSpv(f), { sbufs: [{ binding: 6, cb_slot: 0, cb_offset: 0x520 / 4 }] }); };
     const r = fix("fp_s1.data[(light * 96 + 96) >> 2]");
     const tex = r.bindings.filter(b => b.kind === "tex").map(b => ({ slot: b.reg!, binding: b.binding, handle: b.handle })).sort((x, y) => x.slot - y.slot);
     eq(tex, [{ slot: 0, binding: 64, handle: undefined }, ...[0, 1, 2, 3].map(j => ({ slot: 1 + j, binding: 66 + 2 * j, handle: { sbuf: 1, offset: 96, stride: 96, index: j, entry: j } }))],
@@ -342,6 +345,11 @@ void main() {
     if ((wgsl.match(/textureSampleCompare\(fp_t2ds_cb0_40000000_p\d_?,/g) ?? []).length !== 4 || !/switch /.test(wgsl) || /binding_array/.test(wgsl)) throw new Error("the read is not a switch over four slots");
     eq(fix("fp_s1.data[5]").bindings.filter(b => b.kind === "tex" && b.handle).map(b => b.handle), [0, 1, 2, 3].map(j => ({ sbuf: 1, offset: 20, stride: 0, index: j, entry: j })), "one constant word: stride 0");
     throws(() => fix("fp_s1.data[light]"), /no record table the recorder can walk/, "a word at a run-time index with no stride");
+    // a material's texture reference: the record is uniform data (a tagged index plus a base) and two of its words are handles: a slot a handle, no walk
+    const at = { terms: [{ ubo: 0, offset: 0x88, mask: true }, { ubo: 0, offset: 0x2ec, mask: false }], guard: true };
+    eq(fix("fp_s1.data[(i * 32u + 16u) >> 2]", "fp_s1.data[(i * 32u + 24u) >> 2]").bindings.filter(b => b.kind === "tex" && b.handle).map(b => b.handle),
+      [0, 1].map(j => ({ sbuf: 1, offset: 16, stride: 32, index: j, entry: j, columns: 2, at })), "record i of uniform data, the words at 16 and 24: two slots");
+    throws(() => fix("fp_s1.data[(i * 32u + 16u) >> 2]", "fp_s1.data[(uint(light) * 32u + 24u) >> 2]"), /different tables or records/, "two reads at different records");
     throws(() => fix("uint(light)"), /handle is not a word of a storage buffer/, "a handle from a varying");
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

@@ -61,17 +61,22 @@ export class WebCodecsVideo implements VideoBackend {
       return false;
     }
   }
+  // timing, logged every 60 pictures: from the packet to the decoder's frame, the copy out of it, and the pictures a second over the window
+  private sent = new Map<bigint, number>(); private tDec = 0; private tCopy = 0; private tN = 0; private tAt = 0;
   private output(st: Dec, gen: number, frame: any): void {
     if (st.gen !== gen) { frame.close(); return; }
     const seq = BigInt(Math.round(frame.timestamp));
     this.noneBefore(st, gen, seq);
     if (st.pending[0] === seq) st.pending.shift(); else { frame.close(); return; }
+    const t0 = performance.now(), ts = this.sent.get(seq); this.sent.delete(seq); if (this.sent.size > 256) this.sent.clear();
     const copied = this.planes(frame).catch((e: unknown) => { this.red(st, `a picture could not be read (${e}): none`); return null; });
     st.chain = st.chain.then(async () => {
       const pic = await copied;
       frame.close();
       if (st.gen !== gen) return;
       if (pic) st.pictures++;
+      const t1 = performance.now(); this.tDec += ts === undefined ? 0 : t0 - ts; this.tCopy += t1 - t0;
+      if (++this.tN === 60) { this.sink.log(`[codec] ${VCODEC_NAME[st.codec]} timing over 60 pictures: ${(60000 / (t1 - this.tAt)).toFixed(1)} pictures/s, packet to frame ${(this.tDec / 60).toFixed(1)} ms, copy ${(this.tCopy / 60).toFixed(1)} ms, format ${frame.format ?? "closed"}`); this.tN = 0; this.tDec = 0; this.tCopy = 0; this.tAt = t1; }
       this.sink.picture(st.id, gen, seq, pic);
     });
   }
@@ -138,7 +143,7 @@ export class WebCodecsVideo implements VideoBackend {
       st.configured = "";
       return 2;
     }
-    st.pending.push(seq);
+    st.pending.push(seq); this.sent.set(seq, performance.now());
     if (eos) {
       const d = st.d;
       d.flush().then(() => { if (st.gen === gen && st.d === d) this.noneBefore(st, gen, null); }, () => { /* reset or closed */ });

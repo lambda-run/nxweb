@@ -184,7 +184,7 @@ export class RtShaders {
 // Stages wait in one queue here, in the order they were asked for, until a Worker is free; a free Worker takes up to
 // `batch` of them for one run of the translator. `prioritize` moves a key a draw waits on to the front. Each Worker
 // has its own .NET runtime (started when there is work for it), so `workers` of them translate at once.
-export const SHADER_CHAIN = "nxweb-shaders-8/page";
+export const SHADER_CHAIN = "nxweb-shaders-9/page";
 // subgroups: the device has WebGPU's subgroups feature (GfxHost.hasSubgroups): warp operations become WGSL subgroup builtins, else one-invocation subgroups
 // (src/shaders/spv_subgroups.ts). The output differs, so the chain (and with it every store id) says which.
 export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean; workers?: number; batch?: number }

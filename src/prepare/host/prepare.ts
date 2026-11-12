@@ -18,7 +18,7 @@ import { SCAN_FORMAT as SHADER_SCAN_FORMAT } from "./shader_scan.ts";
 import { isJunk } from "./tree.ts";
 
 export const PREPARE_FORMAT = 3;                        // in every input hash: a change of this file's outputs bumps it
-export const SHADER_CHAIN = "nxweb-shaders-8/page";     // src/glue/rt_shaders.ts SHADER_CHAIN (checked by the tests)
+export const SHADER_CHAIN = "nxweb-shaders-9/page";     // src/glue/rt_shaders.ts SHADER_CHAIN (checked by the tests)
 export const SHADER_STORE = "nxweb-shaders";            // webShaderStore()'s default name
 export const DEFAULT_APP_POOL = "0xCD500000";           // a 4 GB Switch's application pool (nxnative profile_guess.py APP_POOL)
 export const STAGES = ["detect", "index", "profile", "code", "shaders"] as const;

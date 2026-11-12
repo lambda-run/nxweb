@@ -472,6 +472,10 @@ each draw the recorder walks the table in guest memory, gives the slots the firs
 texture, emits them as ordinary `H_TEX` binds, and writes which handle each slot got into the c2 block at 0x980 + 4
 `entry` (0xffffffff: none), where the shader looks its handle up. A handle in no slot reads 0; a table with more live
 textures than slots is red once. A table a compute shader wrote in the same submission is read as it was before.
+A pool read at one record whose index is uniform data (a material's texture reference: `at: { terms, guard }`, i = a
+tagged 20-bit index in one uniform word plus a base in another; kind `BL_POOL_AT`, its words in a helper `RF_blh`
+entry of an unused texture slot) is not walked: the recorder computes i and binds that record's handles, a slot a
+handle (`columns`: the further words of the record that hold one).
 
 **Not supported** (each is refused by the shader chain by name, so its key reads as missing; nothing is faked):
 
