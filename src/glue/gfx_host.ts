@@ -1205,7 +1205,8 @@ export class GfxHost {
     const tex = (slot: number) => this.tex.get(2 * 64 + slot)?.serial ?? 0, img = (slot: number) => this.img.get(2 * 8 + slot)?.serial ?? 0, push = () => this.ubo.get(uboKey(2, 19))?.data ?? null;
     if (pos === nd.keys.length - 1) this.ndveUploadedPlanes();
     if (pos >= 0 && nd.replaces(pos)) { this.ndveStandIn(img(NDVE_OUTPUT_IMAGE), push()); this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); return; }
-    const ran = this.usePipeline(id) && this.bind();
+    // once a layer of this frame's network could not run, the later ones would only write over the picture with what they read from nothing
+    const ran = !(pos > 0 && nd.broken) && this.usePipeline(id) && this.bind();
     if (pos === 0) this.ndvePlanes(tex, img);
     if (pos >= 0 && nd.saw(pos, ran, tex)) this.ndveStandIn(img(NDVE_OUTPUT_IMAGE), push());
     if (!ran) return;
@@ -1252,8 +1253,8 @@ export class GfxHost {
   private ndveStandIn(outSerial: number, push: Uint8Array | null) {
     const nd = this.ndve!, dst = this.texture(outSerial);
     // when the colour conversion did not run either, the picture was never written: the stand-in then reads the decoder's planes and converts them itself
-    const yT = nd.converted ? undefined : this.texture(nd.luma), cT = nd.converted ? undefined : this.texture(nd.chroma), planes = !!(yT?.gpu && cT?.gpu);
-    const rgbT = planes || nd.converted || !nd.rgb ? undefined : this.texture(nd.rgb);
+    /* the planes first, also when the game's conversion ran: its picture came out one flat colour (to be found) */ const yT = nd.luma ? this.texture(nd.luma) : undefined, cT = nd.chroma ? this.texture(nd.chroma) : undefined, planes = !!(yT?.gpu && cT?.gpu);
+    const rgbT = planes || !nd.rgb ? undefined : this.texture(nd.rgb);
     const src = planes ? yT : rgbT?.gpu ? rgbT : this.texture(nd.pic);
     if (!src?.gpu || !dst?.gpu) { this.red("ndvetex", `ndve=bypass: the movie network's ${src?.gpu ? "output image" : "input picture"} is no live texture: no stand-in`); return; }
     // An sRGB output is no storage format in WebGPU: the stand-in then writes an image of its own in the format's linear twin and the texels are copied
