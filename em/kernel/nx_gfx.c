@@ -61,6 +61,7 @@ uint64_t nx_gfx_direct(int code, uint64_t *regs) {   // returns how long the loc
     uint64_t *a = regs + 0x340 / 8, t0 = nx_now_ns();   // the argument block: x0..x7, d0..d7, then the result
     memcpy(a, regs, 64);
     if (abi & 15) for (int i = 0; i < 8; i++) a[8 + i] = regs[38 + 2 * i];
+    { static __thread int ready; void nx_js_gfx_ready(void); if (!ready) { ready = 1; nx_js_gfx_ready(); } }   // (this thread's instance is compiled before the lock is taken: 30-40 ms the first time, which every other thread waited through)
     nx_gfx_lock();
     uint64_t t1 = nx_now_ns(), t_hold = 0;
     nx_js_gfx_call(id, (double)(uintptr_t)a);

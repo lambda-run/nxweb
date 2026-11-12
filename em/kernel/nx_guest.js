@@ -189,6 +189,9 @@ addToLibrary({
     return x;
   },
   // nvn_call(id, args) in this thread's instance; the result goes to args[16]. The caller holds the recorder's lock
+  nx_js_gfx_ready__deps: ['$NX', '$nxGfx'],
+  nx_js_gfx_ready__sig: 'v',
+  nx_js_gfx_ready: function() { if (!NX.gfx) nxGfx(); },
   nx_js_gfx_call__deps: ['$NX', '$nxGfx'],
   nx_js_gfx_call__sig: 'vid',
   nx_js_gfx_call: function(id, args) {

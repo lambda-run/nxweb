@@ -175,6 +175,11 @@ int nx_acc_switch(int cat) {
 }
 // Waits inside host code (the HLE files' usleep, nanosleep, condition waits and poll: hle/nx_hle.h names these): not running
 #include <poll.h>
+#undef usleep            /* (hle/nx_hle.h, which this file includes too, names them nx_w_*: here are the real ones. 333e882 */
+#undef nanosleep         /*  did not undefine them: nx_w_usleep called itself until the stack ran out) */
+#undef pthread_cond_wait
+#undef pthread_cond_timedwait
+#undef poll
 int nx_w_usleep(unsigned us) { int was = nx_acc_switch(A_HOSTWAIT); int r = usleep(us); nx_acc_switch(was); return r; }
 int nx_w_nanosleep(const struct timespec *a, struct timespec *b) { int was = nx_acc_switch(A_HOSTWAIT); int r = nanosleep(a, b); nx_acc_switch(was); return r; }
 int nx_w_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) { int was = nx_acc_switch(A_HOSTWAIT); int r = pthread_cond_wait(c, m); nx_acc_switch(was); return r; }
