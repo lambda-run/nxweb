@@ -60,7 +60,7 @@ addToLibrary({
     return idx;
   },
 
-  $nxThread__deps: ['$NX', '$nxTranslate', '$nxPcMap', 'nx_unit_count', 'nx_unit_base', 'nx_unit_nfuncs', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_note_pc', 'nx_cntpct', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
+  $nxThread__deps: ['$NX', '$nxTranslate', '$nxPcMap', 'nx_unit_count', 'nx_unit_base', 'nx_unit_nfuncs', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_slice_budget', 'nx_note_pc', 'nx_cntpct', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxThread: function() {
     if (NX.t) return NX.t;
     const mem = wasmMemory, t0 = performance.now();
@@ -86,6 +86,7 @@ addToLibrary({
       cntpct: () => BigInt(_nx_cntpct()),
     };
     t.tramp = t.table.get(0);
+    t.budget = _nx_slice_budget();   // instructions per slice: short when guest threads share virtual cores (kernel/nx_cores.c)
     // The table: one slot per translated function, the trampoline in every slot this thread has not filled. It is as
     // long as what is published now (plus room) and grows when a call lands beyond it (runTo): a slot costs 32 bytes
     // in every thread, and a thread that started early or runs little code need not hold the whole program's.
@@ -98,7 +99,7 @@ addToLibrary({
     t.table.set(2, new WebAssembly.Instance(new WebAssembly.Module(THUNK), { env: { host_call: () => { const c = t.enter(); t.save(c); _nx_host_call(c); t.load(c); t.depth--; } } }).exports.f);
     // run until pc is `until`; a trap in translated code ends the process with a report (pthread_exit's unwind passes through)
     t.runTo = (until) => {
-      try { while (core.pc.value !== until) { core.budget.value = 1 << 26; core.run(); _nx_note_pc(Number(BigInt.asUintN(64, core.pc.value))); } }
+      try { while (core.pc.value !== until) { core.budget.value = t.budget; core.run(); _nx_note_pc(Number(BigInt.asUintN(64, core.pc.value))); } }
       catch (e) {
         if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e;
         // a call through a table slot beyond this thread's table: a function another thread had translated since. The

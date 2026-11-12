@@ -70,8 +70,10 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   const spinTimer = (fn: () => void, ms: number) => { waiting.push({ at: performance.now() + ms, fn }); if (waiting.length === 1) ch.port2.postMessage(0); };
   const nextFrame = () => new Promise<void>(res => {
     if (p.pace === "timer" || document.hidden) { spinTimer(res, 16); return; }
-    let done = false; const fin = () => { if (!done) { done = true; res(); } };
-    requestAnimationFrame(fin); spinTimer(fin, 50);
+    // (the 50 ms timer is for a page whose display frames do not come although it is not hidden: an occluded window.
+    // A game held at exactly 20 frames a second is that: frameSource counts which of the two ended each wait)
+    let done = false; const fs = (globalThis as any).NXFRAMESRC ??= { raf: 0, timer: 0 };
+    requestAnimationFrame(() => { if (!done) { done = true; fs.raf++; res(); } }); spinTimer(() => { if (!done) { done = true; fs.timer++; res(); } }, 50);
   });
   log(p.pace === "timer" ? "page: pace=timer: display frames from a 16 ms message timer (not requestAnimationFrame)" : "page: display frames from requestAnimationFrame while the page is visible, from a 16 ms message timer while it is hidden (?pace=timer: always the timer)");
   const c: OwnerConfig = {

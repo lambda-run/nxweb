@@ -350,6 +350,7 @@ export class RtGfx implements HleGfx {
         const k = this.keep(cpu), rt = this.rt, wall = rt.opts.clock === "wall", now = cpu.now();
         this.stats.acquires++;
         const interval = Math.max(1, this.x.gfx_present_interval(Number(cpu.x(0))) | 0);
+        if (this.stats.presentInterval !== interval) { rt.log(`nvnWindowAcquireTexture: the window's present interval is ${interval} (${(60 / interval).toFixed(0)} frames a second at most)${this.stats.presentInterval ? `, was ${this.stats.presentInterval}` : ""}`); this.stats.presentInterval = interval; }
         const period = BigInt(interval) * (this.opts.vsyncNs ?? 16_666_667n), quarter = (this.opts.vsyncNs ?? 16_666_667n) / 4n;
         let at: bigint | undefined, done: Promise<unknown> | null = null, slot = now;
         if (this.opts.unpaced) done = this.lastPresentDone;
