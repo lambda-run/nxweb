@@ -19,7 +19,7 @@
 #define GL_WAITERS ((_Atomic uint32_t *)(uintptr_t)(NXG + 4))
 #define GL_ON ((_Atomic uint32_t *)(uintptr_t)(NXG + 44))
 static uint32_t g_depth;   // the holder's
-static _Atomic uint64_t g_calls, g_ns, g_contended, g_lock_ns;
+static _Atomic uint64_t g_calls, g_ns, g_contended, g_lock_ns, g_lf_calls;
 static __thread uint32_t t_me; static __thread uint64_t t_flush_ns;
 EMSCRIPTEN_KEEPALIVE void nx_gfx_flush_ns(double ns) { t_flush_ns += (uint64_t)ns; }   // kernel/nx_guest.js: the time a flush waited for the owner
 uint64_t nx_now_ns(void);
@@ -57,10 +57,21 @@ void nx_gfx_reacquire(int depth) { if (depth) { nx_gfx_lock(); g_depth = (uint32
 
 // code: (NVN function id + 1) | abi << 16 (abi: bits 0..3 how many of d0..d7 it reads, bit 4 a float result)
 uint64_t nx_gfx_direct(int code, uint64_t *regs) {   // returns how long the lock was held, ns
-    int id = (code & 0xFFFF) - 1, abi = code >> 16;
+    int id = (code & 0xFFFF) - 1, abi = code >> 16 & 0xFF, lf = code >> 24 & 3;
     uint64_t *a = regs + 0x340 / 8, t0 = nx_now_ns();   // the argument block: x0..x7, d0..d7, then the result
     memcpy(a, regs, 64);
     if (abi & 15) for (int i = 0; i < 8; i++) a[8 + i] = regs[38 + 2 * i];
+    // Without the lock: an entry point the audit found to touch no module state (tools/gfx_audit.mjs), or a recording
+    // command while its command buffer (x0: 'CMDB', +8 the write position, +24 the end) has room for any record, so
+    // that the record allocator's slow path (the host-lent segments, the game's out-of-memory callback) cannot run
+    if (lf == 1 || (lf == 3 && regs[0] && *(uint32_t *)(uintptr_t)regs[0] == 0x42444d43u && ((uint64_t *)(uintptr_t)regs[0])[1] && ((uint64_t *)(uintptr_t)regs[0])[1] + 32768 <= ((uint64_t *)(uintptr_t)regs[0])[3])) {
+        static __thread int ready0; void nx_js_gfx_ready(void); if (!ready0) { ready0 = 1; nx_js_gfx_ready(); }
+        nx_js_gfx_call(id, (double)(uintptr_t)a);
+        if (abi & 16) { regs[38] = a[8]; regs[39] = 0; } else regs[0] = a[16];
+        { void nx_acc_add(int, double); nx_acc_add(0, (double)(nx_now_ns() - t0)); }
+        atomic_fetch_add_explicit(&g_lf_calls, 1, memory_order_relaxed);
+        return 0;
+    }
     { static __thread int ready; void nx_js_gfx_ready(void); if (!ready) { ready = 1; nx_js_gfx_ready(); } }   // (this thread's instance is compiled before the lock is taken: 30-40 ms the first time, which every other thread waited through)
     nx_gfx_lock();
     uint64_t t1 = nx_now_ns(), t_hold = 0;
@@ -79,7 +90,7 @@ EMSCRIPTEN_KEEPALIVE void nx_gfx_guest_call(double blk_) {
     b[0] = nx_guest_calln(b[0], 4, b[1], b[2], b[3], b[4]);
 }
 // out: calls answered on the calling thread, their time in ns (lock wait included), times a thread had to sleep for the lock, ns getting the lock
-EMSCRIPTEN_KEEPALIVE void nx_gfx_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)atomic_load(&g_calls); o[1] = (double)atomic_load(&g_ns); o[2] = (double)atomic_load(&g_contended); o[3] = (double)atomic_load(&g_lock_ns); }
+EMSCRIPTEN_KEEPALIVE void nx_gfx_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)atomic_load(&g_calls); o[1] = (double)atomic_load(&g_ns); o[2] = (double)atomic_load(&g_contended); o[3] = (double)atomic_load(&g_lock_ns); o[4] = (double)atomic_load(&g_lf_calls); }
 
 // ---- nxweb's fs module the same way (owner/owner.ts NXF): nn::fs calls run in the calling thread's instance under the
 // module's lock; the storage (the dev_* imports) is the owner's, asked through the lock holder's request words, and a

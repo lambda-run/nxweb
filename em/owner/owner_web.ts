@@ -21,6 +21,7 @@ export interface PageSide {
   modulesList: string[];                                 // the code modules to load, in order
   nativeImage: OwnerConfig["nativeImage"];
   fsDirect?: boolean;    // false (?fsdirect=0): every nn::fs call goes to the owner thread, as before
+  gfxLockFree?: boolean;   // false (?lockfree=0): every direct NVN call takes the recorder's lock
   gfxDirect?: boolean;   // false (?gfxdirect=0): every NVN call goes to the owner thread, as before
   pace: string | null;                                   // 'timer': never requestAnimationFrame
   ndve: boolean;                                         // nxweb's stand-in for nn::ndve's movie upscaler (GfxHost.ndveBypass): its dispatches cannot run on WebGPU yet
@@ -81,7 +82,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   log(p.pace === "timer" ? "page: pace=timer: display frames from a 16 ms message timer (not requestAnimationFrame)" : "page: display frames from requestAnimationFrame while the page is visible, from a 16 ms message timer while it is hidden (?pace=timer: always the timer)");
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
-    tree, prep, fsModule, gfxModule, gfxShare: g.share, fsShare: f.share, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
+    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: p.gfxLockFree === true }, fsShare: f.share, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
     gfx: device ? { ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");

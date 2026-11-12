@@ -106,6 +106,7 @@ EMSCRIPTEN_KEEPALIVE double nx_cntpct(void) {
 
 // ---- files for the translation cache (kernel/nx_guest.js): Node's files, or the page's in-memory /cache
 #include <sys/stat.h>
+#include <malloc.h>
 EMSCRIPTEN_KEEPALIVE double nx_cache_dir(void) {
     const char *e = getenv("NX_CACHE"); struct stat st;
     if (e) return (double)(uintptr_t)e;
@@ -121,6 +122,21 @@ EMSCRIPTEN_KEEPALIVE double nx_file_read(double path, double len_out) {   // the
     *(uint64_t *)(uintptr_t)len_out = p ? (uint64_t)n : 0;
     return (double)(uintptr_t)p;
 }
+// the same in pieces (the translation cache is half a gigabyte: kernel/nx_guest.js reads and writes it 8 MB at a time)
+EMSCRIPTEN_KEEPALIVE double nx_file_size(double path) { struct stat st; return stat((const char *)(uintptr_t)path, &st) == 0 ? (double)st.st_size : -1; }
+EMSCRIPTEN_KEEPALIVE int nx_file_read_at(double path, double off, double buf, double n) {
+    FILE *f = fopen((const char *)(uintptr_t)path, "rb"); if (!f) return 0;
+    int ok = !fseek(f, (long)off, SEEK_SET) && fread((void *)(uintptr_t)buf, 1, (size_t)n, f) == (size_t)n;
+    fclose(f); return ok;
+}
+EMSCRIPTEN_KEEPALIVE void nx_file_done(double path) { if (!getenv("NX_CACHE")) remove((const char *)(uintptr_t)path); }   // the page's copy in memory: read once
+EMSCRIPTEN_KEEPALIVE int nx_file_part(double path, double data, double len, int first) {
+    char tmp[600]; snprintf(tmp, sizeof tmp, "%s.tmp", (const char *)(uintptr_t)path);
+    FILE *f = fopen(tmp, first ? "wb" : "ab"); if (!f) return 0;
+    int ok = fwrite((const void *)(uintptr_t)data, 1, (size_t)len, f) == (size_t)len;
+    return !fclose(f) && ok;
+}
+EMSCRIPTEN_KEEPALIVE int nx_file_commit(double path) { char tmp[600]; snprintf(tmp, sizeof tmp, "%s.tmp", (const char *)(uintptr_t)path); return !rename(tmp, (const char *)(uintptr_t)path); }
 EMSCRIPTEN_KEEPALIVE int nx_file_write(double path, double data, double len) {
     char tmp[600]; snprintf(tmp, sizeof tmp, "%s.tmp", (const char *)(uintptr_t)path);
     FILE *f = fopen(tmp, "wb"); if (!f) return 0;
@@ -508,6 +524,8 @@ void nx_progress(void) {
       pp = a; pn = b; cpu0 = cpu >= 0 ? (uint64_t)cpu : 0; wall0 = wall; }
     { static double pres0; char sp[2400]; double cores = nx_thread_split((double)(uintptr_t)sp, sizeof sp, os[7] - pres0, 1); pres0 = os[7];
       LOG("guest threads: %.2f running at once on average since the last line; ms per frame (per second when none), the main thread then the three busiest: %s", cores, sp); }
+    { struct mallinfo mi = mallinfo(); struct nx_stats s2; nx_get_stats(&s2);   // the host heap is 2 GB of the fixed memory and does not grow
+      LOG("host heap: %.0f MB in use + %.0f MB free in it, of 2048 MB; of it the unit registry's wasm bytes %.0f MB, thread stacks about %d MB", mi.uordblks / 1048576.0, mi.fordblks / 1048576.0, s2.unit_bytes / 1048576.0, g_ntrk); }
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }
@@ -538,8 +556,8 @@ void nx_boot_report(const char *why) {
       LOG("graphics (nxweb's recorder on the owner thread): %.0f host calls of it (%.0f NVN calls recorded, %.0f waited), %.1f us each inside; host stream %.0f batches, %.1f MB; presents %.0f", os[4], os[10], os[6], os[4] ? os[5] / 1e3 / os[4] : 0.0, os[8], os[9] / 1048576, os[7]);
       LOG("owner thread: %llu proxied calls, %.1f us each on the caller's side; nn::fs %0.f calls (%0.f pending, %0.f retried), %.1f us each inside the module", (unsigned long long)g_owner_calls,
           g_owner_calls ? g_owner_ns / 1e3 / g_owner_calls : 0.0, os[0], os[1], os[2], os[0] ? os[3] / 1e3 / os[0] : 0.0); }
-    { void nx_gfx_stats(double); double g[4] = {0}; nx_gfx_stats((double)(uintptr_t)g);
-      LOG("recorder on the calling thread: %.0f NVN calls, %.2f us each, of it %.2f us getting the lock; %.0f times a thread slept for the lock%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[0] ? g[3] / 1e3 / g[0] : 0.0, g[2], nx_gfx_enabled() ? "" : " (off: every NVN call goes to the owner)"); }
+    { void nx_gfx_stats(double); double g[5] = {0}; nx_gfx_stats((double)(uintptr_t)g);
+      LOG("recorder on the calling thread: %.0f NVN calls, %.2f us each, of it %.2f us getting the lock; %.0f times a thread slept for the lock; without the lock %.0f calls more%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[0] ? g[3] / 1e3 / g[0] : 0.0, g[2], g[4], nx_gfx_enabled() ? "" : " (off: every NVN call goes to the owner)"); }
     { void nx_fs_stats(double); double g[3] = {0}; nx_fs_stats((double)(uintptr_t)g);
       LOG("fs module on the calling thread: %.0f nn::fs calls, %.1f us each (the storage's time included), %.0f waited for the storage%s", g[0], g[0] ? g[1] / 1e3 / g[0] : 0.0, g[2], nx_fs_enabled() ? "" : " (off: every nn::fs call goes to the owner)"); }
     { extern _Atomic uint64_t nx_mono_bumps; LOG("guest clock: %llu reads found the host's clock not ahead of the last value handed out (same step, or behind another thread's) and got that value + 32 ns", (unsigned long long)nx_mono_bumps); }

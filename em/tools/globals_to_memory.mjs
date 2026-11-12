@@ -30,7 +30,7 @@ const STORE = { i32: [0x36, 2], i64: [0x37, 3], f32: [0x38, 2], f64: [0x39, 3], 
 function uleb(n) { const o = []; n = BigInt(n); do { let b = Number(n & 0x7Fn); n >>= 7n; if (n) b |= 0x80; o.push(b); } while (n); return o; }
 function sleb(n) { const o = []; n = BigInt(n); for (;;) { const b = Number(n & 0x7Fn); n >>= 7n; if ((n === 0n && !(b & 0x40)) || (n === -1n && (b & 0x40))) { o.push(b); return o; } o.push(b | 0x80); } }
 
-class R {
+export class R {
   constructor(b, p = 0) { this.b = b; this.p = p; }
   u8() { return this.b[this.p++]; }
   uleb() { let v = 0n, s = 0n, c; do { c = this.b[this.p++]; v |= BigInt(c & 0x7F) << s; s += 7n; } while (c & 0x80); return Number(v); }
@@ -40,7 +40,7 @@ class R {
 }
 
 // one instruction's immediates are skipped; returns nothing (r.p is after it). op was read already
-function skipImm(r, op, where) {
+export function skipImm(r, op, where) {
   const memarg = () => { const a = r.uleb(); if (a & 0x40) r.skipLeb(); r.skipLeb(); };
   const blocktype = () => { const c = r.b[r.p]; if (c === 0x40 || VT[c] || c === 0x70 || c === 0x6F) r.p++; else r.skipLeb(); };
   if (op === 0x02 || op === 0x03 || op === 0x04) return blocktype();

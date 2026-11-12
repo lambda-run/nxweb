@@ -17,6 +17,8 @@ import { nvn2Items, sdkVersionIn } from "../../src/glue/rt_runtime.ts";
 import { STUBS } from "../../src/glue/rt_layout.ts";
 // @ts-ignore (a plain module, also a command-line tool)
 import { globalsToMemory } from "../tools/globals_to_memory.mjs";
+// @ts-ignore
+import { lockFreeTable } from "../tools/gfx_audit.mjs";
 import { VCODEC, type VideoBackend, type VideoPicture, type VideoSink } from "../../src/glue/video_host.ts";
 
 export const KIND_FS = 1, KIND_HOST = 2, KIND_VIDEO = 3;   // 3: the AV1 decoder of kernel/nx_video.c   // nxweb's fs module; a host function nxweb's glue registers (RtGfx: nvnBootstrapLoader, every NVN entry point, nv::)
@@ -42,7 +44,7 @@ export interface OwnerConfig {
   fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
   gfxModule: WebAssembly.Module;
   fsShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };    // the same for fsModule
-  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
+  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean };   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
   saves: FsStorage;
   programId: bigint;
   scratch: number;                      // 8 KB of the memory nothing else uses
@@ -257,7 +259,12 @@ export class Owner {
     return true;
   }
   // the code of a stub a guest thread may answer in its own instance of the recorder: (NVN id + 1) | abi << 16, else 0
-  stubDirect(id: number): number { return this.cfg.gfxShare?.direct ? this.gfx?.direct.get(STUBS.base + 4 * id) ?? 0 : 0; }
+  // bits 24, 25: without the recorder's lock (1), and only while the command buffer in x0 has room (3): tools/gfx_audit.mjs
+  private lockFree: Uint8Array | null = null;
+  stubDirect(id: number): number {
+    const d = this.cfg.gfxShare?.direct ? this.gfx?.direct.get(STUBS.base + 4 * id) ?? 0 : 0;
+    return d && this.lockFree ? d | (this.lockFree[(d & 0xFFFF) - 1] ?? 0) << 24 : d;
+  }
   lowAlloc(n: number): number { const a = this.low; if (a + n > LOW_END) return 0; this.low = Math.ceil((a + n) / 0x1000) * 0x1000; return a; }
   // nxweb's NVN recorder (gfx64.wasm) and its glue (src/glue/rt_gfx.ts), with the null replayer: the host stream is
   // counted, and a present is the first-frame mark. `device` / `canvas` make it the real replayer (the page).
@@ -278,6 +285,17 @@ export class Owner {
     const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
     host.account = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
     host.exec = (p: number, n: number) => { this.hostStream.calls++; this.hostStream.bytes += n; return exec(p, n); };
+    if (sh?.direct && sh.plain && sh.lockFree !== false) {
+      try {
+        const x: any = this.gfx.x, u8 = new Uint8Array(this.memory.buffer), n = x.nvn_count();
+        const nameOf = (id: number) => { const p = x.nvn_name(id); if (!p) return ""; let e = p; while (u8[e] && e < p + 128) e++; return String.fromCharCode(...u8.slice(p, e)); };
+        const t = lockFreeTable(sh.plain, nameOf, n);
+        if (!x.kit_trace_enable) throw new Error("the recorder has no kit_trace_enable (its state machines' trace ring is written on every record)");
+        x.kit_trace_enable(0);   // the one write to shared state on a record's fast path
+        this.lockFree = t.table;
+        this.log(`owner: recorder audit (tools/gfx_audit.mjs, ${t.cases} cases): ${t.free} entry points reach no module state and ${t.room} recording commands reach it only through the record allocator's slow path: guest threads call those without the recorder's lock (the second kind while the command buffer has 32 KB of room)`);
+      } catch (e) { this.log(`[RED] owner: recorder audit failed, every direct call stays under the lock: ${(e as Error).message}`); }
+    }
     if (sh?.direct) { Atomics.store(this.gl, 11, 1); this.log(`owner: the recorder's ${sh.globals.length} globals are in the memory at 0x${GFX_GLOBALS.toString(16)}: every guest thread calls it in its own instance under one lock; the owner keeps the replayer (gfx_exec) and the calls that wait or pace`); }
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
@@ -440,5 +458,5 @@ export { sharedBuild };
 export function gfxShared(wasm: Uint8Array, direct: boolean, base = GFX_GLOBALS): { wasm: Uint8Array; share: NonNullable<OwnerConfig["gfxShare"]> } {
   const first = globalsToMemory(wasm, { base }), second = globalsToMemory(wasm, { base, secondary: true });
   if (first.size > 0x7000) throw new Error("owner: the module has more globals than their block holds");
-  return { wasm: first.wasm, share: { globals: first.globals, secondary: second.wasm, direct } };
+  return { wasm: first.wasm, share: { globals: first.globals, secondary: second.wasm, direct, plain: wasm } };
 }

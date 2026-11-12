@@ -55,7 +55,8 @@ addToLibrary({
   $nxTranslate: function(t, pcBig) {
     const pc = Number(BigInt.asUintN(64, pcBig));
     let idx = nxPcMap(pc);
-    if (idx > 1 && (t.table.get(idx) !== t.tramp || nxNeed(t, idx))) return idx;
+    if (idx >= t.table.length) t.cover();   // a function another thread had translated since this thread's table was sized (Table.get beyond the end throws)
+    if (idx > 1 && idx < t.table.length && (t.table.get(idx) !== t.tramp || nxNeed(t, idx))) return idx;
     const tr0 = performance.now();
     idx = _nx_translate(pc);   // behind the translator's lock: what it returns is published
     _nx_acc_add(3, (performance.now() - tr0) * 1e6);
@@ -279,7 +280,7 @@ addToLibrary({
     put(0, host.coreBytes);
     put(1, HEAPU8.slice(hlp, hlp + hlpLen));
   },
-  nx_js_tr_job__deps: ['$NX', '$nxPublish', 'malloc', 'free', 'nx_file_write', 'nx_js_cache_store', '$UTF8ToString'],
+  nx_js_tr_job__deps: ['$NX', '$nxPublish', 'malloc', 'free', 'nx_file_part', 'nx_file_commit', 'nx_js_cache_store', '$UTF8ToString'],
   nx_js_tr_job__sig: 'did',
   nx_js_tr_job: function(kind, pc) {
     const h = NX.host;
@@ -297,10 +298,11 @@ addToLibrary({
       let bytes = 0;
       for (const m of NX.mods) {
         const blob = h.exportCache(m.base, m.imageSize); if (blob.length <= 16) continue;
-        const p = _malloc(blob.length); if (!p) { err('[RED] translation cache: no memory for a blob of ' + blob.length + ' bytes'); break; }
-        HEAPU8.set(blob, p);
-        const path = NX.cstr(NX.cacheDir + '/' + NX.cacheKey(m));
-        if (_nx_file_write(path, p, blob.length)) { bytes += blob.length; _nx_js_cache_store(path); } else err('[RED] translation cache: ' + NX.cacheKey(m) + ' was not written');
+        // in pieces of 8 MB through one buffer: the blob is half a gigabyte, and a copy of it in the host heap (2 GB in
+        // all, 570 MB of it the unit registry) was what ended a ride with "abort: OOM" (2026-11-12)
+        const CH = 8 << 20, p = _malloc(CH), path = NX.cstr(NX.cacheDir + '/' + NX.cacheKey(m)); let ok = 1;
+        for (let o = 0; ok && o < blob.length; o += CH) { const n = Math.min(CH, blob.length - o); HEAPU8.set(blob.subarray(o, o + n), p); ok = _nx_file_part(path, p, n, o === 0 ? 1 : 0); }
+        if (ok && _nx_file_commit(path)) { bytes += blob.length; _nx_js_cache_store(path); } else err('[RED] translation cache: ' + NX.cacheKey(m) + ' was not written');
         _free(path); _free(p);
       }
       NX.cacheMark = h.cacheHits + h.translatedInsns;
@@ -415,7 +417,7 @@ addToLibrary({
   // out: [38] index of nnosInitialize in the start list, [39] nnMain, [40] start list length, [41..] the pcs to call in
   // order (nxweb rt_runtime.ts sdkStart = nxnative main.c: _init_libc0, nnosInitialize, _init_libc1,
   // nninitInitializeSdkModule, nninitStartup, _init_libc2, each module's DT_INIT).
-  $nxLoadGame__deps: ['$NX', '$nxPublish', 'nx_cache_dir', 'nx_file_read', 'nx_module_add', 'nx_stub_set', 'nx_stub_base_set', 'nx_hle_name_count', 'nx_hle_name_at', 'nx_hle_name_flags', 'malloc', 'free', '$UTF8ToString', '$stringToUTF8', '$lengthBytesUTF8'],
+  $nxLoadGame__deps: ['$NX', '$nxPublish', 'nx_cache_dir', 'nx_file_size', 'nx_file_read_at', 'nx_file_done', 'nx_module_add', 'nx_stub_set', 'nx_stub_base_set', 'nx_hle_name_count', 'nx_hle_name_at', 'nx_hle_name_flags', 'malloc', 'free', '$UTF8ToString', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxLoadGame: function(host, B) {
     const A = nxLoadA64(), D = HEAPF64, pages = wasmMemory.buffer.byteLength / 65536;
     const cstr = (s) => { const n = lengthBytesUTF8(s) + 1, p = _malloc(n); stringToUTF8(s, p, n); return p; };
@@ -461,11 +463,14 @@ addToLibrary({
     if (NX.cacheDir) {
       let units = 0, bytes = 0; const t0 = performance.now(), lenAt = _malloc(8);
       for (const m of set.modules) {
-        const path = cstr(NX.cacheDir + '/' + NX.cacheKey(m)), p = _nx_file_read(path, lenAt), n = Number(HEAPU64[lenAt / 8]);
-        _free(path);
-        if (!p) continue;
-        units += host.importCache(HEAPU8.subarray(p, p + n)); bytes += n;   // (importCache copies what it keeps)
-        _free(p);
+        // read in pieces of 8 MB into this realm's own (JavaScript) memory, not into the host heap
+        const path = cstr(NX.cacheDir + '/' + NX.cacheKey(m)), n = _nx_file_size(path), CH = 8 << 20;
+        if (n <= 0) { _free(path); continue; }
+        const blob = new Uint8Array(n), p = _malloc(CH); let ok = 1;
+        for (let o = 0; ok && o < n; o += CH) { const k = Math.min(CH, n - o); ok = _nx_file_read_at(path, o, p, k); if (ok) blob.set(HEAPU8.subarray(p, p + k), o); }
+        _nx_file_done(path); _free(p); _free(path);
+        if (!ok) { err('[RED] translation cache: ' + NX.cacheKey(m) + ' could not be read'); continue; }
+        units += host.importCache(blob); bytes += n;   // (importCache copies what it keeps)
       }
       _free(lenAt);
       NX.cacheInsns = host.translatedInsns;

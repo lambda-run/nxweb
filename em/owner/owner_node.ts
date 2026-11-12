@@ -16,7 +16,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   const fsPlain = sharedBuild(readFileSync(`${rt}/fs64.wasm`), pages), f = e.NX_FS_DIRECT !== "0" ? gfxShared(fsPlain, true, FS_GLOBALS) : { wasm: fsPlain, share: undefined };
   const c: OwnerConfig = {
     tree: await NupTree.open(nodeBytes(nup), nup, { sha256, log }), prep: new PrepWasm(new WebAssembly.Module(readFileSync(e.NX_PREPARE ?? "/mnt/build/prepare/prepare.wasm")), log),
-    fsModule: new WebAssembly.Module(f.wasm as unknown as BufferSource), fsShare: f.share, gfxModule: new WebAssembly.Module(g.wasm as unknown as BufferSource), gfxShare: g.share, saves: new NodeStorage({ saveDir: e.NX_SAVES ?? "/ctl/nxweb-em/em/build/saves" }),
+    fsModule: new WebAssembly.Module(f.wasm as unknown as BufferSource), fsShare: f.share, gfxModule: new WebAssembly.Module(g.wasm as unknown as BufferSource), gfxShare: { ...g.share, lockFree: e.NX_GFX_LOCKFREE === "1" }, saves: new NodeStorage({ saveDir: e.NX_SAVES ?? "/ctl/nxweb-em/em/build/saves" }),
     programId: BigInt(e.NX_PROGRAM_ID ?? "0x0400486024DEC000"), scratch: 0x1FF00000, malloc, modules, log,
   };
   return (await startOwner(memory, c)).owner;
