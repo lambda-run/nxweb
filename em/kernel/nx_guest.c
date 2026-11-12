@@ -36,10 +36,22 @@ _Atomic uint64_t nx_svc_by_num[128];   // every SVC by number (the progress line
 static _Atomic uint32_t g_wake_word; static _Atomic int g_parked;
 _Atomic uint64_t nx_stat_yield_parks;
 static __thread unsigned t_yields;
-void nx_yield_reset(void) { t_yields = 0; }
+// What the runs of yields look like (all threads): how long a run is when it ends (log2 buckets: 1, 2-3, 4-7, ...) and
+// what ends it (a host call, or an SVC by number)
+_Atomic uint64_t nx_yrun_len[16], nx_yrun_by_host, nx_yrun_by_svc[128];
+static void yrun_end(int by_svc) {
+    if (!t_yields) return;
+    int b = 31 - __builtin_clz(t_yields); if (b > 15) b = 15;
+    atomic_fetch_add_explicit(&nx_yrun_len[b], 1, memory_order_relaxed);
+    if (by_svc < 0) atomic_fetch_add_explicit(&nx_yrun_by_host, 1, memory_order_relaxed); else atomic_fetch_add_explicit(&nx_yrun_by_svc[by_svc & 127], 1, memory_order_relaxed);
+    t_yields = 0;
+}
+void nx_yield_reset(void) { yrun_end(-1); }
 static int park_us(void) { static int v = -1; if (v < 0) { const char *e = getenv("NX_YIELD_PARK_US"); v = e && *e ? atoi(e) : 100; } return v; }
 static void yield_or_wake(int num, const uint64_t *regs) {
-    if (num == 0x0B && (int64_t)regs[0] <= 0) {
+    // (SleepThread of less than 20 us is a yield to hle_thread.c too. The game's job workers and its main thread wait with
+    // yield, yield, SleepThread(a few us), over and over: counted as sleeps, their runs were 2 long and nothing parked.)
+    if (num == 0x0B && (int64_t)regs[0] < 20000) {
         if (++t_yields > 64 && park_us() > 0) {
             uint32_t w = atomic_load(&g_wake_word);
             atomic_fetch_add(&g_parked, 1);
@@ -49,7 +61,7 @@ static void yield_or_wake(int num, const uint64_t *regs) {
         }
         return;
     }
-    t_yields = 0;
+    yrun_end(num);
     if (num == 0x09 || num == 0x0A || num == 0x11 || num == 0x1B || num == 0x1D || num == 0x35) {   // StartThread, ExitThread, SignalEvent, ArbitrateUnlock, SignalProcessWideKey, SignalToAddress
         atomic_fetch_add(&g_wake_word, 1);
         if (atomic_load(&g_parked)) emscripten_futex_wake(&g_wake_word, 1 << 30);

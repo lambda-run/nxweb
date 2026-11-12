@@ -174,7 +174,7 @@ def page():
     open(f"{B}/owner_pre.js", "w").write(open(f"{B}/owner.js").read() + open(f"{R}/owner/owner_pre_web.js").read())
     link(objs, f"{B}/em.js", 64, ["-sERROR_ON_UNDEFINED_SYMBOLS=0", "--js-library", f"{R}/kernel/nx_guest.js", "--js-library", f"{R}/kernel/nx_owner.js", "--pre-js", f"{R}/kernel/nx_worker_pre.js", "--pre-js", f"{B}/a64_host.js", "--pre-js", f"{B}/owner_pre.js",
                                   f"-sGLOBAL_BASE={14 << 30}", f"-sINITIAL_MEMORY={16 << 30}", "-sENVIRONMENT=web,worker", "-sPTHREAD_POOL_SIZE=8", "-sFORCE_FILESYSTEM=1",
-                                  "-sEXPORTED_FUNCTIONS=_main,_malloc,_free", "-sEXPORTED_RUNTIME_METHODS=FS", "-sSTACK_SIZE=1048576"])
+                                  "-sEXPORTED_FUNCTIONS=_main,_malloc,_free", "-sEXPORTED_RUNTIME_METHODS=FS,HEAPU8", "-sSTACK_SIZE=1048576"])
     sh(["cp", f"{R}/web/em.html", f"{B}/index.html"])
     # the page side of the audio device: nxweb's AudioDeviceMain and worklet, bundled with the port's glue (web/audio_page.ts)
     sh([f"{W}/node_modules/.bin/esbuild", f"{R}/web/audio_page.ts", "--bundle", "--platform=browser", "--format=iife", f"--outfile={B}/audio.js", "--log-level=warning"])

@@ -169,9 +169,13 @@ void dm_host_lock(pthread_mutex_t *m);
 // under node); here the owner keeps watching the slot between the calls of a burst.
 static struct { _Atomic uint32_t state; int32_t code; int32_t result; int32_t pad; double ctx; } g_slot;
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER; static int g_slot_on;
-static uint64_t g_slot_queue_ns, g_slot_serve_ns, g_slot_n;   // waiting for the slot (behind other threads); from the request to its answer
+static uint64_t g_slot_queue_ns, g_slot_serve_ns, g_slot_n;
+static _Atomic int g_slot_waiting; static _Atomic uint64_t g_slot_depth[8];   // callers at the slot when one arrives: 0, 1, 2, 3, 4-7, 8-15, 16-31, 32+
+// For the page's frame split (main thread): out = requests, ns waiting for the slot, ns from request to answer, then the 8 depth counts
+EMSCRIPTEN_KEEPALIVE void nx_slot_stats(double out_) { double *o = (double *)(uintptr_t)out_; o[0] = (double)g_slot_n; o[1] = (double)g_slot_queue_ns; o[2] = (double)g_slot_serve_ns; for (int i = 0; i < 8; i++) o[3 + i] = (double)g_slot_depth[i]; }   // waiting for the slot (behind other threads); from the request to its answer
 static int owner_request(int code, uint64_t *regs) {
     uint64_t t0 = now_ns();
+    { int d = atomic_fetch_add(&g_slot_waiting, 1); atomic_fetch_add_explicit(&g_slot_depth[d < 4 ? d : d < 8 ? 4 : d < 16 ? 5 : d < 32 ? 6 : 7], 1, memory_order_relaxed); }
     dm_host_lock(&g_slot_mu);   // a guest thread that waits here holds no guest core (hle_thread.c)
     uint64_t t1 = now_ns();
     if (!g_slot_on) { g_slot_on = 1; nx_owner_serve((double)(uintptr_t)&g_slot); }
@@ -180,6 +184,7 @@ static int owner_request(int code, uint64_t *regs) {
     for (int spin = 0; atomic_load(&g_slot.state) != 2; spin++) if (spin > 20000) emscripten_futex_wait(&g_slot.state, 1, 5.0);
     int r = g_slot.result;
     atomic_store(&g_slot.state, 0);
+    atomic_fetch_sub(&g_slot_waiting, 1);
     g_slot_queue_ns += t1 - t0; g_slot_serve_ns += now_ns() - t1; g_slot_n++;   // (under the slot's lock)
     pthread_mutex_unlock(&g_slot_mu);
     return r;
@@ -306,6 +311,13 @@ void nx_progress(void) {
     { void nx_core_stats(char *, size_t); __attribute__((weak)) void nx_yield_top(char *, size_t); char cs[240], yt[400] = "";
       nx_core_stats(cs, sizeof cs); if (nx_yield_top) nx_yield_top(yt, sizeof yt);
       LOG("cores: %s", cs); if (yt[0]) LOG("most yields since the last line: %s", yt); }
+    { extern _Atomic uint64_t nx_yrun_len[16], nx_yrun_by_host, nx_yrun_by_svc[128]; static uint64_t pl[16], ph, ps[128]; char b[400]; size_t o = 0; uint64_t runs = 0;
+      for (int i = 0; i < 16; i++) { uint64_t v = nx_yrun_len[i], d = v - pl[i]; pl[i] = v; runs += d; if (d) o += (size_t)snprintf(b + o, sizeof b - o, " %d+:%llu", 1 << i, (unsigned long long)d); }
+      uint64_t hv = nx_yrun_by_host, hd = hv - ph; ph = hv; int top = 0, top2 = 0; uint64_t dv[128];
+      for (int i = 0; i < 128; i++) { uint64_t v = nx_yrun_by_svc[i]; dv[i] = v - ps[i]; ps[i] = v; }
+      for (int i = 1; i < 128; i++) if (dv[i] > dv[top]) top = i;
+      for (int i = 0; i < 128; i++) if (i != top && dv[i] >= dv[top2 == top ? (top ? 0 : 1) : top2]) top2 = i;
+      if (runs) LOG("yield runs since the last line: %llu; by length (yields in a row, from):%s; ended by a host call %llu, by svc %#x %llu, by svc %#x %llu", (unsigned long long)runs, b, (unsigned long long)hd, top, (unsigned long long)dv[top], top2, (unsigned long long)dv[top2]); }
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }
