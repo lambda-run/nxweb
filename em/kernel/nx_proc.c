@@ -65,6 +65,15 @@ const char *nx_where(uint64_t pc, char *buf, size_t n) {
 int thr_limit_used(void);
 EMSCRIPTEN_KEEPALIVE int nx_live_threads(void) { return thr_limit_used(); }   // live guest threads (the page's runtime label)
 
+// The page's keyboard and first controller, for nxnative's hle_hid.c (its front-end paths dm_input_set / dm_pad_set:
+// atomics, any thread). NpadButton bits and sticks of +-32767 as dm_input.h.
+__attribute__((weak)) void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+__attribute__((weak)) void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+EMSCRIPTEN_KEEPALIVE void nx_input(int controller, double buttons, int lx, int ly, int rx, int ry) {
+    if (controller) { if (dm_pad_set) dm_pad_set((uint64_t)buttons, lx, ly, rx, ry); }
+    else if (dm_input_set) dm_input_set((uint64_t)buttons, lx, ly, rx, ry);
+}
+
 // ---- thread-local region (nxnative thread.c guest_thread_init, without the pthread keys: the translated code reads
 // tpidr_el0 / tpidrro_el0 from its core's globals, which kernel/nx_guest.js sets from nx_tls / nx_tlr)
 #define TLS_SIZE 8192

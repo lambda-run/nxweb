@@ -16,6 +16,7 @@
   <span id="stage">choose the game file</span>
 </div>
 <div id="wrap"><canvas id="screen" width="1280" height="720"></canvas><div id="fps"></div></div>
+<div style="color:#888;margin-top:4px">keys: Z = A · X = B · C = X · V = Y · Enter = + · Backspace = − · Q / E = L / R · arrows or WASD = left stick · IJKL = right stick · or a controller</div>
 <div id="log"></div>
 <script>
 // The Emscripten runtime's page: nxnative's C under real threads, nxweb's translator, file system, recorder and
@@ -76,6 +77,31 @@ function start(file) {
     nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", stage: function (t) { $("stage").textContent = t; window.nxem.state = t; } },
   };
   var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s);
+  // input: the keyboard and the first controller, as the nxweb page maps them (web/main.ts): Z = A, X = B, C = X, V = Y,
+  // Enter = Plus, Backspace = Minus, Q / E = L / R, arrows or WASD = left stick, IJKL = right stick; a controller in the
+  // standard mapping. Sent to nn::hid (nxnative's hle_hid.c) when it changes.
+  var BTN = { A: 1, B: 2, X: 4, Y: 8, LS: 16, RS: 32, L: 64, R: 128, ZL: 256, ZR: 512, Plus: 1024, Minus: 2048, Left: 4096, Up: 8192, Right: 16384, Down: 32768 };
+  var KEY_BTN = { KeyZ: BTN.A, KeyX: BTN.B, KeyC: BTN.X, KeyV: BTN.Y, Enter: BTN.Plus, Backspace: BTN.Minus, KeyQ: BTN.L, KeyE: BTN.R };
+  var PAD_BTN = [BTN.B, BTN.A, BTN.Y, BTN.X, BTN.L, BTN.R, BTN.ZL, BTN.ZR, BTN.Minus, BTN.Plus, BTN.LS, BTN.RS, BTN.Up, BTN.Down, BTN.Left, BTN.Right];
+  var keys = new Set(), sentK = "", sentP = "";
+  addEventListener("keydown", function (e) { if (e.target === $("fileinput")) return; keys.add(e.code); if (KEY_BTN[e.code] || /^Arrow|^Key[WASDIJKL]$/.test(e.code)) e.preventDefault(); });
+  addEventListener("keyup", function (e) { keys.delete(e.code); });
+  addEventListener("blur", function () { keys.clear(); });
+  var pollInput = function () {
+    requestAnimationFrame(pollInput);
+    var M = window.Module; if (!M || !M._nx_input || !globalThis.NXOWNER) return;
+    var ax = function (neg, pos) { return (pos.some(function (k) { return keys.has(k); }) ? 32767 : 0) - (neg.some(function (k) { return keys.has(k); }) ? 32767 : 0); };
+    var b = 0; keys.forEach(function (k) { b |= KEY_BTN[k] || 0; });
+    var k = [b, ax(["ArrowLeft", "KeyA"], ["ArrowRight", "KeyD"]), ax(["ArrowDown", "KeyS"], ["ArrowUp", "KeyW"]), ax(["KeyJ"], ["KeyL"]), ax(["KeyK"], ["KeyI"])];
+    if (k.join() !== sentK) { sentK = k.join(); M._nx_input(0, k[0], k[1], k[2], k[3], k[4]); }
+    var gp = Array.prototype.find.call(navigator.getGamepads ? navigator.getGamepads() : [], function (g) { return g && g.connected && g.mapping === "standard"; });
+    var p = [0, 0, 0, 0, 0];
+    if (gp) { gp.buttons.forEach(function (x, i) { if (x.pressed && PAD_BTN[i]) p[0] |= PAD_BTN[i]; });
+      var dead = function (v) { return Math.abs(v) < 0.12 ? 0 : Math.round(v * 32767); };
+      p[1] = dead(gp.axes[0] || 0); p[2] = -dead(gp.axes[1] || 0); p[3] = dead(gp.axes[2] || 0); p[4] = -dead(gp.axes[3] || 0); }
+    if (p.join() !== sentP) { sentP = p.join(); M._nx_input(1, p[0], p[1], p[2], p[3], p[4]); }
+  };
+  requestAnimationFrame(pollInput);
   var last = 0, lastT = performance.now();
   setInterval(function () {
     var o = globalThis.NXOWNER; if (!o) return;
