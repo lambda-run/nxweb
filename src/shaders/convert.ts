@@ -25,7 +25,7 @@ export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions 
     stage: opts.mesh ? (opts.mesh.kind === "ts" ? "task" : "mesh") : f.stage, entry: "main",
     ...(opts.mesh ? { mesh: opts.mesh } : {}),
     ubos: cb.map(b => b.reg!).sort((a, b) => a - b),
-    textures: tex.map(t => ({ slot: t.reg!, dim: t.dim!, depth: t.sampleType === "depth", ...(t.handle ? { handle: t.handle } : {}) })).sort((a, b) => a.slot - b.slot),
+    textures: tex.map(t => ({ slot: t.reg!, dim: t.dim!, depth: t.sampleType === "depth", ...(t.handle ? { handle: t.handle } : {}), ...(t.nosampler ? { sampler: false as const } : t.samplerOf !== undefined ? { sampler: t.samplerOf } : {}) })).sort((a, b) => a.slot - b.slot),
     fixup: f.bindings.some(b => b.kind === "fixup"),
     ...(f.bindings.some(b => b.kind === "draw") ? { drawParams: true } : {}),
     ...(sb.length ? { storage: sb.map(b => ({ slot: b.reg!, write: !!b.write, ...(b.ubo === undefined ? {} : { ubo: b.ubo }) })).sort((a, b) => a.slot - b.slot) } : {}),

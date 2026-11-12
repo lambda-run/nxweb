@@ -5,8 +5,8 @@ export interface NvnFormat { tex?: string; bpb: number; bw: number; bh: number; 
 const F = (tex: string | undefined, bpb: number, vtx?: string, kind: NvnFormat["kind"] = "float", bw = 1, bh = 1, stencil = false): NvnFormat => ({ tex, bpb, bw, bh, kind, vtx, stencil });
 
 export const NVN_FORMATS: Record<number, NvnFormat> = {
-  0x01: F("r8unorm", 1, undefined), 0x02: F("r8snorm", 1), 0x03: F("r8uint", 1, undefined, "uint"), 0x04: F("r8sint", 1, undefined, "sint"),
-  0x05: F("r16float", 2), 0x08: F("r16uint", 2, undefined, "uint"), 0x09: F("r16sint", 2, undefined, "sint"),
+  0x01: F("r8unorm", 1, "unorm8"), 0x02: F("r8snorm", 1, "snorm8"), 0x03: F("r8uint", 1, "uint8", "uint"), 0x04: F("r8sint", 1, "sint8", "sint"),
+  0x05: F("r16float", 2, "float16"), 0x06: F(undefined, 2, "unorm16"), 0x07: F(undefined, 2, "snorm16"), 0x08: F("r16uint", 2, "uint16", "uint"), 0x09: F("r16sint", 2, "sint16", "sint"),
   0x0a: F("r32float", 4, "float32"), 0x0b: F("r32uint", 4, "uint32", "uint"), 0x0c: F("r32sint", 4, "sint32", "sint"),
   0x0d: F("rg8unorm", 2, "unorm8x2"), 0x0e: F("rg8snorm", 2, "snorm8x2"), 0x0f: F("rg8uint", 2, "uint8x2", "uint"), 0x10: F("rg8sint", 2, "sint8x2", "sint"),
   0x11: F("rg16float", 4, "float16x2"), 0x12: F(undefined, 4, "unorm16x2"), 0x13: F(undefined, 4, "snorm16x2"), 0x14: F("rg16uint", 4, "uint16x2", "uint"), 0x15: F("rg16sint", 4, "sint16x2", "sint"),
@@ -24,7 +24,7 @@ export const NVN_FORMATS: Record<number, NvnFormat> = {
   0x45: F("bc1-rgba-unorm-srgb", 8, undefined, "float", 4, 4), 0x46: F("bc1-rgba-unorm-srgb", 8, undefined, "float", 4, 4), 0x47: F("bc2-rgba-unorm-srgb", 16, undefined, "float", 4, 4), 0x48: F("bc3-rgba-unorm-srgb", 16, undefined, "float", 4, 4),
   0x49: F("bc4-r-unorm", 8, undefined, "float", 4, 4), 0x4a: F("bc4-r-snorm", 8, undefined, "float", 4, 4), 0x4b: F("bc5-rg-unorm", 16, undefined, "float", 4, 4), 0x4c: F("bc5-rg-snorm", 16, undefined, "float", 4, 4),
   0x4d: F("bc7-rgba-unorm", 16, undefined, "float", 4, 4), 0x4e: F("bc7-rgba-unorm-srgb", 16, undefined, "float", 4, 4), 0x4f: F("bc6h-rgb-float", 16, undefined, "float", 4, 4), 0x50: F("bc6h-rgb-ufloat", 16, undefined, "float", 4, 4),
-  0x6d: F("rgba8unorm", 4), 0x99: F("bgra8unorm", 4), 0x9a: F("bgra8unorm", 4), 0x9b: F("bgra8unorm-srgb", 4), 0x9c: F("bgra8unorm-srgb", 4),
+  0x6d: F("rgba8unorm", 4), 0x99: F("bgra8unorm", 4), 0x9a: F("bgra8unorm", 4, "unorm8x4-bgra"), 0x9b: F("bgra8unorm-srgb", 4), 0x9c: F("bgra8unorm-srgb", 4),
 };
 
 // Formats WebGPU cannot hold as they are stored. The recorder converts their texels on upload (src/gfx/fmt.ts fmtXform,
@@ -44,6 +44,22 @@ export function hostFormat(format: number, caps: number): (NvnFormat & { conv?: 
   if (n) return caps & 2 ? F(n[0], n[2]) : { ...F(n[1], n[2]), conv: true };
   return NVN_FORMATS[format];
 }
+// Vertex attribute formats WebGPU has no vertex format for, which the replayer converts on the CPU into a buffer of their own (GfxHost vertexConverted):
+// the WebGPU format of the converted elements and their size. 0x69: RGB10A2 signed normalized (10 10 10 2 bits from bit 0), as four snorm16
+export const VERTEX_CONV: Record<number, { vtx: string; bytes: number }> = { 0x69: { vtx: "snorm16x4", bytes: 8 } };
+export function convertVertices(format: number, src: DataView, offset: number, stride: number, count: number): Int16Array {
+  const out = new Int16Array(count * 4), n10 = (v: number) => Math.round(Math.max(-511, v) * 32767 / 511);
+  for (let i = 0, p = offset; i < count; i++, p += stride) {
+    const v = src.getUint32(p, true);
+    out[i * 4] = n10(v << 22 >> 22); out[i * 4 + 1] = n10(v << 12 >> 22); out[i * 4 + 2] = n10(v << 2 >> 22); out[i * 4 + 3] = Math.max(-1, v >> 30) * 32767;
+  }
+  return out;
+}
+// Float formats a `float` (filterable) binding may not take on every device: the 32-bit floats without `float32-filterable`, and the 16-bit normalized ones
+// (Chromium samples them unfiltered). The replayer asks the device which it filters (GfxHost.probe)
+export const MAYBE_UNFILTERABLE = ["r16unorm", "r16snorm", "rg16unorm", "rg16snorm", "rgba16unorm", "rgba16snorm", "r32float", "rg32float", "rgba32float"];
+// Storage images that are read and written by one shader: core WebGPU has three such formats (more with `texture-formats-tier2`: the device is asked)
+export const STORAGE_RW_FORMATS = new Set(["r32float", "r32uint", "r32sint"]);
 // Formats a texture may be bound as a storage image with (core WebGPU; bgra8unorm needs the feature `bgra8unorm-storage`)
 export const STORAGE_FORMATS = new Set(["rgba8unorm", "rgba8snorm", "rgba8uint", "rgba8sint", "rgba16uint", "rgba16sint", "rgba16float", "r32uint", "r32sint", "r32float", "rg32uint", "rg32sint", "rg32float",
   "rgba32uint", "rgba32sint", "rgba32float"]);

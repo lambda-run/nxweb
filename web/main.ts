@@ -6,10 +6,16 @@
 import { AudioDeviceMain } from "../src/glue/audio_device_main.ts";
 
 const $ = (id: string) => document.getElementById(id)!;
+// which runtime this page is: the language the kernel and services are written in, how it reaches the browser, the graphics API, and how guest
+// threads run with this address's options. Shown beside the build stamp and on the picture's readout. (The Emscripten port sets RT_KIND to its own.)
+const RT_KIND = "AssemblyScript \u2192 WebAssembly";
+const rtLabel = (() => { const q = new URLSearchParams(location.search), sh = q.get("shared") === "1", h = Number(q.get("helpers") ?? 0) | 0, c = q.get("cores")?.startsWith("8") ? 8 : 4;
+  return `rt ${RT_KIND} \u00b7 WebGPU \u00b7 ${sh && h ? `1 worker + ${h} helpers` : "1 worker"}, ${c} virtual cores${sh ? ", shared memory" : ""}`; })();
 // which build this is (build/web/build.json, written by web:build), at the top of the page
 fetch("build.json", { cache: "no-store" }).then(r => r.json()).then((b: { commit: string; branch: string; dirty: boolean; date: string; md5: string }) => {
   const el = $("build");
   el.textContent = `${b.commit}${b.dirty ? "+changes" : ""} · ${b.date.slice(0, 16).replace("T", " ")} UTC · md5 ${b.md5.slice(0, 8)}`;
+  el.textContent += ` \u00b7 ${rtLabel}`;
   el.title = `branch ${b.branch}, commit ${b.commit}${b.dirty ? " with uncommitted changes" : ""}, built ${b.date}, md5 of the built files ${b.md5}`;
 }, () => { $("build").textContent = "build unknown"; });
 const worker = new Worker("worker.js" + location.search);   // (?mem64=1 reaches the worker: every program in the 64-bit memory mode)
@@ -109,7 +115,7 @@ worker.onmessage = ev => {
     // under the number: what the number is and where a frame's time goes. "game" is frames the game presents a second; "video" is movie pictures a
     // second while a movie plays (a movie can be slower than the game's frames); then one frame's milliseconds in translated game code, in nxweb's
     // own host calls, in WebGPU calls, and waiting
-    hudMore = m.fps === undefined ? "" : `game frames ${m.fps.toFixed(0)}/s${m.video > 0.5 ? ` · video ${m.video.toFixed(0)}/s` : ""}` +
+    hudMore = m.fps === undefined ? "" : `${rtLabel}\ngame frames ${m.fps.toFixed(0)}/s${m.video > 0.5 ? ` · video ${m.video.toFixed(0)}/s` : ""}` +
       (m.ms ? `\ncode ${m.ms.code.toFixed(1)} · host ${m.ms.host.toFixed(1)} · gpu ${m.ms.gpu.toFixed(1)} · idle ${m.ms.idle.toFixed(1)} ms` : "");
     // before the first frames of a build whose shaders are not stored yet the picture is black for minutes: say what is going on
     { const sh = /shaders: (\d+) ready \(\d+ library, (\d+) stored, (\d+) translated\)/.exec(m.more ?? "");

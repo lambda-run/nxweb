@@ -76,6 +76,8 @@ export interface Binding {
   // sampler ID in the high 12), read by the host at each draw; `sampler`: a second word ORed into it, or the sampler ID as a constant (nxnative tex_ubo / samp_ubo)
   // or a slot of a pool texture (pool.ts): one of the first distinct handles of a record table in a storage buffer, found by the recorder at each draw
   handle?: { ubo: number; offset: number; sampler?: { ubo: number; offset: number } | { id: number } } | PoolHandle;
+  samplerOf?: number;  // tex: it samples through the sampler binding of this other texture slot, having none of its own (shareSamplers)
+  nosampler?: boolean; // tex: the shader only fetches from it or asks its size; no sampler is declared at binding + 1 (fetchOnlySamplers)
   name: string;        // the translator's name of the variable, for the reader
 }
 export interface FixResult {
@@ -103,6 +105,11 @@ export interface FixOptions {
   mesh?: { kind: "ts" | "ms"; task?: boolean };
   // warp operations (spv_subgroups.ts): "native" when the device has WebGPU's subgroups feature, else "single" (the default: one-invocation subgroups)
   subgroups?: SubgroupPath;
+  // the device's maxStorageBuffersPerShaderStage (the replayer asks for the adapter's maximum): what global memory through loaded addresses may take beside
+  // the stage's own storage buffers. Default GMEM_STORAGE_BUDGET (WebGPU's guaranteed 8 leaves some stages short, most desktop adapters give 10 or more)
+  storageBuffers?: number;
+  // the device's maxSamplersPerShaderStage (default 16, WebGPU's guaranteed number): a stage that samples more textures shares sampler bindings (shareSamplers)
+  samplers?: number;
 }
 
 // The nxweb binding convention (src/gfx/README.md), with the three things a translated shader has and a hand-written one has not:
@@ -454,6 +461,38 @@ function splitSamplers(c: Ctx): Map<number, number> {
   return samplerOf;
 }
 
+// 3a. A texture the shader only fetches from or asks the size of (OpImageFetch, the size and level queries: everything it does with the pair goes through OpImage)
+// needs no sampler: WGSL's textureLoad and textureDimensions take none, and a device has few sampler bindings a stage (WebGPU guarantees 16, and Metal gives no
+// more) where NVN has a sampler with every texture unit. Its sampler variable is dropped and the texture is reported `nosampler`: the host binds none for it
+function fetchOnlySamplers(c: Ctx, samplerOf: Map<number, number>): Set<number> {
+  const none = new Set<number>();
+  if (!samplerOf.size) return none;
+  const imageOf = new Map<number, number>(), siOf = new Map<number, { tv: number; image: number }>(), needed = new Set<number>();
+  let inBody = false;
+  for (const i of c.m.insts) {
+    if (i.op === Op.Function) inBody = true;
+    if (!inBody) continue;
+    if (i.op === Op.Load && samplerOf.has(i.w[2])) { imageOf.set(i.w[1], i.w[2]); continue; }
+    if (i.op === Op.SampledImage && imageOf.has(i.w[2])) { siOf.set(i.w[1], { tv: imageOf.get(i.w[2])!, image: i.w[2] }); continue; }
+    if (i.op === 100 /* OpImage */) continue;
+    for (const k of idOperands(i)) { const si = siOf.get(i.w[k]); if (si) needed.add(si.tv); else if (imageOf.has(i.w[k]) && i.op !== Op.SampledImage) needed.add(imageOf.get(i.w[k])!); }
+  }
+  for (const tv of samplerOf.keys()) if (!needed.has(tv)) none.add(tv);
+  if (!none.size) return none;
+  const svGone = new Set([...none].map(tv => samplerOf.get(tv)!)), out: Inst[] = [];
+  for (const i of c.m.insts) {
+    if (i.op === Op.SampledImage && siOf.has(i.w[1]) && none.has(siOf.get(i.w[1])!.tv)) continue;
+    if (i.op === Op.Load && svGone.has(i.w[2])) continue;
+    if (i.op === Op.Variable && svGone.has(i.w[1])) continue;
+    if ((i.op === Op.Name || i.op === Op.Decorate) && svGone.has(i.w[0])) continue;
+    if (i.op === 100 && siOf.has(i.w[2]) && none.has(siOf.get(i.w[2])!.tv)) { out.push({ op: 83 /* OpCopyObject */, w: [i.w[0], i.w[1], siOf.get(i.w[2])!.image] }); continue; }
+    out.push(i);
+  }
+  c.m.insts = out;
+  for (const tv of none) (c.def.get(tv) as any).nosampler = true;
+  return none;
+}
+
 // 3b. OpImageQueryLod (Maxwell TMML, GLSL textureQueryLod): WGSL has no such query. In a pixel shader the LOD is computed as the hardware does, from the screen-space
 // derivatives of the coordinate scaled by the texture's size at level 0: λ = log2(max(|∂uv/∂x|, |∂uv/∂y|)); x = λ clamped to the mip chain, y = λ unclamped. The
 // sampler's LOD bias and clamps are not applied. A cube's coordinate is a direction: its derivatives are divided by the major axis (a face spans [-1, 1], so half its
@@ -710,7 +749,7 @@ export function storageSlot(binding: number | undefined, name: string, stage: Fi
 export const GMEM_SLOT0 = 32, GMEM_MAP_BINDING = 224, GMEM_MAX_POINTERS = 8, GMEM_STORAGE_BUDGET = 10;
 interface GmemPlaced extends GmemInfo { vars: number[]; map: number }
 const NO_RESULT = new Set([0, 8, 317, 56, 62, 63, 64, 99, 218, 219, 220, 221, 224, 225, 228, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 5364, 5365]);
-function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>, mesh?: { kind: "ts" | "ms"; task?: boolean }): GmemPlaced | undefined {
+function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>, mesh?: { kind: "ts" | "ms"; task?: boolean }, budget = GMEM_STORAGE_BUDGET): GmemPlaced | undefined {
   const ent = sbufs.filter(s => s.cb_slot === GMEM_MAP_CB_SLOT);
   if (!ent.length) return undefined;
   const svars = c.m.insts.filter(v => v.op === Op.Variable && (v.w[2] === SC.StorageBuffer || (v.w[2] === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))));
@@ -784,8 +823,8 @@ function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixO
   if (!found.size) throw new Error(`storage buffer ${gname}: global memory traced to no storage buffer, and no call of a raw load helper: not placed`);
   const pointers = [...found.values()].map(p => ({ slot: storageSlot(c.decoration(p.variable, Dec.Binding), c.names.get(p.variable) ?? "", stage, sbufs, mesh?.kind), word: p.word })).sort((a, b) => a.slot - b.slot || a.word - b.word);
   if (pointers.length > GMEM_MAX_POINTERS || pointers.some(p => p.word > 255)) throw new Error(`global memory through ${pointers.length} loaded addresses (${pointers.map(p => `${p.slot}:${p.word}`).join(", ")}; at most ${GMEM_MAX_POINTERS}, in the first 256 words of their buffers): not placed yet`);
-  const own = svars.length - 1 + (mesh ? (mesh.kind === "ms" && mesh.task ? 3 : 2) : 0), N = Math.min(pointers.length, GMEM_STORAGE_BUDGET - own);
-  if (N < 1) throw new Error(`global memory through loaded addresses in a stage that has ${own} storage buffers already: WebGPU devices allow ${GMEM_STORAGE_BUDGET} a stage at most, none is left for the memory read`);
+  const own = svars.length - 1 + (mesh ? (mesh.kind === "ms" && mesh.task ? 3 : 2) : 0), N = Math.min(pointers.length, budget - own);
+  if (N < 1) throw new Error(`global memory through loaded addresses in a stage that has ${own} storage buffers already: this device allows ${budget} a stage (maxStorageBuffersPerShaderStage), none is left for the memory read`);
 
   // The table, the buffers and what the helpers need, at the end of the globals
   const st = STAGE_INDEX[stage];
@@ -1053,7 +1092,7 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
       set(id, b.group, b.binding); out.push(b);
     } else if (sc === SC.UniformConstant) {
       if (samplerOf.has(id)) {
-        const info = imageInfo(c, (v as any).image), sv = samplerOf.get(id)!;
+        const info = imageInfo(c, (v as any).image), sv = samplerOf.get(id)!, nosampler = !!(v as any).nosampler;
         let slot: number, handle: Binding["handle"];
         if (mode === "keep") slot = ((c.decoration(id, Dec.Binding) ?? 0) - st * 64) >> 1;
         else if (pools?.has(id)) { handle = pools.get(id)!; slot = freeSlot(name); }   // the pass's own slot of a pool texture (pool.ts, which notes it)
@@ -1072,7 +1111,8 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
         }
         const t: Binding = { kind: "tex" as const, reg: slot, ...where(id, 1, st * 64 + slot * 2), ...info, name };
         if (handle) t.handle = handle;
-        set(id, t.group, t.binding); out.push(t);
+        set(id, t.group, t.binding); out.push(t); TEX_VAR.set(t, id);
+        if (nosampler) { t.nosampler = true; continue; }
         const s = { kind: "samp_tex" as const, reg: slot, ...where(sv, 1, st * 64 + slot * 2 + 1), sampleType: info.sampleType, name: c.names.get(sv)! };
         set(sv, s.group, s.binding); out.push(s);
       } else if ([...samplerOf.values()].includes(id)) continue;
@@ -1084,6 +1124,45 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
     }
   }
   return out;
+}
+
+// 5d. More samplers than the device binds a stage (maxSamplersPerShaderStage: WebGPU guarantees 16, Metal has no more; NVN has a sampler with each of its 32
+// texture units a stage). The textures over the limit sample through another texture's sampler binding: their own sampler variable goes, the tex binding says
+// `samplerOf: <slot>`, and the host binds no sampler for them. Which sampler object a slot gets is run-time state, so a shared one can be the wrong one; the
+// choice, best first:
+//   1. a bindless texture whose sampler is a constant ID, with another of the same ID: exact;
+//   2. a pool texture's slot, with an earlier slot of the same record table and column (the shadow maps of a light list are sampled alike);
+//   3. the highest slots, each with the nearest lower slot of its kind.
+// Only a texture of the same sampler kind (comparison or not, float or integer) is a partner, and a partner keeps its own sampler. The host can tell when the
+// two slots' bound samplers differ at a draw (and say so); the note names every pair
+const TEX_VAR = new WeakMap<Binding, number>();
+function shareSamplers(c: Ctx, bindings: Binding[], samplerOf: Map<number, number>, limit: number) {
+  const own = bindings.filter(b => b.kind === "tex" && !b.nosampler && TEX_VAR.has(b)).sort((a, b) => a.reg! - b.reg!);
+  let over = own.length - limit;
+  if (over <= 0) return;
+  const kind = (b: Binding) => b.sampleType === "depth" ? "depth" : b.sampleType === "float" ? "float" : "int";
+  const share = new Map<Binding, Binding>(), kept = (b: Binding) => !share.has(b);
+  const constId = (b: Binding) => { const h: any = b.handle; return h && h.sampler && "id" in h.sampler ? h.sampler.id as number : undefined; };
+  const pool = (b: Binding) => { const h: any = b.handle; return h && "sbuf" in h ? `${h.sbuf}:${h.offset}:${h.stride}:${JSON.stringify(h.at ?? null)}` : undefined; };
+  const take = (b: Binding, to: Binding | undefined) => { if (over > 0 && to && to !== b && kept(to) && kept(b) && ![...share.values()].includes(b)) { share.set(b, to); over--; } };
+  for (const b of own) if (constId(b) !== undefined) take(b, own.find(o => o !== b && kept(o) && kind(o) === kind(b) && constId(o) === constId(b) && o.reg! < b.reg!));
+  for (const b of [...own].reverse()) if (pool(b) !== undefined) take(b, own.find(o => o !== b && kept(o) && kind(o) === kind(b) && pool(o) === pool(b) && o.reg! < b.reg!));
+  for (const b of [...own].reverse()) take(b, [...own].reverse().find(o => o.reg! < b.reg! && kept(o) && kind(o) === kind(b)));
+  if (over > 0) throw new Error(`${own.length} textures are sampled, the device binds ${limit} samplers a stage (maxSamplersPerShaderStage), and ${over} of them ha${over === 1 ? "s" : "ve"} no texture of the same sampler kind to share one with`);
+  const redirect = new Map<number, number>();   // sampler variable -> the partner's
+  for (const [b, to] of share) { redirect.set(samplerOf.get(TEX_VAR.get(b)!)!, samplerOf.get(TEX_VAR.get(to)!)!); b.samplerOf = to.reg; }
+  const out: Inst[] = [];
+  for (const i of c.m.insts) {
+    if ((i.op === Op.Variable && redirect.has(i.w[1])) || ((i.op === Op.Name || i.op === Op.Decorate) && redirect.has(i.w[0]))) continue;
+    if (i.op === Op.Load && redirect.has(i.w[2])) i.w[2] = redirect.get(i.w[2])!;
+    out.push(i);
+  }
+  c.m.insts = out;
+  const gone = new Set([...share.keys()].map(b => b.binding + 1));
+  for (let k = bindings.length - 1; k >= 0; k--) if (bindings[k].kind === "samp_tex" && bindings[k].group === 1 && gone.has(bindings[k].binding)) bindings.splice(k, 1);
+  const exact = (b: Binding, to: Binding) => constId(b) !== undefined && constId(b) === constId(to);
+  c.notes.push(`${own.length} sampled textures, ${limit} samplers a stage on this device: ${[...share].map(([b, to]) => `slot ${b.reg} samples with slot ${to.reg}'s sampler${exact(b, to) ? " (the same constant sampler ID)" : ""}`).join(", ")}` +
+    ([...share].every(([b, to]) => exact(b, to)) ? "" : "; where the game binds the two slots different samplers, the shared slot's filtering and addressing are its partner's"));
 }
 
 // 6. position.y *= fix.y; position.z = position.z * fix.z + position.w * fix.w, before every return of the entry point (src/gfx/lower.ts emitState)
@@ -1150,17 +1229,19 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   const posVar = perVertex(c); c.index();
   const pools = (opts.bindings ?? "nxweb") === "nxweb" ? poolTextures(c, stage, opts.sbufs ?? [], opts.mesh?.kind) : undefined; c.index();
   const samplerOf = splitSamplers(c); c.index();
+  if ((opts.bindings ?? "nxweb") === "nxweb") { fetchOnlySamplers(c, samplerOf); c.index(); }
   queryLod(c, stage); c.index();
   imageAtomics(c); c.index();
   const sizes = opts.shrinkUniforms === false ? new Map<number, number>(c.m.insts.filter(i => i.op === Op.Variable && i.w[2] === SC.Uniform).map(v => [v.w[1], structSize(c, c.def.get(c.def.get(v.w[0])!.w[2])!)])) : shrinkUniforms(c);
-  const gm = (opts.bindings ?? "nxweb") === "nxweb" && opts.sbufs ? globalMemory(c, stage, opts.sbufs, opts.mesh) : undefined; c.index();
+  const gm = (opts.bindings ?? "nxweb") === "nxweb" && opts.sbufs ? globalMemory(c, stage, opts.sbufs, opts.mesh, Math.max(1, opts.storageBuffers ?? GMEM_STORAGE_BUDGET)) : undefined; c.index();
   const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs, opts.mesh?.kind, gm, pools); c.index();
+  if ((opts.bindings ?? "nxweb") === "nxweb") { shareSamplers(c, bindings, samplerOf, Math.max(1, opts.samplers ?? 16)); c.index(); }
   if (stage === "vertex" && opts.fixup !== false) {
     if (!posVar) throw new Error("a vertex shader that never writes gl_Position");
     bindings.push(fixup(c, posVar)); c.index();
   }
   const draw = drawParameters(c); c.index();
   if (draw) bindings.push(draw);
-  for (const i of c.m.insts) delete (i as any).image, delete (i as any).sampler, delete (i as any).standIn;
+  for (const i of c.m.insts) delete (i as any).image, delete (i as any).sampler, delete (i as any).standIn, delete (i as any).nosampler;
   return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, ...(sg ? { subgroups: sg } : {}), ...(gm ? { gmem: { buffers: gm.buffers, pointers: gm.pointers } } : {}) };
 }

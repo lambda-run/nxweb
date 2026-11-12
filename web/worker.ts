@@ -86,12 +86,16 @@ function shortTimer(fn: () => void, ms: number): void { if (ms <= 4) spinTimer(f
 const noCanvas = new URLSearchParams(self.location?.search ?? "").get("canvas") === "off";
 // ?shaderdump=<url>: every stage the in-page translator fails on is POSTed there as <url>/sh-<key>.bin (u32 control length, control, code), so the
 // chain can be run on it outside the page (debugging; off by default, and the bytes go only where the URL says)
+// ?shaderdumpkeys=k1,k2 (or `all`), with ?shaderdump=: the named stages are POSTed there when a program first names them, whether they translate or not (a stage
+// whose WGSL the browser refuses, or one already in the store of earlier translations)
 const shaderDump = new URLSearchParams(self.location?.search ?? "").get("shaderdump");
 const dumpFailed = shaderDump ? (b: { key: string; control: Uint8Array; code: Uint8Array }) => {
   const body = new Uint8Array(4 + b.control.length + b.code.length);
   new DataView(body.buffer).setUint32(0, b.control.length, true); body.set(b.control, 4); body.set(b.code, 4 + b.control.length);
   void fetch(`${shaderDump}/sh-${b.key}.bin`, { method: "POST", body }).catch(() => {});
 } : undefined;
+const dumpKeysArg = new URLSearchParams(self.location?.search ?? "").get("shaderdumpkeys");
+const dumpKeys = !shaderDump || !dumpKeysArg ? undefined : dumpKeysArg === "all" ? "all" as const : new Set(dumpKeysArg.toLowerCase().split(",").map(s => s.trim()).filter(Boolean));
 // ?shared=1: the shared-memory mode (RuntimeOptions.shared; src/runtime/README.md, "Shared memory"): the same one
 // Worker and cooperative guest threads on a shared WebAssembly.Memory, with the translator's atomics. Only on a
 // cross-origin isolated page (SharedArrayBuffer); otherwise one log line and the normal mode.
@@ -130,7 +134,7 @@ async function init() {
   try { device = await requestDevice(); } catch (e: any) { gpuInfo = "no WebGPU device (" + (e?.message ?? e) + "): the null replayer (nothing is drawn)"; }
   // (after the device: whether it has WebGPU subgroups decides how warp operations are translated)
   try { if ((await fetch("shaders/xlate_wasm/_framework/dotnet.js", { method: "HEAD" })).ok && (await fetch("shaders/nx_naga.wasm", { method: "HEAD" })).ok)
-    shaderTranslator = workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href, subgroups: GfxHost.hasSubgroups(device) }); } catch { /* none */ }
+    shaderTranslator = workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href, subgroups: GfxHost.hasSubgroups(device), storageBuffers: device?.limits?.maxStorageBuffersPerShaderStage, samplers: device?.limits?.maxSamplersPerShaderStage }); } catch { /* none */ }
   log("page: runtime modules compiled; " + gpuInfo);
   if (sharedAsked) log(sharedMem ? "page: shared-memory mode (?shared=1): each process gets a shared WebAssembly.Memory and the translator's atomic code; still one Worker (no speed-up expected); the translated-code cache of this mode is its own (first run translates again)"
     : `[RED] page: ?shared=1 was asked for but this page ${typeof SharedArrayBuffer === "undefined" ? "has no SharedArrayBuffer" : "is not cross-origin isolated (crossOriginIsolated is false: it needs Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp)"}; running in the normal mode`);
@@ -210,7 +214,7 @@ async function load(files: { name: string; bytes: Uint8Array }[], shaders: [stri
   // shaders: a library the user gave first, then translation in the page (stored by key and chain version)
   // a game's picture has the size the game presents (the demos keep the canvas they ask for)
   if (game) { gfx.host.fitCanvas = true; gfx.host.onCanvasSize = (width, height) => post({ type: "canvas", width, height }); }
-  try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined, onFailed: dumpFailed }); }
+  try { shaderLookup = new RtShaders(gfx, { library: o.nxsl, translator: shaderTranslator, store: typeof caches !== "undefined" ? webShaderStore() : undefined, onFailed: dumpFailed, dumpKeys, onDump: dumpFailed }); }
   catch (e: any) { log("[RED] page: the shader library was refused: " + (e?.message ?? e)); shaderLookup = new RtShaders(gfx, { translator: shaderTranslator }); }
   // the SDK take-overs, with nn::vi's present side from the graphics glue (vsync events tick at every present). The
   // controller applet's prompt is a dialog of the page, vibration goes to the player's controller; the input box, the

@@ -12,6 +12,7 @@
 import type { RtGfx } from "./rt_gfx.ts";
 import { ndveRole } from "./ndve.ts";
 import { ShaderLibrary, unsupportedExtra, type Reflection } from "../shaders/library.ts";
+import { vertexInputVariant } from "../shaders/variants.ts";
 
 export interface ShaderBlob { key: string; control: Uint8Array; code: Uint8Array }
 export interface Translated { wgsl: string; reflection: Reflection; failed?: string }   // failed: the chain's refusal of this stage, kept so that a later run does not translate it again (a new chain version asks again)
@@ -25,6 +26,9 @@ export interface ShaderOptions {
   store?: ShaderStore;                    // translations of earlier runs, by key + the translator's chain version
   wait?: boolean;                         // false: the game does not wait for a program's stages; its draws are skipped until they are there (pending)
   onFailed?: (blob: ShaderBlob, error: string) => void;   // a stage the translator failed on, with its bytes (the page's ?shaderdump=, for debugging the chain)
+  // stages handed over with their bytes when a program first names them, whatever becomes of them (translated, from the store, from the library): the named keys,
+  // or every stage (the page's ?shaderdumpkeys=k1,k2 | all: a stage whose WGSL the browser refuses is found by its key in the log)
+  dumpKeys?: Set<string> | "all"; onDump?: (blob: ShaderBlob) => void;
 }
 
 export class RtShaders {
@@ -104,6 +108,7 @@ export class RtShaders {
   need(key: string, blob: () => ShaderBlob): void {
     if (this.state.has(key)) return;
     this.stats.stages++;
+    if (this.o.onDump && this.o.dumpKeys && (this.o.dumpKeys === "all" || this.o.dumpKeys.has(key))) { try { this.o.onDump(blob()); } catch { /* a debugging hook */ } }
     const ndve = ndveRole(key);
     if (ndve) this.log(`[ndve] shader ${key} is ${ndve}${this.ndveSeen++ ? "" : " (the movie path reached nn::ndve; a failed one leaves the movie's picture undrawn)"}`);
     const lib = this.library?.get(key);
@@ -166,7 +171,9 @@ export class RtShaders {
     const r = t.reflection;
     const unknown = unsupportedExtra(r);
     if (unknown.length) return this.fail(key, `${from} has it with bindings src/gfx does not provide: ${unknown.join(", ")}`);
-    if (this.gfx.host.registerShader(key, { ...r, entry: r.entry ?? "main", wgsl: t.wgsl } as any) < 0) return this.fail(key, "registerShader refused the record");
+    // a vertex stage bound with attribute formats of another class than its inputs declare: the replayer asks for its text made over (ShaderInfo.variant)
+    const variant = r.stage === "vertex" ? { variant: (classes: Record<number, "float" | "sint" | "uint">) => vertexInputVariant(t.wgsl, classes) } : {};
+    if (this.gfx.host.registerShader(key, { ...r, entry: r.entry ?? "main", wgsl: t.wgsl, ...variant } as any) < 0) return this.fail(key, "registerShader refused the record");
     this.state.set(key, "ready"); this.stats.registered++;
     return true;
   }
@@ -184,10 +191,15 @@ export class RtShaders {
 // Stages wait in one queue here, in the order they were asked for, until a Worker is free; a free Worker takes up to
 // `batch` of them for one run of the translator. `prioritize` moves a key a draw waits on to the front. Each Worker
 // has its own .NET runtime (started when there is work for it), so `workers` of them translate at once.
-export const SHADER_CHAIN = "nxweb-shaders-10/page";
+export const SHADER_CHAIN = "nxweb-shaders-11/page";
 // subgroups: the device has WebGPU's subgroups feature (GfxHost.hasSubgroups): warp operations become WGSL subgroup builtins, else one-invocation subgroups
 // (src/shaders/spv_subgroups.ts). The output differs, so the chain (and with it every store id) says which.
-export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean; workers?: number; batch?: number }
+// samplers: the device's maxSamplersPerShaderStage (a stage that samples more textures shares sampler bindings; 16 is the default).
+// storageBuffers: the device's maxStorageBuffersPerShaderStage, the budget of memory read through loaded addresses (src/shaders/spv.ts globalMemory); the chain says
+// so when it is not the default 10
+export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean; storageBuffers?: number; samplers?: number; workers?: number; batch?: number }
+export const chainFor = (o: { chain?: string; subgroups?: boolean; storageBuffers?: number; samplers?: number }): string =>
+  (o.chain ?? SHADER_CHAIN) + (o.subgroups ? "+subgroups" : "") + (o.storageBuffers && o.storageBuffers !== 10 ? `+sb${o.storageBuffers}` : "") + (o.samplers && o.samplers !== 16 ? `+sm${o.samplers}` : "");
 export const defaultShaderWorkers = (): number => Math.max(1, Math.min(4, Math.floor(((globalThis as any).navigator?.hardwareConcurrency ?? 2) / 2)));
 export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator & { prioritize(key: string): void; stats: ShaderWorkerStats } {
   type Call = { id: number; key: string; control: Uint8Array; code: Uint8Array; res: (t: Translated) => void; rej: (e: Error) => void };
@@ -222,7 +234,7 @@ export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator &
     pool.push(x); stats.started++;
     x.bc.onmessage = ev => {
       const m = ev.data;
-      if (m.ready) { x.up = true; x.bc.postMessage({ init: { framework: o.framework, naga: o.naga, subgroups: !!o.subgroups } }); pump(); return; }
+      if (m.ready) { x.up = true; x.bc.postMessage({ init: { framework: o.framework, naga: o.naga, subgroups: !!o.subgroups, storageBuffers: o.storageBuffers, samplers: o.samplers } }); pump(); return; }
       const c = x.busy.get(m.id);
       if (!c || (m.wgsl === undefined && m.error === undefined)) return;
       x.busy.delete(m.id);
@@ -233,7 +245,7 @@ export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator &
     x.w.onerror = ev => drop(x, "the shader translator's Worker failed: " + (ev.message || "it could not be started"));
   };
   return {
-    chain: (o.chain ?? SHADER_CHAIN) + (o.subgroups ? "+subgroups" : ""),
+    chain: chainFor(o),
     stats,
     translate: blob => new Promise((res, rej) => {
       if (closed) { rej(new Error("the shader translator was closed")); return; }

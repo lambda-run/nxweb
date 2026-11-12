@@ -4,18 +4,19 @@
 // runtime's store.
 import type { PrepTree } from "../src/prepare/host/tree.ts";
 import type { ShaderPrewarm, ShaderScanSource, ScanFile } from "../src/prepare/host/shader_prewarm.ts";
-import { workerTranslator, webShaderStore, SHADER_CHAIN } from "../src/glue/rt_shaders.ts";
+import { workerTranslator, webShaderStore, SHADER_CHAIN, chainFor } from "../src/glue/rt_shaders.ts";
 import type { FileScan } from "../src/prepare/host/shader_scan.ts";
 
 const exists = (u: string) => fetch(u, { method: "HEAD" }).then(r => r.ok, () => false);
 export async function pagePrewarm(tree: PrepTree, module: WebAssembly.Module): Promise<ShaderPrewarm> {
   const have = (await Promise.all(["shader_worker.js", "shaders/nx_naga.wasm", "shaders/xlate_wasm/_framework/dotnet.js"].map(exists))).every(Boolean);
   // as the runtime will translate: with WGSL subgroups when the adapter has them (GfxHost.deviceDescriptor asks the runtime's device for them)
-  const subgroups = have && !!(await (navigator as any).gpu?.requestAdapter().catch(() => null))?.features?.has("subgroups");
+  const adapter = have ? await (navigator as any).gpu?.requestAdapter().catch(() => null) : null;
+  const subgroups = !!adapter?.features?.has("subgroups"), storageBuffers: number | undefined = adapter?.limits?.maxStorageBuffersPerShaderStage, samplers: number | undefined = adapter?.limits?.maxSamplersPerShaderStage;
   const n = Math.max(1, Math.min(2, Math.floor((navigator.hardwareConcurrency || 2) / 4)));
   return {
-    key: `page-1:${have ? SHADER_CHAIN + (subgroups ? "+subgroups" : "") : "scan-only"}`,
-    translators: have ? () => Array.from({ length: n }, () => workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href, subgroups })) : null,
+    key: `page-1:${have ? chainFor({ subgroups, storageBuffers, samplers }) : "scan-only"}`,
+    translators: have ? () => Array.from({ length: n }, () => workerTranslator({ worker: "shader_worker.js", framework: new URL("shaders/xlate_wasm/_framework", location.href).href, naga: new URL("shaders/nx_naga.wasm", location.href).href, subgroups, storageBuffers, samplers })) : null,
     store: typeof caches !== "undefined" ? webShaderStore() : null,
     source: (files: ScanFile[]): ShaderScanSource => {
       const worker = new Worker("prepare_shader_worker.js");

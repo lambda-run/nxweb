@@ -66,6 +66,7 @@ export function subgroups(c: Ctx, stage: "vertex" | "fragment" | "compute", want
     laneVar = c.id();
     c.m.insts.splice(c.firstFunction(), 0, { op: Op.Variable, w: [ptr, laneVar, SC.Input] });
     c.addDecoration(laneVar, Dec.BuiltIn, BI.LaneId);
+    if (stage === "fragment") c.addDecoration(laneVar, 14 /* Flat: Vulkan wants it on an integer input of a fragment stage */);
     c.m.insts.find(i => i.op === Op.EntryPoint)!.w.push(laneVar);
   }
 
@@ -80,9 +81,13 @@ export function subgroups(c: Ctx, stage: "vertex" | "fragment" | "compute", want
   const rawLane = () => laneType === u32 ? e(Op.Load, u32, laneVar!) : e(124, u32, e(Op.Load, laneType, laneVar!));
   const lane32 = () => native ? e(199, u32, rawLane(), ku(31)) : ku(0);
   const warpBase = () => e(199, u32, rawLane(), ku(0xffffffe0));
-  const ballotWord = (p: number) => native ? e(77, u32, e(339, uvec4, ku(3), p), e(194, u32, rawLane(), ku(5))) : e(169, u32, p, ku(1), ku(0));
-  // the warp's active lanes: a ballot of a true that is not a constant (naga writes a constant one as subgroupBallot(), which WGSL does not have)
-  const active = () => { const r = rawLane(); return ballotWord(e(170, bool, r, r)); };
+  // a ballot's predicate: naga writes a constant true one as `subgroupBallot()`, which WGSL does not have (the builtin takes a bool). The translator ballots
+  // a constant true itself (the active lanes), so every constant true predicate becomes a true that is none: lane == lane
+  const isTrue = (p: number) => { const d = c.def.get(p); return !!d && (d.op === 41 /* OpConstantTrue */ || d.op === 48 /* OpSpecConstantTrue */); };
+  const liveTrue = () => { const r = rawLane(); return e(170, bool, r, r); };
+  const ballotWord = (p: number) => native ? e(77, u32, e(339, uvec4, ku(3), isTrue(p) ? liveTrue() : p), e(194, u32, rawLane(), ku(5))) : e(169, u32, p, ku(1), ku(0));
+  // the warp's active lanes
+  const active = () => ballotWord(liveTrue());
   const findLsb = (x: number) => e(12, u32, glsl(), GLSL_FIND_ILSB, x);
   const eqMask = () => native ? e(196, u32, ku(1), lane32()) : ku(1);
   const ltMask = () => native ? e(130, u32, eqMask(), ku(1)) : ku(0);
