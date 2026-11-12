@@ -167,7 +167,9 @@ that every module, the glue and the page work with a `SharedArrayBuffer` behind 
   line and the normal mode. The options line of the report starts with `shared memory (?shared=1)`.
 - **Tests.** `NX_SHARED=1` (or a mode name with `s`: `NX_MEM=32s`) runs a suite's memory modes on a shared memory
   (`tools/modes.mjs`): `npm run rt:test:shared`, `kernel:test:shared`, `hle:test:shared`. In the mode the runtime
-  runner's `TextDecoder` refuses shared views like a browser's.
+  runner's `TextDecoder` refuses shared views like a browser's. Measured under Node 24: `rt:test` 61/61 in
+  [32s] and [64s] (as unshared), `hle:test` 106/106 in [32s], [64s], [64his], `kernel:test` the same results as unshared in
+  all three; one runtime case makes an `ldxr` at a misaligned address and checks the red line and its pc.
 
 Limits: one Worker (a second thread on the memory would need its own core instance, table and units, and a kernel
 that locks: none of that exists); 128-bit `STXP` is two exchanges with a roll-back, not one atomic pair; the
