@@ -4,7 +4,7 @@
 // (Emscripten's wasmMemory). Table indices are the same in every worker, so the pc map in the memory serves all.
 // NXA64 is nxweb's src/glue/a64_host.ts + rt_layout.ts, bundled unchanged (build_p2.sh) and included as --pre-js.
 addToLibrary({
-  $NX: { t: null, host: null, published: 0, EXIT: 0xFFFFFFF0n, RET: 0xFFFFFFC0n },
+  $NX: { t: null, host: null, published: 0 },   // pcs >= 0xFFFFFF00 return to the embedder: 0xFFFFFFF0 = thread exit, 0xFFFFFFC0 = return from a host call
 
   // the pc map (two levels; nxweb src/a64/README.md) read from the shared memory: pc -> table index, 0 = not translated
   $nxPcMap__deps: ['$NX'],
@@ -73,8 +73,9 @@ addToLibrary({
     const t = nxThread(), c = t.core, q = io / 8;
     HEAPU8.fill(0, t.ctx, t.ctx + 0x330); c.load_ctx(t.ctx);
     c.x0.value = HEAPU64[q]; c.x1.value = HEAPU64[q + 1]; c.x2.value = HEAPU64[q + 2]; c.x3.value = HEAPU64[q + 3]; c.x4.value = HEAPU64[q + 4];
-    c.pc.value = HEAPU64[q + 5]; c.sp.value = HEAPU64[q + 6]; c.x30.value = NX.EXIT; c.excl_addr.value = -1n;
-    while (c.pc.value !== NX.EXIT) { c.budget.value = 1 << 30; c.run(); }
+    c.pc.value = HEAPU64[q + 5]; c.sp.value = HEAPU64[q + 6]; const EXIT = BigInt(0xFFFFFFF0);
+    c.x30.value = EXIT; c.excl_addr.value = BigInt(-1);
+    while (c.pc.value !== EXIT) { c.budget.value = 1 << 30; c.run(); }
     HEAPU64[q] = c.x0.value;
   },
 
@@ -84,8 +85,9 @@ addToLibrary({
   nx_guest_call: function(pc, a0, a1, a2) {
     const t = nxThread(), c = t.core, save = _malloc(0x400);
     c.save_ctx(save);
-    c.x0.value = a0; c.x1.value = a1; c.x2.value = a2; c.x30.value = NX.RET; c.pc.value = pc;
-    while (c.pc.value !== NX.RET) { c.budget.value = 1 << 30; c.run(); }
+    c.x0.value = a0; c.x1.value = a1; c.x2.value = a2; const RET = BigInt(0xFFFFFFC0);
+    c.x30.value = RET; c.pc.value = pc;
+    while (c.pc.value !== RET) { c.budget.value = 1 << 30; c.run(); }
     const r = c.x0.value;
     c.load_ctx(save); _free(save);
     return r;
@@ -98,7 +100,7 @@ addToLibrary({
     const stop = (what) => () => { throw new Error('the translator realm does not run guest code (' + what + ')'); };
     const host = new NXA64.A64Host(HEAPU8.slice(tr, tr + trLen), HEAPU8.slice(hlp, hlp + hlpLen), {
       memory: wasmMemory, shared: true, layout: Object.assign({}, NXA64.A64, { codeRegionLo: codeLo }),
-      imports: { svc: stop('svc'), unimpl: stop('unimpl'), brk: stop('brk'), cntpct: () => 0n },
+      imports: { svc: stop('svc'), unimpl: stop('unimpl'), brk: stop('brk'), cntpct: () => BigInt(0) },
     });
     host.keepBytes = true;
     host.addCode(codeLo, codeSize);

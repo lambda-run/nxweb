@@ -7,8 +7,8 @@
 // Returns the counter (mode 0, 2) or the xor of the per-thread results (mode 1).
 typedef unsigned long u64; typedef unsigned int u32;
 #define WAITERS 0x40000000u
-struct shared { u32 mutex; u32 pad; volatile u64 counter; u64 atomic_counter; u64 lock_svcs; u64 per_thread[16]; u64 result[16]; };
-struct targ { u32 handle, idx; u64 rounds, mode; struct shared *s; };
+struct shared { u32 mutex; u32 pad; volatile u64 counter; u64 atomic_counter; u64 lock_svcs; u64 per_thread[16]; u64 result[16]; u64 started; };
+struct targ { u32 handle, idx; u64 rounds, mode, threads; struct shared *s; };
 
 #define SVC_ASM(n) "svc #" #n
 static inline u64 svc_create_thread(u32 *out, void (*entry)(void *), void *arg, void *stack_top, int prio, int core) {
@@ -55,6 +55,9 @@ __attribute__((noinline)) static u64 compute(u64 seed, u64 rounds) {   // xorshi
 }
 static void work(struct targ *t) {
   struct shared *s = t->s;
+  // start gate: every thread spins here until all of them run, so the rounds below really overlap
+  __atomic_fetch_add(&s->started, 1, __ATOMIC_SEQ_CST);
+  while (__atomic_load_n(&s->started, __ATOMIC_SEQ_CST) < t->threads) ;
   if (t->mode == 0) {
     for (u64 i = 0; i < t->rounds; i++) { lock(s, t->handle); s->counter = s->counter + 1; unlock(s, t->handle); s->per_thread[t->idx]++; }
   } else if (t->mode == 1) {
@@ -71,7 +74,7 @@ static struct targ T[16];
 static char stacks[16][0x4000] __attribute__((aligned(16)));
 __attribute__((section(".text.start"))) u64 guest_main(struct shared *s, u64 main_handle, u64 threads, u64 rounds, u64 mode) {
   if (threads > 16) threads = 16;
-  for (u64 i = 0; i < threads; i++) { T[i].idx = (u32)i; T[i].rounds = rounds; T[i].mode = mode; T[i].s = s; }
+  for (u64 i = 0; i < threads; i++) { T[i].idx = (u32)i; T[i].rounds = rounds; T[i].mode = mode; T[i].threads = threads; T[i].s = s; }
   T[0].handle = (u32)main_handle;
   for (u64 i = 1; i < threads; i++) {
     if (svc_create_thread(&T[i].handle, thread_entry, &T[i], stacks[i] + sizeof stacks[i], 44, (int)(i % 3))) return ~0ul;

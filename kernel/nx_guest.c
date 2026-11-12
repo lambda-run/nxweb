@@ -26,7 +26,7 @@ enum { NX_MAX_UNITS = 1 << 16, NX_TABLE_CAP = 1 << 18 };
 typedef struct { uint8_t *bytes; uint32_t len, table_base, nfuncs; } nx_unit_t;
 static nx_unit_t g_units[NX_MAX_UNITS];
 static _Atomic uint32_t g_nunits;
-static struct { uint8_t *p; uint32_t len; } g_mod[2];   // 0 = the core module (CPU state + run loop), 1 = helpers
+static struct { uint8_t *p; uint32_t len; } g_wmod[2];   // 0 = the core module (CPU state + run loop), 1 = helpers
 _Atomic uint64_t nx_stat_translate_ns, nx_stat_translate_calls, nx_stat_unit_bytes;
 
 EMSCRIPTEN_KEEPALIVE void nx_unit_publish(uint8_t *bytes, uint32_t len, uint32_t table_base, uint32_t nfuncs) {
@@ -41,9 +41,9 @@ EMSCRIPTEN_KEEPALIVE uint8_t *nx_unit_bytes(uint32_t i) { return g_units[i].byte
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_len(uint32_t i) { return g_units[i].len; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_base(uint32_t i) { return g_units[i].table_base; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_table_cap(void) { return NX_TABLE_CAP; }
-EMSCRIPTEN_KEEPALIVE void nx_mod_set(int which, uint8_t *p, uint32_t len) { g_mod[which].p = p; g_mod[which].len = len; }
-EMSCRIPTEN_KEEPALIVE uint8_t *nx_mod_ptr(int which) { return g_mod[which].p; }
-EMSCRIPTEN_KEEPALIVE uint32_t nx_mod_len(int which) { return g_mod[which].len; }
+EMSCRIPTEN_KEEPALIVE void nx_mod_set(int which, uint8_t *p, uint32_t len) { g_wmod[which].p = p; g_wmod[which].len = len; }
+EMSCRIPTEN_KEEPALIVE uint8_t *nx_mod_ptr(int which) { return g_wmod[which].p; }
+EMSCRIPTEN_KEEPALIVE uint32_t nx_mod_len(int which) { return g_wmod[which].len; }
 
 // ---- translator service
 static pthread_mutex_t tr_m = PTHREAD_MUTEX_INITIALIZER, tr_gate = PTHREAD_MUTEX_INITIALIZER;

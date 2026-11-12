@@ -7,6 +7,8 @@
 #include <stdatomic.h>
 #include <emscripten.h>
 #include <emscripten/stack.h>
+#include <emscripten/heap.h>
+#include <unistd.h>
 #include <emscripten/threading.h>
 
 uint32_t svc_thread_main_init(void);
@@ -22,7 +24,7 @@ uint32_t nx_unit_count(void);
 #define DATA 0x09000000ull
 #define STACK_TOP 0x09200000ull
 #define CODE_SPAN 0x00100000ull
-struct shared { uint32_t mutex, pad; uint64_t counter, atomic_counter, lock_svcs, per_thread[16], result[16]; };
+struct shared { uint32_t mutex, pad; uint64_t counter, atomic_counter, lock_svcs, per_thread[16], result[16], started; };
 #define S ((struct shared *)(uintptr_t)DATA)
 
 // the SVCs of the test guest ABI that are not thread SVCs (nxweb docs/CONTRACT.md)
@@ -66,7 +68,7 @@ static void *watchdog(void *arg) { (void)arg; sleep(240); LOG("[RED] FAIL no res
 
 int main(int argc, char **argv) {
     if (argc < 5) die("usage: p2 guest.bin translator.wasm helpers.wasm add3_addr [mutex rounds] [compute rounds]");
-    uint64_t add3 = strtoull(argv[4], 0, 16), mrounds = argc > 5 ? strtoull(argv[5], 0, 10) : 200000, crounds = argc > 6 ? strtoull(argv[6], 0, 10) : 100000000;
+    uint64_t add3 = strtoull(argv[4], 0, 16), mrounds = argc > 5 ? strtoull(argv[5], 0, 10) : 200000, crounds = argc > 6 ? strtoull(argv[6], 0, 10) : 300000000;
     g_t0_ns = now_ns();
     pthread_key_create(&g_key18, NULL);
     { pthread_t wd; pthread_create(&wd, NULL, watchdog, NULL); }

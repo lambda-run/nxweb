@@ -24,7 +24,7 @@ python3 $R/kernel/port_thread.py $NX/host/hle_thread.c $R/build/host/hle_thread.
 CF="-O2 -g1 -pthread -D_GNU_SOURCE -I$R/kernel/shim -I$NX/host -I$R/build/gen -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-format -Wno-unused-function"
 emcc $CF $R/build/host/hle_thread.c $R/kernel/nx_shims.c $R/kernel/nx_guest.c $R/test/p2_main.c -o $B/p2.js \
   --js-library $R/kernel/nx_guest.js --pre-js $B/a64_host.js \
-  -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=8 -sGLOBAL_BASE=268435456 -sSTACK_FIRST=0 -sINITIAL_MEMORY=536870912 \
+  -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=8 -sGLOBAL_BASE=268435456 -sINITIAL_MEMORY=536870912 \
   -sEXIT_RUNTIME=1 -sNODERAWFS=1 -sENVIRONMENT=node,worker -sEXPORTED_FUNCTIONS=_main,_malloc,_free
 ls -la $B/p2.js $B/p2.wasm | awk '{print $5, $9}'
 echo BUILD_P2_DONE
