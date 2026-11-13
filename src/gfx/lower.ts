@@ -871,7 +871,22 @@ function memFill(dst: usize, n: usize, v: u32): void {
   memDirty(dst, n);
   dirty |= D_VBUF | D_UBO;
 }
+// Stream writes (gfx_stream_writes(1); off by default): the bytes travel in the stream and the REPLAYER writes guest
+// memory when it gets there, as the console's GPU does (the game may not touch the range before the submission is
+// done there either). No flush: a frame of the game's first 3D area has about a hundred of these writes, and each
+// flush made the calling thread wait until the replayer had executed everything before it. What is given up: the
+// recorder itself (an address a shader loads, lower.ts emitGmem; an indirect draw's count) and the game's CPU read
+// the range as it was until the replayer has passed the record.
+let streamWrites = false;
+export function setStreamWrites(on: bool): void { streamWrites = on; }
 function memWrite(dst: usize, src: usize, n: usize): void {
+  if (streamWrites && dst && n && n <= 65536) {
+    R.reportOverwrite(dst, n);
+    const r = H.hostRec(H.H_MEM_WRITE, (24 + n + 7) & ~7);
+    store<u64>(r, <u64>dst, 8); store<u32>(r, <u32>n, 16); memory.copy(r + 24, src, n);
+    dirty |= D_VBUF | D_UBO;
+    return;
+  }
   H.hostFlush();
   R.reportOverwrite(dst, n);
   memory.copy(dst, src, n);

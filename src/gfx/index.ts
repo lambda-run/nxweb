@@ -9,7 +9,8 @@ import { NVN_NFUNC, ABI } from "./gen/names";
 import { deviceInit, deviceLost, deviceRestored, deviceState, deviceLosses } from "./device";
 import { setHostCaps } from "./fmt";
 import { astcRows } from "./astc";
-import { lowerInit, stat, passState } from "./lower";
+import { lowerInit, stat, passState, setStreamWrites } from "./lower";
+import { gmemFind, gmemLive, gmemWalked } from "./gmem";
 import { libRegister, shaderInit, shaderPending, shaderKeyState, shaderWaited, watchKey } from "./shader";
 import { arenaInit, ARENA_BYTES } from "./arena";
 import { pipelineDone, pipelineState, pipelineCount, pipelineInit } from "./pipeline";
@@ -139,3 +140,9 @@ export function gfx_static_end(): usize { return __heap_base; }
 const SCRATCH: usize = memory.data(512);
 export function gfx_scratch(): usize { return SCRATCH; }
 export function gfx_tex_level_offset(desc: usize, level: u32): u32 { return <u32>texLevelOffset(desc, level); }
+// For benchmarks and the status line: the live-buffer table (gmem.ts): the smallest live buffer an address lies in, how many are live, how many of them are walked
+export function gfx_gmem_find(p: u64): usize { return gmemFind(p, 0); }
+export function gfx_gmem_live(): i32 { return gmemLive(); }
+export function gfx_gmem_walked(): i32 { return gmemWalked(); }
+// 1: UpdateUniformBuffer and CopyBufferToBuffer do not flush; their bytes go into the stream as H_MEM_WRITE and the replayer writes guest memory (lower.ts memWrite)
+export function gfx_stream_writes(on: u32): void { setStreamWrites(on != 0); }

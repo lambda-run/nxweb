@@ -2550,6 +2550,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.FIXUP: { const f = [0, 1, 2, 3].map(i => dv.getFloat32(p + 8 + i * 4, true)); if (f.some((v, i) => v !== this.fix[i])) { this.fix = f; this.bindDirty = true; } break; }
         case H.COPY_T2B: this.copyT2B(dv, p); break;
         case H.FLUSH: this.flush(); break;
+        case 42 /* H_MEM_WRITE: the bytes into guest memory here, then as H_MEM_DIRTY of that range */: { const a = this.u64(dv, p + 8), n = dv.getUint32(p + 16, true); if (a && n && a + n <= this.memory.buffer.byteLength) { this.u8.copyWithin(a, p + 24, p + 24 + n); this.dropRange(a, n); } break; }
         case H.MEM_DIRTY: { const n = size >= 24 ? dv.getUint32(p + 16, true) : 0; if (n) this.dropRange(this.u64(dv, p + 8), n); else this.dropUploads(); break; }
         case H_REPORT: this.reportsSeen = true; this.reportsOpen.push({ id: dv.getUint32(p + 8, true), seg: this.segOf() }); break;
         case H_REPORT_COMMIT: this.reportsCommit = true; break;
