@@ -37,3 +37,123 @@ engineering time (a guess). If nxweb can put a guest thread on its own Worker wi
 shorter; the per-thread-instance seam is plain JS and nxweb can take it as it is.
 
 Toolchain: Emscripten 4.0.22 under /ctl/emsdk using Alpine's clang (see SETUP.md). 4 local commits, nothing pushed.
+
+# Memory, lock-free recording, fs worker (2026-11-13)
+
+All numbers: headless Chromium 156 in the VM (4 CPUs, 8 GB + zram), the real game with a warm translation cache
+(5,255 units, 363 MB of wasm), the default path (runtime in a worker), 240 s after the file was given (93 threads, the
+intro; the 3D area is not reached in that time). Resident + swapped MB of the renderer process from `/proc/<pid>/smaps`
+(`web/em_run.mjs` prints it every 60 s; `MEMINFRA=1` adds Chromium's own memory-infra dump). Real Chrome on the Mac was
+not run.
+
+## 1. Where the memory is
+
+Every guest thread's worker is a thread of ONE renderer process, so "per worker" cannot be read from the process list;
+blocked workers do not answer CDP either (`Runtime.getHeapUsage`, the memory-infra V8 dumps: "success: false"). What can
+be had: the renderer's mappings by kind, the wasm memory by GB of address (pagemap), PartitionAlloc's total, the page's
+own counters, and two unit costs measured apart from the game (`tools/chrome_costs.mjs`).
+
+| renderer, MB | before (6f9e89f) | after |
+|---|---|---|
+| the 16 GB wasm memory, touched | 3,003 | 2,565 |
+| of it the host heap (GB 14) | 571 (362 = the registry's copy of the units) | 196 (0) |
+| of it guest: GB 0-3 (images, pc map, alias region) / GB 10-11 (guest heap) / the rest | 1,026 / 1,148 / 258 | 987 / 1,150 / 232 |
+| PartitionAlloc superpages (1-4 MB mappings); memory-infra `malloc` | 1,409; 1,295 | 1,340; 1,088 |
+| executable (compiled wasm and JS) | 598 | 676 |
+| other anonymous (V8 heaps, tables, array buffers): 32-256 MB / >=256 MB / 4-32 MB / <1 MB | 456 / 288 / 339 / 374 | 455 / 317 / 321 / 372 |
+| files | 394 | 362 |
+| **renderer total** | **6,861** | **6,408** |
+
+Other processes (GPU 0.9-1.3 GB with SwiftShader, browser 0.5 GB) are the VM's software GPU and are not the port's.
+
+Unit costs in Chromium 156 (measured, no game): a function-table slot **12.6 bytes** (Node 24: 32, which is where the
+earlier "32 bytes" came from); a compiled module that a worker is handed and never instantiates **0.68 KB per module and
+worker** (5,255 modules: 3.5 MB a worker, 330 MB for 93); an idle worker 2.2 MB; a compiled module 12 KB at least.
+With those: the threads' tables are about 225 MB in all (18.6 M slots in 71 threads that run guest code), the module
+lists up to 330 MB. `translated wasm 363 MB` is held once by V8 beside the compiled code (inside `malloc`).
+
+What changed (kernel/nx_guest.js, nx_owner.js, nx_worker_pre.js, nx_units.cpp, nx_proc.c):
+
+- **The registry keeps no bytes of cached units.** The translator thread transfers each cached unit's bytes to the main
+  thread (Emscripten's `callHandler` message), which compiles each once and hands the modules to every worker before it
+  runs a thread, as before; the bytes never enter the host heap, and the translator realm drops them and the units'
+  side tables (120 MB) too. Host heap 571 -> 196 MB. Units translated while the game runs keep their bytes in the heap
+  (a running thread can only compile from bytes: a worker inside a thread never reads a message); with a warm cache
+  that is 1-3 MB, with no cache it is everything, once. The cache is now a module's first file plus one file per later
+  run (`<key>.d1`, ...): a run writes only what it translated.
+- **A worker unpacks its list of modules when its thread first runs guest code** (the message is marked by a dummy
+  port and kept unread; `malloc` 1,295 -> 1,088 MB together with the side tables). Threads that run no guest code
+  (22 of 93) never pay for it.
+- **Tables as long as the highest slot called**, slots handed out by use (units several threads used, then room for
+  what the run translates, then the units one thread used, thread by thread; the counts are kept beside the cache as
+  `units3-*.a64pop`). **This gained almost nothing** and the reason is measured: 209,526 of 265,000 slots belong to
+  units that two or more threads used, and 69 of 71 threads end with a table over half the longest (median 235,520 of
+  299,008 slots). The job workers each run a large, different part of the game. Paying only for the units a thread
+  calls needs a per-thread index (the pc map's first level taken from a per-instance global instead of a constant
+  folded into every unit): a translator change in nxweb's `src/a64`, not made here. At 12.6 bytes a slot the prize is
+  about 200 MB, not the 600 MB the 32-byte figure suggested.
+
+Not reduced, and why: the guest's own touched memory (2.4 GB: the game's heap, images, the alias region of mapped
+stacks); compiled code (0.68 GB, V8's two tiers of 363 MB of wasm); V8's copy of the wire bytes (363 MB). The first
+run without a cache still holds every unit's bytes in the host heap until the page is loaded again.
+Verified: proof 2 (`M=64 sh run_p2.sh a78c`: P2 PASS), headless boot to presents (first present 30 s after the recorder
+started, 844 presents in 240 s, the same 13 red lines as before, none new).
+
+## 2. Lock-free command recording
+
+What `nvnCommandBufferBindVertexBuffer` wrote: `const RANGE: usize = memory.data(16)` in `src/gfx/dispatch.ts`, 16 bytes
+of static memory at one address for every instance of the recorder. The entry point stores the buffer's address and
+size there and `bindVertexBuffers` reads them back; six threads at once read each other's values.
+`nvnCommandBufferBindImage` uses the same 16 bytes. A wasm global does not show such a write, so the static audit
+could not see it.
+
+- `tools/gfx_dynaudit.mjs`, the dynamic audit: the recorder alone on a 512 MB memory of its own, a device, four command
+  buffers per candidate, every candidate called with six made-up argument patterns while the static data, the globals
+  block and the used arena are compared before and after. Result for the current gfx64.wasm: of the 228 entry points
+  the static audit lets through, **58 + 66 stay lock-free** (builder setters; recording commands while the buffer has
+  32 KB of room), 1 range of scratch (16 bytes at 0x1838d80) is found and passes the scratch test (two fill patterns,
+  same records, same bytes left), **104 go back under the lock**: 99 because no pattern made them record anything
+  (most are entry points nxweb's recorder answers without a record), 3 that trapped, 2 that only took their error path.
+  It takes 4.5 s in Chromium (9 s in Node); the page keeps the verdict in the Cache API by the binary's SHA-256.
+- `tools/globals_to_memory.mjs` `statics`: address constants inside such a range go through a new exported global
+  `nx_tls` (default: the old address, so the owner's instance is unchanged); every guest thread's instance gets 16 bytes
+  of its own (`kernel/nx_guest.js`). 5 constants are rewritten.
+- `test/gfx_lockfree_test.mts`: now the full list, 66 recording commands, 6 with changing arguments, 6 workers, 49,896
+  commands and 4.1 MB per buffer: **passes** (0 of 6 buffers differ). Negative control `NX_NO_TLS=1` (scratch shared
+  again): fails, 4 of 6 differ. `NX_ONLY=4` (BindVertexBuffer alone): passes, and fails with `NX_NO_TLS=1`.
+- Enabled by default in the page (`?lockfree=0` turns it off); Node keeps `NX_GFX_LOCKFREE=1`.
+  Headless boot with it: first present 28.2 s, 680 presents in 200 s, the same 13 red lines as without, no recorder
+  error; in the final default run (200 s, 697 presents) 450,889 NVN calls went without the lock and 854,803 under it (694 sleeps for it). Node boot harness with it: 27.5 s until its memory stop, 9 red lines, none from the recorder.
+
+Not verified: the 3D area (six recording threads, 24,000 calls a frame) is not reached in a headless run, so the
+frame-rate gain there is not measured, and neither is how much of that traffic is among the 124 lock-free entry points.
+The dynamic audit sees only the paths its made-up arguments take; an entry point the audit could not make record stays
+under the lock, so the hot ones among the 104 (BindTexture, the draws: check the list `node em/tools/gfx_dynaudit.mjs`
+prints) need better argument patterns before they gain anything.
+
+## 3. fs reads off the owner (`?fsworker=1`)
+
+`owner/fs_worker.ts` (+ `owner/rom.ts`, the RomFS device shared with the owner): a dedicated worker holds the File,
+builds the same RomFS device with FileReaderSync (up in 7.1 s, beside the boot), and has its own instance of the fs
+module. With `?fsworker=1` the guest threads call the fs module themselves (`fsdirect`), a RomFS `dev_read` leaves its
+request in a slot (NXW, 0x1FF1F200) and pends; the worker reads into the shared memory 8 MB at a time, takes the
+module's lock, runs `fs_complete` in its instance, writes the result into the caller's context block and wakes it with
+`Atomics.notify`. The owner is asked only for a device's first read (it tells the worker the device's id) and for
+storage that is not the RomFS (saves). Off by default; without the flag nothing changed.
+A first version hung at boot (a thread holding the module's lock waited for the slot while the worker waited for the
+lock); the worker now empties the slot into its own queue also while it waits for the lock.
+
+| headless, to the intro | first present | owner: fs sections | longest | over 8 ms | fs worker |
+|---|---|---|---|---|---|
+| default (owner reads), 249 s | 30.0 s | 13,049 entries, 2,401 ms (0.96 %) | 80.6 ms | 13 (390 ms) | |
+| `?fsdirect=1`, 106 s | 27.8 s | 2,233 entries, 2,396 ms (2.26 %) | 124.7 ms | 17 (694 ms) | |
+| `?fsworker=1`, 189 s | 28.2 s | 18 entries, 7 ms (0.00 %) | 2.2 ms | 0 | 2,222 reads, 340 MB, 7.9 s reading, longest 301 ms |
+
+(`node em/tools/fs_stretch.mjs logs/<run>.console.txt`.) The owner's event-loop lag did not change (mean 12-15 ms, max
+0.4-0.9 s in all three: the replayer and the decoder). Not verified: the loading of the 3D area, where the 0.8-2.4 s
+stretches were seen (not reached headless); saves through this path; real Chrome.
+
+## Staged build
+`/em-next/` and, promoted by copying, `/em/`: the commit named in their `build.json`, built 2026-11-13 02:53 (lock-free
+recording on by default, `?fsworker=1` behind its flag). The run that passed on the default path: `logs/r7` (headless,
+200 s, first present 27.8 s, 697 presents, 13 red lines as before, renderer 6,298 MB).

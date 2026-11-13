@@ -12,7 +12,7 @@
 //     the caller's context block and wakes it with Atomics.notify.
 // What the module asks for while the worker completes a call (another storage call) is answered here when it is a
 // RomFS read, and by the owner otherwise, through the lock holder's request words, as for a guest thread.
-// NXW: i32 +0 the slot (0 free, 1 a request)  +4 1: the worker serves  +8 how many RomFS device ids follow  +12.. the ids (4)
+// NXW: i32 +0 the slot (0 free, 1 a request; the worker empties it into its own queue)  +4 1: the worker serves  +8 how many RomFS device ids follow  +12.. the ids (4)
 //      i64 +32 dev, offset, address, length, token, context block   f64 +96 reads, bytes, ms reading, longest read ms
 import { NupTree, blobBytes } from "../../src/prepare/host/nup.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
@@ -33,7 +33,12 @@ const say = (line: string) => (self as any).postMessage({ line });
     // this worker's instance of the fs module (the build for further instances, as a guest thread's)
     const f = NXF / 4, q = NXF / 8, w = NXW / 4, pages = buf.byteLength / 65536;
     let ctxNow = 0;
-    const lock = () => { for (let spin = 0; ; spin++) { if (Atomics.compareExchange(i32, f, 0, ME) === 0) return; if (spin < 4000) continue; Atomics.add(i32, f + 1, 1); const z = Atomics.load(i32, f); if (z) Atomics.wait(i32, f, z, 1); Atomics.sub(i32, f + 1, 1); } };
+    // Requests wait in a queue of this worker's own: the slot is emptied whenever it is looked at, also while this
+    // worker waits for the module's lock. (A thread that holds that lock and finds the slot full waits for the slot;
+    // if the worker then waited for the lock without emptying the slot, neither went on: the first version hung so.)
+    const queue: number[][] = [];
+    const take = () => { if (Atomics.load(i32, w) !== 1) return; const a = NXW / 8 + 4; queue.push([Number(i64[a + 1]), Number(i64[a + 2]), Number(i64[a + 3]), Number(i64[a + 4]), Number(i64[a + 5])]); Atomics.store(i32, w, 0); Atomics.notify(i32, w); };
+    const lock = () => { for (let spin = 0; ; spin++) { if (Atomics.compareExchange(i32, f, 0, ME) === 0) return; take(); if (spin < 4000) continue; Atomics.add(i32, f + 1, 1); const z = Atomics.load(i32, f); if (z) Atomics.wait(i32, f, z, 1); Atomics.sub(i32, f + 1, 1); } };
     const unlock = () => { Atomics.store(i32, f, 0); if (Atomics.load(i32, f + 1)) Atomics.notify(i32, f, 1); };
     const ask = (kind: number, a: (number | bigint)[]): bigint => {   // the owner, as kernel/nx_guest.js $nxFs asks it
       for (let i = 0; i < 6; i++) i64[q + 4 + i] = i < a.length ? BigInt(a[i]) : 0n;
@@ -70,11 +75,10 @@ const say = (line: string) => (self as any).postMessage({ line });
     Atomics.store(i32, w + 1, 1);
     let last = performance.now(), seen = 0;
     for (;;) {
-      if (Atomics.load(i32, w) !== 1) { Atomics.wait(i32, w, 0, 1000); }
-      if (Atomics.load(i32, w) === 1) {
-        const a = NXW / 8 + 4, dev = Number(i64[a]), off = Number(i64[a + 1]), ptr = Number(i64[a + 2]), len = Number(i64[a + 3]), token = Number(i64[a + 4]), ctx = Number(i64[a + 5]);
-        Atomics.store(i32, w, 0); Atomics.notify(i32, w);   // the slot is free again at once: the lock's holder never waits for a read
-        void dev;
+      take();
+      if (!queue.length) { Atomics.wait(i32, w, 0, 1000); take(); }
+      if (queue.length) {
+        const [off, ptr, len, token, ctx] = queue.shift()!;
         let st = -2; try { st = read(off, ptr, len); } catch (err) { say(`[RED] fs worker: a read of ${len} bytes at ${off} failed: ${(err as Error).message}`); }
         lock(); ctxNow = ctx;
         let r = 0x2A2n, ok = true;

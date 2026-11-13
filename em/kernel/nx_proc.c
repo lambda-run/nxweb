@@ -531,6 +531,7 @@ void nx_progress(void) {
       LOG("guest threads: %.2f running at once on average since the last line; ms per frame (per second when none), the main thread then the three busiest: %s", cores, sp); }
     { struct mallinfo mi = mallinfo(); struct nx_stats s2; nx_get_stats(&s2);   // the host heap is 2 GB of the fixed memory and does not grow
       LOG("host heap: %.0f MB in use + %.0f MB free in it, of 2048 MB; of it the unit registry's wasm bytes %.0f MB (units from the translation cache keep none there), thread stacks about %d MB", mi.uordblks / 1048576.0, mi.fordblks / 1048576.0, s2.unit_heap_bytes / 1048576.0, g_ntrk);
+      { void nx_gfx_stats(double); double g[5] = {0}; nx_gfx_stats((double)(uintptr_t)g); LOG("recorder on the calling thread, so far: %.0f NVN calls under its lock (%.0f times a thread slept for it), %.0f without the lock", g[0], g[2], g[4]); }
       uint32_t tl[512]; int nt = 0, big = 0; for (int i = 0; i < 512; i++) { uint32_t v = g_tlen[i]; if (v) { int j = nt++; while (j > 0 && tl[j - 1] > v) { tl[j] = tl[j - 1]; j--; } tl[j] = v; } }
       for (int i = 0; i < nt; i++) if (tl[i] * 2 > tl[nt - 1]) big++;
       LOG("thread tables: %llu slots in all threads' function tables (about %.0f MB at the 12.6 bytes a slot measured in Chromium; Node: 32), %llu unit instances in all threads, %u units; by thread (%d that ran code): shortest %u, median %u, longest %u slots, %d over half the longest",
