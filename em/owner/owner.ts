@@ -321,7 +321,7 @@ export class Owner {
       u8.set(sh.secondary, GFX_MOD); this.gl[10] = sh.secondary.length; this.gl[12] = sh.tls?.span ?? 0;
     }
     const wrapExports = (x: any) => { const out: any = {}; for (const k of Object.keys(x)) { const fn = x[k]; out[k] = typeof fn === "function" ? (...a: any[]) => { this.lock(); try { return fn(...a); } finally { this.unlock(); } } : fn; } return out; };
-    this.gfx = new RtGfx(rt as any, c.gfxModule, { unpaced: !o.device, shaderWait: false, wrapExports, ...o, onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
+    this.gfx = new RtGfx(rt as any, c.gfxModule, { unpaced: !o.device, shaderWait: false, wrapExports, ...o,   /* (o: the platform's options: the page sets profile and shaderWait, owner_web.ts) */ onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
     if (c.nativeImage) this.gfx.nativeImageOf = c.nativeImage;
     const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
     host.account = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
@@ -350,10 +350,17 @@ export class Owner {
         if (!x.kit_trace_enable) throw new Error("the recorder has no kit_trace_enable (its state machines' trace ring is written on every record)");
         x.kit_trace_enable(0);   // the one write to shared state on a record's fast path
         this.lockFree = sh.lockTable;
+        // A recording command goes without the lock only while its buffer has 32 KB of room (kernel/nx_gfx.c), which is
+        // more than any record of a fixed size. One whose record grows with a count or carries data (the plural binds
+        // and sets, UpdateUniformBuffer, the constants) could need more and reach the record allocator's slow path,
+        // which is shared: those stay under the lock whatever the audits say.
+        { const names = this.nvnNames(), VAR = /^nvnCommandBuffer(Bind\w+s(Deferred)?|Set(Viewports|Scissors|DepthRanges)|UpdateUniformBuffer|Push\w+|\w*Multi\w+|SetProgramSubroutines|BindCoverageModulationTable)$/; let n = 0;
+          for (let id = 0; id < names.length; id++) if (sh.lockTable[id] === 3 && VAR.test(names[id])) { sh.lockTable[id] = 0; n++; }
+          this.varSize = VAR; if (n) this.log(`owner: ${n} recording commands whose record's size depends on a count stay under the recorder's lock (the 32 KB room check covers fixed-size records only)`); }
         // the real-call audit: its candidates are what the static audit lets through and the dynamic audit did not
         if (sh.plain && (sh.realAudit || sh.promote?.length)) {
           const names = this.nvnNames(), st = lockFreeTable(sh.plain, (id: number) => names[id], names.length), tab = sh.lockTable;
-          if (sh.promote?.length) { const want = new Set(sh.promote); let n = 0; for (let id = 0; id < names.length; id++) if (!tab[id] && st.table[id] && want.has(names[id])) { tab[id] = st.table[id]; n++; }
+          if (sh.promote?.length) { const want = new Set(sh.promote); let n = 0; for (let id = 0; id < names.length; id++) if (!tab[id] && st.table[id] && want.has(names[id]) && !(st.table[id] === 3 && this.varSize?.test(names[id]))) { tab[id] = st.table[id]; n++; }
             this.log(`owner: ${n} more entry points go without the recorder's lock: the real-call audit of this recorder build cleared them (owner/lockfree_real.ts; ?lfreal=0: under the lock)`); }
           if (sh.realAudit) {
             const N = 12, blk = c.malloc(64 + 32 * names.length), f = new Float64Array(this.memory.buffer, blk, 8), u32 = new Uint32Array(this.memory.buffer, blk + 64, 8 * names.length), stat = range("gfx static"), arena = range("gfx arena");
@@ -373,6 +380,7 @@ export class Owner {
     if (sh?.direct) { Atomics.store(this.gl, 11, 1); this.log(`owner: the recorder's ${sh.globals.length} globals are in the memory at 0x${GFX_GLOBALS.toString(16)}: every guest thread calls it in its own instance under one lock; the owner keeps the replayer (gfx_exec) and the calls that wait or pace`); }
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
+  private varSize: RegExp | null = null;
   private lfa: { blk: number; names: string[]; n: number } | null = null; private nvnNameList: string[] | null = null;
   nvnNames(): string[] { if (!this.nvnNameList) { const x: any = this.gfx!.x, u8 = new Uint8Array(this.memory.buffer), out: string[] = []; for (let id = 0, n = x.nvn_count(); id < n; id++) { const p = Number(x.nvn_name(id)); let e = p; while (u8[e]) e++; out.push(String.fromCharCode(...u8.subarray(p, e))); } this.nvnNameList = out; } return this.nvnNameList; }
   // the real-call audit so far: per candidate that was called, its audited calls and the words they changed

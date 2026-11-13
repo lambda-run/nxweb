@@ -4,6 +4,9 @@
 // on the page's canvas, shaders are translated by nxweb's shader Workers and kept in its store (same origin, so a
 // profile that ran the AssemblyScript page has them already).
 import { MemStorage, FS_KIND, type FsStorage } from "../../src/glue/fs_host.ts";
+import { gfxSettingsFor } from "../../src/glue/rt_process.ts";
+// the game's profile (the one title this page starts: programId below), as nxweb's page applies it: its graphics switches
+import gameProfile from "../../src/prepare/profiles/0400486024DEC000.json";
 import { REAL_AUDIT } from "./lockfree_real.ts";
 import { OpfsStorage } from "../../src/glue/fs_dev_opfs.ts";
 import { GfxHost } from "../../src/glue/gfx_host.ts";
@@ -27,6 +30,8 @@ export interface PageSide {
   vdec?: string | null;
   skipMovie?: boolean;     // ?skipmovie=1 (a test aid): story movies end after their first clusters
   search?: string;         // the page's location.search: the replayer reads ?gfxcapture= (and gfxcapto / logto, gfxcapname) from it; the worker has no query of its own
+  gfxProfile?: boolean;    // false (?gfxprofile=0): the recorder without the game profile's switches (render_cond, tex_flush_upload, tex_dirty_upload, gpu_timestamps), as it was until 2026-11-13
+  shaderWait?: boolean;    // false (?shaderwait=0): a program's stages are not waited for (its draws are dropped while they compile, and a pipeline that failed then stays failed), as it was
   saves?: string | null;   // ?saves=mem / new
   gfxAsync?: boolean;      // true (?asyncsubmit=1): a submission does not wait for the replayer
   gfxLockFree?: boolean;   // false (?lockfree=0): every direct NVN call takes the recorder's lock
@@ -77,6 +82,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   };
   try { device = await requestDevice(); } catch (e) { gpuInfo = `no WebGPU device (${(e as Error).message}): the null replayer`; }
   log("page: " + gpuInfo);
+  if (device) log(`page: the game profile's graphics switches are ${p.gfxProfile === false ? "off (gfxprofile=0)" : "on (bits " + gfxSettingsFor((gameProfile as any).apply).bits + ": render_cond, tex_flush_upload, tex_dirty_upload, gpu_timestamps)"}; a program's shaders are ${p.shaderWait !== false ? "waited for" : "not waited for (shaderwait=0)"}`);
   if (device) log(p.ndve ? "page: ndve=bypass: nxweb's bilinear stand-in shows the movie pictures in place of nn::ndve's upscaler (the default here; ?ndve=off for the game's own dispatches)" : "page: ndve=off: the game's own nn::ndve dispatches (the movie stays black where WebGPU cannot run them)");
   // The display frame the replayer paces acquire / present by. requestAnimationFrame stops in a hidden tab or a
   // background window, and a hidden page's timers are slowed too, so the 16 ms are counted by messages the page sends
@@ -116,7 +122,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
     tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true, realAudit: p.gfxRealAudit === true, promote: audit && p.gfxRealPromote !== false && REAL_AUDIT.key === sha256(gfxRaw) ? REAL_AUDIT.names : [] }, fsShare: f.share, saves, skipMovie: p.skipMovie === true, programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
-    gfx: device ? { capture: p.search || false, ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
+    gfx: device ? { profile: p.gfxProfile === false ? undefined : gfxSettingsFor((gameProfile as any).apply), shaderWait: p.shaderWait !== false, capture: p.search || false, ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");
   const { owner, exefs } = await startOwner(memory, c);
