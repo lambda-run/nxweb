@@ -15,13 +15,13 @@
 #include <emscripten.h>
 
 namespace {
-struct Unit { uint8_t *bytes; uint32_t len, table_base, nfuncs; };
+struct Unit { uint8_t *bytes; uint32_t len, table_base, nfuncs; std::atomic<uint32_t> users, owner; };   // bytes: 0 when the unit came from the translation cache (its compiled module is handed to every worker; the bytes never enter the host heap)
 constexpr uint32_t kMaxUnits = 1u << 18;   // (65536 until 2026-11-12; the game had 11,078 units when its first area loaded)
 std::array<Unit, kMaxUnits> g_units;
 std::atomic<uint32_t> g_nunits{0};
 std::atomic<uint32_t> g_table_cap{1u << 26};   // the highest table index a unit may have: a bound against a runaway, not a size (every thread's table grows to what it calls: kernel/nx_guest.js). It was 2^18, which the game passed with 11,078 units as its first area loaded
 struct { uint8_t *p; uint32_t len; } g_wmod[2];
-std::atomic<uint64_t> g_translate_ns{0}, g_translate_calls{0}, g_unit_bytes{0};
+std::atomic<uint64_t> g_translate_ns{0}, g_translate_calls{0}, g_unit_bytes{0}, g_unit_heap_bytes{0}, g_table_slots{0}, g_unit_insts{0};
 
 // A guest thread that waits for the translator blocks like in a native HLE wait: it holds no guest core meanwhile,
 // so nxnative's same-core handoff does not wait for it.
@@ -78,8 +78,8 @@ EMSCRIPTEN_KEEPALIVE void nx_unit_publish(double bytes, uint32_t len, uint32_t t
     if (i >= kMaxUnits || table_base + nfuncs > g_table_cap.load()) {
         char b[160]; snprintf(b, sizeof b, "translated-unit registry or function table full (%u units, table index %u)", i, table_base + nfuncs); nx_die(b);
     }
-    g_units[i] = Unit{(uint8_t *)(uintptr_t)bytes, len, table_base, nfuncs};
-    g_unit_bytes += len;
+    g_units[i].bytes = (uint8_t *)(uintptr_t)bytes; g_units[i].len = len; g_units[i].table_base = table_base; g_units[i].nfuncs = nfuncs;
+    g_unit_bytes += len; if (bytes) g_unit_heap_bytes += len;
     g_nunits.store(i + 1);
 }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_count(void) { return g_nunits.load(); }
@@ -87,6 +87,12 @@ EMSCRIPTEN_KEEPALIVE double nx_unit_bytes(uint32_t i) { return (double)(uintptr_
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_len(uint32_t i) { return g_units[i].len; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_base(uint32_t i) { return g_units[i].table_base; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_nfuncs(uint32_t i) { return g_units[i].nfuncs; }
+// how many threads have instantiated unit i (the order of the table slots in the next run: kernel/nx_guest.js), and the
+// sums the memory line shows: table slots held by all threads' tables, unit instances made by all threads
+EMSCRIPTEN_KEEPALIVE void nx_unit_used(uint32_t i, int who) { if (!g_units[i].users++) g_units[i].owner = (uint32_t)(who + 1); g_unit_insts++; }   // who: the first thread to use it (kernel/nx_proc.c nx_trk_index), -1 unknown
+EMSCRIPTEN_KEEPALIVE int nx_unit_owner(uint32_t i) { return (int)g_units[i].owner.load() - 1; }
+EMSCRIPTEN_KEEPALIVE uint32_t nx_unit_users(uint32_t i) { return g_units[i].users.load(); }
+EMSCRIPTEN_KEEPALIVE void nx_table_slots_add(int n) { g_table_slots += (uint64_t)(int64_t)n; }
 EMSCRIPTEN_KEEPALIVE uint32_t nx_table_cap(void) { return g_table_cap.load(); }
 EMSCRIPTEN_KEEPALIVE void nx_set_table_cap(uint32_t n) { g_table_cap.store(n); }
 EMSCRIPTEN_KEEPALIVE void nx_mod_set(int which, double p, uint32_t len) { g_wmod[which].p = (uint8_t *)(uintptr_t)p; g_wmod[which].len = len; }
@@ -96,7 +102,7 @@ EMSCRIPTEN_KEEPALIVE int nx_is64(void) { return sizeof(void *) == 8; }
 static std::atomic<double> g_pcmap_base{0};   // where the translator's pc map is (nxweb's layout), for the guest threads' lookups
 EMSCRIPTEN_KEEPALIVE void nx_pcmap_set(double base) { g_pcmap_base.store(base); }
 EMSCRIPTEN_KEEPALIVE double nx_pcmap_base(void) { return g_pcmap_base.load(); }
-void nx_get_stats(struct nx_stats *out) { out->translate_ns = g_translate_ns; out->translate_calls = g_translate_calls; out->unit_bytes = g_unit_bytes; }
+void nx_get_stats(struct nx_stats *out) { out->translate_ns = g_translate_ns; out->translate_calls = g_translate_calls; out->unit_bytes = g_unit_bytes; out->unit_heap_bytes = g_unit_heap_bytes; out->table_slots = g_table_slots; out->unit_insts = g_unit_insts; }
 void nx_translator_start(const uint8_t *tr, uint32_t tr_len, const uint8_t *hlp, uint32_t hlp_len, uint64_t code_lo, uint64_t code_size, double *boot) {
     g_translator.start(tr, tr_len, hlp, hlp_len, code_lo, code_size, boot);
 }

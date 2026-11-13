@@ -30,8 +30,9 @@
 // ?vdec=hardware: ask WebCodecs for the hardware AV1 decoder (nxweb's glue asks for software).
 // ?asyncsubmit=1: a guest thread's nvnQueueSubmitCommands leaves its batch in a ring for the replayer and returns: the
 //   recorder's lock is not held while the owner works (off by default until a ride has compared frames).
-// ?lockfree=1: recording commands and builder setters do not take the recorder's lock (off by default: the proof test
-//   em/test/gfx_lockfree_test.mts still fails in two runs of three, so something on that path is shared).
+// ?lockfree=1: recording commands and builder setters do not take the recorder's lock: those that the static and the
+//   dynamic audit let through (tools/gfx_audit.mjs, tools/gfx_dynaudit.mjs; the proof is em/test/gfx_lockfree_test.mts).
+// ?fsworker=1: guest threads call the fs module themselves and a dedicated worker reads the game file (owner/fs_worker.ts).
 // ?gfxdirect=0: every NVN call goes to the owner thread (default: guest threads call the recorder in their own instance).
 // ?pollpark=N: a thread that only polls (yield, yield, a sleep of microseconds, again and again) parks N microseconds
 //   at a time, up to 8 N, until some thread wakes or starts one (default 250; 0 = off: every cycle runs).
@@ -109,7 +110,7 @@ function start(file) {
     onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; if (!window.nxem.reason) Module.nxStopped("abort() in host code: " + w); },
     nxStopped: function (why) { if (window.nxem.reason) return; window.nxem.reason = why; $("stage").textContent = "stopped: " + why; $("stage").style.color = "#f66"; },
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
-    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") === "1", gfxAsync: q.get("asyncsubmit") === "1", vdec: q.get("vdec"), vpipe: q.get("vpipe") === "1", fsDirect: q.get("fsdirect") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") === "1", gfxAsync: q.get("asyncsubmit") === "1", vdec: q.get("vdec"), vpipe: q.get("vpipe") === "1", fsDirect: q.get("fsdirect") === "1" || q.get("fsworker") === "1", fsWorker: q.get("fsworker") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
   };
   // The runtime (and the owner thread with it) runs in a dedicated worker, em_worker.js; the page keeps the DOM, the
   // input and the audio device. ?owner=page: as it was until 78bdc16, the runtime's main thread is this page's (the

@@ -177,6 +177,10 @@ static const char *const g_acc_name[A_N] = {"NVN", "host", "svc", "translate", "
 enum { NTRK = 256 };
 static struct { _Atomic uint64_t pc, slices; _Atomic int in_host; _Atomic uint32_t handle; _Atomic uint64_t acc[A_N], born; uint64_t seen[2][A_N], seen_at[2], seen_slices[2]; double pend[2]; int pend_cat[2]; _Atomic int cur_cat; _Atomic uint64_t cur_t0; _Atomic uint64_t hold_max; _Atomic int hold_stub; char name[28]; } g_trk[NTRK];
 static _Atomic int g_ntrk; static __thread int t_trk = -1;
+// the calling guest thread's number in the order the threads first ran (-1: none yet), and its function table's length (kernel/nx_guest.js)
+static _Atomic uint32_t g_tlen[512];
+EMSCRIPTEN_KEEPALIVE int nx_trk_index(void) { return t_trk; }
+EMSCRIPTEN_KEEPALIVE void nx_table_len(uint32_t len) { if (t_trk >= 0 && t_trk < 512) g_tlen[t_trk] = len; }
 static int trk(void);
 int thr_name_of(pthread_t pt, char *out, size_t n);
 // An SVC or host call that may wait begins / ends: what it has taken so far counts in the interval it is in, not only
@@ -526,7 +530,11 @@ void nx_progress(void) {
     { static double pres0; char sp[2400]; double cores = nx_thread_split((double)(uintptr_t)sp, sizeof sp, os[7] - pres0, 1); pres0 = os[7];
       LOG("guest threads: %.2f running at once on average since the last line; ms per frame (per second when none), the main thread then the three busiest: %s", cores, sp); }
     { struct mallinfo mi = mallinfo(); struct nx_stats s2; nx_get_stats(&s2);   // the host heap is 2 GB of the fixed memory and does not grow
-      LOG("host heap: %.0f MB in use + %.0f MB free in it, of 2048 MB; of it the unit registry's wasm bytes %.0f MB, thread stacks about %d MB", mi.uordblks / 1048576.0, mi.fordblks / 1048576.0, s2.unit_bytes / 1048576.0, g_ntrk); }
+      LOG("host heap: %.0f MB in use + %.0f MB free in it, of 2048 MB; of it the unit registry's wasm bytes %.0f MB (units from the translation cache keep none there), thread stacks about %d MB", mi.uordblks / 1048576.0, mi.fordblks / 1048576.0, s2.unit_heap_bytes / 1048576.0, g_ntrk);
+      uint32_t tl[512]; int nt = 0, big = 0; for (int i = 0; i < 512; i++) { uint32_t v = g_tlen[i]; if (v) { int j = nt++; while (j > 0 && tl[j - 1] > v) { tl[j] = tl[j - 1]; j--; } tl[j] = v; } }
+      for (int i = 0; i < nt; i++) if (tl[i] * 2 > tl[nt - 1]) big++;
+      LOG("thread tables: %llu slots in all threads' function tables (about %.0f MB at the 12.6 bytes a slot measured in Chromium; Node: 32), %llu unit instances in all threads, %u units; by thread (%d that ran code): shortest %u, median %u, longest %u slots, %d over half the longest",
+          (unsigned long long)s2.table_slots, s2.table_slots * 12.6 / 1048576.0, (unsigned long long)s2.unit_insts, nx_unit_count(), nt, nt ? tl[0] : 0, nt ? tl[nt / 2] : 0, nt ? tl[nt - 1] : 0, big); }
     LOG("progress %4.0f s: %llu SVCs, %llu host calls (%0.f NVN, %0.f fs), %0.f submits, %0.f presents, %u units translated, threads created %d; main thread: %llu slices, at %s%s%s", (now_ns() - g_t0_ns) / 1e9,
         (unsigned long long)nx_stat_svcs, (unsigned long long)g_host_calls, os[10], os[0], os[8], os[7], nx_unit_count(), (int)g_ntrk, (unsigned long long)sl, w, h ? " in " : "", h ? g_stub_name[h - 1] : "");
 }

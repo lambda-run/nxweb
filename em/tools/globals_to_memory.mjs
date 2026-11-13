@@ -17,6 +17,11 @@
 //     function, the data segments and the data count (the first instance ran the one and wrote the others; a second
 //     run would reset what the module has changed since). A module that uses memory.init or data.drop has no such
 //     build (it would not validate).
+//   - `statics: [{ addr, len }]` (ranges of the module's static memory that are scratch: written and read back within
+//     one call, tools/gfx_dynaudit.mjs finds them) become per INSTANCE: one new mutable global of the address type is
+//     appended and exported as `nx_tls`; every address constant inside a range, `<v>.const`, becomes
+//     `global.get nx_tls; <v - lowest addr>.const; add`. The global starts as the lowest address, so an instance that
+//     never sets it uses the static memory as before; any other instance sets it to `tls.span` bytes of its own.
 // Refused: a mutable global whose initialiser is not a constant; anything the decoder does not know (it stops with
 // the opcode and the function).
 //
@@ -101,6 +106,11 @@ export function globalsToMemory(bytes, o) {
   const ftype = []; if (sec(3)) { const r = new R(b, sec(3).body), n = r.uleb(); for (let i = 0; i < n; i++) ftype.push(r.uleb()); }
   const exported = new Set(); if (sec(7)) { const r = new R(b, sec(7).body), n = r.uleb(); for (let i = 0; i < n; i++) { r.name(); const k = r.u8(), ix = r.uleb(); if (k === 3) exported.add(ix); } }
   const globals = [], slot = new Map();   // global index -> { type, addr }
+  const statics = (o.statics ?? []).filter(s => s.len > 0), tlsLo = statics.length ? Math.min(...statics.map(s => s.addr)) : 0, tlsHi = statics.length ? Math.max(...statics.map(s => s.addr + s.len)) : 0;
+  const inStatic = v => { for (const s of statics) if (v >= s.addr && v < s.addr + s.len) return true; return false; };
+  let nGlobals = 0, tlsConsts = 0; if (sec(6)) nGlobals = new R(b, sec(6).body).uleb();
+  const tlsIndex = impGlobals + nGlobals;   // the new global's index: after every other, so no index moves
+  if (statics.length && (!sec(6) || !sec(7))) throw new Error("globals_to_memory: statics need a module with a global and an export section");
   if (sec(6)) { const r = new R(b, sec(6).body), n = r.uleb();
     for (let i = 0; i < n; i++) {
       const index = impGlobals + i, t = VT[r.u8()], mut = r.u8(), at = r.p, op = r.u8(); let init = null;
@@ -136,6 +146,13 @@ export function globalsToMemory(bytes, o) {
           if (op === 0x23) { out.push(...addr(g.addr), ...opc, align, 0); gets++; }
           else { if (tmp[g.type] === undefined) tmp[g.type] = nlocals + Object.keys(tmp).length; out.push(0x21, ...uleb(tmp[g.type]), ...addr(g.addr), 0x20, ...uleb(tmp[g.type]), ...opc, align, 0); sets++; }
           copied = r.p;
+        } else if (statics.length && op === (mem64 ? 0x42 : 0x41)) {
+          let v = 0n, s = 0n, c; do { c = b[r.p++]; v |= BigInt(c & 0x7F) << s; s += 7n; } while (c & 0x80); if (c & 0x40) v |= -1n << s;
+          const n = Number(mem64 ? v : BigInt.asUintN(32, v));
+          if (!inStatic(n)) continue;
+          for (let i = copied; i < at; i++) out.push(b[i]);
+          out.push(0x23, ...uleb(tlsIndex), op, ...sleb(n - tlsLo), mem64 ? 0x7C : 0x6A); tlsConsts++;
+          copied = r.p;
         } else skipImm(r, op, where);
       }
       if (r.p !== end) throw new Error(`globals_to_memory: ${where}: decoding ran past its end`);
@@ -148,12 +165,18 @@ export function globalsToMemory(bytes, o) {
   const parts = [b.subarray(0, 8)];
   for (const s of secs) {
     if (o.secondary && (s.id === 8 || s.id === 11 || s.id === 12)) continue;
+    if (statics.length && s.id === 6) {   // one more global: the instance's scratch block, starting as the static one
+      const r = new R(b, s.body); r.uleb(); const rest = b.subarray(r.p, s.end), g = [mem64 ? 0x7E : 0x7F, 1, mem64 ? 0x42 : 0x41, ...sleb(mem64 ? tlsLo : tlsLo | 0), 0x0B], cnt = uleb(nGlobals + 1);
+      parts.push(Uint8Array.from([6, ...uleb(cnt.length + rest.length + g.length), ...cnt]), rest, Uint8Array.from(g)); continue; }
+    if (statics.length && s.id === 7) {
+      const r = new R(b, s.body), n = r.uleb(), rest = b.subarray(r.p, s.end), e = [6, ...new TextEncoder().encode("nx_tls"), 3, ...uleb(tlsIndex)], cnt = uleb(n + 1);
+      parts.push(Uint8Array.from([7, ...uleb(cnt.length + rest.length + e.length), ...cnt]), rest, Uint8Array.from(e)); continue; }
     if (s.id !== 10) { parts.push(b.subarray(s.start, s.end)); continue; }
     const count = uleb(bodies.length), size = count.length + bodies.reduce((n, x) => n + x.length, 0);
     parts.push(Uint8Array.from([10, ...uleb(size), ...count]), ...bodies);
   }
   const wasm = new Uint8Array(parts.reduce((n, x) => n + x.length, 0)); let at = 0; for (const x of parts) { wasm.set(x, at); at += x.length; }
-  return { wasm, globals, size: 16 * globals.length, gets, sets, functions: bodies.length, mem64 };
+  return { wasm, globals, size: 16 * globals.length, gets, sets, functions: bodies.length, mem64, tls: statics.length ? { base: tlsLo, span: tlsHi - tlsLo, consts: tlsConsts } : null };
 }
 function lebLen(b, p) { let n = 1; while (b[p++] & 0x80) n++; return n; }
 // the value of a signed LEB constant as `bytes` little-endian bytes

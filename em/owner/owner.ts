@@ -10,7 +10,8 @@ import { FsHost, FS_RETRY, DEV, fsIsPending, fsToken, type FsStorage } from "../
 import { range } from "../../src/glue/rt_layout.ts";
 import { sharedBuild } from "../../src/glue/wasm_shared.ts";
 import type { PrepTree } from "../../src/prepare/host/tree.ts";
-import { DirRomDevice, PrepStorage, treeSource } from "../../src/prepare/host/romdev.ts";
+import { PrepStorage } from "../../src/prepare/host/romdev.ts";
+import { romDevice } from "./rom.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { RtGfx } from "../../src/glue/rt_gfx.ts";
 import { nvn2Items, sdkVersionIn } from "../../src/glue/rt_runtime.ts";
@@ -19,6 +20,9 @@ import { STUBS } from "../../src/glue/rt_layout.ts";
 import { globalsToMemory } from "../tools/globals_to_memory.mjs";
 // @ts-ignore
 import { lockFreeTable } from "../tools/gfx_audit.mjs";
+// @ts-ignore
+import { dynamicAudit, auditLine } from "../tools/gfx_dynaudit.mjs";
+import { instantiate } from "../../src/glue/wasm_abi.ts";
 import { VCODEC, type VideoBackend, type VideoPicture, type VideoSink } from "../../src/glue/video_host.ts";
 
 export const KIND_FS = 1, KIND_HOST = 2, KIND_VIDEO = 3;   // 3: the AV1 decoder of kernel/nx_video.c   // nxweb's fs module; a host function nxweb's glue registers (RtGfx: nvnBootstrapLoader, every NVN entry point, nv::)
@@ -29,10 +33,12 @@ const LOW_BASE = 0x1C000000, LOW_END = 0x1FF00000;   // host allocations that mu
 //   +0 the recorder's lock (0 free, 1 the owner, else a thread)   +4 threads waiting for it   +8 the holder's request to
 //   the owner: 0 none, 1 asked, 2 answered   +12 its kind (0 gfx_exec, 1 gfx_proc_address, 2 gfx_arena_more)
 //   +16 +24 f64 arguments   +32 f64 result   +40 bytes at GFX_MOD   +44 1: guest threads call the recorder themselves
+//   +48 bytes of static scratch every instance has for itself (0: none; kernel/nx_guest.js sets the instance's nx_tls)
 // The fs module shared the same way: its globals at FS_GLOBALS, the build for the other threads at FS_MOD, its words at NXF:
 //   +0 lock   +4 waiters   +8 the holder's request (0, 1 asked, 2 answered)   +12 its kind (0 dev_open, 1 dev_size, 2 dev_read,
 //   3 dev_write, 4 dev_flush, 5 dev_remove, 6 save_failed, 7 arena_more)   +16 i64 result   +24 bytes at FS_MOD
 //   +28 1: guest threads call the module themselves   +32 six i64 arguments   +80 i64 the caller's context block
+export const NXW = 0x1FF1F200;   // the fs worker's words (fs_worker.ts)
 export const NXF = 0x1FF1F100, FS_GLOBALS = 0x1FF18000, FS_MOD = 0x1FFA0000, FS_MOD_MAX = 0x20000;
 export const NXG = 0x1FF1F000, GFX_GLOBALS = 0x1FF10000, GFX_MOD = 0x1FF20000, GFX_MOD_MAX = 0x80000;
 const CELL = 0x3F0;   // in the caller's context block (0x400 bytes, the CPU state ends at 0x330): the word a pending call's completion sets
@@ -44,7 +50,7 @@ export interface OwnerConfig {
   fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
   gfxModule: WebAssembly.Module;
   fsShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };    // the same for fsModule
-  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean };   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
+  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean; tls?: { base: number; span: number; consts: number } | null; lockTable?: Uint8Array; lockLine?: string };   // lockTable: the dynamic audit's verdict by NVN id (lockFreeAudit below); without it nothing is lock-free   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
   saves: FsStorage;
   programId: bigint;
   scratch: number;                      // 8 KB of the memory nothing else uses
@@ -58,20 +64,9 @@ export interface OwnerConfig {
 
 // The game's RomFS out of the container without unpacking it: the tables are built once from the listing
 // (src/prepare/romfs_build.ts, as the prepare step's Index stage does), a read is a read of the container.
-export async function romStorage(c: OwnerConfig): Promise<{ storage: FsStorage; files: number; bytes: number; root: string; ms: number; exefs: string }> {
-  const t0 = performance.now();
-  const tree = c.tree, l = await tree.list();
-  const ver = (r: string) => r.startsWith("updates/") ? Number(r.split("/")[1]) : 0;
-  const pick = (kind: string) => [...new Set(l.dirs.filter(d => new RegExp("^(base|updates/\\d+)/" + kind + "$").test(d)).map(d => d + "/"))].sort((a, b) => ver(b) - ver(a))[0];
-  const root = pick("romfs");   // an update's romfs is the whole patched tree (src/prepare/host/detect.ts)
-  if (!root) throw new Error("owner: no romfs/ in " + tree.name);
-  const cut = root.length, files = l.files.filter(f => f.path.startsWith(root));
-  const entries = [...l.dirs.filter(d => d.startsWith(root) && d.length > cut).map(d => ({ path: d.slice(cut), size: 0, dir: true })), ...files.map(f => ({ path: f.path.slice(cut), size: f.size }))];
-  const r = c.prep.romTables(entries as any);
-  if ("error" in r) throw new Error("owner: RomFS tables: " + r.error);
-  const sizes = Float64Array.from(files, f => f.size);
-  const dev = new DirRomDevice({ tables: r.tables, starts: r.starts, sizes, size: r.size }, treeSource(tree, files.map(f => f.path)));
-  return { storage: new PrepStorage(dev, new Map(), c.saves), files: files.length, bytes: sizes.reduce((a, b) => a + b, 0), root, ms: performance.now() - t0, exefs: pick("exefs") ?? "" };
+export async function romStorage(c: OwnerConfig): Promise<{ storage: FsStorage; files: number; bytes: number; root: string; ms: number; exefs: string; dev: unknown }> {
+  const r = await romDevice(c.tree, c.prep);
+  return { storage: new PrepStorage(r.dev, new Map(), c.saves), files: r.files, bytes: r.bytes, root: r.root, ms: r.ms, exefs: r.exefs, dev: r.dev };
 }
 
 type Fn = (cpu: any) => any;
@@ -199,6 +194,7 @@ export class Owner {
     this.flHeld = false;
     Atomics.store(this.fl, 0, 0); if (Atomics.load(this.fl, 1)) Atomics.notify(this.fl, 0, 1);
   }
+  romDev: unknown = null;   // the RomFS device: its ids are told to the fs worker (NXW), which then reads for the guest threads
   private fsSvc(): boolean {
     const g = this.fl;
     if (!g || Atomics.load(g, 2) !== 1) return false;
@@ -209,7 +205,9 @@ export class Owner {
       switch (kind) {
         case 0: r = im.dev_open(N(0), B(1), tok = N(2)); break;
         case 1: r = im.dev_size(N(0)); break;
-        case 2: r = im.dev_read(N(0), B(1), N(2), N(3), tok = N(4)); break;
+        case 2: r = im.dev_read(N(0), B(1), N(2), N(3), tok = N(4));
+          if (this.romDev && (this.fs as any).devs.get(N(0)) === this.romDev) { const w = new Int32Array(this.memory.buffer, NXW, 8), n = w[2]; let have = false; for (let i = 0; i < n; i++) if (w[3 + i] === N(0)) have = true; if (!have && n < 4) { w[3 + n] = N(0); Atomics.store(w, 2, n + 1); } }
+          break;
         case 3: r = im.dev_write(N(0), B(1), N(2), N(3)); break;
         case 4: r = im.dev_flush(N(0), tok = N(1)); break;
         case 5: r = im.dev_remove(N(0), B(1), tok = N(2)); break;
@@ -300,12 +298,12 @@ export class Owner {
     const o: any = c.gfx ?? {};
     const rt = this.rt = new RtShim(this.memory, { memory_size: () => pages, memory_grow: (n: number) => n ? -1 : pages }, c, this);
     const t0 = performance.now(), sh = c.gfxShare;
-    this.gl = new Int32Array(this.memory.buffer, NXG, 12); this.glf = new Float64Array(this.memory.buffer, NXG, 6);
+    this.gl = new Int32Array(this.memory.buffer, NXG, 13); this.glf = new Float64Array(this.memory.buffer, NXG, 6);
     if (sh) {
       if (sh.secondary.length > GFX_MOD_MAX) throw new Error("owner: the recorder's build for the guest threads is larger than its room");
       const u8 = new Uint8Array(this.memory.buffer);
       for (const g of sh.globals) { u8.fill(0, g.addr, g.addr + 16); u8.set(g.init, g.addr); }
-      u8.set(sh.secondary, GFX_MOD); this.gl[10] = sh.secondary.length;
+      u8.set(sh.secondary, GFX_MOD); this.gl[10] = sh.secondary.length; this.gl[12] = sh.tls?.span ?? 0;
     }
     const wrapExports = (x: any) => { const out: any = {}; for (const k of Object.keys(x)) { const fn = x[k]; out[k] = typeof fn === "function" ? (...a: any[]) => { this.lock(); try { return fn(...a); } finally { this.unlock(); } } : fn; } return out; };
     this.gfx = new RtGfx(rt as any, c.gfxModule, { unpaced: !o.device, shaderWait: false, wrapExports, ...o, onPresent: (n: number) => { this.presents = n; if (n === 1) { this.firstPresentMs = performance.now() - t0; this.log(`gfx: FIRST PRESENT (nvnQueuePresentTexture reached the host stream), ${(this.firstPresentMs / 1000).toFixed(1)} s after the recorder started`); } } });
@@ -313,15 +311,17 @@ export class Owner {
     const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
     host.account = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
     host.exec = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; const t0 = performance.now(); try { return exec(p, n); } finally { this.batchDone(p, n, performance.now() - t0); } };   // (the owner's own flushes too come after what is in the ring)
-    if (sh?.direct && sh.plain && sh.lockFree !== false) {
+    // Without the lock: what the static audit AND the dynamic audit both let through (lockFreeAudit below, made by the
+    // platform before the module was built: the static scratch it found is per instance in this build)
+    if (sh?.direct && sh.lockFree !== false) {
       try {
-        const x: any = this.gfx.x, u8 = new Uint8Array(this.memory.buffer), n = x.nvn_count();
-        const nameOf = (id: number) => { const p = x.nvn_name(id); if (!p) return ""; let e = p; while (u8[e] && e < p + 128) e++; return String.fromCharCode(...u8.slice(p, e)); };
-        const t = lockFreeTable(sh.plain, nameOf, n);
+        const x: any = this.gfx.x;
+        if (!sh.lockTable) throw new Error("no dynamic audit of this recorder build");
+        if (sh.lockTable.length !== x.nvn_count()) throw new Error("the dynamic audit is of another recorder build");
         if (!x.kit_trace_enable) throw new Error("the recorder has no kit_trace_enable (its state machines' trace ring is written on every record)");
         x.kit_trace_enable(0);   // the one write to shared state on a record's fast path
-        this.lockFree = t.table;
-        this.log(`owner: recorder audit (tools/gfx_audit.mjs, ${t.cases} cases): ${t.free} entry points reach no module state and ${t.room} recording commands reach it only through the record allocator's slow path: guest threads call those without the recorder's lock (the second kind while the command buffer has 32 KB of room)`);
+        this.lockFree = sh.lockTable;
+        this.log(`owner: ${sh.lockLine ?? "recorder audit"}; guest threads call those without the recorder's lock${sh.tls ? `; ${sh.tls.consts} address constants of the module now go through the instance's scratch block (${sh.tls.span} bytes)` : ""}`);
       } catch (e) { this.log(`[RED] owner: recorder audit failed, every direct call stays under the lock: ${(e as Error).message}`); }
     }
     if (sh?.direct && sh.asyncSubmit && (globalThis as any).NXGFXRING) { new Int32Array(this.memory.buffer, (globalThis as any).NXGFXRING, 4)[3] = 1; this.log("owner: a guest thread's submission is handed to the replayer through a ring and does not wait for it (asyncsubmit)"); }
@@ -576,15 +576,27 @@ export class Owner {
 export async function startOwner(memory: WebAssembly.Memory, c: OwnerConfig): Promise<{ owner: Owner; exefs: string }> {
   const rom = await romStorage(c);
   c.log(`owner: RomFS ${rom.root} of ${c.tree.name}: ${rom.files} files, ${(rom.bytes / 1073741824).toFixed(2)} GB, tables built in ${rom.ms.toFixed(0)} ms`);
-  const o = new Owner(memory, rom.storage, c);
+  const o = new Owner(memory, rom.storage, c); o.romDev = rom.dev;
   c.log(`owner: nxweb's fs module answers ${o.names().length} nn::fs names`);
   o.startGfx(c, memory.buffer.byteLength / 65536);
   return { owner: o, exefs: rom.exefs };
 }
 export { sharedBuild };
 // gfx64.wasm / fs64.wasm (already the shared build) as the globals-in-memory build and what goes with it (OwnerConfig.gfxShare, fsShare)
-export function gfxShared(wasm: Uint8Array, direct: boolean, base = GFX_GLOBALS): { wasm: Uint8Array; share: NonNullable<OwnerConfig["gfxShare"]> } {
-  const first = globalsToMemory(wasm, { base }), second = globalsToMemory(wasm, { base, secondary: true });
+// statics: ranges of the module's static memory that every instance gets for itself (the dynamic audit's scratch)
+export function gfxShared(wasm: Uint8Array, direct: boolean, base = GFX_GLOBALS, statics: { addr: number; len: number }[] = []): { wasm: Uint8Array; share: NonNullable<OwnerConfig["gfxShare"]> } {
+  const first = globalsToMemory(wasm, { base, statics }), second = globalsToMemory(wasm, { base, secondary: true, statics });
   if (first.size > 0x7000) throw new Error("owner: the module has more globals than their block holds");
-  return { wasm: first.wasm, share: { globals: first.globals, secondary: second.wasm, direct, plain: wasm } };
+  return { wasm: first.wasm, share: { globals: first.globals, secondary: second.wasm, direct, plain: wasm, tls: first.tls } };
+}
+// The lock-free verdict for a recorder binary (gfx64.wasm as built): tools/gfx_dynaudit.mjs runs it alone on a small
+// memory of its own. It takes seconds, so the platform may keep the answer by the binary's hash (load / save).
+export async function lockFreeAudit(raw: Uint8Array, key: string, log: (l: string) => void, load?: (k: string) => Promise<string | null>, save?: (k: string, v: string) => Promise<void>): Promise<{ table: Uint8Array; statics: { addr: number; len: number }[]; line: string } | null> {
+  try {
+    const kept = load ? await load(key).catch(() => null) : null;
+    if (kept) { const j = JSON.parse(kept); return { table: Uint8Array.from(j.table), statics: j.statics, line: j.line + " (kept from an earlier run of this recorder build)" }; }
+    const d = dynamicAudit(raw, { sharedBuild, instantiate, range }), line = auditLine(d), statics = d.statics;
+    if (save) await save(key, JSON.stringify({ table: [...d.table], statics, line })).catch(() => {});
+    return { table: d.table, statics, line };
+  } catch (e) { log(`[RED] owner: the recorder's dynamic audit failed (${(e as Error).message}): every direct call stays under the lock`); return null; }
 }

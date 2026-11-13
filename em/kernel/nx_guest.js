@@ -19,7 +19,7 @@ addToLibrary({
 
   // A worker instantiates a unit when it first calls into it (most guest threads run a small part of the code): every
   // table slot it has not filled holds the trampoline, which lands in nxTranslate with the pc.
-  $nxUnit__deps: ['$NX', 'nx_core_out', 'nx_core_in', 'nx_unit_bytes', 'nx_unit_len', 'nx_unit_base', 'nx_unit_nfuncs'],
+  $nxUnit__deps: ['$NX', 'nx_core_out', 'nx_core_in', 'nx_unit_bytes', 'nx_unit_len', 'nx_unit_base', 'nx_unit_nfuncs', 'nx_unit_used', 'nx_trk_index'],
   $nxUnit: function(t, k) {
     if (t.have[k]) return;
     const p = _nx_unit_bytes(k), len = _nx_unit_len(k), base = _nx_unit_base(k);
@@ -27,13 +27,16 @@ addToLibrary({
     const t0 = performance.now();
     // the module the main thread compiled and sent to this worker before its thread started (kernel/nx_owner.js
     // nx_units_share), when there is one: a module compiled here from the bytes is a copy of the code for this thread alone
-    let mod = globalThis.NXSHARED && globalThis.NXSHARED[k];
-    if (mod) t.shared++; else mod = new WebAssembly.Module(HEAPU8.slice(p, p + len));
+    const shared = globalThis.NXMODS ? globalThis.NXMODS() : globalThis.NXSHARED; let mod = shared && shared[k];
+    if (mod) t.shared++;
+    else if (p) mod = new WebAssembly.Module(HEAPU8.slice(p, p + len));
+    // (a unit of the translation cache has no bytes in the memory: every worker is sent its module before it runs a thread)
+    else throw new Error('unit ' + k + ' (table slots from ' + base + ') has no bytes in the registry and this worker was not handed its compiled module');
     t.compileMs += performance.now() - t0;
     const end = base + _nx_unit_nfuncs(k);
-    if (end > t.table.length) t.table.grow(Math.ceil((end - t.table.length + 8192) / 4096) * 4096, t.tramp);   // (to what is needed and a little: a slot costs every thread 32 bytes. It grew by 2^18 slots at a time, 8 MB)
+    t.cover(end);
     new WebAssembly.Instance(mod, { cpu: t.core, hlp: t.hlp, env: Object.assign({ table_base: new WebAssembly.Global({ value: 'i32', mutable: false }, base) }, t.unitEnv) });
-    t.have[k] = 1; t.n++;
+    t.have[k] = 1; t.n++; _nx_unit_used(k, _nx_trk_index());
     _nx_core_in();
     if (typeof process !== 'undefined' && process.env && process.env.NX_MEMDBG && (t.n === 1 || t.n === 20 || t.n === 200) && (NX.dbg = (NX.dbg || 0) + 1) < 4) { const m = process.memoryUsage(); err('[memdbg] worker with ' + t.n + ' units (' + t.shared + ' shared): JS heap used ' + (m.heapUsed / 1048576).toFixed(1) + ' MB of ' + (m.heapTotal / 1048576).toFixed(1) + ', external ' + (m.external / 1048576).toFixed(1) + ' MB; shared modules held ' + (globalThis.NXSHARED ? globalThis.NXSHARED.length : 0)); }
     t.syncMs += performance.now() - t0; t.syncBytes += len;
@@ -55,7 +58,7 @@ addToLibrary({
   $nxTranslate: function(t, pcBig) {
     const pc = Number(BigInt.asUintN(64, pcBig));
     let idx = nxPcMap(pc);
-    if (idx >= t.table.length) t.cover();   // a function another thread had translated since this thread's table was sized (Table.get beyond the end throws)
+    if (idx >= t.table.length) t.cover(idx + 1);   // beyond this thread's table (Table.get beyond the end throws)
     if (idx > 1 && idx < t.table.length && (t.table.get(idx) !== t.tramp || nxNeed(t, idx))) return idx;
     const tr0 = performance.now();
     idx = _nx_translate(pc);   // behind the translator's lock: what it returns is published
@@ -65,7 +68,7 @@ addToLibrary({
     return idx;
   },
 
-  $nxThread__deps: ['$NX', '$nxTranslate', '$nxPcMap', 'nx_unit_count', 'nx_unit_base', 'nx_unit_nfuncs', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_slice_budget', 'nx_note_pc', 'nx_cntpct', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
+  $nxThread__deps: ['$NX', '$nxTranslate', '$nxPcMap', 'nx_unit_count', 'nx_unit_base', 'nx_unit_nfuncs', 'nx_svc', 'nx_host_call', 'nx_guest_fault', 'nx_slice_budget', 'nx_note_pc', 'nx_cntpct', 'nx_mod_ptr', 'nx_mod_len', 'nx_table_cap', 'nx_table_slots_add', 'nx_table_len', 'nx_is64', 'malloc', '$stringToUTF8', '$lengthBytesUTF8'],
   $nxThread: function() {
     if (NX.t) return NX.t;
     const mem = wasmMemory, t0 = performance.now();
@@ -100,12 +103,14 @@ addToLibrary({
     };
     t.tramp = t.table.get(0);
     t.budget = _nx_slice_budget();   // instructions per slice: short when guest threads share virtual cores (kernel/nx_cores.c)
-    // The table: one slot per translated function, the trampoline in every slot this thread has not filled. It is as
-    // long as what is published now (plus room) and grows when a call lands beyond it (runTo): a slot costs 32 bytes
-    // in every thread, and a thread that started early or runs little code need not hold the whole program's.
-    t.cover = () => { let end = 4096; for (let k = 0, n = _nx_unit_count(); k < n; k++) end = Math.max(end, _nx_unit_base(k) + _nx_unit_nfuncs(k)); end = Math.ceil((end + 2048) / 4096) * 4096;
-      if (end > t.table.length) t.table.grow(end - t.table.length, t.tramp); };
-    t.cover();
+    // The table: the trampoline in every slot this thread has not filled. A slot costs about 32 bytes in every thread,
+    // so the table is only as long as the highest slot this thread has called (plus a step: growing copies it), not as
+    // long as the program: it grows when a call lands beyond it (nxTranslate, runTo) or a unit is instantiated beyond
+    // it. The slots are handed out so that the units most threads use come first (nxLoadGame: the order of the cache).
+    t.cover = (end) => { const len = t.table.length; if (end <= len) return;
+      const to = Math.ceil(Math.max(end + 512, len + (len >> 3)) / 1024) * 1024;
+      t.table.grow(to - len, t.tramp); _nx_table_slots_add(to - len); _nx_table_len(to); };
+    t.cover(typeof process !== 'undefined' && process.env && process.env.NX_TABLE_FULL ? (() => { let end = 4096; for (let k = 0, n = _nx_unit_count(); k < n; k++) end = Math.max(end, _nx_unit_base(k) + _nx_unit_nfuncs(k)); return end; })() : 1024);
     // slot 2: the one function every host stub's pc maps to (as nxweb's rt_runtime.ts THUNK): it calls host_call
     const THUNK = new Uint8Array([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 0x11, 1, 3, 0x65, 0x6E, 0x76, 9, 0x68, 0x6F, 0x73, 0x74, 0x5F, 0x63, 0x61, 0x6C, 0x6C, 0, 0,
                                   3, 2, 1, 0, 7, 5, 1, 1, 0x66, 0, 1, 0x0A, 6, 1, 4, 0, 0x10, 0, 0x0B]);
@@ -119,7 +124,7 @@ addToLibrary({
         // registers were written back and pc is the target (the contract of an indirect transfer), so grow and go on
         if (e instanceof WebAssembly.RuntimeError && /table index is out of bounds/.test(e.message)) {
           const idx = nxPcMap(Number(BigInt.asUintN(64, core.pc.value))), len = t.table.length;
-          if (idx >= len) { t.cover(); if (t.table.length > len) { t.grown = (t.grown || 0) + 1; return t.runTo(until); } }
+          if (idx >= len) { t.cover(idx + 1); if (t.table.length > len) { t.grown = (t.grown || 0) + 1; return t.runTo(until); } }
         }
         const m = String(e && e.message || e), p = _malloc(lengthBytesUTF8(m) + 1); stringToUTF8(m, p, lengthBytesUTF8(m) + 1);
         err(String(e && e.stack || e).split('\n').slice(0, 6).join(' | '));
@@ -207,6 +212,8 @@ addToLibrary({
       gfx_guest_call: (fn, a0, a1, a2, a3) => { const q = blk / 8, v = [fn, a0, a1, a2, a3]; for (let i = 0; i < 5; i++) HEAPU64[q + i] = BigInt.asUintN(64, v[i]); _nx_gfx_guest_call(blk); return HEAPU64[q]; },
     };
     const x = new WebAssembly.Instance(mod, { env }).exports;
+    // the module's static scratch (the dynamic audit's finding: tools/gfx_dynaudit.mjs) is this instance's own
+    { const span = HEAPU32[(G + 48) / 4]; if (span) { if (!x.nx_tls) throw new Error('the recorder build has no nx_tls global, but the owner says it has per-instance scratch'); const p = Math.ceil(_malloc(span + 32) / 16) * 16; HEAPU8.fill(0, p, p + span); x.nx_tls.value = BigInt(p); } }
     NX.gfx = x; NX.gfxMs = performance.now() - t0;
     return x;
   },
@@ -243,7 +250,21 @@ addToLibrary({
     const fs = {
       dev_open: (kind, index, token) => Number(ask(0, [kind, index, token])),
       dev_size: (dev) => ask(1, [dev]),
-      dev_read: (dev, off, ptr, len, token) => Number(ask(2, [dev, off, ptr, len >>> 0, token])),
+      // a read of the RomFS goes to the fs worker when there is one (owner/fs_worker.ts, NXW): the request is left in
+      // its slot and the call pends; the worker reads into the memory and completes it. Else the owner is asked.
+      dev_read: (dev, off, ptr, len, token) => {
+        const W = 0x1FF1F200, w = W / 4;
+        if (token && HEAP32[w + 1] === 1) {
+          let rom = false; for (let i = 0, n = Atomics.load(HEAP32, w + 2); i < n && i < 4; i++) if (HEAP32[w + 3 + i] === dev) rom = true;
+          if (rom) {
+            while (Atomics.load(HEAP32, w) !== 0) Atomics.wait(HEAP32, w, 1, 1);   // (the worker takes a request out of the slot at once)
+            const a = W / 8 + 4; HEAP64[a] = BigInt(dev); HEAP64[a + 1] = BigInt(off); HEAP64[a + 2] = BigInt(ptr); HEAP64[a + 3] = BigInt(len >>> 0); HEAP64[a + 4] = BigInt(token); HEAP64[a + 5] = BigInt(NX.fsCtx);
+            Atomics.store(HEAP32, w, 1); Atomics.notify(HEAP32, w);
+            return 1;
+          }
+        }
+        return Number(ask(2, [dev, off, ptr, len >>> 0, token]));
+      },
       dev_write: (dev, off, ptr, len) => Number(ask(3, [dev, off, ptr, len >>> 0])),
       dev_flush: (dev, token) => Number(ask(4, [dev, token])),
       dev_remove: (kind, index, token) => Number(ask(5, [kind, index, token])),
@@ -301,7 +322,7 @@ addToLibrary({
     put(0, host.coreBytes);
     put(1, HEAPU8.slice(hlp, hlp + hlpLen));
   },
-  nx_js_tr_job__deps: ['$NX', '$nxPublish', 'malloc', 'free', 'nx_file_part', 'nx_file_commit', 'nx_js_cache_store', '$UTF8ToString'],
+  nx_js_tr_job__deps: ['$NX', '$nxPublish', 'malloc', 'free', 'nx_file_part', 'nx_file_commit', 'nx_js_cache_store', '$UTF8ToString', 'nx_unit_users', 'nx_unit_owner'],
   nx_js_tr_job__sig: 'did',
   nx_js_tr_job: function(kind, pc) {
     const h = NX.host;
@@ -315,15 +336,17 @@ addToLibrary({
       return a === undefined || NX.ld.stubId(a) >= 0 ? 0 : a;
     }
     if (kind === 4) {   // write the translation cache (when something was translated since it was read or written): the units of each module
-      if (!NX.cacheDir || !NX.mods || h.cacheHits + h.translatedInsns === NX.cacheMark) return 0;
+      if (!NX.cacheDir || !NX.mods) return 0;
+      NX.popWrite();
+      if (h.cacheHits + h.translatedInsns === NX.cacheMark) return 0;
       let bytes = 0;
       for (const m of NX.mods) {
-        const blob = h.exportCache(m.base, m.imageSize); if (blob.length <= 16) continue;
+        const blob = h.exportCache(m.base, m.imageSize); if (blob.length <= 16) continue;   // (the units that still have bytes: what this run translated)
         // in pieces of 8 MB through one buffer: the blob is half a gigabyte, and a copy of it in the host heap (2 GB in
         // all, 570 MB of it the unit registry) was what ended a ride with "abort: OOM" (2026-11-12)
-        const CH = 8 << 20, p = _malloc(CH), path = NX.cstr(NX.cacheDir + '/' + NX.cacheKey(m)); let ok = 1;
+        const CH = 8 << 20, p = _malloc(CH), path = NX.cstr(NX.cacheDir + '/' + NX.cacheFile(m)); let ok = 1;
         for (let o = 0; ok && o < blob.length; o += CH) { const n = Math.min(CH, blob.length - o); HEAPU8.set(blob.subarray(o, o + n), p); ok = _nx_file_part(path, p, n, o === 0 ? 1 : 0); }
-        if (ok && _nx_file_commit(path)) { bytes += blob.length; _nx_js_cache_store(path); } else err('[RED] translation cache: ' + NX.cacheKey(m) + ' was not written');
+        if (ok && _nx_file_commit(path)) { bytes += blob.length; _nx_js_cache_store(path); } else err('[RED] translation cache: ' + NX.cacheFile(m) + ' was not written');
         _free(path); _free(p);
       }
       NX.cacheMark = h.cacheHits + h.translatedInsns;
@@ -426,7 +449,18 @@ addToLibrary({
   $nxPublish: function() {
     const h = NX.host;
     for (; NX.published < h.units.length; NX.published++) {
-      const u = h.units[NX.published], p = _malloc(u.bytes.length);
+      const u = h.units[NX.published];
+      // A unit out of the translation cache: its bytes go to the main thread (transferred, not copied), which compiles
+      // each once and hands the compiled modules to every worker before it runs a thread (kernel/nx_owner.js
+      // nx_units_share). They never enter the host heap, and this realm lets go of them: the cache's files keep them.
+      if (u.cached && NX.shareOut) {
+        if (!NX.shareOut.length) NX.shareFrom = NX.published;
+        NX.shareOut.push(u.bytes); NX.shareBytes += u.bytes.length;
+        _nx_unit_publish(0, u.bytes.length, u.tableBase, u.pcs.length); u.bytes = null; u.side = new Uint32Array(0);   // (the side table too: it is the cache's, and this realm runs no code that could fault)
+        if (NX.shareBytes > (24 << 20)) NX.shareFlush();
+        continue;
+      }
+      const p = _malloc(u.bytes.length);
       HEAPU8.set(u.bytes, p);
       _nx_unit_publish(p, u.bytes.length, u.tableBase, u.pcs.length);
       u.bytes = HEAPU8.subarray(p, p + u.bytes.length);
@@ -481,23 +515,77 @@ addToLibrary({
       return m.name + '-' + Array.from(m.buildId.slice(0, 8), b => b.toString(16).padStart(2, '0')).join('') + '-' + m.base.toString(16) + '-' + h.toString(16) + '.a64cache'; };
     NX.cstr = cstr;
     NX.cacheInsns = 0;
+    // A module's cache is its first file and the files later runs added (<key>.d1, .d2, ...): a run writes only the units
+    // it translated itself, into one file of its own, because the bytes of the units it read are not kept in memory.
+    NX.cacheN = {};
+    NX.cacheFile = (m) => NX.cacheKey(m) + (NX.cacheN[m.name] ? '.d' + NX.cacheN[m.name] : '');
+    // read in pieces of 8 MB into this realm's own (JavaScript) memory, not into the host heap; null: no such file
+    const readFile = (name) => {
+      const path = cstr(NX.cacheDir + '/' + name), n = _nx_file_size(path), CH = 8 << 20;
+      if (n <= 0) { _free(path); return null; }
+      const blob = new Uint8Array(n), p = _malloc(CH); let ok = 1;
+      for (let o = 0; ok && o < n; o += CH) { const k = Math.min(CH, n - o); ok = _nx_file_read_at(path, o, p, k); if (ok) blob.set(HEAPU8.subarray(p, p + k), o); }
+      _nx_file_done(path); _free(p); _free(path);
+      if (!ok) { err('[RED] translation cache: ' + name + ' could not be read'); return null; }
+      return blob;
+    };
+    // Which threads instantiated each unit in earlier runs (first pc -> how many threads, and the first of them by its
+    // number in the order the threads start), kept beside the cache. The table slots are handed out by it, because a
+    // thread's table is as long as the highest slot it calls (32 bytes a slot, in every thread):
+    //   1. the units several threads used, those of most threads first (a job worker's table ends here);
+    //   2. room for what this run translates itself (it would otherwise lie at the very end, and one call of it would
+    //      make a thread's table as long as the program);
+    //   3. the units one thread alone used, thread by thread, the thread with the fewest first (only the thread with
+    //      the most private code, the game's main thread, has a table as long as everything);
+    //   4. what was never counted: the SDK's modules, then the game's.
+    const firstPc = (pcs) => { for (let i = 0; i < pcs.length; i++) if (pcs[i] !== 0xFFFFFFFF) return pcs[i]; return -1; };
+    let hh = 5381; for (const ch of host.optionsKey()) hh = (hh * 33 ^ ch.charCodeAt(0)) >>> 0;
+    const popName = 'units3-' + hh.toString(16) + '.a64pop';
+    NX.pop = new Map();
+    NX.popWrite = () => {
+      const n = Math.min(h0.units.length, NX.published), f = new Float64Array(3 * n); let any = 0;
+      for (let k = 0; k < n; k++) { const pc = firstPc(h0.units[k].pcs), was = NX.pop.get(pc), now = _nx_unit_users(k), u = Math.max(now, was ? was.u : 0);
+        f[3 * k] = pc; f[3 * k + 1] = u; f[3 * k + 2] = now ? _nx_unit_owner(k) : was ? was.o : -1; if (u) any++; }
+      if (!any) return;
+      const b = new Uint8Array(f.buffer), p = _malloc(b.length), path = cstr(NX.cacheDir + '/' + popName);
+      HEAPU8.set(b, p);
+      if (_nx_file_part(path, p, b.length, 1) && _nx_file_commit(path)) _nx_js_cache_store(path); else err('[RED] translation cache: ' + popName + ' was not written');
+      _free(path); _free(p);
+    };
+    const h0 = host;
     if (NX.cacheDir) {
-      let units = 0, bytes = 0; const t0 = performance.now(), lenAt = _malloc(8);
+      let units = 0, bytes = 0, files = 0; const t0 = performance.now();
       for (const m of set.modules) {
-        // read in pieces of 8 MB into this realm's own (JavaScript) memory, not into the host heap
-        const path = cstr(NX.cacheDir + '/' + NX.cacheKey(m)), n = _nx_file_size(path), CH = 8 << 20;
-        if (n <= 0) { _free(path); continue; }
-        const blob = new Uint8Array(n), p = _malloc(CH); let ok = 1;
-        for (let o = 0; ok && o < n; o += CH) { const k = Math.min(CH, n - o); ok = _nx_file_read_at(path, o, p, k); if (ok) blob.set(HEAPU8.subarray(p, p + k), o); }
-        _nx_file_done(path); _free(p); _free(path);
-        if (!ok) { err('[RED] translation cache: ' + NX.cacheKey(m) + ' could not be read'); continue; }
-        units += host.importCache(blob); bytes += n;   // (importCache copies what it keeps)
+        let n = 0;
+        for (; n < 200; n++) { NX.cacheN[m.name] = n; const blob = readFile(NX.cacheFile(m)); if (!blob) break; units += host.importCache(blob); bytes += blob.length; files++; }   // (importCache copies what it keeps)
+        NX.cacheN[m.name] = n;
+        if (n >= 200) err('[RED] translation cache: ' + m.name + ' has 200 files: this run adds none');
       }
-      _free(lenAt);
+      { const b = readFile(popName); if (b && b.length % 24 === 0) { const f = new Float64Array(b.buffer, 0, b.length / 8); for (let i = 0; i < f.length; i += 3) NX.pop.set(f[i], { u: f[i + 1], o: f[i + 2] }); } }
       NX.cacheInsns = host.translatedInsns;
       // every cached unit gets its table slots and goes into the registry now, so that the main thread can compile each
-      // once and hand the compiled modules to the workers before guest threads start (a running thread cannot be sent one)
-      if (units && host.cache) { for (const [pc, cu] of [...host.cache]) if (host.cache.get(pc) === cu) host.translateUnit([BigInt(pc)]); nxPublish(); }
+      // once and hand the compiled modules to the workers before guest threads start (a running thread cannot be sent one).
+      // The order of the slots: the units most threads used first; of those never counted, the small modules every thread
+      // calls (the SDK) before the game's own code.
+      if (units && host.cache) {
+        const seen = new Set(), list = [], rank = (pc) => { for (const m of set.modules) if (pc >= m.base && pc < m.base + m.imageSize) return m.name === 'main' ? 1 : 0; return 2; };
+        const own = new Map(), st = { shared: 0, one: 0, none: 0 };   // owner -> slots of its private units
+        for (const [pc, cu] of host.cache) { if (seen.has(cu)) continue; seen.add(cu); const w = NX.pop.get(firstPc(cu.pcs)), u = w ? w.u : 0, e = { pc, cu, u, o: w ? w.o : -1, r: rank(pc), i: list.length, g: u >= 2 ? 0 : u === 1 ? 1 : 2 };
+          list.push(e); if (e.g === 1) own.set(e.o, (own.get(e.o) || 0) + cu.pcs.length); st[e.g === 0 ? 'shared' : e.g === 1 ? 'one' : 'none'] += cu.pcs.length; }
+        const full = typeof process !== 'undefined' && process.env && process.env.NX_TABLE_FULL;   // (the order of the cache, as it was: for comparison)
+        if (!full) list.sort((a, b) => a.g - b.g || (a.g === 0 ? b.u - a.u : a.g === 1 ? (own.get(a.o) - own.get(b.o) || a.o - b.o) : a.r - b.r) || a.i - b.i);
+        const GAP = 24576; let gapAt = -1;
+        NX.shareOut = []; NX.shareBytes = 0; NX.shareFrom = 0;
+        NX.shareFlush = () => { if (!NX.shareOut.length) return;
+          postMessage({ cmd: 'callHandler', handler: 'nxUnitBytes', args: [NX.shareFrom, NX.shareOut] }, NX.shareOut.map(b => b.buffer));
+          NX.shareOut = []; NX.shareBytes = 0; };
+        for (const e of list) {
+          if (!full && gapAt < 0 && e.g > 0) { gapAt = host.table.length; host.table.grow(GAP); }
+          if (host.cache.get(e.pc) !== e.cu) { for (const pc of e.cu.pcs) if (host.cache.get(pc) === e.cu) { e.pc = pc; break; } if (host.cache.get(e.pc) !== e.cu) continue; } host.translateUnit([BigInt(e.pc)]); nxPublish(); }
+        if (gapAt >= 0) host.freeSlots.push({ base: gapAt, len: GAP });   // (after the cache's units: they must not take it)
+        NX.shareFlush(); NX.shareOut = null;
+        err('[loader] translation cache: ' + files + ' files; table slots: ' + st.shared + ' of units several threads used, ' + (gapAt >= 0 ? GAP : 0) + ' kept for what this run translates, ' + st.one + ' of units one thread used (' + own.size + ' threads), ' + st.none + ' never counted');
+      }
       err('[loader] translation cache: ' + (units ? units + ' units, ' + (bytes / 1048576).toFixed(1) + ' MB from ' + NX.cacheDir + ' in ' + (performance.now() - t0).toFixed(0) + ' ms' : 'nothing in ' + NX.cacheDir + ' for these modules and options yet'));
     }
   },

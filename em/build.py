@@ -184,7 +184,9 @@ def page():
     # the page is served by the nxweb page's server, under /em/ (the one directory of the main checkout's build output this track writes)
     dest = os.environ.get("NXEM_SERVE", "/mnt/build/web/em-next")   # a staging directory: the page at /em/ may be running (its workers load em.js when they start). NXEM_SERVE=/mnt/build/web/em to replace it; os.makedirs(dest, exist_ok=True)
     sh(["cp", f"{R}/web/em_worker.js", f"{B}/em_worker.js"]); sh(["cp", f"{R}/web/em_status.js", f"{B}/em_status.js"])
-    for f in ("index.html", "em.js", "em.wasm", "build.json", "audio.js", "em_worker.js", "em_status.js"): sh(["cp", f"{B}/{f}", f"{dest}/{f}"])
+    # the fs worker (?fsworker=1): the game file read off the owner thread (owner/fs_worker.ts)
+    sh([f"{W}/node_modules/.bin/esbuild", f"{R}/owner/fs_worker.ts", "--bundle", "--platform=browser", "--format=iife", f"--outfile={B}/fs_worker.js", "--log-level=warning"])
+    for f in ("index.html", "em.js", "em.wasm", "build.json", "audio.js", "em_worker.js", "em_status.js", "fs_worker.js"): sh(["cp", f"{B}/{f}", f"{dest}/{f}"])
     print(f"build: page copied to {dest} (http://localhost:8080/{os.path.basename(dest)}/index.html)")
 
 def p2():

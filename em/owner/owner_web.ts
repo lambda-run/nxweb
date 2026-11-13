@@ -9,7 +9,7 @@ import { RtShaders, workerTranslator, webShaderStore } from "../../src/glue/rt_s
 import { NupTree, blobBytes } from "../../src/prepare/host/nup.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { WebCodecsVideo } from "../../src/glue/video_webcodecs.ts";
-import { startOwner, sharedBuild, gfxShared, FS_GLOBALS, type Owner, type OwnerConfig } from "./owner.ts";
+import { startOwner, sharedBuild, gfxShared, lockFreeAudit, FS_GLOBALS, GFX_GLOBALS, type Owner, type OwnerConfig } from "./owner.ts";
 
 export interface PageSide {
   file: File;                                            // the .nup
@@ -20,7 +20,8 @@ export interface PageSide {
   stage: (text: string) => void;
   modulesList: string[];                                 // the code modules to load, in order
   nativeImage: OwnerConfig["nativeImage"];
-  fsDirect?: boolean;    // false (?fsdirect=0): every nn::fs call goes to the owner thread, as before
+  fsDirect?: boolean;    // true (?fsdirect=1): guest threads call the fs module in their own instance
+  fsWorker?: boolean;    // true (?fsworker=1): fsdirect, and a dedicated worker reads the RomFS for them (fs_worker.ts)
  vdec?: string | null;
   gfxAsync?: boolean;      // true (?asyncsubmit=1): a submission does not wait for the replayer
   gfxLockFree?: boolean;   // false (?lockfree=0): every direct NVN call takes the recorder's lock
@@ -36,12 +37,16 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   if (p.vdec === "hardware") { (globalThis as any).NXVDEC = "no-preference"; log("page: vdec=hardware: the AV1 decoder is asked for with hardwareAcceleration no-preference (hardware where there is one, else software)"); }
   if ((p as any).vpipe) (globalThis as any).NXVLATENCY = false;
   p.stage("runtime modules");
-  const prep = new PrepWasm(await WebAssembly.compile(await bytes("wasm/prepare.wasm") as unknown as BufferSource), log);
+  const prepModule = await WebAssembly.compile(await bytes("wasm/prepare.wasm") as unknown as BufferSource), prep = new PrepWasm(prepModule, log);
   const sha256 = (b: Uint8Array) => prep.sha256(b);
   const shared = async (n: string) => WebAssembly.compile(sharedBuild(await bytes(`wasm/${n}64.wasm`), pages) as unknown as BufferSource);
-  const g = gfxShared(sharedBuild(await bytes("wasm/gfx64.wasm"), pages), p.gfxDirect !== false);
+  // ?lockfree=1: the recorder's audit first (kept in the browser's store by the binary's hash: it takes seconds)
+  const gfxRaw = await bytes("wasm/gfx64.wasm");
+  const kv = { load: async (k: string) => { const r = await (await caches.open("nxem-a64")).match("/em-gfx-audit/" + k); return r ? await r.text() : null; }, save: async (k: string, v: string) => { await (await caches.open("nxem-a64")).put("/em-gfx-audit/" + k, new Response(v)); } };
+  const audit = p.gfxLockFree === true && p.gfxDirect !== false ? await lockFreeAudit(gfxRaw, "v1-" + sha256(gfxRaw), log, typeof caches !== "undefined" ? kv.load : undefined, typeof caches !== "undefined" ? kv.save : undefined) : null;
+  const g = gfxShared(sharedBuild(gfxRaw, pages), p.gfxDirect !== false, GFX_GLOBALS, audit?.statics ?? []);
   // (without ?fsdirect=1 the fs module is the plain shared build, exactly as before: the direct path has not run at game scale yet)
-  const fsPlain = sharedBuild(await bytes("wasm/fs64.wasm"), pages), f = p.fsDirect === true ? gfxShared(fsPlain, true, FS_GLOBALS) : { wasm: fsPlain, share: undefined };
+  const fsPlain = sharedBuild(await bytes("wasm/fs64.wasm"), pages), f = p.fsDirect === true || p.fsWorker === true ? gfxShared(fsPlain, true, FS_GLOBALS) : { wasm: fsPlain, share: undefined };
   const [fsModule, gfxModule] = await Promise.all([WebAssembly.compile(f.wasm as unknown as BufferSource), WebAssembly.compile(g.wasm as unknown as BufferSource)]);
   for (const n of ["translator64.shared", "helpers64.shared", "loader64"]) p.writeFile(`/rt/${n}.wasm`, await bytes(`wasm/${n}.wasm`));
   // the translation cache: its blobs out of the Cache API into /cache, where the translator thread reads them (kernel/nx_guest.js)
@@ -87,11 +92,20 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   log(p.pace === "timer" ? "page: pace=timer: display frames from a 16 ms message timer (not requestAnimationFrame)" : "page: display frames from requestAnimationFrame while the page is visible, from a 16 ms message timer while it is hidden (?pace=timer: always the timer)");
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
-    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: p.gfxLockFree === true, asyncSubmit: p.gfxAsync === true }, fsShare: f.share, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
+    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true }, fsShare: f.share, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
     gfx: device ? { ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");
   const { owner, exefs } = await startOwner(memory, c);
+  if (p.fsWorker === true) {
+    try {
+      const fw = new Worker(new URL("fs_worker.js", location.href).href);
+      fw.onmessage = (e: MessageEvent) => { if (e.data && e.data.line) log(e.data.line); };
+      fw.onerror = (e: any) => log(`[RED] page: the fs worker failed (${e.message ?? e}): RomFS reads stay with the owner`);
+      fw.postMessage({ start: true, memory, file: p.file, prep: prepModule });
+      log("page: fsworker=1: guest threads call the fs module themselves (fsdirect) and a dedicated worker reads the game file for them");
+    } catch (e) { log(`[RED] page: no fs worker (${(e as Error).message}): RomFS reads stay with the owner`); }
+  }
   if (device && owner.gfx) {
     owner.gfx.host.fitCanvas = true;
     let translator: any;

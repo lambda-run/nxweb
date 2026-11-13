@@ -45,7 +45,7 @@ void nx_mod_set(int which, double p, uint32_t len);   // 0 = the core module's b
 double nx_mod_ptr(int which);
 uint32_t nx_mod_len(int which);
 int nx_is64(void);
-struct nx_stats { uint64_t translate_ns, translate_calls, unit_bytes; };
+struct nx_stats { uint64_t translate_ns, translate_calls, unit_bytes, unit_heap_bytes, table_slots, unit_insts; };
 void nx_get_stats(struct nx_stats *out);
 
 // ---- the owner realm (kernel/nx_owner.js -> owner/owner.ts): nxweb's modules that exist once, on the main thread

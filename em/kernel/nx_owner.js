@@ -90,14 +90,19 @@ addToLibrary({
     const done = () => { Atomics.store(HEAP32, cell / 4, 1); Atomics.notify(HEAP32, cell / 4); };
     if (!upTo || globalThis.NXSHARE) { done(); return; }
     const S = globalThis.NXSHARE = { mods: [], sent: new Set() }, t0 = performance.now();
-    const post = (w) => { if (S.mods.length && !S.sent.has(w)) { S.sent.add(w); w.postMessage({ nxUnits: S.mods }); } };
+    const post = (w) => { if (S.mods.length && !S.sent.has(w)) { S.sent.add(w); if (typeof MessageChannel !== 'undefined' && typeof process === 'undefined') { const ch = new MessageChannel(); w.postMessage({ nxUnits: S.mods }, [ch.port2]); } else w.postMessage({ nxUnits: S.mods }); } };   // (the port: kernel/nx_worker_pre.js)
     (async () => {
-      let bytes = 0;
+      let bytes = 0, want = 0;
+      // the units of the translation cache have no bytes in the memory: the translator thread sent them here (nxUnitBytes)
+      for (let i = 0; i < upTo; i++) if (!_nx_unit_bytes(i)) want++;
+      for (let tries = 0; want && (!globalThis.NXUNITBYTES || globalThis.NXUNITBYTES.n < want); tries++) { if (tries > 12000) throw new Error('the bytes of ' + want + ' cached units did not arrive from the translator thread'); await new Promise((r) => setTimeout(r, 5)); }
+      const B = globalThis.NXUNITBYTES ? globalThis.NXUNITBYTES.at : [];
       for (let k = 0; k < upTo; k += 32) {
         const jobs = [];
-        for (let i = k; i < Math.min(upTo, k + 32); i++) { const p = _nx_unit_bytes(i), n = _nx_unit_len(i); bytes += n; jobs.push(WebAssembly.compile(HEAPU8.slice(p, p + n))); }
+        for (let i = k; i < Math.min(upTo, k + 32); i++) { const p = _nx_unit_bytes(i), n = _nx_unit_len(i); bytes += n; jobs.push(WebAssembly.compile(p ? HEAPU8.slice(p, p + n) : B[i])); B[i] = null; }
         for (const m of await Promise.all(jobs)) S.mods.push(m);
       }
+      globalThis.NXUNITBYTES = null;
       for (const w of PThread.unusedWorkers.concat(PThread.runningWorkers)) post(w);
       const load = PThread.loadWasmModuleToWorker;
       PThread.loadWasmModuleToWorker = function (w) { const r = load.apply(PThread, arguments); post(w); return r; };
@@ -114,7 +119,9 @@ addToLibrary({
     const p = UTF8ToString(path), name = p.split('/').pop(); let b;
     try { b = FS.readFile(p); FS.unlink(p); } catch (e) { err('[RED] translation cache: ' + name + ': ' + e.message); return; }
     caches.open('nxem-a64').then(async (c) => {
-      for (const k of await c.keys()) { const n = decodeURIComponent(new URL(k.url).pathname.split('/').pop()); if (n.split('-')[0] === name.split('-')[0] && n !== name) await c.delete(k); }
+      // (what goes: the same module's files of another build or of other translator options; its own later files, <key>.dN, stay)
+      const stem = (n) => n.replace(/\.d\d+$/, '');
+      for (const k of await c.keys()) { const n = decodeURIComponent(new URL(k.url).pathname.split('/').pop()); if (n.split('-')[0] === name.split('-')[0] && stem(n) !== stem(name)) await c.delete(k); }
       await c.put('/em-a64-cache/' + encodeURIComponent(name), new Response(b, { headers: { 'Content-Type': 'application/octet-stream' } }));
       err('[owner] translation cache: ' + name + ' stored in the browser (' + (b.length / 1048576).toFixed(1) + ' MB)');
     }).catch((e) => err('[RED] translation cache: not stored: ' + (e && e.message || e)));
