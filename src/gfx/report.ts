@@ -53,21 +53,41 @@ function once(bit: u32): bool { if (redOnce & (1 << bit)) return false; redOnce 
 @inline function inMemory(addr: u64, n: u64): bool { return addr > 1 && addr + n <= <u64>memory.size() << 16; }
 
 // Records written by counters this port does not count: a condition on one of them is never evaluated. Open
-// addressing; an address that a timestamp report takes over is replaced by 1, which no record has
-const CONS_N: u32 = 4096;
-const CONS: usize = memory.data(32768);
-let consCount: u32 = 0, consAll = false;
+// addressing; an address that is no longer there (a timestamp report took it over, or it left the ring) is replaced by 1,
+// which no record has. The latest CONS_KEEP addresses are kept, in a ring in the order they came: a game that asks for
+// occlusion queries every frame, each at a place of its own, went past any table (it used to give up there and draw
+// every condition from then on, the conditional clears a game skips included: an engine that clears its depth copy
+// under a false condition lost the copy, and every opaque draw with it, depth test EQUAL). A record that left the ring is
+// evaluated from memory like any other: nothing wrote it here, so it reads what the game put there
+const CONS_BITS: u32 = 14, CONS_N: u32 = 1 << CONS_BITS, CONS_KEEP: u32 = CONS_N >> 1;
+const CONS: usize = memory.data(131072);      // CONS_N addresses
+const CONS_AT: usize = memory.data(65536);    // CONS_N u32: where in the ring the slot's address is
+const CONS_RING: usize = memory.data(65536);  // CONS_KEEP addresses; 0: no longer there
+let consCount: u32 = 0, consUsed: u32 = 0, consNext: u32 = 0;      // addresses there; slots that are not 0 (the 1s too); where the next one goes in the ring
 // @ts-ignore: decorator
-@inline function consHash(addr: u64): u32 { return <u32>((addr * 0x9E3779B97F4A7C15) >> 52); }
+@inline function consHash(addr: u64): u32 { return <u32>((addr * 0x9E3779B97F4A7C15) >> (64 - CONS_BITS)); }
 function consSlot(addr: u64): usize {     // where addr is, 0 when it is not there
   for (let i = consHash(addr), k: u32 = 0; k < CONS_N; k++, i = (i + 1) & (CONS_N - 1)) { const p = CONS + (<usize>i << 3), v = load<u64>(p); if (v == addr) return p; if (!v) return 0; }
   return 0;
 }
-function consAdd(addr: u64): void {
-  if (consAll || consSlot(addr)) return;
-  if (consCount >= CONS_N - CONS_N / 4) { consAll = true; L.redLine("conditional rendering: counters that are not counted wrote more records than the table holds: every condition is drawn from now on"); return; }
+function consPut(addr: u64, at: u32): void {
   let i = consHash(addr); while (load<u64>(CONS + (<usize>i << 3))) i = (i + 1) & (CONS_N - 1);
-  store<u64>(CONS + (<usize>i << 3), addr); consCount++;
+  store<u64>(CONS + (<usize>i << 3), addr); store<u32>(CONS_AT + (<usize>i << 2), at); consUsed++;
+}
+function consDrop(p: usize): void { store<u64>(CONS_RING + (<usize>load<u32>(CONS_AT + ((p - CONS) >> 1)) << 3), 0); store<u64>(p, 1); consCount--; }
+function consAdd(addr: u64): void {
+  const had = consSlot(addr);
+  if (had) consDrop(had);                 // it comes again: the latest now
+  const r = CONS_RING + (<usize>consNext << 3), old = load<u64>(r);
+  if (old) {                              // the ring is full: the oldest leaves
+    const p = consSlot(old); if (p) consDrop(p);
+    if (once(3)) L.redLine("conditional rendering: counters that are not counted wrote more records than the table keeps: the oldest are forgotten (a condition on one of them is evaluated from what the game left there)");
+  }
+  if (consUsed >= CONS_N - CONS_N / 4) {  // too few free slots (the 1s take them): the table is made again from the ring
+    memory.fill(CONS, 0, <usize>CONS_N << 3); consUsed = 0;
+    for (let k: u32 = 0; k < CONS_KEEP; k++) { const a = load<u64>(CONS_RING + (<usize>k << 3)); if (a) consPut(a, k); }
+  }
+  store<u64>(r, addr); consPut(addr, consNext); consCount++; consNext = (consNext + 1) & (CONS_KEEP - 1);
 }
 
 function write(e: usize, counter: u64, ticks: u64): void {
@@ -88,7 +108,7 @@ export function reportIssue(type: u32, addr: u64): void {
     return;
   }
   if (!inMemory(addr, 16)) { if (once(1)) { L.red("ReportCounter: the record at 0x"); L.hex(addr); L.str(" is outside guest memory: not written"); L.end(); } return; }
-  if (isTime(type)) { const p = consCount ? consSlot(addr) : 0; if (p) store<u64>(p, 1); } else consAdd(addr);
+  if (isTime(type)) { const p = consCount ? consSlot(addr) : 0; if (p) consDrop(p); } else consAdd(addr);
   if (nextId - oldest == CAP) {       // the GPU has not finished 4096 reports: the oldest takes the latest time known
     if (once(2)) L.redLine("more than 4096 counter reports are on their way: the oldest lands now with the latest time known");
     const e = slot(oldest), t = ticksFromNs(lastNs);
@@ -144,7 +164,7 @@ export function reportOverwrite(dst: u64, n: u64): void {
 // The 64-bit counter at addr as the GPU would read it at this point of the stream; false: not known
 let rcV: u64 = 0;
 function rcValue(addr: u64): bool {
-  if (consAll || !inMemory(addr, 8) || (consCount && consSlot(addr))) return false;
+  if (!inMemory(addr, 8) || (consCount && consSlot(addr))) return false;
   for (let id = nextId; id != oldest;) {
     const e = slot(--id);
     if (load<u64>(e, R_addr) != addr || !(load<u32>(e, R_mask) & 1)) continue;
