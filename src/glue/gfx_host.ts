@@ -128,7 +128,7 @@ const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8,
 const DIMS = ["2d", "2d-array", "cube", "3d", "cube-array"], CLASSES: VinClass[] = ["float", "sint", "uint"];
 
 interface Tex { serial: number; target: number; format: number; flags: number; samples: number; width: number; height: number; depth: number; levels: number; swz: number;
-  gpu?: GPU; snap?: GPU; imgScratch?: Map<string, GPU>; blockScratch?: Map<string, GPU>; shapes?: Map<string, { tex: GPU; at: number; view: GPU }>; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
+  gpu?: GPU; snap?: GPU; blank?: boolean; imgScratch?: Map<string, GPU>; blockScratch?: Map<string, GPU>; shapes?: Map<string, { tex: GPU; at: number; view: GPU }>; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
 interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo" | "host"; dyn: boolean; write: boolean; size?: number; info?: ShaderInfo }
 interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
   mesh?: boolean; dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU;
@@ -187,7 +187,7 @@ export class GfxHost {
   ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0, gmemRanges: 0, gmemBytes: 0, gmemUploads: 0, gmemUploadBytes: 0, gmemReadbacks: 0, gmemGrows: 0, gmemLogged: 0,
-    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0 };
+    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0, zeroUploads: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
   caps = 0;
   // Hooks for the embedder (the kernel's waits): a fence completed (everything submitted before it is done on the GPU
@@ -390,7 +390,17 @@ export class GfxHost {
   private ndvePipes = new Map<string, { pipe: GPU; layout: GPU }>();
   private upR8 = 0; private upRg8 = 0;
   private ndveScratch = new Map<string, GPU>();      // the stand-in's own image for an output WebGPU cannot store to (an sRGB format), by format and size
-  private red(key: string, line: string) { if (!this.redOnce.has(key)) { this.redOnce.add(key); this.log(`[RED] ${line}`); } }
+  // A red line is logged once a key; how often its cause came up is counted, and frameReds() hands the counts since it was last called (a replay asks every frame)
+  private redCount = new Map<string, number>(); private redText = new Map<string, string>();
+  private red(key: string, line: string) {
+    this.redCount.set(key, (this.redCount.get(key) ?? 0) + 1);
+    if (!this.redOnce.has(key)) { this.redOnce.add(key); if (this.redText.size < 4096) this.redText.set(key, line); this.log(`[RED] ${line}`); }
+  }
+  frameReds(): [string, number][] {
+    const out: [string, number][] = [...this.redCount].map(([k, n]) => [this.redText.get(k) ?? k, n]);
+    this.redCount.clear();
+    return out.sort((a, b) => b[1] - a[1]);
+  }
   private get dv() { return new DataView(this.memory.buffer); }
   private memView: Uint8Array | null = null;
   private get u8() { let v = this.memView; if (!v || v.buffer !== this.memory.buffer) v = this.memView = new Uint8Array(this.memory.buffer); return v; }
@@ -1127,7 +1137,7 @@ export class GfxHost {
     }, (e: any) => { if (!this.lost && gen === this.gen) this.log(`[RED] storage buffer readback failed: ${e?.message ?? e}`); }));
     this.gmFlush(gen);
     for (const b of this.inUse) { let l = this.pool.get(b.size); if (!l) this.pool.set(b.size, l = []); l.push(b); }
-    this.inUse = []; this.epoch++; this.flushNo++; this.bindDirty = true;
+    this.inUse = []; this.epoch++; this.flushNo++; this.bindDirty = true; this.splitsLeft = 64;
     if (!this.cacheUploads) { for (const e of this.ranges.values()) this.release(e.buf); this.ranges.clear(); this.groups.clear(); }
     else if (this.flushNo % 64 === 0) {
       for (const [k, e] of this.ranges) if (e.used < this.flushNo - 240) { this.release(e.buf); this.ranges.delete(k); this.groups.clear(); }
@@ -1372,7 +1382,7 @@ export class GfxHost {
       pipe.layouts = layouts; pipe.g0 = g0;
       pipe.desc = { layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }), compute: { module: this.module(csId), entryPoint: cs.entry } };
       this.device.createComputePipelineAsync(pipe.desc).then((p: GPU) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
-        (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.desc = null; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] compute pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
+        (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe || !pipe.desc) return; pipe.desc = null; pipe.gpu = undefined; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] compute pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
       return;
     }
     const vsId = dv.getUint16(k + PK.vs, true), fsId = dv.getUint16(k + PK.fs, true), vs = this.shaders[vsId].info, fs = this.shaders[fsId].info, flags = dv.getUint8(k + PK.flags);
@@ -1460,14 +1470,40 @@ export class GfxHost {
     pipe.desc = desc;
     // Asynchronously, so a pipeline first needed later is ready by then; the draw that needs it now builds it itself (usePipeline)
     this.device.createRenderPipelineAsync(desc).then((p: GPU) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
-      (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.desc = null; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
+      (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe || !pipe.desc) return; pipe.desc = null; pipe.gpu = undefined; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
+  }
+  // The encoder is submitted where it stands and the open pass goes on in a new one (a render pass on the same attachments, loading what was drawn)
+  private splitsLeft = 64;      // a submission: at most so many (flush() fills it up again)
+  private splitEncoder() {
+    const open = !!this.pass, render = !this.computePass, d = this.passDesc, st = this.passState, blocks = this.passBlocks;
+    if (open) { this.passBlocks = []; this.pass.end(); this.pass = null; }
+    // not flush(): the submission's segment (counter reports, time stamps), its upload epoch and its fences stay as they are; only the commands go out
+    if (this.uniformArena) this.uaWrite();
+    if (this.enc) { this.device.queue.submit([this.enc.finish()]); this.enc = null; this.stats.submits++; }
+    if (open && render) { this.passDesc = d; this.passState = st; this.reopenRenderPass(); this.passBlocks = blocks; }
+    else if (open) { this.pass = this.encoder().beginComputePass(); this.computePass = true; }
+    this.bindDirty = true;
   }
   private usePipeline(id: number): boolean {
     const pipe = this.pipes.get(id);
     if (!pipe) { this.red(`nopipe${id}`, `host stream binds pipeline ${id}, which was never created`); this.cur = null; return false; }
     if (!pipe.gpu) {
       if (!pipe.desc) { this.cur = null; return false; }      // it cannot be built (over a limit, no shader variant): its draws are skipped
-      pipe.gpu = pipe.compute ? this.device.createComputePipeline(pipe.desc) : this.device.createRenderPipeline(pipe.desc); this.stats.pipelinesSync++;
+      // Built now, for this draw. Whether WebGPU takes it is known only later (an error scope answers asynchronously), and an invalid pipeline makes the
+      // command buffer it is set in invalid: what was encoded before goes out on its own first, so a refusal costs the rest of this submission and not
+      // all of it; when the answer is a refusal the pipeline is dropped, said in red with the reason and reported to the recorder, which stops sending its draws
+      const plain = !pipe.mesh && (pipe.compute ? this.shaders[pipe.stages[0]]?.info.stage === "compute" : true), scoped = typeof this.device.pushErrorScope === "function";
+      if (plain && this.enc && this.splitsLeft > 0) { this.splitsLeft--; this.splitEncoder(); }
+      if (scoped) this.device.pushErrorScope("validation");
+      const g = pipe.gpu = pipe.compute ? this.device.createComputePipeline(pipe.desc) : this.device.createRenderPipeline(pipe.desc); this.stats.pipelinesSync++;
+      if (scoped) { const gen = this.gen; Promise.resolve(this.device.popErrorScope()).then((e: any) => {
+        if (!e || gen !== this.gen || this.pipes.get(id) !== pipe) return;
+        if (pipe.gpu === g) pipe.gpu = undefined;
+        if (!pipe.desc) return;       // the asynchronous request said so already
+        pipe.desc = null; this.stats.pipelinesFailed++;
+        this.log(`[RED] ${pipe.compute ? "compute " : ""}pipeline ${id} did not build: ${String(e.message ?? e).split("\n")[0]} (it was built for a draw: what the submission encoded after that draw is lost with it)`);
+        this.x.gfx_pipeline_done(id, 0);
+      }, () => {}); }
     }
     this.cur = pipe; this.pass.setPipeline(pipe.gpu); this.bindDirty = true;
     if (!pipe.compute && (this.ownSlots.length || pipe.constSlot !== undefined || pipe.vconv)) this.ownBuffers(pipe);
@@ -1845,8 +1881,8 @@ ${planes ? `  // NV12 to RGB as BT.709 limited range (the stand-in's assumption;
     if (!this.pass || !this.computePass) return;
     this.stats.dispatches++;
     if (this.ndve) { this.ndveDispatch(dv, p); return; }
-    if (!this.usePipeline(dv.getUint32(p + 8, true))) return;
-    if (!this.bind()) return;
+    if (!this.usePipeline(dv.getUint32(p + 8, true))) { this.ledger.dropped("pipeline not built on the host", true); return; }
+    if (!this.bind()) { this.ledger.dropped("bindings not made on the host", true); return; }
     this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
     this.imgFlush();
     this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
@@ -2274,9 +2310,23 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   }
   // Texels from the recorder (texcontent.ts): linear rows in memory. Takes effect at once; the recorder only sends
   // them before the submission's first use of the texture, so nothing encoded and not yet submitted reads it
+  // A texture whose GPU object these very records made holds zeros (WebGPU clears a new texture), and zeros are what a game's new render targets have
+  // in memory: such an upload is not made (the game makes its shadow, depth and colour targets anew every frame: 43 MB of zeros a frame, the depth ones a draw
+  // and a submit a layer). `blank` lasts until the first record that is not an upload
+  private blank: Tex[] = [];
+  private allZero(ptr: number, n: number): boolean {
+    const m = this.u8, end = Math.min(ptr + n, m.length);
+    let i = ptr;
+    for (; i < end && (i & 7); i++) if (m[i]) return false;
+    const w = new BigUint64Array(m.buffer, i, (end - i) >> 3);
+    for (let k = 0; k < w.length; k++) if (w[k]) return false;
+    for (i += w.length << 3; i < end; i++) if (m[i]) return false;
+    return true;
+  }
   private texData(dv: DataView, p: number) {
-    const t = this.texture(this.u64(dv, p + 8));
+    const serial = this.u64(dv, p + 8), made = !this.textures.get(serial)?.gpu, t = this.texture(serial);
     if (!t) return;
+    if (made) { t.blank = true; this.blank.push(t); }
     // the last 2D single- and two-channel textures whose texels came from guest memory: a decoder's NV12 planes are such a pair (ndveStandIn)
     if (this.ndve && t.gpu.dimension === "2d") { if (t.gpu.format === "r8unorm") this.upR8 = t.serial; else if (t.gpu.format === "rg8unorm") this.upRg8 = t.serial; }
     const what = dv.getUint32(p + 56, true);
@@ -2285,6 +2335,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     const w = Math.min(dv.getUint32(p + 28, true), lw - x), h = Math.min(dv.getUint32(p + 32, true), lh - y), rows = h / f.bh;
     if (w <= 0 || h <= 0 || level >= t.gpu.mipLevelCount) return;
     if (t.gpu.sampleCount > 1) return;
+    if (t.blank && this.allZero(ptr, pitch * (what === 1 ? h : rows) * slices)) { this.stats.zeroUploads++; return; }
     if (what === 1) {       // depth as f32, one draw a layer
       for (let s = 0; s < slices; s++) this.depthData(t, level, z + s, x, y, w, h, ptr + s * pitch * h, pitch);
       this.stats.uploads++; this.stats.uploadBytes += pitch * h * slices; return;
@@ -2353,6 +2404,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
       const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
       if (this.cap) this.captureRecord(op, dv, p);
       this.ledger.record(op, dv, p);
+      if (this.blank.length && op !== H.TEX_DATA) { for (const t of this.blank) t.blank = false; this.blank.length = 0; }
       switch (op) {
         case H.TEX_CREATE: {
           const serial = this.u64(dv, p + 8), d = p + 16, format = dv.getInt32(d + 4, true);

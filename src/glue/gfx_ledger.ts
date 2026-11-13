@@ -8,7 +8,7 @@ const R_DRAW = 14, R_DRAW_IDX = 15, R_BEGIN_PASS = 3, R_END_PASS = 4, R_TEX = 11
 export const FRAMES = 64, KEYS = 16384, TEXTURES = 4096, FRAME_TEXTURES = 256, SOURCES = 8;
 
 // H_SKIP's reason (hostops.ts SKIP_*); a shader reason is split by the state of its keys
-const SKIP_REASON = ["shader", "program lacks the stage", "pipeline failed", "unsupported state", "render condition false"];
+const SKIP_REASON = ["shader", "program lacks the stage", "pipeline failed", "unsupported state", "render condition false", "rasterizer discard", "nothing to draw (count 0)"];
 const KEY_STATE = ["unknown", "pending", "failed"] as const;
 export type KeyState = typeof KEY_STATE[number];
 
@@ -89,8 +89,9 @@ export class FrameLedger {
   }
 
   // the live replayer could not issue the draw it just counted (no pipeline yet, bindings it could not make)
-  dropped(why: string): void {
+  dropped(why: string, dispatch = false): void {
     const f = this.f;
+    if (dispatch) { f.dispatches--; f.dispatchSkips.set(why, (f.dispatchSkips.get(why) ?? 0) + 1); return; }
     f.draws--; f.drawSkips.set(why, (f.drawSkips.get(why) ?? 0) + 1);
     for (const s of this.pass) if (f.first.get(s)?.ord === this.ord) f.first.delete(s);
   }

@@ -301,7 +301,7 @@ export async function indexCapture(read: (off: number, len: number) => Promise<U
   return { chunks, complete, size };
 }
 
-export interface ReplayFrame { n: number; serial: number; width: number; height: number; bytesPerPixel: number; format: string; flip: boolean; data: Uint8Array | null; line: string;
+export interface ReplayFrame { n: number; serial: number; width: number; height: number; bytesPerPixel: number; format: string; flip: boolean; data: Uint8Array | null; line: string; reds: [string, number][];
   live: "same" | "differs" | "none"; differing: number; note: string }
 export interface ReplayResult { host: any; frames: ReplayFrame[]; log: string[]; errors: [string, number][]; notes: string[]; stats: any; ms: number }
 // shader: a shader of the capture is about to be taken: what it returns (when anything) replaces its record (a stage translated again by a newer chain)
@@ -486,7 +486,7 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
           h.exec(from, p - from); from = p;
           if (op !== H.PRESENT) continue;
           await h.landed();
-          const fr: ReplayFrame = { n: frames.length, serial: h.lastPresented, width: 0, height: 0, bytesPerPixel: 0, format: "", flip, data: null, line: h.ledger.lastLine ?? "", live: "none", differing: 0, note: "" };
+          const fr: ReplayFrame = { n: frames.length, serial: h.lastPresented, width: 0, height: 0, bytesPerPixel: 0, format: "", flip, reds: h.frameReds?.() ?? [], data: null, line: h.ledger.lastLine ?? "", live: "none", differing: 0, note: "" };
           if (opts.noReadback) fr.note = "not read back";
           else try { const r = await h.readTexture(h.lastPresented); fr.width = r.width; fr.height = r.height; fr.bytesPerPixel = r.bytesPerPixel; fr.data = r.data; fr.format = h.textures.get(h.lastPresented)?.fmt?.tex ?? ""; }
           catch (e: any) { fr.note = `the presented image could not be read: ${e?.message ?? e}`; }

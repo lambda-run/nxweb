@@ -57,7 +57,7 @@ export const H_SKIP: u32 = 41;             // a draw or dispatch the recorder sk
                                            // 2 mesh draw), +13 u8[3] the state of each key (0 unknown, 1 pending, 2 failed), +16 u64 key[3] (0 = none): the program's
                                            // stages that are not in the library. Nothing to run: the replayer only counts it (gfx_ledger.ts)
 export const H_SKIP_SIZE: usize = 40;
-export const SKIP_SHADER: u32 = 0, SKIP_NO_STAGE: u32 = 1, SKIP_PIPELINE: u32 = 2, SKIP_STATE: u32 = 3, SKIP_RENDER_COND: u32 = 4;
+export const SKIP_SHADER: u32 = 0, SKIP_NO_STAGE: u32 = 1, SKIP_PIPELINE: u32 = 2, SKIP_STATE: u32 = 3, SKIP_RENDER_COND: u32 = 4, SKIP_DISCARD: u32 = 5, SKIP_EMPTY: u32 = 6;
 const CAP: usize = 1 << 20;
 let BUF: usize = 0;
 export function hostInit(): void { BUF = arenaAlloc(CAP); }

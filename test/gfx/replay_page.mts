@@ -41,8 +41,19 @@ async function main() {
     const f = (device as any)[m].bind(device);
     (device as any)[m] = (d: any) => { const t0 = performance.now(), at = stamp(); try { return f(d); } finally { const ms = performance.now() - t0; if (ms > 50 || m.endsWith("Pipeline")) trace.push(`${at} ${m} ${ms.toFixed(0)} ms ${m === "createShaderModule" ? `${d.code.length} chars` : m === "createTexture" ? `${d.format} ${JSON.stringify(d.size)}` : m === "createBuffer" ? `${d.size} bytes` : (d.compute?.module ?? d.fragment?.module)?.__key ?? ""}`); } };
   }
+  // Pipelines are built when a draw or dispatch first uses them (GfxHost.usePipeline), one at a time: the asynchronous requests the replayer makes for every
+  // pipeline at once (a software device compiles hundreds of shaders of up to a megabyte of WGSL side by side and runs out of memory) never start.
+  // ?skipbig=<chars>[&keep=key,key]: a pipeline with a shader of more WGSL than that is not built at all (its draws and dispatches are skipped) unless one of its keys is kept
+  const never = () => new Promise<never>(() => {});
+  (device as any).createRenderPipelineAsync = never; (device as any).createComputePipelineAsync = never;
+  const skipBig = Number(q.get("skipbig") ?? 0), keep = new Set((q.get("keep") ?? "").split(",").filter(Boolean)), skipped = new Map<string, number>();
   const mk = (memory: any, log: (l: string) => void) => {
     const h: any = new GfxHost(device, memory, { log: l => { if (tr) trace.push(`${stamp()} log ${l.slice(0, 200)}`); log(l); }, capture: false, limits });
+    if (skipBig) { const use0 = h.usePipeline.bind(h); h.usePipeline = (id: number) => {
+      const pp = h.pipes.get(id);
+      if (pp && !pp.gpu && pp.desc) { const ks: string[] = (h.pipeShaders?.(id) ?? pp.stages).map((sid: number) => h.shaders[sid]).filter((x: any) => x && x.info.wgsl.length > skipBig).map((x: any) => x.key);
+        if (ks.length && !ks.some(k => keep.has(k))) { pp.desc = null; for (const k of ks) skipped.set(k, (skipped.get(k) ?? 0) + 1); } }
+      return use0(id); }; }
     if (tr) { const use = h.usePipeline.bind(h); h.usePipeline = (id: number) => { const pp = h.pipes.get(id); if (pp && !pp.gpu && pp.desc) trace.push(`${stamp()} pipeline ${id} built at its use: ${pp.stages.map((sid: number) => `${h.shaders[sid]?.info.stage} ${h.shaders[sid]?.key} (${h.shaders[sid]?.info.wgsl.length} chars)`).join(", ")}`); return use(id); }; }
     return h;
   };
@@ -56,9 +67,11 @@ async function main() {
   });
   const adapterName = adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "";
   await out("replay.log", r.log.join("\n") + "\n");
+  if (skipped.size) r.notes.push(`--skipbig ${skipBig}: ${skipped.size} shaders of more WGSL were left out with their pipelines (${[...skipped.keys()].join(" ")})`);
   if (tr) await out("trace.txt", trace.join("\n") + "\n");
-  await out("errors.txt", r.errors.map(([l, n]) => `${String(n).padStart(6)}  ${l}`).join("\n") + (r.errors.length ? "\n" : ""));
+  // errors.txt: what the frame ledger counted and how often each red line's cause came up, frame by frame; then every red line of the run with its count
+  await out("errors.txt", r.frames.map(f => `frame ${f.n}: ${f.line}\n${f.reds.map(([l, n]) => `${String(n).padStart(6)}  ${l}`).join("\n")}\n`).join("\n") + "\nwhole run:\n" + r.errors.map(([l, n]) => `${String(n).padStart(6)}  ${l}`).join("\n") + (r.errors.length ? "\n" : ""));
   if (replaced.length) r.notes.push(`${replaced.length} shaders of the capture replaced by ones translated again (--shaders)`);
-  return { adapter: adapterName, notes: r.notes, ms: r.ms, stats: r.stats, errors: r.errors, dumps, frames: r.frames.map(f => ({ n: f.n, serial: f.serial, width: f.width, height: f.height, format: f.format, live: f.live, differing: f.differing, note: f.note, line: f.line })) };
+  return { adapter: adapterName, notes: r.notes, ms: r.ms, stats: r.stats, errors: r.errors, dumps, frames: r.frames.map(f => ({ n: f.n, serial: f.serial, width: f.width, height: f.height, format: f.format, live: f.live, differing: f.differing, note: f.note, line: f.line, reds: f.reds })) };
 }
 (window as any).__replay = main().catch(e => ({ fatal: String(e?.stack ?? e) }));
