@@ -155,7 +155,19 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
     // (a stage that goes to the translator: the calls waiting for it are told, below)
     const atTranslator = new Set<string>(), told = new Map<string, () => void>();
     if (translator) { const t0 = translator.translate.bind(translator); translator.translate = (b: any) => { sw.translating++; atTranslator.add(b.key); told.get(b.key)?.(); told.delete(b.key); return t0(b).finally(() => { sw.translating--; sw.translated++; atTranslator.delete(b.key); }); }; }
-    const sh = new RtShaders(owner.gfx, { translator, store });
+    // ?shaderdumpkeys=k1,k2 | all (&shaderdump=<receiver>, default ?logto= or http://localhost:8082): the named stages' bytes are POSTed there as
+    // sh-<key>.bin (u32 control length, control, code: what tools/shaders/one.mts reads) when a program first names them, translated or not
+    const dk = qs.get("shaderdumpkeys"), dumpTo = (qs.get("shaderdump") || qs.get("logto") || "http://localhost:8082").replace(/\/+$/, "");
+    const dumpKeys = !dk ? undefined : dk === "all" ? "all" as const : new Set(dk.toLowerCase().split(",").map(s => s.trim()).filter(Boolean));
+    const dumped = new Set<string>();
+    const onDump = (b: { key: string; control: Uint8Array; code: Uint8Array }) => {
+      if (dumped.has(b.key)) return; dumped.add(b.key);
+      const body = new Uint8Array(4 + b.control.length + b.code.length);
+      new DataView(body.buffer).setUint32(0, b.control.length, true); body.set(b.control, 4); body.set(b.code, 4 + b.control.length);
+      fetch(`${dumpTo}/sh-${b.key}.bin`, { method: "POST", body }).then(() => log(`page: shaderdumpkeys: sh-${b.key}.bin posted (${body.length} bytes)`), e => log(`[RED] page: shaderdumpkeys: sh-${b.key}.bin not posted: ${e?.message ?? e}`));
+    };
+    if (dumpKeys) log(`page: shaderdumpkeys: ${dumpKeys === "all" ? "every stage" : `${dumpKeys.size} stages`} will be posted to ${dumpTo}`);
+    const sh = new RtShaders(owner.gfx, { translator, store, ...(dumpKeys ? { dumpKeys, onDump } : {}) });
     // A program's stages are waited for (RtGfx.afterStages parks the caller on RtShaders.pending; the owner goes on) WHILE
     // THEY ARE READ FROM THE STORE of earlier translations: milliseconds, and the program is usable when the call returns.
     // A stage that has to be translated is not waited for: the game hands over its 3,471 programs one call at a time, so
