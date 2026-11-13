@@ -595,7 +595,7 @@ export class Owner {
       video: { packetsIn: a.video.packets, picturesOut: a.video.pictures, perSecondIn: r1(a.video.packets * 1000 / wall), perSecondOut: r1(a.video.pictures * 1000 / wall), decoders: decs, hardwareAcceleration: (globalThis as any).NXVDEC ?? "prefer-software", pipeline: { ...this.vpStats }, handed: this.videoStats.pictures },
       replayerBatches: Object.fromEntries([...this.rep.kinds].map(([k, v]) => [k, { n: v.n, ms: r1(v.ms), maxMs: r1(v.max) }])), replayerSlowBatches: this.rep.slow.slice(),
       presentSteps: { n: this.presentSteps.n, ms: r1(this.presentSteps.ms), maxMs: r1(this.presentSteps.max), over8ms: this.presentSteps.over8, steps: Object.fromEntries(Object.entries(this.presentSteps.steps).map(([k, v]) => [k, { ms: r1(v.ms), maxMs: r1(v.max) }])), slow: this.presentSteps.slow.slice() },
-      nvnCalls: this.nvnCalls(), lfAudit: this.lfAudit(),
+      nvnCalls: this.nvnCalls(), lfAudit: this.lfAudit(), frameWork: reset ? this.frameWork() : null,
       ring: this.ringStats, presents: this.presents };
     if (reset) { const ps = this.presentSteps; ps.n = 0; ps.ms = 0; ps.max = 0; ps.over8 = 0; ps.steps = {}; ps.slow = []; this.rep.kinds.clear(); this.rep.slow = []; a.t0 = now; a.sec.clear(); a.long.clear(); a.req.clear(); a.lag = { n: 0, sum: 0, max: 0 }; a.video = { packets: 0, pictures: 0 }; (this as any).execSeen0 = g ? g.times.execMs : 0; }
     return out;
@@ -613,10 +613,28 @@ export class Owner {
   // copies; the slow ones (over 8 ms) are kept with their record counts.
   private rep = { kinds: new Map<string, { n: number; ms: number; max: number }>(), slow: [] as { ms: number; bytes: number; records: string }[] };
   private presentSteps: { inside: boolean; cur: Record<string, number>; n: number; ms: number; max: number; over8: number; steps: Record<string, { ms: number; max: number }>; slow: string[] } = { inside: false, cur: {}, n: 0, ms: 0, max: 0, over8: 0, steps: {}, slow: [] };
+  // What the game asks for per presented frame (report().frameWork, the status line): the host stream's draws, passes
+  // and flushes, the game's submits and command buffers (the calls counted by id on the calling threads), and the time
+  // of the recorder's entry points without the waits for the owner: nvnQueueSubmitCommands' is the submit's lowering.
+  private work = { batches: 0, bytes: 0, draws: 0, passes: 0, flushes: 0, pipelines: 0, texUploads: 0 }; private workLast: any = null; private workLine = "";
+  frameWork(): any { const M: any = (globalThis as any).Module, g = this.gfx; if (!g) return null;
+    const names = this.nvnNames(), cur: any = { ...this.work, presents: this.presents, calls: null as Uint32Array | null, ns: null as Float64Array | null };
+    if (M?._nx_gfx_id_calls && M?._nx_gfx_id_ns) { cur.calls = new Uint32Array(this.memory.buffer, Number(M._nx_gfx_id_calls()), 1024).slice(); cur.ns = Float64Array.from(new BigUint64Array(this.memory.buffer, Number(M._nx_gfx_id_ns()), 1024), v => Number(v)); }
+    const last = this.workLast; this.workLast = cur; if (!last) return null;
+    const f = Math.max(1, cur.presents - last.presents), per = (k: string) => +((cur[k] - last[k]) / f).toFixed(1), out: any = { presents: cur.presents - last.presents, drawsPerPresent: per("draws"), passesPerPresent: per("passes"), flushesPerPresent: per("flushes"), batchesPerPresent: per("batches"), streamKBPerPresent: +((cur.bytes - last.bytes) / f / 1024).toFixed(1), pipelinesMade: cur.pipelines - last.pipelines, texUploadsPerPresent: per("texUploads") };
+    if (cur.calls && last.calls) { const idOf = (n: string) => names.indexOf(n), dc = (n: string) => { const i = idOf(n); return i < 0 ? 0 : cur.calls[i] - last.calls[i]; }, dms = (i: number) => (cur.ns[i] - last.ns[i]) / 1e6;
+      const sub = idOf("nvnQueueSubmitCommands");
+      out.submitsPerPresent = +(dc("nvnQueueSubmitCommands") / f).toFixed(1); out.commandBuffersPerPresent = +(dc("nvnCommandBufferBeginRecording") / f).toFixed(1);
+      out.loweringMsPerPresent = sub < 0 ? 0 : +(dms(sub) / f).toFixed(2); out.loweringUsPerDraw = sub < 0 || cur.draws === last.draws ? 0 : +(dms(sub) * 1000 / (cur.draws - last.draws)).toFixed(1);
+      const rows: [string, number, number][] = []; for (let i = 0; i < names.length && i < 1024; i++) { const ms = dms(i); if (ms > 0) rows.push([names[i], +(ms / f).toFixed(2), cur.calls[i] - last.calls[i]]); }
+      out.recorderMsPerPresentTop = rows.sort((a, b) => b[1] - a[1]).slice(0, 12).map(r => `${r[0]} ${r[1]} ms (${r[2]} calls)`); }
+    this.workLine = ` · per present: ${out.drawsPerPresent} draws, ${out.submitsPerPresent ?? "?"} submits, ${out.commandBuffersPerPresent ?? "?"} command buffers, ${out.passesPerPresent} passes, lowering ${out.loweringMsPerPresent ?? "?"} ms`;
+    return out; }
+  frameWorkLine(): string { return this.workLine; }
   private batchDone(p: number, n: number, ms: number): void {
     const u32 = new Uint32Array(this.memory.buffer), ops = new Map<number, number>(); let texels = 0;
     for (let q = p; q + 8 <= p + n; ) { const op = u32[q / 4], sz = u32[q / 4 + 1]; if (sz < 8) break; ops.set(op, (ops.get(op) ?? 0) + 1); if (op === 24) texels += sz; q += sz; }
-    const has = (op: number) => ops.has(op);
+    const has = (op: number) => ops.has(op), w = this.work; w.batches++; w.bytes += n; w.draws += (ops.get(14) ?? 0) + (ops.get(15) ?? 0); w.passes += ops.get(3) ?? 0; w.flushes += ops.get(22) ?? 0; w.pipelines += ops.get(7) ?? 0; w.texUploads += ops.get(24) ?? 0;
     const kind = has(20) ? "with a present" : has(24) ? "with texels uploaded" : has(7) ? "with pipelines made" : has(1) ? "with textures made" : has(17) || has(18) || has(25) ? "with copies" : has(14) || has(15) ? "draws only" : "state only";
     let k = this.rep.kinds.get(kind); if (!k) this.rep.kinds.set(kind, k = { n: 0, ms: 0, max: 0 }); k.n++; k.ms += ms; if (ms > k.max) k.max = ms;
     if (ms > 8 && this.rep.slow.length < 12) { const NAME: Record<number, string> = { 1: "texCreate", 3: "beginPass", 7: "pipelineCreate", 14: "draw", 15: "drawIndexed", 17: "copyB2T", 18: "copyT2T", 19: "snapshot", 20: "present", 21: "fence", 22: "flush", 24: "texData", 25: "copyT2B", 27: "uboData" };

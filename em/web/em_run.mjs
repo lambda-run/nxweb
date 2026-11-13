@@ -53,9 +53,9 @@ const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatte
 await cdp.send("Runtime.enable", {}, sessionId); await cdp.send("Inspector.enable", {}, sessionId); await cdp.send("DOM.enable", {}, sessionId); await cdp.send("Page.enable", {}, sessionId);
 await cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, sessionId);
 await cdp.send("Page.navigate", { url }, sessionId);
-await new Promise(r => setTimeout(r, 2500));
-const { result } = await cdp.send("Runtime.evaluate", { expression: `document.getElementById("fileinput")` }, sessionId);
-if (!result.objectId) throw new Error("em_run: the page has no #fileinput (did it load? " + url + ")");
+let result = {};   // (a loaded machine takes longer than the 2.5 s this waited once: looked for up to 40 s)
+for (let i = 0; i < 16 && !result.objectId; i++) { await new Promise(r => setTimeout(r, 2500)); try { ({ result } = await cdp.send("Runtime.evaluate", { expression: `document.getElementById("fileinput")` }, sessionId)); } catch { /* not there yet */ } }
+if (!result.objectId) { try { child.kill("SIGKILL"); } catch { /* gone */ } throw new Error("em_run: the page has no #fileinput (did it load? " + url + ")"); }
 await cdp.send("DOM.setFileInputFiles", { files: [game], objectId: result.objectId }, sessionId);
 console.log(`em_run: ${url} with ${game}`);
 const t0 = Date.now(); let how = "time", last = null;

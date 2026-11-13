@@ -36,6 +36,6 @@ function nxStartStatus($, say, rtLabel) {
     window.nxem.presents = n; window.nxem.threads = threads; window.nxem.fps = fps; window.nxem.label = rtLabel(threads);
     if (n > 0 && !window.nxem.reason && window.nxem.state !== "aborted" && window.nxem.state !== "exited") { window.nxem.state = "running"; $("stage").textContent = "running"; }
     $("rt").textContent = rtLabel(threads);
-    $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads) + split + (coresBusy >= 0 ? " · guest threads running at once " + coresBusy.toFixed(2) + " · per frame ms: " + tsplit : "");
+    $("fps").textContent = fps.toFixed(1) + " fps · frame " + n + " · " + rtLabel(threads) + split + (o.frameWorkLine ? o.frameWorkLine() : "") + (coresBusy >= 0 ? " · guest threads running at once " + coresBusy.toFixed(2) + " · per frame ms: " + tsplit : "");
   }, 1000);
 }

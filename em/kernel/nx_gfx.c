@@ -22,6 +22,8 @@ static uint32_t g_depth;   // the holder's
 static _Atomic uint64_t g_calls, g_ns, g_contended, g_lock_ns, g_lf_calls;
 static _Atomic uint32_t g_id_calls[1024];   // calls answered on the calling thread, by NVN id (owner/owner.ts nvnCalls)
 EMSCRIPTEN_KEEPALIVE double nx_gfx_id_calls(void) { return (double)(uintptr_t)g_id_calls; }
+static _Atomic uint64_t g_id_ns[1024];       // and their time in the recorder, ns: without the time a flush waited for the owner (nvnQueueSubmitCommands: the submit's lowering)
+EMSCRIPTEN_KEEPALIVE double nx_gfx_id_ns(void) { return (double)(uintptr_t)g_id_ns; }
 static __thread uint32_t t_me; static __thread uint64_t t_flush_ns;
 EMSCRIPTEN_KEEPALIVE void nx_gfx_flush_ns(double ns) { t_flush_ns += (uint64_t)ns; }   // kernel/nx_guest.js: the time a flush waited for the owner
 uint64_t nx_now_ns(void);
@@ -71,7 +73,7 @@ uint64_t nx_gfx_direct(int code, uint64_t *regs) {   // returns how long the loc
         static __thread int ready0; void nx_js_gfx_ready(void); if (!ready0) { ready0 = 1; nx_js_gfx_ready(); }
         nx_js_gfx_call(id, (double)(uintptr_t)a);
         if (abi & 16) { regs[38] = a[8]; regs[39] = 0; } else regs[0] = a[16];
-        { void nx_acc_add(int, double); nx_acc_add(0, (double)(nx_now_ns() - t0)); }
+        { void nx_acc_add(int, double); uint64_t d = nx_now_ns() - t0; nx_acc_add(0, (double)d); if ((unsigned)id < 1024) atomic_fetch_add_explicit(&g_id_ns[id], d, memory_order_relaxed); }
         atomic_fetch_add_explicit(&g_lf_calls, 1, memory_order_relaxed);
         return 0;
     }
@@ -82,7 +84,7 @@ uint64_t nx_gfx_direct(int code, uint64_t *regs) {   // returns how long the loc
     nx_gfx_unlock();
     if (abi & 16) { regs[38] = a[8]; regs[39] = 0; } else regs[0] = a[16];
     { void nx_acc_add(int, double); uint64_t t2 = nx_now_ns(), fl = t_flush_ns; t_flush_ns = 0;   // (kernel/nx_proc.c: 0 NVN, 9 NVN-lock, 10 flush)
-      nx_acc_add(9, (double)(t1 - t0)); nx_acc_add(10, (double)fl); nx_acc_add(0, (double)(t2 - t1 > fl ? t2 - t1 - fl : 0)); t_hold = t2 - t1; }
+      nx_acc_add(9, (double)(t1 - t0)); nx_acc_add(10, (double)fl); nx_acc_add(0, (double)(t2 - t1 > fl ? t2 - t1 - fl : 0)); t_hold = t2 - t1; if ((unsigned)id < 1024) atomic_fetch_add_explicit(&g_id_ns[id], t2 - t1 > fl ? t2 - t1 - fl : 0, memory_order_relaxed); }
     atomic_fetch_add_explicit(&g_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&g_ns, nx_now_ns() - t0, memory_order_relaxed); atomic_fetch_add_explicit(&g_lock_ns, t1 - t0, memory_order_relaxed);
     return t_hold;
 }
