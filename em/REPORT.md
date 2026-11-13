@@ -264,3 +264,86 @@ Open, in order:
    the main checkout): not started; from outside there is `frameWork.loweringMsPerPresent`; (b) CDP `Profiler.start`
    per worker target (em_run.mjs already auto-attaches workers: `Target.attachedToTarget`): not tried; (c) done
    (status line). 6. `?fsworker=1` with saves: not looked at.
+
+# Round three (2026-11-13, third session): the frame time in the area, the shader "hang", the Mac's headless Chrome
+
+Runs: VM headless (t5, t6: SwiftShader) and the headless Chrome on the Mac with the real GPU (hB-hE: `run_host.sh`).
+**The 3D area was NOT reached by this session**: the game read from the VM's server (`?game=`) loads too slowly (see
+"Open"), so every number for the area below is either the coordinator's ride on 504b604 or a benchmark, and the frame
+time there with the changes is NOT measured.
+
+## 1. The `?shaderwait` "deadlock" is not a deadlock
+The owner was idle and alive (its report in the hanging ride: 0 % busy, event-loop lag 4 ms). The caller was parked on
+`RtShaders.pending`, as designed, while its stages were TRANSLATED. The game hands over its 3,471 programs one call at
+a time, so a wait per call puts one program at a time through the translator: one Worker, no batches, and the first
+wait is the .NET runtime's start. Headless with an empty store (logs/t5, `?shaders=new`): 609 waits took 108.7 s, the
+first 17.5 s, no present after 150 s. The headless runs before had a full store and never waited (t3: 0 parked).
+Now (owner_web.ts): a call waits only while its stages are READ FROM THE STORE; the moment one goes to the translator
+the call returns (the stages queue up, four Workers, batches; the replayer's red line says while draws are skipped).
+`?shaderwait=all` waits for translations too; any wait ends after 20 s (`?shaderwaitms=`) with a red line that says
+where the stages were, and after three such waits none waits. Same empty store (logs/t6): first present 75 s, 1,172
+waits 20.1 s in all, 4,462 calls not waited for, 0 ran out. Status line: `shader waits N (ms, longest, not waited
+for, ran out, waiting now)`; report: `shaderWait`.
+
+## 2. Why `?asyncsubmit=1` did nothing in the area
+Only a batch whose LAST record was H_FLUSH and that carried no texels went into the ring. Every other `gfx_exec` waited
+for the owner, which first runs everything in the ring: one waiting flush costs the whole frame's replay. The recorder
+flushes (src/gfx: every `hostFlush()`): before UpdateUniformBuffer / CopyBufferToBuffer / ClearBuffer write guest
+memory (lower.ts memWrite, memFill: the source says "some 80 such writes" a frame), before a texture-to-buffer copy,
+at a full stream buffer (1 MB; the area's 4 MB a frame: 4 cuts), after a fence (nvnQueueFenceSync: 3 a frame, the batch
+ends with H_FENCE, not H_FLUSH), with texels. The area's 111 batches for 6.3 submits a present are these.
+- Counted by cause now (kernel/nx_guest.js gfx_exec -> nx_gfx.c g_flush_cause -> owner.ts `flushCauses`, in the report
+  and the status line: `flushes per present: A+B in the ring, N waited M ms (texels, memory writes, copies to buffers,
+  other cuts, ring full)`).
+- Into the ring now: the end of a submission, a cut at a full stream buffer, a batch that ends with a fence.
+- Memory writes: `?gfxown=1` + `?asyncsubmit=1` = stream writes (H_MEM_WRITE: the bytes travel in the stream, the
+  replayer writes guest memory; src/gfx patch 2 in /ctl/reports/em-gfx-recorder.patch). Without the patch they wait.
+- Still waiting, by design: texels in the batch (the record points into the recorder's scratch), a texture-to-buffer
+  copy, ClearBuffer, writes over 64 KB, ReadTexels.
+Measured (Mac's Chrome, loading screen after New Game, logs/hD, before the fence change): 6 batches a present in the
+ring, 3 waited 14 ms a present, all three "cut then other" = the fences. The area: not measured.
+
+## 3. Lowering at 135 us a draw and nvnBufferFinalize at 34 us
+Both are walks of the live-buffer table (src/gfx/gmem.ts): `gmemBufDrop` walks it backwards for the object,
+`gmemFind` walks all of it when the hint is not the buffer (a draw of a shader that reads memory through a loaded
+address). `node em/tools/gmem_bench.mjs <gfx64.wasm> 40000 2354` (the recorder alone, 40,000 live buffers, Node):
+nvnBufferFinalize 5.8-16.1 us -> 0.1-0.4 us; a frame of 2,354 end + make 35-39 ms -> 1.2-2.0 ms; a lookup without a
+hint 128.5 us -> 0.9 us (the 135 us per draw is one such lookup). The fix (chains by the 64 KiB page a buffer starts
+in; the object keeps its entry) is patch 1 in **/ctl/reports/em-gfx-recorder.patch** (applies to local/zelda-loop
+2d07808; gfx:test passes in the three memory modes, the proof test and the audit pass). In this tree it is
+`src/gfx` of the branch and `?gfxown=1` loads it (`node em/tools/build_gfx_own.mjs`: the recorder at the runtime's
+static base, with names). A CPU profile of the area was not taken (not reached); `PROF="640:12"` of em_run.mjs
+profiles every worker over CDP (98 of 98 answered at the title, 4 of 106 during a load).
+The dynamic audit watched static data only up to the last initialized byte + 128 KB; it watches the whole range now
+(8 s instead of 4, kept by the binary's hash).
+
+## 4. The owner's slot
+- 22 getters that only read their arguments or an object's fields (nvnEventGetValue, nvnDeviceGet*Handle,
+  nvnTextureGet*, nvnMemoryPoolGetFlags/Size/Map, nvnBufferMap/GetAddress/...) are answered without the recorder's
+  lock (`?lfgetters=0` off): 25 % of the title's NVN calls. The static audit rejects them because they are cases of
+  the one dispatch function.
+- The fs worker is the default for a game FILE (`?fsworker=0` off). Saves through it: logs/hC wrote `save commit #1
+  generation 1`, the next run (hD) read it and committed generation 2 (both with `fsworker=1`, Mac's Chrome).
+  A game from a URL keeps the owner's reads (the worker's synchronous requests took 80-220 ms each).
+- Not done: the codec on a thread of its own; nvnSyncWait / nvnQueueFinish / AcquireTexture / PresentTexture stay
+  the owner's (they are the game's explicit waits for the replayer; 4 calls a frame in the area).
+
+## The Mac's headless Chrome (`run_host.sh`)
+`CDP=http://192.168.64.1:9334 GAME_URL=http://192.168.64.4:8093/zelda-oot.nup node web/em_run.mjs` drives a browser
+that is already running; `?game=<url>` reads the container by ranges (owner/game_file.ts, 1 MiB blocks, 96 kept;
+web/game_serve.mjs in the VM). `run_host.sh <secs> <name>` takes /ctl/host.lock and /ctl/heavy.sh, starts the server,
+closes the target at the end. Title there: 20-34 presents a second (hB, hC, hD).
+
+## Open, in order
+1. **The area with the changes**: not reached. Over `?game=` the title movie opened 361 s after the owner started and
+   the load after New Game was still running at 740 s (hE, owner's reads); with the fs worker 3,269 reads took 720 s
+   (hD). In the VM a request to game_serve costs 15-45 ms whatever its size (direct reads of the share: 3-11 ms), in
+   Chrome 80-220 ms. Either make the reads fewer and larger (game_file.ts BLK = 8 MiB, read ahead), or ride it in
+   the user's Chrome with the file: `…/em-next/index.html?skipmovie=1&asyncsubmit=1&gfxown=1` and read, in the
+   status line: `lowering … ms` (was 131-164), `flushes per present: … waited … ms` (the Presentation Thread's
+   `flush` in `per frame ms:` was 537), `NVN-lock`, and in the 10 s report `frameWork.recorderMsPerPresentTop`
+   (nvnBufferFinalize was 79 ms), `flushCauses`, `streamWritesPerPresent`.
+2. Lit-frame A/B of `asyncsubmit=1` and of stream writes (the picture in the area with and without `gfxown=1`).
+3. Headless (SwiftShader) the title movie's start stalls in nvnSyncWait since 504b604 (t3 at present 266, t6 at 243:
+   `'workgroupBarrier' must only be called from uniform control flow`, `compute pipeline 10444 did not build`, then no
+   present). Not seen in the Mac's Chrome. A failed pipeline should not leave a fence unsignalled: the replayer's.
