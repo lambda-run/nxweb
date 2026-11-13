@@ -40,7 +40,11 @@ time `host.streamCapture("3@draws500")` (returns a promise of the summary).
 
 (outside the VM: `node test/gfx/replay.mts <file>`; needs playwright's Chromium, as `npm run gfx:test`.) Options:
 `--out <dir>` (default `<file>.replay`), `--limits maxStorageBuffersPerShaderStage:8,...` (replay as on a smaller
-device, `GfxHostOptions.limits`). It bundles the current `gfx_host.ts`, replays the file in headless Chromium (WebGPU
+device, `GfxHostOptions.limits`), `--shaders <dir>` (stages translated again by the current chain: for every shader of
+the capture with `<dir>/<key>.wgsl` and `<dir>/<key>.refl.json`, the WGSL, `storage`, `gmem` and `extra` of that
+reflection record replace the capture's; `tools/shaders/one.mts --out` writes the WGSL, the record is
+`convertStage(...).reflection`. For a change of the shader chain that alters bindings the stream does not name, such as
+the mirror of global memory; a draw the recorder skipped stays skipped). It bundles the current `gfx_host.ts`, replays the file in headless Chromium (WebGPU
 on SwiftShader) and writes:
 
 | file | what |

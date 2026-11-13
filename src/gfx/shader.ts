@@ -17,7 +17,7 @@ import { Inst } from "../kit/machine";
 import { GFX_SHADER, GfxShaderE, GfxShaderS } from "../kit/gen/tables";
 import { pipelineResetShader } from "./pipeline";
 
-// Reflection record (424 bytes), as the embedder passes it (GfxHost.registerShader fills it from the shader chain's record)
+// Reflection record (472 bytes), as the embedder passes it (GfxHost.registerShader fills it from the shader chain's record)
 export const RF_stage: usize = 0;       // u32: 0 vertex, 1 fragment, 2 compute, 3 task, 4 mesh (NVN2: compute after the translator, src/shaders/meshstage.ts)
 export const RF_ubo: usize = 4;         // u32: bit i = uniform buffer binding i of this stage is read (0..13 the game's slots, 14 the translator's support buffer)
 export const RF_tex: usize = 8;         // u32: bit s = texture slot s of this stage is sampled
@@ -49,11 +49,11 @@ export const BL_POOL: u8 = 4;
 export const BL_POOL_AT: u8 = 5;
 export const C2_POOL: usize = 0x980;
 // Memory read through addresses the shader loads (src/shaders/spv.ts globalMemory; lower.ts emitGmem)
-export const RF_gmem: usize = 400;      // u32: bits 0..7 how many addresses (0: none), bits 8..15 how many ranges the module declares for them (storage slots 32 + j)
-export const RF_gmem_ptr: usize = 404;  // [8] { u8 slot; u8 word }: the 64-bit address is at 32-bit word `word` of the range bound at storage slot `slot` (16 + r: uniform slot r)
-export const RF_SIZE: usize = 424;
+export const RF_gmem: usize = 400;      // u32: bits 0..7 how many addresses the shader follows into global memory (0: none; spv.ts globalMemory)
+export const RF_gmem_ptr: usize = 404;  // [16] { u8 slot | 0x80 when stored through; u8 0; u16 word }: the 64-bit address is at 32-bit word `word` of the range bound at storage slot `slot` (16 + r: uniform slot r)
+export const RF_SIZE: usize = 472;
 const LIB_N: u32 = 16384;
-const LE_SIZE: usize = 432;              // u64 key, reflection record
+const LE_SIZE: usize = 480;              // u64 key, reflection record
 let LIB: usize = 0;
 // What is known about a key (machine gfx_shader), for keys the embedder has spoken of: { u64 key, Inst }
 const KEYS_N: u32 = 16384 + 256, KE_SIZE: usize = 24;

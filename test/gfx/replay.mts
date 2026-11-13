@@ -1,4 +1,4 @@
-// node test/gfx/replay.mts <capture file> [--out <dir>] [--limits name:value,...]      (test/gfx/REPLAY.md)
+// node test/gfx/replay.mts <capture file> [--out <dir>] [--limits name:value,...] [--shaders <dir>]      (test/gfx/REPLAY.md)
 // Replays a stream capture (`?gfxcapture=`, src/glue/gfx_stream_capture.ts) in headless Chromium (WebGPU on SwiftShader) without the game: writes each
 // presented frame as frame-<n>.png (and the image the live run presented as frame-<n>.live.png), every red line of the replayer and of WebGPU with its
 // count as errors.txt, the replayer's whole log as replay.log and the summary as summary.json into <dir> (default: <capture>.replay). Exit code 0 when the
@@ -12,7 +12,7 @@ import { indexCapture } from "../../src/glue/gfx_stream_capture.ts";
 
 const ROOT = resolve(import.meta.dirname, "../.."), args = process.argv.slice(2);
 const opt = (name: string) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
-const outDir = opt("--out"), limits = opt("--limits") ?? "", file = args[0];
+const outDir = opt("--out"), limits = opt("--limits") ?? "", shaderDir = opt("--shaders"), file = args[0];
 if (!file || !existsSync(file)) { console.error("usage: node test/gfx/replay.mts <capture file> [--out <dir>] [--limits maxStorageBuffersPerShaderStage:8,...]"); process.exit(1); }
 const out = resolve(outDir ?? file + ".replay");
 mkdirSync(out, { recursive: true });
@@ -27,6 +27,11 @@ const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javasc
 const server = createServer((req, res) => {
   const path = normalize(decodeURIComponent((req.url ?? "/").split("?")[0]));
   const head = { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp", "Cache-Control": "no-store" };
+  if (path === "/__shaders") {      // --shaders <dir>: <key>.wgsl and <key>.refl.json (the reflection record) of stages translated again; they replace the capture's
+    const o: Record<string, { wgsl: string; refl: unknown }> = {};
+    if (shaderDir) for (const c of index.chunks) { const k = c.h.type === "shader" ? String(c.h.key) : "", w = join(shaderDir, k + ".wgsl"), r = join(shaderDir, k + ".refl.json"); if (k && existsSync(w) && existsSync(r)) o[k] = { wgsl: readFileSync(w, "utf8"), refl: JSON.parse(readFileSync(r, "utf8")) }; }
+    res.writeHead(200, { ...head, "Content-Type": "application/json" }); res.end(JSON.stringify(o)); return;
+  }
   if (path === "/__index") { res.writeHead(200, { ...head, "Content-Type": "application/json" }); res.end(JSON.stringify(index)); return; }
   if (path === "/__cap") {
     const m = /bytes=(\d+)-(\d+)/.exec(String(req.headers.range ?? ""));

@@ -32,10 +32,11 @@ export interface Reflection {
   outputs?: number[];                                                    // fragment: colour targets written
   fixup: boolean;                                                        // vertex: reads the position fix-up at @group(2) @binding(0)
   drawParams?: boolean;                                                  // vertex: reads the draw's base vertex, base instance, draw index at @group(2) @binding(2)
-  // global memory read through addresses the shader loads (src/shaders/spv.ts globalMemory): the 64-bit addresses are at 32-bit word `word` of the range bound at
-  // storage slot `slot` (16 + r: uniform slot r); the recorder binds the live buffers they lie in, `buffers` at most, read-only at storage slots 32 + j (listed in
-  // `storage`) and their { start low, start high, bytes, 0 } as the uniform block of `extra` kind "gmem" (group 0, binding 224 + stage)
-  gmem?: { buffers: number; pointers: { slot: number; word: number }[] };
+  // global memory through addresses the shader loads (src/shaders/spv.ts globalMemory, GmemInfo; docs/gmem-mirror.md): the module reads and writes the
+  // replayer's mirror (storage slot 32 of `storage`, its range table at 33, the write log at 34) and has no other storage binding: its own storage slots
+  // (`slots`) are read in the mirror at bases in the uniform block of `extra` kind "gmem" (group 0, binding 224 + stage). `pointers`: the 64-bit addresses
+  // the recorder follows, at 32-bit word `word` of the range bound at storage slot `slot` (16 + r: uniform slot r)
+  gmem?: import("./spv.ts").GmemInfo;
   storage?: { slot: number; write?: boolean; ubo?: number }[];           // storage buffer slots, at @group(0) @binding(128 + stage * 16 + slot); `ubo` (compute, slot 16 + ubo): the range bound to that uniform slot instead
   // storage images, at @group(1) @binding(256 + stage * 8 + slot): `format` is the texel format the WGSL declares, `type` its component class. The host declares the
   // bound texture's format instead when that differs and has the same class (src/shaders/images.ts imageVariant); `bound`: the shader names no format, `format` is a stand-in

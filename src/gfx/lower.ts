@@ -577,49 +577,39 @@ function emitTexs(st: u32, id: i32, from: u32 = 0xff): void {
     if (hasView) memory.copy(r + 32, e + TDE_view, O.VIEW_SIZE);
   }
 }
-// Memory a stage reads through addresses it loads (src/shaders/spv.ts globalMemory; nxnative binds its table of every memory pool instead). The 64-bit addresses
-// stand in storage ranges bound to the stage, at words the shader's record names: each is read from guest memory here, the live buffer it lies in becomes one of
-// the stage's ranges (storage slots 32 + j, read-only; addresses in one buffer share a range) and the ranges' { start low, start high, bytes, 0 } go to the
-// replayer as the uniform block the module searches (uniform index 20: group 0 binding 224 + stage). A null address takes no range. What cannot be served reads
-// 0 in the shader, with a red line once: an address in no live buffer, and more buffers than the module declares ranges (WebGPU's storage buffers a stage).
+// Memory a stage reaches through addresses it loads (src/shaders/spv.ts globalMemory; docs/gmem-mirror.md). The module reads and writes the replayer's mirror of
+// global memory; what the mirror must hold for this draw or dispatch is named here. The 64-bit addresses stand in storage ranges bound to the stage, at words
+// the shader's record names: each is read from guest memory, and the live buffer it lies in goes to the replayer as storage "slot" 32 + k of the stage (H_SSBO;
+// flag 1 when the shader stores through that address: such a range is read back at the end of the pass, as a written storage slot is). A null address names
+// nothing. An address in no live buffer names nothing either, with a red line once: the shader reads 0 there unless the mirror holds the memory for another reason.
 // DEPARTS: the words are read from guest memory. When a compute pass of this submission wrote them (a range whose read-back has not landed) they are stale
-const GM: usize = memory.data(128);           // { u64 start, u64 bytes } x 8
-const GMH: usize = memory.data(64);           // the buffer object each of the 8 addresses was found in last
+const GMH: usize = memory.data(128);          // the buffer object each of the 16 addresses was found in last
+function wrNote(addr: u64, size: u64): void {
+  let k = 0; while (k < nwr && (load<u64>(WR + (<usize>k << 4)) != addr || load<u64>(WR + (<usize>k << 4), 8) != size)) k++;
+  if (k == nwr) { if (nwr < 32) { store<u64>(WR + (<usize>k << 4), addr); store<u64>(WR + (<usize>k << 4), size, 8); nwr++; } else if (once(34)) L.redLine("a pass writes more than 32 storage ranges: the others are not read back into guest memory"); }
+}
 function emitGmem(st: u32, rf: usize, from: u32): void {
-  const g = load<u32>(rf, RF_gmem), K = g & 0xff, N = (g >> 8) & 0xff;
-  let n: u32 = 0;
-  for (let k: u32 = 0; k < K && k < 8; k++) {
-    const e = rf + RF_gmem_ptr + (<usize>k << 1), slot = <u32>load<u8>(e), word = <u32>load<u8>(e, 1);
+  const K = load<u32>(rf, RF_gmem) & 0xff;
+  for (let k: u32 = 0; k < K && k < 16; k++) {
+    const e = rf + RF_gmem_ptr + (<usize>k << 2), sw = <u32>load<u8>(e), slot = sw & 0x7f, w: u32 = sw >> 7, word = <u32>load<u16>(e, 2);
     const b = slot < 16 ? SSBO + (<usize>(from * 16 + slot) << 4) : UBO + (<usize>(from * 16 + slot - 16) << 4), addr = load<u64>(b), size = load<u64>(b, 8);
+    const r = H.hostRec(H.H_SSBO, 32);
+    store<u32>(r, st, 8); store<u32>(r, 32 + k, 12);
     if (!addr || <u64>(word * 4 + 8) > size) {
-      if (once(42)) { L.red("a shader reads memory through an address kept at word "); L.u(word); L.str(" of storage slot "); L.u(slot); L.str(", where nothing that long is bound: that memory reads 0"); L.end(); }
+      if (once(42)) { L.red("a shader reaches memory through an address kept at word "); L.u(word); L.str(" of storage slot "); L.u(slot); L.str(", where nothing that long is bound: that memory reads 0"); L.end(); }
       continue;
     }
     const p = load<u64>(<usize>addr + (<usize>word << 2));
     if (!p) continue;
-    let j: u32 = 0;
-    while (j < n && p - load<u64>(GM + (<usize>j << 4)) >= load<u64>(GM + (<usize>j << 4), 8)) j++;
-    if (j < n) continue;
     const buf = gmemFind(p, load<usize>(GMH + (<usize>k << 3)));
     store<usize>(GMH + (<usize>k << 3), buf);
     if (!buf || gmemSize > GMEM_MAX_BYTES) {
-      if (once(43)) { L.red("a shader reads memory through address 0x"); L.hex(p); L.str(" (word "); L.u(word); L.str(" of storage slot "); L.u(slot); L.str(buf ? "), in a buffer of more than 128 MiB, which is not bound: it reads 0" : "), which lies in no live buffer: it reads 0"); L.end(); }
+      if (once(43)) { L.red("a shader reaches memory through address 0x"); L.hex(p); L.str(" (word "); L.u(word); L.str(" of storage slot "); L.u(slot); L.str(buf ? "), in a buffer of more than 128 MiB, which the mirror of global memory does not take: it reads 0" : "), which lies in no live buffer: it reads 0"); L.end(); }
       continue;
     }
-    if (n == N) {
-      if (once(44)) { L.red("a shader reads memory through addresses in more buffers than the "); L.u(N); L.str(" ranges its module has room for (WebGPU's storage buffers a stage): the others read 0"); L.end(); }
-      continue;
-    }
-    store<u64>(GM + (<usize>n << 4), gmemStart); store<u64>(GM + (<usize>n << 4), gmemSize, 8); n++;
+    store<u64>(r, gmemStart, 16); store<u32>(r, <u32>gmemSize, 24); store<u32>(r, w, 28);
+    if (w) wrNote(gmemStart, gmemSize);
   }
-  for (let j: u32 = 0; j < N; j++) {
-    const r = H.hostRec(H.H_SSBO, 32);
-    store<u32>(r, st, 8); store<u32>(r, 32 + j, 12);
-    if (j < n) { store<u64>(r, load<u64>(GM + (<usize>j << 4)), 16); store<u32>(r, <u32>load<u64>(GM + (<usize>j << 4), 8), 24); }
-  }
-  const t = H.hostRec(H.H_UBO_DATA, 24 + (<usize>N << 4));
-  store<u32>(t, st, 8); store<u32>(t, 20, 12); store<u32>(t, N << 4, 16);
-  for (let j: u32 = 0; j < n; j++) { store<u64>(t + 24 + (<usize>j << 4), load<u64>(GM + (<usize>j << 4))); store<u32>(t + 24 + (<usize>j << 4), <u32>load<u64>(GM + (<usize>j << 4), 8), 8); }
 }
 // Storage buffers and images of a draw's or dispatch's stage. A written range is noted for the read-back at the end of the pass
 function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
@@ -630,10 +620,7 @@ function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
     if (!(m & 1)) continue;
     const b = SSBO + (<usize>(from * 16 + i) << 4), addr = load<u64>(b), size = load<u64>(b, 8), w = (wm >> i) & 1, r = H.hostRec(H.H_SSBO, 32);
     store<u32>(r, st, 8); store<u32>(r, i, 12); store<u64>(r, addr, 16); store<u32>(r, <u32>size, 24); store<u32>(r, w, 28);
-    if (w && addr && size) {
-      let k = 0; while (k < nwr && (load<u64>(WR + (<usize>k << 4)) != addr || load<u64>(WR + (<usize>k << 4), 8) != size)) k++;
-      if (k == nwr) { if (nwr < 32) { store<u64>(WR + (<usize>k << 4), addr); store<u64>(WR + (<usize>k << 4), size, 8); nwr++; } else if (once(34)) L.redLine("a compute pass writes more than 32 storage ranges: the others are not read back into guest memory"); }
-    }
+    if (w && addr && size) wrNote(addr, size);
   }
   // Slots 16 + r: a compute stage that takes uniform slot r's address and reads it through global memory (src/shaders/spv.ts storageSlot; nxnative's
   // ubo_ptr): the range bound at the stage's uniform slot r is sent as storage slot 16 + r
@@ -642,6 +629,7 @@ function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
     if (!(um & 1)) continue;
     const b = UBO + (<usize>(from * 16 + r) << 4), addr = load<u64>(b), size = load<u64>(b, 8), rec = H.hostRec(H.H_SSBO, 32);
     store<u32>(rec, st, 8); store<u32>(rec, 16 + r, 12); store<u64>(rec, addr, 16); store<u32>(rec, <u32>size, 24); store<u32>(rec, (wm >> (16 + r)) & 1, 28);
+    if (((wm >> (16 + r)) & 1) && addr && size) wrNote(addr, size);
   }
   if (load<u32>(rf, RF_gmem)) emitGmem(st, rf, from);
   const im = load<u32>(rf, RF_img);
