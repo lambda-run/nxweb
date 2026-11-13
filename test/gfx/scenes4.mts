@@ -119,6 +119,25 @@ export const scenes4: Scene[] = [
     t.eq([s[0], s[1], s[2], s[3], s[4]], [4, 4, 3, 6, 1], "reports issued and landed; conditions false, true, unknown");
     console.log(`render_cond: ${s[0]} reports, conditions ${s[3]} true / ${s[2]} false / ${s[4]} unknown, ${s[5]} draws and ${s[6]} clears skipped`);
   } },
+  { name: "render_cond: 20000 occlusion query reports, each at a place of its own (more than the table of uncounted records keeps), then a depth clear under a false condition and a pass with an EQUAL depth test: the clear is still skipped, a condition on a late query still draws", async run(e, t) {
+    const G = e.G, x = e.g.x, prog = await uboProgram(e), depth = G.texture({ w: 64, h: 64, format: FMT.DEPTH32F });
+    x.gfx_set_profile(PROFILE.RENDER_COND);
+    const grey = ubo(e, [0.25, 0.25, 0.25, 1]), green = ubo(e, [0, 1, 0, 1]), quad = ubo(e, [1, 1, 0, 0, 0.5, 0, 0, 0]), rec = G.put(new Uint8Array(64)), N = 20000, q = G.put(new Uint8Array(N * 16));
+    const img = await frame(e, (cmd, target) => {
+      const st = e.frame(cmd, target, prog, depth);
+      for (let i = 0; i < N; i++) G.c("CommandBufferReportCounter", [cmd, COUNTER.SAMPLES_PASSED, q + i * 16]);
+      G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferClearDepthStencil", [cmd, 1, 0, 0], [1.0]);
+      G.c("DepthStencilStateSetDepthTestEnable", [st.ds, 1]); G.c("DepthStencilStateSetDepthWriteEnable", [st.ds, 1]); G.c("DepthStencilStateSetDepthFunc", [st.ds, 2 /* LESS */]); G.c("CommandBufferBindDepthStencilState", [cmd, st.ds]);
+      bindUbos(e, cmd, quad, grey); e.drawQuad(cmd);
+      G.c("CommandBufferSetRenderEnableConditional", [cmd, COND.NOT_EQUAL, rec]); G.c("CommandBufferClearDepthStencil", [cmd, 1, 0, 0], [1.0]); G.c("CommandBufferSetRenderEnable", [cmd, 1]);
+      G.c("DepthStencilStateSetDepthWriteEnable", [st.ds, 0]); G.c("DepthStencilStateSetDepthFunc", [st.ds, 3 /* EQUAL */]); G.c("CommandBufferBindDepthStencilState", [cmd, st.ds]);
+      // the last query's record holds two equal counters (0, 0) that nothing wrote: a condition on it is unknown and draws
+      G.c("CommandBufferSetRenderEnableConditional", [cmd, COND.NOT_EQUAL, q + (N - 1) * 16 - 16]); bindUbos(e, cmd, quad, green); e.drawQuad(cmd); G.c("CommandBufferSetRenderEnable", [cmd, 1]);
+    });
+    t.rect(img, 0, 0, 64, 64, GREEN, "the opaque pass drew everywhere");
+    t.eq(stats(e).slice(2, 7), [1, 0, 1, 0, 1], "the clear's condition false and its clear skipped; the late query's unknown, drawn");
+    t.eq(e.g.red().map((l: string) => l.includes("SAMPLES_PASSED") ? "queries" : l.includes("the oldest are forgotten") ? "forgotten" : l), ["queries", "forgotten"], "the two red lines: queries not counted, the oldest forgotten");
+  } },
   ...[true, false].map((on): Scene => ({ name: `render_cond ${on ? "on" : "off"}: a depth clear under a condition the console skips, then a pass with an EQUAL depth test: ${on ? "the clear is skipped, the pass draws" : "run unconditionally, the test fails everywhere"}`, async run(e, t) {
     const G = e.G, x = e.g.x, prog = await uboProgram(e), depth = G.texture({ w: 64, h: 64, format: FMT.DEPTH32F });
     if (on) x.gfx_set_profile(PROFILE.RENDER_COND);
