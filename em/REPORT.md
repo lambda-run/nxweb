@@ -322,9 +322,12 @@ The dynamic audit watched static data only up to the last initialized byte + 128
   nvnTextureGet*, nvnMemoryPoolGetFlags/Size/Map, nvnBufferMap/GetAddress/...) are answered without the recorder's
   lock (`?lfgetters=0` off): 25 % of the title's NVN calls. The static audit rejects them because they are cases of
   the one dispatch function.
-- The fs worker is the default for a game FILE (`?fsworker=0` off). Saves through it: logs/hC wrote `save commit #1
-  generation 1`, the next run (hD) read it and committed generation 2 (both with `fsworker=1`, Mac's Chrome).
-  A game from a URL keeps the owner's reads (the worker's synchronous requests took 80-220 ms each).
+- The fs worker stays behind `?fsworker=1` (NOT the default). Saves through it work: logs/hC wrote `save commit #1
+  generation 1`, the next run (hD) read it and committed generation 2 (Mac's Chrome). It was made the default and
+  taken back: the headless default-path run then started no thread in 195 s (logs/t7); the same run without it
+  (logs/t8) was as slow (page stages three times slower than in t6 an hour earlier: the VM was swapping), so t7 says
+  nothing either way and the default was not verified. A game from a URL: the worker's synchronous requests took
+  80-220 ms each.
 - Not done: the codec on a thread of its own; nvnSyncWait / nvnQueueFinish / AcquireTexture / PresentTexture stay
   the owner's (they are the game's explicit waits for the replayer; 4 calls a frame in the area).
 
@@ -334,7 +337,15 @@ that is already running; `?game=<url>` reads the container by ranges (owner/game
 web/game_serve.mjs in the VM). `run_host.sh <secs> <name>` takes /ctl/host.lock and /ctl/heavy.sh, starts the server,
 closes the target at the end. Title there: 20-34 presents a second (hB, hC, hD).
 
+## Staged
+`/em-next/` is this branch's head (build.json), main checkout modules rebuilt at local/zelda-loop 2d07808 (`nx rt`),
+`gfx64.own.wasm` beside it; proof test and dynamic audit pass on both recorders. Its default path booted headless
+at b9f74dd (logs/t6: first present 75 s with an empty shader store); the runs after the last merge (t7, t8, hF, hG)
+were too slow or too short to reach a present, so the head is NOT verified and `/em/` is still 30cf000.
+
 ## Open, in order
+0. A headless default-path run of the head when the VM is healthy (`sh run_page.sh 240 t9`), then the host run
+   (`sh run_host.sh 400 hH`: over `?game=` the first present comes after 150-360 s).
 1. **The area with the changes**: not reached. Over `?game=` the title movie opened 361 s after the owner started and
    the load after New Game was still running at 740 s (hE, owner's reads); with the fs worker 3,269 reads took 720 s
    (hD). In the VM a request to game_serve costs 15-45 ms whatever its size (direct reads of the share: 3-11 ms), in

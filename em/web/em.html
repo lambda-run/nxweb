@@ -36,7 +36,7 @@
 // ?skipmovie=1 (A TEST AID, said in the status line): story movies (Dm_*.webm, not the title's) end after their first
 //   two clusters, so the way to the first area is not an hour of movie. ?saves=mem: saves end with the page (default:
 //   stored in the browser's private file system, so a later run can continue); ?saves=new: the stored saves are deleted first.
-// fs worker (default; ?fsworker=0 off): guest threads call the fs module themselves and a dedicated worker reads the game file (owner/fs_worker.ts).
+// ?fsworker=1: guest threads call the fs module themselves and a dedicated worker reads the game file (owner/fs_worker.ts).
 // ?lfaudit=1: the real-call audit: the first 12 real calls of every entry point the dynamic audit left under the lock
 //   are watched for writes to the recorder's shared state (the owner's report has the result: lfAudit; tools/lf_real.mjs
 //   reads it from a console log). ?lfreal=0: what that audit cleared (owner/lockfree_real.ts) stays under the lock.
@@ -123,10 +123,10 @@ if (q.get("game")) (async function () {
 function start(file) {
   if (started) return; started = true; $("continue").hidden = true;
   window.nxem.state = "starting";
-  // the fs worker (owner/fs_worker.ts) reads the game file for the guest threads: the default for a file (?fsworker=0: the
-  // owner reads, as before 2026-11-13); a game read from a URL (?game=) keeps the owner's reads unless ?fsworker=1 (the
-  // worker's synchronous requests were 80-220 ms each against the VM's server)
-  var fsw = file.remote ? q.get("fsworker") === "1" : q.get("fsworker") !== "0";
+  // ?fsworker=1: the fs worker (owner/fs_worker.ts) reads the game file for the guest threads. NOT the default: with it
+  // as the default the headless default-path run did not start a thread in 195 s (logs/t7, 2026-11-13; not understood,
+  // the VM was swapping), although saves work through it (logs/hC, hD) and it booted before (REPORT.md, part 3).
+  var fsw = q.get("fsworker") === "1";
   window.Module = {
     arguments: ["/exefs", "/rt/translator64.shared.wasm", "/rt/helpers64.shared.wasm", "/rt/loader64.wasm", q.get("secs") || "86400"],
     nxEnv: Object.assign({ NX_CORES: q.get("cores") === "1" ? "1" : "0", NX_COREEXCL: q.get("coreexcl") === "1" ? "1" : "0", NX_WAKE_HANDOFF: q.get("handoff") === "1" ? "1" : "0", NX_VPIPE: q.get("vpipe") === "1" ? "1" : "0" }, q.get("pollpark") !== null ? { NX_POLL_PARK_US: q.get("pollpark") } : {}, q.get("yieldpark") !== null ? { NX_YIELD_PARK_US: q.get("yieldpark") } : {}),
