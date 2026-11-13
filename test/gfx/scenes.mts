@@ -415,7 +415,7 @@ export const scenes: Scene[] = [
     const frame = (p: number, c: number[]) => { const i = G.acquire(e.win); G.begin(); e.frame(cmd, e.wtex[i], p); G.clear(cmd, [0, 0, 0, 1]); bindUbos(e, cmd, ubo(e, IDENT), ubo(e, c)); e.drawQuad(cmd); e.finish(i); };
     frame(prog, [1, 0, 0, 1]);
     t.eq([e.g.x.gfx_pipeline_count(), e.host.stats.pipelinesSync, e.host.stats.pipelinesAsync], [1, 1, 0], "first use: requested, built synchronously for the draw");
-    const id = [...Array(2048).keys()].find(k => e.g.x.gfx_pipeline_state(k) >= 0)!;
+    const id = [...Array(16384).keys()].find(k => e.g.x.gfx_pipeline_state(k) >= 0)!;
     t.eq(e.g.x.gfx_pipeline_state(id), 1, "Building until the asynchronous build reports");
     t.rect(await e.read(), 0, 0, 64, 64, RED, "frame 1"); await e.settle();
     t.eq([e.g.x.gfx_pipeline_state(id), e.host.stats.pipelinesAsync], [2, 1], "Ready");
@@ -424,7 +424,7 @@ export const scenes: Scene[] = [
     // a vertex shader whose inputs do not match the vertex layout: WebGPU refuses the pipeline
     const bad = await e.program("vs_bad", "fs_ubo");
     frame(bad, [0, 0, 1, 1]); await e.settle();
-    const bid = [...Array(2048).keys()].find(k => k !== id && e.g.x.gfx_pipeline_state(k) >= 0)!;
+    const bid = [...Array(16384).keys()].find(k => k !== id && e.g.x.gfx_pipeline_state(k) >= 0)!;
     t.eq(e.g.x.gfx_pipeline_state(bid), 3, "Failed"); t.ok(e.g.red().some(l => l.includes(`pipeline ${bid} did not build`)), "the replayer reported why"); t.ok(e.host.stats.errors > 0, "WebGPU reported the frame that used it");
     const before = e.g.red().length, errors = e.host.stats.errors;
     frame(bad, [0, 0, 1, 1]); frame(bad, [0, 0, 1, 1]);
