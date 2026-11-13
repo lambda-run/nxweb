@@ -63,7 +63,7 @@ export interface Binding {
   reg?: number;        // cbuf: uniform slot; tex / samp_tex: texture slot; image: image slot
   bank?: number;       // drvcb: 0 or 2; push: 24
   write?: boolean;     // storage: the shader may write it
-  gmem?: boolean;      // storage: not a bound range but one the recorder finds from an address the shader loads (reg is GMEM_SLOT0 + j; FixResult.gmem)
+  gmem?: boolean;      // storage: not a bound range but the host's mirror of global memory (reg GMEM_SLOT0), its range table (+ 1) or its write log (+ 2); FixResult.gmem
   ubo?: number;        // storage, compute: not a storage buffer slot's range but the range bound to this uniform slot of the stage (reg is then UBO_PTR_SLOT0 + ubo)
   size?: number;       // buffers: bytes the WGSL type covers = the least the host may bind
   dim?: "2d" | "2d-array" | "cube" | "cube-array" | "3d";
@@ -90,9 +90,11 @@ export interface FixResult {
   subgroups?: SubgroupPath;   // how its warp operations were made (none: it has none)
   gmem?: GmemInfo;     // global memory read through addresses the shader loads (globalMemory)
 }
-// `pointers`: where the shader takes the 64-bit addresses it reads global memory through: 32-bit word `word` (and word + 1) of the range bound at storage slot `slot`
-// of its stage (16 + r: compute uniform slot r). `buffers`: how many read-only ranges the module declares for them (storage slots GMEM_SLOT0 + j)
-export interface GmemInfo { buffers: number; pointers: { slot: number; word: number }[] }
+// Global memory through addresses the shader loads (globalMemory): the module reads (and writes) the host's mirror. `pointers`: where the shader takes the 64-bit
+// addresses it follows: 32-bit word `word` (and word + 1) of the range bound at storage slot `slot` of its stage (16 + r: compute uniform slot r); `write`: a store
+// goes through it. `slots`: the stage's own storage slots, which the module reads in the mirror too (no binding of their own). `write`: the module declares the
+// mirror writable. `log`: it has the write log. `untraced`: accesses whose address the pass could not follow to a bound word
+export interface GmemInfo { pointers: { slot: number; word: number; write?: boolean }[]; slots: { slot: number; write: boolean }[]; write: boolean; log: boolean; untraced?: number }
 export interface FixOptions {
   // "nxweb": the translator's names decide (step 5). "keep": descriptor sets and bindings stay as they are; a sampler split off a texture at (set, b) goes to (set, b + 1)
   // and the caller keeps b + 1 free (test shaders written in GLSL with the nxweb numbers already in their layout qualifiers)
@@ -105,8 +107,8 @@ export interface FixOptions {
   mesh?: { kind: "ts" | "ms"; task?: boolean };
   // warp operations (spv_subgroups.ts): "native" when the device has WebGPU's subgroups feature, else "single" (the default: one-invocation subgroups)
   subgroups?: SubgroupPath;
-  // the device's maxStorageBuffersPerShaderStage (the replayer asks for the adapter's maximum): what global memory through loaded addresses may take beside
-  // the stage's own storage buffers. Default GMEM_STORAGE_BUDGET (WebGPU's guaranteed 8 leaves some stages short, most desktop adapters give 10 or more)
+  // the device's maxStorageBuffersPerShaderStage. Not used any more: a module that reaches global memory through loaded addresses binds the mirror, its
+  // table and at most the write log, whatever it reads (globalMemory)
   storageBuffers?: number;
   // the device's maxSamplersPerShaderStage (default 16, WebGPU's guaranteed number): a stage that samples more textures shares sampler bindings (shareSamplers)
   samplers?: number;
@@ -114,7 +116,7 @@ export interface FixOptions {
 
 // The nxweb binding convention (src/gfx/README.md), with the three things a translated shader has and a hand-written one has not:
 //   group 0, binding 128 + 2 * 16 + 16 + r: compute uniform slot r read through its address (a storage buffer; reflection storage { slot: 16 + r, ubo: r })
-//   group 0, binding 128 + stage * 16 + 32 + j and binding 224 + stage: memory read through loaded addresses and the table of its ranges (globalMemory)
+//   group 0, binding 128 + stage * 16 + 32 .. 34 and binding 224 + stage: the mirror of global memory, its range table, its write log, and the bases of the stage's storage slots in it (globalMemory)
 //   group 0, binding stage * 16 + 14: the translator's support buffer (only when the shader reads it)
 //   group 0, binding 208 + stage * 4 + 0: the shader's own constants c1;  + 1: driver segment c0;  + 2: driver segment c2;  + 3: NVN2 push constants (c[24])
 //   group 2, binding 0: the position fix-up (one vec4f), vertex shaders
@@ -728,52 +730,65 @@ export function storageSlot(binding: number | undefined, name: string, stage: Fi
   return r;
 }
 
-// 5a. Global memory at addresses the shader loaded from memory (nxnative docs/reference/shaders.md, "Global memory at an address loaded from memory"). The translator
-// traces such an access to no storage buffer and writes a helper per kind of access: it finds the host's memory pool holding the 64-bit address in a table (a storage
-// buffer under the sentinel slot GMEM_MAP_CB_SLOT), moves the address by the pool's delta and reads through a physical storage buffer pointer. WGSL has no pointers
-// from integers and WebGPU binds no table of every pool. Here instead:
-//   - where the addresses come from is found in the module: each call's address words are followed back (through the translator's register variables, without
-//     regard to order) to everything they can come from. An address is a 64-bit word pair of a bound storage buffer at a constant place (high word w + 1 among the
-//     sources of the call's high word, low word w among those of its low word) plus an offset computed at run time; only copies, sums, differences and choices are
-//     followed, so a word that went through a product, a shift or a mask (an offset's) is no address. A call with
-//     no such pair is an error. The pairs are FixResult.gmem.pointers. An address that in truth comes from elsewhere (one loaded through another address, which
-//     this cannot tell from an offset) falls in no range at run time and reads 0, as an address in no pool does in nxnative;
-//   - the recorder reads those words at each draw or dispatch, finds the live buffer each address lies in (src/gfx/lower.ts emitGmem) and binds up to `buffers`
-//     distinct ranges read-only at storage slots GMEM_SLOT0 + j, with their { start low, start high, bytes, 0 } in a uniform table (group 0, binding
-//     GMEM_MAP_BINDING + stage);
-//   - each load helper's body becomes: for each table entry, if the address lies in it, read word (address - start) / 4 of that entry's buffer and finish as the
-//     translator's own code after its load did (a copy of it for each entry); else the translator's own miss path (0).
-// Loads only: a store or an atomic through such an address (the translator's write log) is an error. The pool table variable becomes the first range's buffer.
-// WebGPU devices give a stage 8 or 10 storage buffers: `buffers` is the number of addresses, or fewer when the stage's own buffers leave less of GMEM_STORAGE_BUDGET
-// (addresses in one live buffer share a range, so fewer ranges than addresses may do; the recorder says so in red when they do not)
-export const GMEM_SLOT0 = 32, GMEM_MAP_BINDING = 224, GMEM_MAX_POINTERS = 8, GMEM_STORAGE_BUDGET = 10;
-interface GmemPlaced extends GmemInfo { vars: number[]; map: number }
+// 5a. Global memory at addresses the shader loaded from memory (nxnative docs/reference/shaders.md, "Global memory at an address loaded from memory"; the design
+// and the host's side are docs/gmem-mirror.md). The translator traces such an access to no storage buffer and writes a helper per kind of access: it finds the
+// entry holding the 64-bit address in a table of ranges (a storage buffer under the sentinel slot GMEM_MAP_CB_SLOT; 8192 entries of 8 words { start, end, delta,
+// hint, 0 }, sorted, searched in 13 steps), moves the address by the entry's delta and reads or writes through a physical storage buffer pointer; a helper that
+// writes first sets the entry's bit in a write log (a second storage buffer under the sentinel slot, offset 1). WGSL has no pointers from integers. Here:
+//   - the host keeps ONE storage buffer, the mirror, holding a copy of every range a shader may reach, and fills the table with delta = the range's byte offset
+//     in the mirror - its guest address: the "host address" the helper computes is a byte offset into the mirror. Only the physical pointer goes: each
+//     OpConvertUToPtr becomes a pointer to word (offset >> 2) of the mirror, and the loads, stores and atomics through it stay as the translator wrote them
+//     (a 64- or 128-bit load becomes its words; an 8- or 16-bit store is the translator's compare-and-swap loop on the word). The table search, the entry kept
+//     from the last access, the miss path (a load reads 0, a store is dropped) and the write log are the translator's own code;
+//   - a module that uses the mirror takes ALL its storage buffers from it: an access to word i of the range bound at storage slot s becomes word base[s] + i of
+//     the mirror, base[s] a word of a uniform block the host fills at each draw or dispatch (group 0, binding GMEM_MAP_BINDING + stage; 32 words: slots 0..15 and
+//     the compute uniform slots read through their addresses, 16 + r). So such a stage binds two or three storage buffers whatever it reads (the mirror, the
+//     table, the write log when it writes), where WebGPU devices give a stage 8 or 10, and a store through a bound slot and a load through an address meet in
+//     the same bytes;
+//   - where the addresses come from is still followed in the module, now for the host and not for the module's own shape: each helper call's address words are
+//     followed back (through the translator's register variables, without regard to order) to the constant word pairs of bound storage buffers they can come
+//     from (copies, sums, differences and choices only: a word that went through a product, a shift or a mask is an offset's). The pairs are
+//     FixResult.gmem.pointers, `write` when a storing helper is called with it: the recorder reads those words at each draw or dispatch and names the live
+//     buffer each address lies in (src/gfx/lower.ts emitGmem), which the host then keeps in the mirror, up to date, and reads back when written. An address the
+//     pass cannot follow is not an error any more: it reads what the mirror holds for it (a range placed for another reason) or 0, and a note says so.
+// The mirror is declared read-only unless the module stores (through an address or a bound slot); WebGPU allows no writable storage in a vertex stage, so a
+// vertex stage that stores is still an error. Bindings: group 0, 128 + stage * 16 + GMEM_SLOT0 the mirror, + 1 the table, + 2 the write log.
+export const GMEM_SLOT0 = 32, GMEM_MAP_BINDING = 224, GMEM_MAX_POINTERS = 16, GMEM_STORAGE_BUDGET = 10;
+export const GMEM_TABLE_WORDS = 65536, GMEM_LOG_WORDS = 256, GMEM_BASE_WORDS = 32;
+interface GmemPlaced extends GmemInfo { mirror: number; table: number; logVar?: number; map?: number }
 const NO_RESULT = new Set([0, 8, 317, 56, 62, 63, 64, 99, 218, 219, 220, 221, 224, 225, 228, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 5364, 5365]);
-function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>, mesh?: { kind: "ts" | "ms"; task?: boolean }, budget = GMEM_STORAGE_BUDGET): GmemPlaced | undefined {
+function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixOptions["sbufs"]>, mesh?: { kind: "ts" | "ms"; task?: boolean }): GmemPlaced | undefined {
   const ent = sbufs.filter(s => s.cb_slot === GMEM_MAP_CB_SLOT);
   if (!ent.length) return undefined;
   const svars = c.m.insts.filter(v => v.op === Op.Variable && (v.w[2] === SC.StorageBuffer || (v.w[2] === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))));
   const byBinding = (b?: number) => b === undefined ? undefined : svars.find(v => c.decoration(v.w[1], Dec.Binding) === b);
-  if (ent.some(s => s.cb_offset !== 0 && byBinding(s.binding))) throw new Error("global memory written through an address the shader loaded (the translator's write log, nxnative DMSH_GMEM_LOG): not placed yet");
-  const gv = byBinding(ent.find(s => s.cb_offset === 0)?.binding);
+  const gv = byBinding(ent.find(s => s.cb_offset === 0)?.binding), lv = byBinding(ent.find(s => s.cb_offset !== 0)?.binding);
   if (!gv) return undefined;
-  const gid = gv.w[1], gname = c.names.get(gid) ?? `${gid}`, f0 = c.firstFunction();
+  const gid = gv.w[1], lid = lv?.w[1] ?? -1, gname = c.names.get(gid) ?? `${gid}`, f0 = c.firstFunction();
   const fns: Inst[][] = [];
   for (let k = f0; k < c.m.insts.length; k++) { const i = c.m.insts[k]; if (i.op === Op.Function) fns.push([]); fns[fns.length - 1].push(i); }
   const helpers = new Set(fns.filter(f => f.some(i => i.op === 120 /* OpConvertUToPtr */)).map(f => f[0].w[1]));
-  if (!helpers.size) throw new Error(`storage buffer ${gname}: global memory traced to no storage buffer (nxnative's pool table), and the module has no raw load helper that reads it: not placed`);
-  for (const f of fns) if (!helpers.has(f[0].w[1]) && f.some(i => idOperands(i).some(k => i.w[k] === gid))) throw new Error(`storage buffer ${gname}: the pool table of global memory is read outside the raw load helpers: not placed`);
+  if (!helpers.size) throw new Error(`storage buffer ${gname}: global memory traced to no storage buffer (nxnative's pool table), and the module has no raw access helper that reads it: not placed`);
+  for (const f of fns) if (!helpers.has(f[0].w[1]) && f.some(i => idOperands(i).some(k => i.w[k] === gid || i.w[k] === lid))) throw new Error(`storage buffer ${gname}: the range table or the write log of global memory is used outside the raw access helpers: not placed`);
   const gst = c.def.get(c.def.get(gv.w[0])!.w[2])!, garr = c.def.get(gst.w[1])!, gel = c.def.get(garr.w[1])!;
-  if (gst.w.length !== 2 || garr.op !== Op.TypeRuntimeArray || gel.op !== Op.TypeInt || gel.w[1] !== 32 || gel.w[2] !== 0) throw new Error(`storage buffer ${gname}: the pool table of global memory is not an array of 32-bit words`);
+  if (gst.w.length !== 2 || garr.op !== Op.TypeRuntimeArray || gel.op !== Op.TypeInt || gel.w[1] !== 32 || gel.w[2] !== 0) throw new Error(`storage buffer ${gname}: the range table of global memory is not an array of 32-bit words`);
+  const bdef = new Map<number, Inst>();
+  for (const f of fns) for (const i of f) if (!NO_RESULT.has(i.op) && i.op !== Op.Function) bdef.set(i.w[1], i);
+  // a helper stores when it writes or does an atomic through a pointer made from an integer
+  const stores = new Set<number>();
+  for (const f of fns) {
+    if (!helpers.has(f[0].w[1])) continue;
+    const pp = new Set(f.filter(i => i.op === 120).map(i => i.w[1]));
+    if (f.some(i => (i.op === Op.Store && pp.has(i.w[0])) || (i.op === 228 && pp.has(i.w[0])) || (i.op >= 229 && i.op <= 242 && pp.has(i.w[2])))) stores.add(f[0].w[1]);
+  }
 
   // Where the addresses come from. leaves(id): the storage buffer words ("s:<variable>:<word>") and the other sources (in words) a value can come from
-  const sets = new Map<number, Set<string>>(), users = new Map<number, number[]>(), work: number[] = [], bdef = new Map<number, Inst>();
+  const sets = new Map<number, Set<string>>(), users = new Map<number, number[]>(), work: number[] = [];
   const seed = (id: number, leaf: string) => { let s = sets.get(id); if (!s) sets.set(id, s = new Set()); if (!s.has(leaf)) { s.add(leaf); work.push(id); } };
   const edge = (to: number, from: number) => push(users, from, to);
-  const header = new Set(svars.filter(v => v !== gv).map(v => v.w[1]));
+  const own = svars.filter(v => v !== gv && v !== lv), header = new Set(own.map(v => v.w[1]));
   const local = (id: number) => { const d = c.def.get(id); return !!d && d.op === Op.Variable && (d.w[2] === 7 /* Function */ || d.w[2] === SC.Private); };
   const isBool = (t: number) => { let d = c.def.get(t); if (d && d.op === Op.TypeVector) d = c.def.get(d.w[1]); return !!d && d.op === Op.TypeBool; };
-  for (const f of fns) for (const i of f) if (!NO_RESULT.has(i.op) && i.op !== Op.Function) bdef.set(i.w[1], i);
   const calls: Inst[] = [];
   for (const f of fns) {
     const inHelper = helpers.has(f[0].w[1]);
@@ -793,6 +808,8 @@ function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixO
         const base = i.w[2];
         if (header.has(base)) { const word = i.w.length === 5 && c.constU32(i.w[3]) === 0 ? c.constU32(i.w[4]) : undefined; seed(r, word === undefined ? `a word of storage buffer ${c.names.get(base) ?? base} at an offset computed at run time` : `s:${base}:${word}`); }
         else if (local(base) || bdef.has(base)) { edge(r, base); edge(base, r); }
+        // a word of the driver segment c0 (a vec4 array): the address the game bound at one of the stage's storage or uniform slots (C0_SSBO, C0_CS_UBO)
+        else if (/^[a-z]+_c0$/.test(c.names.get(base) ?? "") && i.w.length === 6 && c.constU32(i.w[3]) === 0 && c.constU32(i.w[4]) !== undefined && c.constU32(i.w[5]) !== undefined) seed(r, `c:${c.constU32(i.w[4])! * 16 + c.constU32(i.w[5])! * 4}`);
         else seed(r, `${c.names.get(base) || "a variable"} (no storage buffer)`);
         continue;
       }
@@ -804,92 +821,123 @@ function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixO
         for (const k of idOperands(i)) edge(r, i.w[k]);
     }
   }
+  const mk = mesh?.kind;
+  // the slot whose bound address is at byte `off` of c0 (-1: none): the stage's storage slot r, or 16 + r for compute's uniform slot r (storageSlot)
+  const c0Slot = (off: number) => {
+    const u = (off - C0_CS_UBO) / C0_ROW, r = (off - C0_SSBO[mk ?? stage]) / C0_ROW;
+    return stage === "compute" && !mk && Number.isInteger(u) && u >= 0 && u < C0_CS_UBO_SLOTS ? UBO_PTR_SLOT0 + u : Number.isInteger(r) && r >= 0 && r < C0_SSBO_SLOTS ? r : -1;
+  };
+  const bases = new Map<number, boolean>();   // slots whose own address (from c0) an access goes through -> stored through
   while (work.length) {
     const id = work.pop()!, s = sets.get(id)!;
     for (const u of users.get(id) ?? []) { let t = sets.get(u); if (!t) sets.set(u, t = new Set()); let grew = false; for (const l of s) if (!t.has(l)) { t.add(l); grew = true; } if (grew) work.push(u); }
   }
-  const found = new Map<string, { variable: number; word: number }>();
+  const found = new Map<string, { variable: number; word: number; write: boolean }>();
+  let untraced = 0;
+  const from = new Set<string>();
   for (const call of calls) {
-    const hi = sets.get(call.w[4]) ?? new Set<string>(), lo = sets.get(call.w[3]) ?? new Set<string>();
+    const hi = sets.get(call.w[4]) ?? new Set<string>(), lo = sets.get(call.w[3]) ?? new Set<string>(), w = stores.has(call.w[2]);
     // The high word is the address's own plus the offset's (a 64-bit product's high word, a carry): the address is the pair of constant buffer words among its sources
     let n = 0;
     for (const l of hi) {
       const m = /^s:(\d+):(\d+)$/.exec(l);
       if (!m || +m[2] < 1 || !lo.has(`s:${m[1]}:${+m[2] - 1}`)) continue;
-      found.set(`${m[1]}:${+m[2] - 1}`, { variable: +m[1], word: +m[2] - 1 }); n++;
+      const key = `${m[1]}:${+m[2] - 1}`, e = found.get(key);
+      if (e) e.write ||= w; else found.set(key, { variable: +m[1], word: +m[2] - 1, write: w });
+      n++;
     }
-    if (!n) throw new Error(`global memory at an address that comes from no constant pair of words of a bound storage buffer (its high word comes from ${[...hi].map(l => l.replace(/^s:(\d+):/, (_, v) => `${c.names.get(+v) ?? v} word `)).join("; ") || "constants"}): not placed yet`);
+    for (const l of hi) {
+      const m = /^c:(\d+)$/.exec(l), slot = m && lo.has(`c:${+m[1] - 4}`) ? c0Slot(+m[1] - 4) : -1;
+      if (slot < 0) continue;
+      bases.set(slot, (bases.get(slot) ?? false) || w); n++;
+    }
+    if (!n) { untraced++; for (const l of hi) if (!l.startsWith("s:")) from.add(l); }
   }
-  if (!found.size) throw new Error(`storage buffer ${gname}: global memory traced to no storage buffer, and no call of a raw load helper: not placed`);
-  const pointers = [...found.values()].map(p => ({ slot: storageSlot(c.decoration(p.variable, Dec.Binding), c.names.get(p.variable) ?? "", stage, sbufs, mesh?.kind), word: p.word })).sort((a, b) => a.slot - b.slot || a.word - b.word);
-  if (pointers.length > GMEM_MAX_POINTERS || pointers.some(p => p.word > 255)) throw new Error(`global memory through ${pointers.length} loaded addresses (${pointers.map(p => `${p.slot}:${p.word}`).join(", ")}; at most ${GMEM_MAX_POINTERS}, in the first 256 words of their buffers): not placed yet`);
-  const own = svars.length - 1 + (mesh ? (mesh.kind === "ms" && mesh.task ? 3 : 2) : 0), N = Math.min(pointers.length, budget - own);
-  if (N < 1) throw new Error(`global memory through loaded addresses in a stage that has ${own} storage buffers already: this device allows ${budget} a stage (maxStorageBuffersPerShaderStage), none is left for the memory read`);
+  let pointers = [...found.values()].map(p => ({ slot: storageSlot(c.decoration(p.variable, Dec.Binding), c.names.get(p.variable) ?? "", stage, sbufs, mk), word: p.word, ...(p.write ? { write: true } : {}) })).sort((a, b) => a.slot - b.slot || a.word - b.word);
+  const all = pointers.length;
+  pointers = pointers.filter(p => p.word < 65536).slice(0, GMEM_MAX_POINTERS);
+  const writes = stores.size > 0;
+  if (writes && stage === "vertex") throw new Error("global memory written through an address the shader loaded, by a vertex stage: WebGPU allows no writable storage buffer there (nxnative runs it natively; here it would have to run as compute): not placed yet");
 
-  // The table, the buffers and what the helpers need, at the end of the globals
+  // The stage's own storage buffers: each becomes a base in the mirror
+  const moved = new Map<number, { slot: number; write: boolean; name: string }>();
+  for (const v of own) {
+    const id = v.w[1], name = c.names.get(id) ?? "", slot = storageSlot(c.decoration(id, Dec.Binding), name, stage, sbufs, mk);
+    const struct = c.def.get(c.def.get(v.w[0])!.w[2])!.w[0];
+    const write = !c.has(id, Dec.NonWritable) && !(c.mdeco.get(struct) ?? []).some(i => i.w[2] === Dec.NonWritable) && storageWritten(c, id);
+    if (write && stage === "vertex") throw new Error(`storage buffer ${name}: written by a vertex stage, which WebGPU does not allow`);
+    if (c.def.get(c.def.get(v.w[0])!.w[2])!.w[0] !== gst.w[0]) throw new Error(`storage buffer ${name}: not an array of 32-bit words as the range table of global memory is: not placed in the mirror`);
+    moved.set(id, { slot, write, name });
+  }
+  const mwrite = writes || [...moved.values()].some(m => m.write);
+  // every slot the module reaches in the mirror: its own storage buffers, and those whose bound address it takes from c0
+  const slotW = new Map<number, boolean>(bases);
+  for (const m of moved.values()) slotW.set(m.slot, (slotW.get(m.slot) ?? false) || m.write);
+
+  // The mirror, the base block and what the rewrite needs, at the end of the globals
   const st = STAGE_INDEX[stage];
   let at = f0, r;
   const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
   const fresh = (op: number, ...w: number[]) => { const id = c.id(); c.m.insts.splice(at++, 0, { op, w: op === Op.Variable ? [w[0], id, ...w.slice(1)] : [id, ...w] }); return id; };
-  const u32 = gel.w[0], bool = add(Op.TypeBool, [], false), v4 = add(Op.TypeVector, [u32, 4], false), pu = add(Op.TypePointer, [gv.w[2], u32], false), pv4 = add(Op.TypePointer, [SC.Uniform, v4], false);
+  const u32 = gel.w[0], v4 = add(Op.TypeVector, [u32, 4], false), pu = add(Op.TypePointer, [gv.w[2], u32], false), puu = add(Op.TypePointer, [SC.Uniform, u32], false);
   const kc = new Map<number, number>(), k = (n: number) => { let id = kc.get(n); if (id === undefined) kc.set(n, id = add(Op.Constant, [u32, n], true)); return id; };
-  for (let n = 0; n < Math.max(4, N + 1); n++) k(n);
-  const tarr = fresh(Op.TypeArray, v4, k(N)), tst = fresh(Op.TypeStruct, tarr), map = fresh(Op.Variable, fresh(Op.TypePointer, SC.Uniform, tst), SC.Uniform);
-  const vars = [gid]; while (vars.length < N) vars.push(fresh(Op.Variable, gv.w[0], gv.w[2]));
-  c.addDecoration(tarr, Dec.ArrayStride, 16); c.addDecoration(tst, Dec.Block); c.m.insts.splice(c.firstType(), 0, { op: Op.MemberDecorate, w: [tst, 0, Dec.Offset, 0] });
-  c.setDecoration(map, Dec.DescriptorSet, 0); c.setDecoration(map, Dec.Binding, GMEM_MAP_BINDING + st);
-  vars.forEach((v, j) => { c.setDecoration(v, Dec.DescriptorSet, 0); c.setDecoration(v, Dec.Binding, 128 + st * 16 + GMEM_SLOT0 + j); if (!c.has(v, Dec.NonWritable)) c.addDecoration(v, Dec.NonWritable); });
-  c.m.insts = c.m.insts.filter(i => !(i.op === Op.Name && i.w[0] === gid));
+  for (let n = 0; n <= GMEM_BASE_WORDS / 4; n++) k(n);
+  const mirror = fresh(Op.Variable, gv.w[0], gv.w[2]);
+  let map: number | undefined;
+  if (moved.size) {
+    const tarr = fresh(Op.TypeArray, v4, k(GMEM_BASE_WORDS / 4)), tst = fresh(Op.TypeStruct, tarr);
+    map = fresh(Op.Variable, fresh(Op.TypePointer, SC.Uniform, tst), SC.Uniform);
+    c.addDecoration(tarr, Dec.ArrayStride, 16); c.addDecoration(tst, Dec.Block); c.m.insts.splice(c.firstType(), 0, { op: Op.MemberDecorate, w: [tst, 0, Dec.Offset, 0] });
+    c.setDecoration(map, Dec.DescriptorSet, 0); c.setDecoration(map, Dec.Binding, GMEM_MAP_BINDING + st);
+  }
+  const b0 = 128 + st * 16 + GMEM_SLOT0;
+  c.setDecoration(mirror, Dec.DescriptorSet, 0); c.setDecoration(mirror, Dec.Binding, b0); if (!mwrite) c.addDecoration(mirror, Dec.NonWritable);
+  c.setDecoration(gid, Dec.DescriptorSet, 0); c.setDecoration(gid, Dec.Binding, b0 + 1); if (!c.has(gid, Dec.NonWritable)) c.addDecoration(gid, Dec.NonWritable);
+  if (lv) { c.setDecoration(lid, Dec.DescriptorSet, 0); c.setDecoration(lid, Dec.Binding, b0 + 2); }
+  const gone = new Set(moved.keys());
+  c.m.insts = c.m.insts.filter(i => !(i.op === Op.Name && (i.w[0] === gid || i.w[0] === lid)) && !((i.op === Op.Name || i.op === Op.Decorate) && gone.has(i.w[0])) && !(i.op === Op.Variable && gone.has(i.w[1])));
+  for (const ep of c.m.insts) if (ep.op === Op.EntryPoint) { const nameEnd = ep.w.findIndex((w, n) => n >= 2 && ((w >>> 24) === 0)) + 1; ep.w = [...ep.w.slice(0, nameEnd), ...ep.w.slice(nameEnd).filter(v => !gone.has(v))]; }
   const nameAt = c.m.insts.findIndex(i => i.op === Op.Name || i.op === Op.Decorate);
-  c.m.insts.splice(nameAt, 0, { op: Op.Name, w: [map, ...strWords("nx_gmem_map")] }, ...vars.map((v, j) => ({ op: Op.Name, w: [v, ...strWords(`nx_gmem${j}`)] })));
+  c.m.insts.splice(nameAt, 0, { op: Op.Name, w: [mirror, ...strWords("nx_gmem")] }, { op: Op.Name, w: [gid, ...strWords("nx_gmem_table")] },
+    ...(lv ? [{ op: Op.Name, w: [lid, ...strWords("nx_gmem_log")] }] : []), ...(map !== undefined ? [{ op: Op.Name, w: [map, ...strWords("nx_gmem_base")] }] : []));
 
-  // The helpers
-  const globals = new Set<number>();
-  for (const i of c.m.insts) { if (i.op === Op.Function) break; const id = resultId(i); if (id) globals.add(id); }
-  const hasResult = (i: Inst) => !NO_RESULT.has(i.op);
-  const rewrite = (f: Inst[]): Inst[] => {
-    const fn = f[0], params = f.filter(i => i.op === 55), convs = f.filter(i => i.op === 120), ci = f.indexOf(convs[0]), ld = f[ci + 1];
-    if (convs.length !== 1 || params.length !== 2 || !ld || ld.op !== Op.Load || ld.w[2] !== convs[0].w[1] || c.def.get(fn.w[0])?.op === Op.TypeVoid)
-      throw new Error("global memory written through an address the shader loaded (a store or an atomic; nxnative's write log): not placed yet");
-    const lt = c.def.get(ld.w[0])!, n = lt.op === Op.TypeVector ? lt.w[2] : 1;
-    if ((lt.op === Op.TypeVector ? lt.w[1] : lt.w[0]) !== u32) throw new Error("a raw global memory load of something other than 32-bit words: not placed");
-    let re = ci + 2; while (re < f.length && f[re].op !== 254 /* OpReturnValue */) re++;
-    let li = f.length - 1; while (li > 0 && f[li].op !== Op.Label) li--;
-    const tail = f.slice(ci + 2, re + 1), miss = f.slice(li + 1, f.length - 1), first = f.findIndex(i => i.op === Op.Label);
-    const flat = (seg: Inst[]) => seg.length > 0 && seg[seg.length - 1].op === 254 && seg.every(i => i.op !== 120 && !(i.op >= 245 && i.op <= 253));
-    if (li <= re || !flat(tail) || !flat(miss)) throw new Error("a raw global memory load helper of a shape this pass does not know: not placed");
-    const locals = f.slice(first + 1).filter(i => i.op === Op.Variable), localIds = new Set(locals.map(v => v.w[1])), used = new Set<number>();
-    const check = (seg: Inst[], defined: Set<number>) => {
-      for (const i of seg) {
-        for (const q of idOperands(i)) { const id = i.w[q]; if (localIds.has(id)) used.add(id); else if (!globals.has(id) && !defined.has(id) && !params.some(p => p.w[1] === id)) throw new Error("a raw global memory load helper whose end uses a value of its pool search: not placed"); }
-        if (hasResult(i)) defined.add(i.w[1]);
-      }
-    };
-    check(tail, new Set([ld.w[1]])); check(miss, new Set());
-    const out: Inst[] = [fn, ...params, f[first], ...locals.filter(v => used.has(v.w[1]))];
-    const e = (op: number, t: number, ...ops: number[]) => { const id = c.id(); out.push({ op, w: [t, id, ...ops] }); return id; };
-    const word = (p: Inst) => { const t = c.def.get(p.w[0])!.w[2], v = e(Op.Load, t, p.w[1]); return t === u32 ? v : e(124 /* Bitcast */, u32, v); };
-    const alo = word(params[0]), ahi = word(params[1]);
-    for (let j = 0; j < N; j++) {
-      const S = e(Op.Load, v4, e(Op.AccessChain, pv4, map, k(0), k(j))), slo = e(Op.CompositeExtract, u32, S, 0), shi = e(Op.CompositeExtract, u32, S, 1), size = e(Op.CompositeExtract, u32, S, 2);
-      const dlo = e(130 /* ISub */, u32, alo, slo), borrow = e(169 /* Select */, u32, e(176 /* ULessThan */, bool, alo, slo), k(1), k(0)), dhi = e(130, u32, e(130, u32, ahi, shi), borrow);
-      const hit = e(167 /* LogicalAnd */, bool, e(170 /* IEqual */, bool, dhi, k(0)), e(176, bool, dlo, size)), T = c.id(), M = c.id();
-      out.push({ op: 247 /* OpSelectionMerge */, w: [M, 0] }, { op: 250 /* OpBranchConditional */, w: [hit, T, M] }, { op: Op.Label, w: [T] });
-      const idx = e(194 /* ShiftRightLogical */, u32, dlo, k(2)), words: number[] = [];
-      for (let q = 0; q < n; q++) words.push(e(Op.Load, u32, e(Op.AccessChain, pu, vars[j], k(0), q ? e(128 /* IAdd */, u32, idx, k(q)) : idx)));
-      const ren = new Map<number, number>([[ld.w[1], n === 1 ? words[0] : e(Op.CompositeConstruct, lt.w[0], ...words)]]);
-      for (const i of tail) {
-        const w = i.w.slice();
-        for (const q of idOperands(i)) if (ren.has(w[q])) w[q] = ren.get(w[q])!;
-        if (hasResult(i)) { const id = c.id(); ren.set(i.w[1], id); w[1] = id; }
-        out.push({ op: i.op, w });
-      }
-      out.push({ op: Op.Label, w: [M] });
+  // The bodies
+  const typeOf = (id: number) => (bdef.get(id) ?? c.def.get(id))?.w[0];
+  const body: Inst[] = [];
+  const e = (op: number, t: number, ...ops: number[]) => { const id = c.id(); body.push({ op, w: [t, id, ...ops] }); return id; };
+  for (const f of fns) {
+    const inHelper = helpers.has(f[0].w[1]), conv = new Map<number, number>(), dead = new Set<number>();
+    if (inHelper) for (const i of f) if (i.op === 120) {
+      const bc = bdef.get(i.w[2]), cc = bc && bc.op === 124 ? bdef.get(bc.w[2]) : undefined;
+      if (!cc || cc.op !== Op.CompositeConstruct || cc.w.length !== 4 || typeOf(cc.w[2]) !== u32) throw new Error("a raw global memory helper whose pointer is not made of an address's two words: not placed");
+      conv.set(i.w[1], cc.w[2]); dead.add(bc!.w[1]);
     }
-    out.push(...miss, f[f.length - 1]);
-    return out;
-  };
-  c.m.insts = [...c.m.insts.slice(0, c.firstFunction()), ...fns.flatMap(f => helpers.has(f[0].w[1]) ? rewrite(f) : f)];
+    const idx = new Map<number, number>();
+    for (const i of f) {
+      if ((i.op === Op.AccessChain || i.op === Op.InBoundsAccessChain) && moved.has(i.w[2])) {
+        if (i.w.length !== 5 || c.constU32(i.w[3]) !== 0) throw new Error(`storage buffer ${moved.get(i.w[2])!.name}: used other than word by word, in a module that takes its storage from the mirror of global memory: not placed`);
+        const s = moved.get(i.w[2])!.slot, base = e(Op.Load, u32, e(Op.AccessChain, puu, map!, k(0), k(s >> 2), k(s & 3)));
+        const iu = typeOf(i.w[4]) === u32 ? i.w[4] : e(124 /* Bitcast */, u32, i.w[4]);
+        body.push({ op: Op.AccessChain, w: [pu, i.w[1], mirror, k(0), e(128 /* IAdd */, u32, iu, base)] });
+        continue;
+      }
+      if (i.op !== Op.Name && idOperands(i).some(q => moved.has(i.w[q]))) throw new Error(`storage buffer ${moved.get(i.w[idOperands(i).find(q => moved.has(i.w[q]))!])!.name}: used other than word by word, in a module that takes its storage from the mirror of global memory: not placed`);
+      if (dead.has(resultIdOf(i))) continue;
+      if (i.op === 120) { const x = e(194 /* ShiftRightLogical */, u32, conv.get(i.w[1])!, k(2)); idx.set(i.w[1], x); body.push({ op: Op.AccessChain, w: [pu, i.w[1], mirror, k(0), x] }); continue; }
+      if (i.op === Op.Load && conv.has(i.w[2])) {
+        const lt = c.def.get(i.w[0])!, n = lt.op === Op.TypeVector ? lt.w[2] : 1;
+        if ((lt.op === Op.TypeVector ? lt.w[1] : lt.w[0]) !== u32) throw new Error("a raw global memory load of something other than 32-bit words: not placed");
+        if (n === 1) { body.push({ op: Op.Load, w: [i.w[0], i.w[1], i.w[2]] }); continue; }
+        const words = [e(Op.Load, u32, i.w[2])];
+        for (let q = 1; q < n; q++) words.push(e(Op.Load, u32, e(Op.AccessChain, pu, mirror, k(0), e(128, u32, idx.get(i.w[2])!, k(q)))));
+        body.push({ op: Op.CompositeConstruct, w: [i.w[0], i.w[1], ...words] });
+        continue;
+      }
+      if (i.op === Op.Store && conv.has(i.w[0])) { if (typeOf(i.w[1]) !== u32) throw new Error("a raw global memory store of something other than a 32-bit word: not placed"); body.push({ op: Op.Store, w: [i.w[0], i.w[1]] }); continue; }
+      body.push(i);
+    }
+  }
+  c.m.insts = [...c.m.insts.slice(0, c.firstFunction()), ...body];
   // No physical pointers are left: logical addressing, and the 64-bit integer type when the address was its one use
   const phys = new Set(c.m.insts.filter(i => i.op === Op.TypePointer && i.w[1] === 5349 /* PhysicalStorageBuffer */).map(i => i.w[0]));
   const refs = (id: number) => c.m.insts.some(i => i.op !== Op.Name && i.op !== Op.Decorate && resultId(i) !== id && i.w.includes(id) && !(i.op === Op.Constant && i.w[0] !== id) && !(i.op === Op.TypePointer && phys.has(i.w[0])));
@@ -897,9 +945,15 @@ function globalMemory(c: Ctx, stage: FixResult["stage"], sbufs: NonNullable<FixO
   c.m.insts = c.m.insts.filter(i => !(i.op === Op.TypePointer && phys.has(i.w[0])) && !(i.op === Op.TypeInt && i64gone.has(i.w[0])) && !((i.op === Op.Name || i.op === Op.Decorate) && (phys.has(i.w[0]) || i64gone.has(i.w[0]))) &&
     !(i.op === Op.Capability && (i.w[0] === 5347 /* PhysicalStorageBufferAddresses */ || (i.w[0] === 11 /* Int64 */ && i64.length > 0 && i64gone.size === i64.length))) && !(i.op === Op.Extension && str(i.w, 0) === "SPV_KHR_physical_storage_buffer"));
   for (const i of c.m.insts) if (i.op === 14 /* OpMemoryModel */) i.w[0] = 0;   // Logical
-  c.notes.push(`global memory through ${pointers.length} loaded address${pointers.length === 1 ? "" : "es"} (${pointers.map(p => `storage slot ${p.slot} word ${p.word}`).join(", ")}): read from ${N} read-only range${N === 1 ? "" : "s"} the host finds at each draw or dispatch (storage slots ${GMEM_SLOT0}..${GMEM_SLOT0 + N - 1}, their table at binding ${GMEM_MAP_BINDING + st}); an address outside them reads 0`);
-  return { buffers: N, pointers, vars, map };
+  const slots = [...slotW].map(([slot, write]) => ({ slot, write })).sort((a, b) => a.slot - b.slot);
+  c.notes.push(`global memory through loaded addresses: read${mwrite ? " and written" : ""} in the host's mirror of it (storage slot ${GMEM_SLOT0}, the range table at ${GMEM_SLOT0 + 1}${lv ? `, the write log at ${GMEM_SLOT0 + 2}` : ""})` +
+    (slots.length ? `, as are the stage's storage slots ${slots.map(s => s.slot).join(", ")} (${moved.size ? `their bases at binding ${GMEM_MAP_BINDING + st}` : "through the addresses bound there, which it takes from c0"})` : "") +
+    `; ${pointers.length} address${pointers.length === 1 ? "" : "es"} followed to bound storage words (${pointers.map(p => `slot ${p.slot} word ${p.word}${p.write ? " stored through" : ""}`).join(", ") || "none"})` +
+    (all > pointers.length ? `, ${all - pointers.length} more than the record holds` : "") + (untraced ? `; ${untraced} access${untraced === 1 ? "" : "es"} through addresses the pass cannot follow to a bound storage word (they come from ${[...from].join("; ") || "constants"}) read what the mirror holds for them, or 0` : ""));
+  return { pointers, slots, write: mwrite, log: !!lv, ...(untraced ? { untraced } : {}), mirror, table: gid, ...(lv ? { logVar: lid } : {}), ...(map !== undefined ? { map } : {}) };
 }
+// The result id of any instruction of a function body (0: it has none)
+function resultIdOf(i: Inst): number { return NO_RESULT.has(i.op) || i.op === Op.Function ? 0 : i.w[1]; }
 
 // The constant banks the host supplies itself (src/gfx/README.md): group 0, binding HOST_BANK_BINDING + stage * 4 + k, k = 0 the shader's c1, 1 and 2 the NVN driver
 // segments c0 and c2, 3 the NVN2 push constants (c[24], nxnative DMSH_PUSH_BANK)
@@ -1053,8 +1107,8 @@ function place(c: Ctx, stage: FixResult["stage"], samplerOf: Map<number, number>
   const freeSlot = (name: string) => { for (let s = 0; s < 32; s++) if (!taken.has(s)) { taken.add(s); return s; } throw new Error(`texture ${name}: bindless, and the shader's 32 texture slots are all taken`); };
   for (const v of c.m.insts.filter(i => i.op === Op.Variable)) {
     const id = v.w[1], sc = v.w[2], name = c.names.get(id) ?? "";
-    if (gm && id === gm.map) { out.push({ kind: "gmem", group: 0, binding: GMEM_MAP_BINDING + st, size: 16 * gm.buffers, name }); continue; }
-    if (gm && gm.vars.includes(id)) { const j = gm.vars.indexOf(id); out.push({ kind: "storage", reg: GMEM_SLOT0 + j, write: false, gmem: true, group: 0, binding: 128 + st * 16 + GMEM_SLOT0 + j, name }); continue; }
+    if (gm && id === gm.map) { out.push({ kind: "gmem", group: 0, binding: GMEM_MAP_BINDING + st, size: 4 * GMEM_BASE_WORDS, name }); continue; }
+    if (gm && (id === gm.mirror || id === gm.table || id === gm.logVar)) { const j = id === gm.mirror ? 0 : id === gm.table ? 1 : 2; out.push({ kind: "storage", reg: GMEM_SLOT0 + j, write: j === 2 || (j === 0 && gm.write), gmem: true, group: 0, binding: 128 + st * 16 + GMEM_SLOT0 + j, name }); continue; }
     if (sc === SC.StorageBuffer || (sc === SC.Uniform && c.has(c.def.get(c.def.get(v.w[0])!.w[2])!.w[0], Dec.BufferBlock))) {
       const slot = mode === "keep" ? (c.decoration(id, Dec.Binding) ?? 0) - 128 - st * 16 : storageSlot(c.decoration(id, Dec.Binding), name, stage, sbufs, mesh);
       const ubo = mode === "nxweb" && slot >= UBO_PTR_SLOT0 ? slot - UBO_PTR_SLOT0 : undefined;
@@ -1233,7 +1287,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   queryLod(c, stage); c.index();
   imageAtomics(c); c.index();
   const sizes = opts.shrinkUniforms === false ? new Map<number, number>(c.m.insts.filter(i => i.op === Op.Variable && i.w[2] === SC.Uniform).map(v => [v.w[1], structSize(c, c.def.get(c.def.get(v.w[0])!.w[2])!)])) : shrinkUniforms(c);
-  const gm = (opts.bindings ?? "nxweb") === "nxweb" && opts.sbufs ? globalMemory(c, stage, opts.sbufs, opts.mesh, Math.max(1, opts.storageBuffers ?? GMEM_STORAGE_BUDGET)) : undefined; c.index();
+  const gm = (opts.bindings ?? "nxweb") === "nxweb" && opts.sbufs ? globalMemory(c, stage, opts.sbufs, opts.mesh) : undefined; c.index();
   const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs, opts.mesh?.kind, gm, pools); c.index();
   if ((opts.bindings ?? "nxweb") === "nxweb") { shareSamplers(c, bindings, samplerOf, Math.max(1, opts.samplers ?? 16)); c.index(); }
   if (stage === "vertex" && opts.fixup !== false) {
@@ -1243,5 +1297,5 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   const draw = drawParameters(c); c.index();
   if (draw) bindings.push(draw);
   for (const i of c.m.insts) delete (i as any).image, delete (i as any).sampler, delete (i as any).standIn, delete (i as any).nosampler;
-  return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, ...(sg ? { subgroups: sg } : {}), ...(gm ? { gmem: { buffers: gm.buffers, pointers: gm.pointers } } : {}) };
+  return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, ...(sg ? { subgroups: sg } : {}), ...(gm ? { gmem: { pointers: gm.pointers, slots: gm.slots, write: gm.write, log: gm.log, ...(gm.untraced ? { untraced: gm.untraced } : {}) } } : {}) };
 }

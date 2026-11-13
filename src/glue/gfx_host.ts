@@ -12,6 +12,7 @@ import { FrameLedger } from "./gfx_ledger.ts";
 import { StreamCapture, parseCaptureSpec, httpSink, type CaptureSpec, type CaptureSink, type CaptureSummary } from "./gfx_stream_capture.ts";
 import { NdveBypass, NDVE_KEYS, NDVE_OUTPUT_IMAGE, NDVE_FLIP_ON, NDVE_FLIP_BASE } from "./ndve.ts";
 export type { Capture, CaptureImage } from "./gfx_capture.ts";
+import { GmemMap, GM_ENTRIES, GM_LOG_BYTES, type GmRange } from "./gfx_gmem.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type GPU = any;
@@ -73,9 +74,10 @@ export interface ShaderInfo {
   outputs?: number[];      // fragment: colour outputs written
   support?: boolean;       // reads the support buffer; also taken from `extra` (kind "support")
   storage?: { slot: number; write?: boolean }[];
-  // memory read through addresses the shader loads (src/shaders/library.ts Reflection.gmem): the recorder sends the ranges as storage slots 32 + j (in `storage`)
-  // and their table as the "gmem" block of `extra`
-  gmem?: { buffers: number; pointers: { slot: number; word: number }[] };
+  // global memory through addresses the shader loads (src/shaders/library.ts Reflection.gmem; "the mirror of global memory" below): `storage` then lists the
+  // mirror (slot 32), its range table (33) and the write log (34) and nothing else; `slots` are the stage's own storage slots, which the module reads in the
+  // mirror at bases the "gmem" block of `extra` holds; `pointers` are the address words the recorder follows (it sends the buffers they name as slots 32 + k)
+  gmem?: { pointers: { slot: number; word: number; write?: boolean }[]; slots?: { slot: number; write: boolean }[]; write?: boolean; log?: boolean; untraced?: number };
   // storage images. `format`: the texel format the WGSL declares. A texture of another format of the same class (`type`; default: the format's) is bound through
   // a variant of the module and the pipeline made for that format (imagePipe); `bound`: the shader names no format, `format` is a stand-in (src/shaders/spv.ts placeImage)
   images?: { slot: number; format: string; access?: "write-only" | "read-only" | "read-write"; dim?: "2d" | "2d-array" | "3d"; type?: "float" | "sint" | "uint"; bound?: boolean }[];
@@ -184,7 +186,7 @@ export class GfxHost {
   lastPresented = 0;
   ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
-    clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0,
+    clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0, gmemRanges: 0, gmemBytes: 0, gmemUploads: 0, gmemUploadBytes: 0, gmemReadbacks: 0, gmemGrows: 0, gmemLogged: 0,
     meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
   caps = 0;
@@ -356,7 +358,7 @@ export class GfxHost {
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.imgScratch = undefined; t.shapes = undefined; t.views.clear(); }
     this.textures.clear(); this.shaders = [];
     this.pipes.clear(); this.ndvePipes.clear(); this.ndveScratch.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
-    this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
+    this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.gmReset(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
     this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.readbacks = [];
     // nobody waits on a replayer that is gone
@@ -437,7 +439,7 @@ export class GfxHost {
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.imgScratch = undefined; t.shapes = undefined; t.views.clear(); }
     for (const s of this.shaders) if (s) { s.module = undefined; s.variants = undefined; }
     this.pipes.clear(); this.ndvePipes.clear(); this.ndveScratch.clear(); this.layouts.clear(); this.samplers.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
-    this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
+    this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.gmReset(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
     this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.adopt(device);
     this.lost = false;
@@ -458,7 +460,7 @@ export class GfxHost {
     const support = info.support || (info.extra ?? []).some(e => e.kind === "support"), st = info.stage === "vertex" ? 0 : info.stage === "fragment" ? 1 : info.stage === "task" ? 3 : info.stage === "mesh" ? 4 : 2;
     const hostBlocks = (info.extra ?? []).filter(e => HOST_BLOCK(e) >= 0).map(e => ({ k: HOST_BLOCK(e), size: e.size ?? 0 })).sort((a, b) => a.k - b.k);
     const c1 = info.extra?.find(e => e.kind === "c1")?.data, c1Data = c1 ? Uint8Array.from(c1.match(/../g) ?? [], h => parseInt(h, 16)) : undefined;
-    new Uint8Array(this.memory.buffer, r, 424).fill(0);
+    new Uint8Array(this.memory.buffer, r, 472).fill(0);
     let depth = 0, bindless = 0;
     const poolAux = new Map<string, number>();   // a pool's record index (its `at`) -> the RF_blh entry that says it
     for (const t of info.textures ?? []) {
@@ -480,11 +482,16 @@ export class GfxHost {
     for (const t of info.textures ?? []) { dv.setUint8(r + 32 + t.slot, Math.max(0, DIMS.indexOf(t.dim ?? "2d"))); if (t.depth) depth |= 1 << t.slot; }
     dv.setUint32(r, st, true); dv.setUint32(r + 4, (bit(info.ubos) | (support ? 1 << 14 : 0) | (bit(hostBlocks.map(b => b.k)) << 16)) >>> 0, true); dv.setUint32(r + 8, bit((info.textures ?? []).map(t => t.slot)), true);
     dv.setUint32(r + 12, bit(st === 0 ? info.attributes : info.outputs), true); dv.setUint32(r + 16, depth >>> 0, true);
-    const bound = (info.storage ?? []).filter(b => b.slot < 32);   // slots 32 + j are the recorder's own (RF_gmem)
+    // slots 32 and up are not the game's (the mirror of global memory and its tables); a module that reads the mirror reads its own slots there too
+    const bound = [...(info.storage ?? []).filter(b => b.slot < 32), ...(info.gmem?.slots ?? [])];
     dv.setUint32(r + 20, bit(bound.map(b => b.slot)), true); dv.setUint32(r + 24, bit(bound.filter(b => b.write).map(b => b.slot)), true);
     if (info.gmem) {
-      dv.setUint32(r + 400, (Math.min(8, info.gmem.pointers.length) | info.gmem.buffers << 8) >>> 0, true);
-      info.gmem.pointers.slice(0, 8).forEach((q, k) => { dv.setUint8(r + 404 + k * 2, q.slot); dv.setUint8(r + 405 + k * 2, q.word); });
+      if ((info.gmem as any).buffers !== undefined || !(info.storage ?? []).some(b => b.slot === 32)) { this.log(`[RED] shader ${keyHex} was translated for the per-range bindings of global memory, which the replayer no longer has (a stale shader cache): not registered`); return -1; }
+      if (info.gmem.write && st < 2) { this.log(`[RED] ${info.stage} shader ${keyHex} stores into global memory: the mirror would be writable storage in a render pass whose other draws read it, which WebGPU refuses (the draw would have to run as compute or in a pass of its own): not registered`); return -1; }
+      if (info.gmem.untraced) this.red(`gmuntraced${keyHex}`, `shader ${keyHex} reaches global memory through ${info.gmem.untraced} address${info.gmem.untraced === 1 ? "" : "es"} the translator could not follow to a bound word: it reads 0 there unless the mirror holds that memory for another shader`);
+      const ptrs = info.gmem.pointers.slice(0, 16);
+      dv.setUint32(r + 400, ptrs.length, true);
+      ptrs.forEach((q, k) => { dv.setUint8(r + 404 + k * 4, q.slot | (q.write ? 0x80 : 0)); dv.setUint16(r + 406 + k * 4, q.word, true); });
     }
     dv.setUint32(r + 28, (bit((info.images ?? []).map(b => b.slot)) | bit((info.images ?? []).filter(b => (b.access ?? "write-only") !== "read-only").map(b => b.slot)) << 8) >>> 0, true);
     for (const [slot, size] of Object.entries(info.uboSize ?? {})) if (+slot < 14) dv.setUint32(r + 64 + +slot * 4, size, true);
@@ -769,7 +776,7 @@ export class GfxHost {
   private alloc(cap: number): GPU { return this.pool.get(cap)?.pop() ?? this.newBuffer({ size: cap, usage: 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80 /* COPY_SRC COPY_DST INDEX VERTEX UNIFORM STORAGE */ }); }
   private upload(addr: number, size: number, kind: number): GPU | null {
     this.upOff = 0;
-    if (this.gpuRanges.size && kind !== 1) { const r = this.gpuRangeOver(addr, size); if (r) { this.upOff = addr - r.addr; return r.buf; } }
+    if ((this.gpuRanges.size || this.gm) && kind !== 1) { const r = this.gpuRangeOver(addr, size); if (r) { this.upOff = r.off; return r.buf; } }
     const key = `${addr}:${size}:${kind}`;
     let e = this.ranges.get(key);
     if (e && e.checked === this.epoch) { e.used = this.flushNo; return e.buf; }
@@ -795,8 +802,10 @@ export class GfxHost {
   // Storage ranges a compute pass wrote, until their read-back has landed in guest memory: the GPU's copy is the newer
   // one, so binds inside such a range (storage, vertex, index, uniform) use it instead of uploading guest memory
   private gpuRanges = new Map<string, GpuRange>();
-  private gpuRangeOver(addr: number, size: number): GpuRange | null {
-    for (const r of this.gpuRanges.values()) if (addr >= r.addr && addr + size <= r.addr + r.size) return r;
+  // (and ranges of the mirror of global memory a shader wrote: the mirror itself is bound, unless the draw or dispatch being bound writes it)
+  private gpuRangeOver(addr: number, size: number, mirror = true): { buf: GPU; off: number } | null {
+    for (const r of this.gpuRanges.values()) if (addr >= r.addr && addr + size <= r.addr + r.size) return { buf: r.buf, off: addr - r.addr };
+    if (mirror && this.gm && !this.gmWriting) { const m = this.gm.find(addr, size); if (m && m.gpu) return { buf: this.gmBuf, off: m.off + addr - m.start }; }
     return null;
   }
   private storageBuffer(addr: number, size: number, write: boolean): { buf: GPU; off: number; size: number } | null {
@@ -807,8 +816,8 @@ export class GfxHost {
     let r = this.gpuRanges.get(key);
     // Guest memory changed since the GPU's copy was made (the game wrote new input): it is uploaded again
     if (r && r.hash === hash) return { buf: r.buf, off: 0, size: bsize };
-    const over = !r && this.gpuRangeOver(addr, size);
-    if (over) return { buf: over.buf, off: addr - over.addr, size: bsize };
+    const over = !r && this.gpuRangeOver(addr, size, false);
+    if (over) return { buf: over.buf, off: over.off, size: bsize };
     for (const o of this.gpuRanges.values()) if (o !== r && addr < o.addr + o.size && o.addr < addr + size) this.red("sboverlap", "storage ranges written by compute passes overlap without one containing the other: each keeps its own GPU copy until read back");
     const buf = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(bsize))));
     this.device.queue.writeBuffer(buf, 0, this.u8, addr, down4(Math.min(bsize, this.memory.buffer.byteLength - addr)));
@@ -818,12 +827,173 @@ export class GfxHost {
   }
   private bufReadback(addr: number, size: number) {
     const r = this.gpuRanges.get(`${addr}:${size}`);
-    if (!r) return;
+    if (!r) { this.gmReadback(addr, size); return; }
     this.endPass();
     const n = down4(size + 3), buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
     this.encoder().copyBufferToBuffer(r.buf, 0, buf, 0, n);
     r.pending++;
     this.queuedBufs.push({ buf, range: r });
+  }
+
+  // ---- the mirror of global memory (docs/gmem-mirror.md; src/glue/gfx_gmem.ts; src/shaders/spv.ts globalMemory) ----
+  // A shader that reaches memory through addresses it loads reads and writes ONE storage buffer here, the mirror, through a table of the guest ranges it holds
+  // (GmemMap). What a draw or dispatch names is placed in the mirror and brought up to date before it is bound (gmPrepare): the ranges bound at the stage's own
+  // storage slots (the module reads them in the mirror too, at bases sent in a uniform block) and the live buffers its followed addresses lie in (the recorder
+  // sends them as slots 32 + k). A range is uploaded when its guest bytes changed since the mirror last took them (one hash a range an epoch, as upload());
+  // a range a shader may have written is the GPU's until its read-back lands (H_BUF_READBACK at the end of the pass, as for any written storage range), and
+  // binds of memory inside it by other shaders (vertex, index, uniform, storage, an indirect mesh draw's record) are served from the mirror meanwhile.
+  // Order: an upload into a range no command of the open encoder has used is a queue write; into one that has been used it is a copy encoded in place (the
+  // pass is closed for it and opened again), so earlier draws keep what they read. The mirror grows by doubling (a copy in the encoder, the old buffer dies
+  // after the submission) up to gmemLimit or the device's maxStorageBufferBindingSize / maxBufferSize. Ranges unused for 240 submissions leave the mirror.
+  // The write log (the translator's bitmap of table entries stored through) is copied out and cleared at each submission, and when the table changes under
+  // it; an entry it names that no read-back covered in that submission is read back with the next one (a store through an address nobody followed).
+  gmemInitial = 4 << 20;
+  gmemLimit = 1 << 30;
+  private gm: GmemMap | null = null; private gmBuf: GPU = null; private gmTable: GPU = null; private gmLog: GPU = null;
+  private gmGen = 0; private gmGrown = 0; private gmWriting = false; private gmLogUsed = false; private gmOld: GPU[] = [];
+  private gmQueued: { buf: GPU; r: GmRange; addr: number; size: number }[] = [];
+  private gmLogs: { buf: GPU; ranges: GmRange[]; flush: number }[] = [];
+  private gmLate: GmRange[] = [];
+  private gmRead = new Map<GmRange, number>();   // the submission a range was last read back in
+  private gmReset() { this.gm = null; this.gmBuf = this.gmTable = this.gmLog = null; this.gmOld = []; this.gmQueued = []; this.gmLogs = []; this.gmLate = []; this.gmRead.clear(); this.gmLogUsed = false; this.gmGen = 0; }
+  private gmMap(): GmemMap {
+    if (this.gm) return this.gm;
+    const limit = Math.min(this.gmemLimit, this.limit("maxStorageBufferBindingSize", 134217728), this.limit("maxBufferSize", 268435456));
+    this.gm = new GmemMap(limit - limit % 4096);
+    this.gmTable = this.newBuffer({ size: GM_ENTRIES * 32, usage: 0x80 | 0x08 });
+    this.gmLog = this.newBuffer({ size: GM_LOG_BYTES, usage: 0x80 | 0x08 | 0x04 });
+    this.gmBuf = this.newBuffer({ size: Math.min(this.gm.limit, Math.max(65536, this.gmemInitial - this.gmemInitial % 4096)), usage: 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80 });
+    this.gmGen = 0;
+    this.log(`mirror of global memory: ${this.gmBuf.size >> 10} KiB to begin with, up to ${this.gm.limit >> 20} MiB on this device, a table of ${GM_ENTRIES} ranges`);
+    return this.gm;
+  }
+  // Commands that must run after everything encoded so far and before what follows: an open pass is closed for them and opened again
+  private gmOrdered(fn: (enc: GPU) => void) {
+    if (!this.pass) { fn(this.encoder()); return; }
+    const render = !this.computePass;
+    if (render && !this.passDesc) { this.red("gmorder", "the mirror of global memory needs a copy in the middle of a render pass that cannot be opened again: the copy is left out"); return; }
+    this.pass.end(); fn(this.encoder());
+    if (render) this.reopenRenderPass(); else { this.pass = this.encoder().beginComputePass(); this.computePass = true; }
+    if (this.cur?.gpu) this.pass.setPipeline(this.cur.gpu);
+  }
+  private gmEnsure() {
+    const g = this.gm!, old = this.gmBuf;
+    if (old.size >= g.size) return;
+    const size = Math.min(g.limit, Math.max(g.size, old.size * 2)), nb = this.newBuffer({ size: Math.ceil(size / 4) * 4, usage: old.usage });
+    this.gmOrdered(enc => enc.copyBufferToBuffer(old, 0, nb, 0, old.size));
+    this.gmBuf = nb; this.gmOld.push(old); this.gmGrown = this.flushNo; this.stats.gmemGrows++;
+  }
+  private gmLen(r: GmRange): number { return down4(Math.min(r.end, this.memory.buffer.byteLength) - r.start); }
+  private gmSync(r: GmRange) {
+    if (r.checked === this.epoch) return;
+    r.checked = this.epoch;
+    const n = this.gmLen(r);
+    if (n <= 0) return;
+    const h = this.x.gfx_hash(r.start, n);
+    this.stats.hashes++;
+    if (h === r.hash) return;
+    r.hash = h; this.stats.gmemUploads++; this.stats.gmemUploadBytes += n;
+    if (r.used === this.flushNo || this.gmGrown === this.flushNo) {
+      const st = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(n))));
+      this.device.queue.writeBuffer(st, 0, this.u8, r.start, n); this.inUse.push(st);
+      this.gmOrdered(enc => enc.copyBufferToBuffer(st, 0, this.gmBuf, r.off, n));
+    } else this.device.queue.writeBuffer(this.gmBuf, r.off, this.u8, r.start, n);
+  }
+  // The range of the mirror that holds guest [addr, addr + size), placed if it was not and up to date; `write`: a shader of what is being bound may store into it
+  private gmRange(addr: number, size: number, write: boolean): GmRange | null {
+    if (!addr || !size || addr + size > this.memory.buffer.byteLength) { this.red(`gm${addr}`, `a shader reaches memory outside the guest's (address 0x${addr.toString(16)} size ${size}): not in the mirror of global memory, it reads 0`); return null; }
+    const g = this.gmMap(), p = g.place(addr, size);
+    if (!p) { this.red("gmfull", `the mirror of global memory is full (${g.size >> 20} of ${g.limit >> 20} MiB, ${g.ranges.length} of ${GM_ENTRIES - 1} ranges): a range of ${size} bytes at 0x${addr.toString(16)} is not placed, it reads 0`); return null; }
+    const r = p.r;
+    this.gmEnsure(); this.gmSync(r);
+    for (const o of p.merged) {
+      if (!o.gpu) continue;
+      // what only the mirror held of a range this one replaces moves over (through a buffer: a copy cannot stay within one)
+      const n = o.end - o.start, tmp = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(n))));
+      this.inUse.push(tmp); r.gpu = true;
+      this.gmOrdered(enc => { enc.copyBufferToBuffer(this.gmBuf, o.off, tmp, 0, n); enc.copyBufferToBuffer(tmp, 0, this.gmBuf, r.off + o.start - r.start, n); });
+    }
+    if (write) r.gpu = true;
+    r.used = this.flushNo;
+    this.stats.gmemRanges = g.ranges.length; this.stats.gmemBytes = g.size;
+    return r;
+  }
+  // A stage that reads the mirror is about to be bound: its slots' ranges and its followed addresses' buffers, the table, the bases
+  private gmPrepare(info: ShaderInfo, st: number) {
+    const g = this.gmMap(), gi = info.gmem!, base = new Uint32Array(32);
+    if (gi.write) this.gmWriting = true;
+    for (const s of gi.slots ?? []) {
+      const b = this.ssbo.get(st * 64 + s.slot);
+      if (!b || !b.addr || !b.size) continue;
+      const r = this.gmRange(b.addr, b.size, s.write || b.write);
+      if (!r) continue;
+      if (b.addr % 4) this.red("gmalign", "a storage range read in the mirror of global memory does not start on 4 bytes: its words are read up to 3 bytes early");
+      base[s.slot] = (r.off + b.addr - r.start) >>> 2;
+    }
+    for (let k = 0; k < Math.min(16, gi.pointers.length); k++) { const b = this.ssbo.get(st * 64 + 32 + k); if (b && b.addr && b.size) this.gmRange(b.addr, b.size, b.write); }
+    if (g.gen !== this.gmGen) {
+      if (this.gmLogUsed) this.gmOrdered(() => this.gmLogTake());    // the log's bits number the entries of the table that goes
+      this.device.queue.writeBuffer(this.gmTable, 0, g.table()); this.gmGen = g.gen;
+    }
+    if (gi.log) this.gmLogUsed = true;
+    this.ubo.set(uboKey(st, 20), { addr: 0, size: 0, need: 0, data: new Uint8Array(base.buffer) });
+  }
+  // Where the mirror holds guest [addr, addr + size), up to date, for a copy out of it (an indirect draw's record); null: it does not
+  private gmSource(addr: number, size: number): { buf: GPU; off: number } | null {
+    const r = this.gm?.find(addr, size);
+    if (!r) return null;
+    this.gmSync(r); r.used = this.flushNo;
+    return { buf: this.gmBuf, off: r.off + addr - r.start };
+  }
+  private gmReadback(addr: number, size: number) {
+    const r = this.gm?.find(addr, size);
+    if (!r || !r.gpu) return;
+    this.endPass();
+    const a = addr - addr % 4, n = Math.ceil((addr + size - a) / 4) * 4, buf = this.newBuffer({ size: n, usage: 0x01 | 0x08 });
+    this.encoder().copyBufferToBuffer(this.gmBuf, r.off + a - r.start, buf, 0, n);
+    r.pending++; this.gmRead.set(r, this.flushNo);
+    this.gmQueued.push({ buf, r, addr: a, size: n });
+  }
+  // The write log leaves for the CPU and starts again from zero (no pass is open)
+  private gmLogTake() {
+    this.gmLogUsed = false;
+    const buf = this.newBuffer({ size: GM_LOG_BYTES, usage: 0x01 | 0x08 }), enc = this.encoder();
+    enc.copyBufferToBuffer(this.gmLog, 0, buf, 0, GM_LOG_BYTES); enc.clearBuffer(this.gmLog);
+    const ranges: GmRange[] = [];
+    for (const r of this.gm!.ranges) ranges[r.index] = r;
+    this.gmLogs.push({ buf, ranges, flush: this.flushNo });
+  }
+  private gmBeforeSubmit() {
+    if (!this.gm) return;
+    if (this.gmLogUsed) this.gmLogTake();
+    for (const r of this.gmLate.splice(0)) if (this.gm.ranges.includes(r) && (this.gmRead.get(r) ?? 0) < this.flushNo) this.gmReadback(r.start, this.gmLen(r));
+  }
+  private gmFlush(gen: number) {
+    const g = this.gm;
+    if (!g) return;
+    for (const q of this.gmQueued.splice(0)) this.readbacks.push(q.buf.mapAsync(1).then(() => {
+      if (gen !== this.gen) return;
+      const r = q.r, n = Math.min(q.size, this.memory.buffer.byteLength - q.addr), len = this.gmLen(r);
+      // the guest wrote the range since the mirror last took it: its bytes win where the two differ, at the range's next use
+      const same = this.x.gfx_hash(r.start, len) === r.hash;
+      this.u8.set(new Uint8Array(q.buf.getMappedRange()).subarray(0, n), q.addr);
+      q.buf.unmap(); this.kill(q.buf); this.stats.bufferReadbacks++; this.stats.gmemReadbacks++;
+      if (--r.pending === 0) r.gpu = false;
+      r.hash = same ? this.x.gfx_hash(r.start, len) : NaN;
+      this.dropUploads();
+    }, (e: any) => { if (!this.lost && gen === this.gen) this.log(`[RED] read-back from the mirror of global memory failed: ${e?.message ?? e}`); }));
+    for (const l of this.gmLogs.splice(0)) this.readbacks.push(l.buf.mapAsync(1).then(() => {
+      if (gen !== this.gen) return;
+      const w = new Uint32Array(l.buf.getMappedRange().slice(0)); l.buf.unmap(); this.kill(l.buf);
+      for (let k = 0; k < w.length; k++) for (let m = w[k]; m; m &= m - 1) {
+        const r = l.ranges[k * 32 + 31 - Math.clz32(m & -m)];
+        if (!r || (this.gmRead.get(r) ?? 0) >= l.flush || this.gmLate.includes(r)) continue;
+        r.gpu = true; this.gmLate.push(r); this.stats.gmemLogged++;
+      }
+    }, () => {}));
+    for (const b of this.gmOld.splice(0)) this.kill(b);
+    if (this.flushNo % 64 === 0) for (const r of [...g.ranges]) if (r.used < this.flushNo - 240 && !r.gpu && !r.pending) { g.drop(r); this.gmRead.delete(r); }
+    g.settle();
   }
 
   // ---- uniform data: one large buffer with dynamic offsets ----
@@ -875,10 +1045,10 @@ export class GfxHost {
       return buf ? { buf, off: this.upOff, size: Math.min(buf.size - this.upOff, (u!.size + 15) & ~15) } : { buf: this.zeroBuffer(), off: 0, size: 65536 };
     }
     const have = u ? (u.data ? u.data.length : u.size) : 0, size = Math.min(max, Math.max(16, ((u?.need || have) + 15) & ~15));
-    if (u && !u.data && this.gpuRanges.size) {
+    if (u && !u.data && (this.gpuRanges.size || this.gm)) {
       const r = this.gpuRangeOver(u.addr, Math.min(u.size, size));
       if (r) {
-        const off = u.addr - r.addr;
+        const off = r.off;
         if (off % this.uaAlign === 0 && off + size <= r.buf.size) return { buf: r.buf, off, size };
         this.red("ubogpu", "a uniform range lies in memory a compute pass wrote and is not aligned to 256 bytes: it is bound from guest memory, which has the old content until the read-back lands");
       }
@@ -904,6 +1074,7 @@ export class GfxHost {
   private endPass() { if (this.pass) { this.pass.end(); this.pass = null; this.computePass = false; } this.drawSet = null; this.passDesc = null; }
   private flush() {
     this.endPass();
+    this.gmBeforeSubmit();
     if (this.uniformArena) this.uaWrite();
     const stamps = this.segBeforeSubmit();
     if (this.enc) { this.device.queue.submit([this.enc.finish()]); this.enc = null; this.stats.submits++; }
@@ -931,6 +1102,7 @@ export class GfxHost {
       if (--r.pending === 0 && this.gpuRanges.get(`${r.addr}:${r.size}`) === r) { this.gpuRanges.delete(`${r.addr}:${r.size}`); this.inUse.push(r.buf); }
       this.dropUploads();
     }, (e: any) => { if (!this.lost && gen === this.gen) this.log(`[RED] storage buffer readback failed: ${e?.message ?? e}`); }));
+    this.gmFlush(gen);
     for (const b of this.inUse) { let l = this.pool.get(b.size); if (!l) this.pool.set(b.size, l = []); l.push(b); }
     this.inUse = []; this.epoch++; this.flushNo++; this.bindDirty = true;
     if (!this.cacheUploads) { for (const e of this.ranges.values()) this.release(e.buf); this.ranges.clear(); this.groups.clear(); }
@@ -1366,6 +1538,9 @@ export class GfxHost {
     this.imgBlits.length = 0;
     const c = this.cur!, layouts = c.layouts, e0: any[] = [], offs: number[] = [], g1: any[] = [];
     const wbufs = new Set<GPU>(), robind: number[] = [], ubind: number[] = [], dynAt = new Map<number, number>();
+    // the mirror of global memory first: it may close and open the pass again (a copy into the mirror that must come after what is encoded)
+    this.gmWriting = false;
+    for (const sid of c.stages) { const s = this.shaders[sid].info; if (s.gmem) this.gmPrepare(s, s.stage === "vertex" ? 0 : s.stage === "fragment" ? 1 : 2); }
     for (const b of c.g0) {
       if (b.kind === "ubo" || b.kind === "host") {
         if (b.kind === "host") this.hostBlock(b);
@@ -1374,9 +1549,9 @@ export class GfxHost {
         if (b.dyn) { dynAt.set(e0.length, offs.length); e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: 0, size: r.size } }); offs.push(r.off); }
         else e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: r.off, size: r.size } });
       } else {
+        // slots 32..34: the mirror of global memory, its range table and the write log (gmPrepare has brought them up to date)
+        if (b.i >= 32) { const buf = b.i === 32 ? this.gmBuf : b.i === 33 ? this.gmTable : this.gmLog; e0.push({ binding: b.binding, resource: { buffer: buf, offset: 0, size: buf.size } }); continue; }
         const s = this.ssbo.get(b.st * 64 + b.i);
-        // slots 32 + j: the ranges of memory read through loaded addresses (lower.ts emitGmem). One the recorder left empty is one the shader's table does not name
-        if (b.i >= 32 && !(s && s.addr && s.size)) { e0.push({ binding: b.binding, resource: { buffer: this.scratchStorage(), offset: 0, size: 65536 } }); continue; }
         const r = s && this.storageBuffer(s.addr, s.size, b.write);
         if (!r) { this.red("nossbo", "a draw or dispatch uses a storage buffer slot with nothing (or nothing valid) bound: a zeroed buffer is bound"); e0.push({ binding: b.binding, resource: { buffer: this.scratchStorage(), offset: 0, size: 65536 } }); continue; }
         if (r.off % 256) this.red("ssboalign", "a storage range inside memory a compute pass wrote is not aligned to 256 bytes: WebGPU cannot bind it at that offset");
@@ -1384,6 +1559,7 @@ export class GfxHost {
         e0.push({ binding: b.binding, resource: { buffer: r.buf, offset: r.off, size: r.size } });
       }
     }
+    this.gmWriting = false;
     // WebGPU refuses a buffer that one dispatch or draw has as writable storage and as anything else (the whole command buffer is then invalid). A
     // game's compute stage may read one range and write another of memory that lives in one GPU buffer here: what it only reads is bound as a copy
     // made just before (in a compute pass the pass is closed for the copy and opened again)
@@ -1744,8 +1920,9 @@ fn draw(n: u32) { c[9] = n; c[12] = n * c[20]; c[13] = 1u; c[14] = 0u; c[15] = 0
     w[0] = indirect ? 0 : count; w[1] = first; w[16] = slotCap; w[17] = taskCap; w[18] = task ? 1 : 0; w[19] = TS; w[20] = m.maxP! * m.verts!;
     this.device.queue.writeBuffer(ctl, off, w);
     if (indirect) {
-      const src = ind % 4 === 0 ? this.upload(ind, 8, 3) : null;
-      if (src) this.encoder().copyBufferToBuffer(src, this.upOff, ctl, off, 8);
+      // from the mirror of global memory when it holds the record (a culling shader stores it through a loaded address), else from guest memory or a compute pass's own copy
+      const gm = ind % 4 === 0 ? this.gmSource(ind, 8) : null, src = gm ? gm.buf : ind % 4 === 0 ? this.upload(ind, 8, 3) : null;
+      if (src) this.encoder().copyBufferToBuffer(src, gm ? gm.off : this.upOff, ctl, off, 8);
       else this.red("meshind", `an indirect mesh draw's {count, first} at 0x${ind.toString(16)} is ${ind % 4 ? "not 4-byte aligned" : "in no memory the replayer has"}: drawn as no workgroups`);
     }
     const h = this.meshHelpers();

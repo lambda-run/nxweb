@@ -9,14 +9,14 @@ import type { ShaderInfo } from "../../src/glue/gfx_host.ts";
 
 const BLACK = [0, 0, 0, 255], RED = [255, 0, 0, 255], GREEN = [0, 255, 0, 255];
 // An NVN2 control section of a task (6) or mesh (7) shader and its code area's SPH (position and attribute 0 enabled)
-function stageOf(kind: 6 | 7, o: { threads?: number; payload?: number; task?: boolean; maxV?: number; maxP?: number } = {}): MeshStage {
+export function stageOf(kind: 6 | 7, o: { threads?: number; payload?: number; task?: boolean; maxV?: number; maxP?: number } = {}): MeshStage {
   const ctl = new Uint8Array(0x6c), dv = new DataView(ctl.buffer), area = new Uint8Array(0x80);
   ctl[0x56] = kind; dv.setUint16(0x58, o.threads ?? 32, true); dv.setUint16(0x5a, o.payload ?? 0, true); ctl[0x5e] = o.task ? 1 : 0; ctl[0x5f] = 3;
   dv.setUint16(0x60, o.maxV ?? 4, true); dv.setUint16(0x62, o.maxP ?? 2, true);
   area[0x35] = 0xf0; area[0x36] = 0x0f;
   return meshStage(ctl, area);
 }
-const naga = (words: number, body: string) => `var<workgroup> global: array<u32, ${words}>;
+export const naga = (words: number, body: string) => `var<workgroup> global: array<u32, ${words}>;
 var<private> lid_1: u32;
 fn main_1() {
     if (lid_1 != 0u) { return; }
@@ -31,7 +31,7 @@ fn main(@builtin(local_invocation_index) param: u32) {
 }
 `;
 // A mesh shader's body: one quad (4 vertices, 2 triangles) from x0, y0 (NDC, 1 wide and h high) with colour c, all WGSL expressions
-function quad(m: MeshStage, x0: string, y0: string, c: string[], h = 1): string {
+export function quad(m: MeshStage, x0: string, y0: string, c: string[], h = 1): string {
   const o = m.layout[2] >> 2, p = m.layout[3] >> 2, f = (s: string) => `bitcast<u32>(f32(${s}))`;
   let s = `    let x0 = ${x0}; let y0 = ${y0};\n`;
   [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([dx, dy], v) => {
@@ -39,13 +39,13 @@ function quad(m: MeshStage, x0: string, y0: string, c: string[], h = 1): string 
   });
   return s + `    global[${p}] = 2u << 24u;\n    global[${p + 1}] = 0x02020100u;\n    global[${p + 2}] = 0x0301u;\n`;
 }
-async function register(e: Env, name: string, m: MeshStage, raw: string) {
+export async function register(e: Env, name: string, m: MeshStage, raw: string) {
   const s = await e.blobs(name), info: ShaderInfo = { stage: m.kind === "ts" ? "task" : "mesh", entry: "main", wgsl: wrapStage(raw, m), mesh: m };
   if (e.host.registerShader(s.key, info) < 0) throw new Error(`registerShader ${name}`);
   return s;
 }
-const words = (m: MeshStage) => m.shared + 3 >> 2;
-function begin(e: Env, prog: number, bits: number) {
+export const words = (m: MeshStage) => m.shared + 3 >> 2;
+export function begin(e: Env, prog: number, bits: number) {
   const G = e.G, cmd = G.cmd, i = G.acquire(e.win);
   G.begin(); G.targets(cmd, [e.wtex[i]], 0); G.defaultStates(cmd); G.clear(cmd, [0, 0, 0, 1]);
   G.c("CommandBufferBindProgram", [cmd, prog, bits]);
