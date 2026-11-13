@@ -199,6 +199,14 @@ def page():
     # this tree's own recorder (?gfxown=1), when tools/build_gfx_own.mjs has built it
     if os.path.exists(f"{R}/build/gfxown/gfx64.wasm"): sh(["cp", f"{R}/build/gfxown/gfx64.wasm", f"{dest}/gfx64.own.wasm"])
     print(f"build: page copied to {dest} (http://localhost:8080/{os.path.basename(dest)}/index.html)")
+    # the shader pack of the current chain beside the page (nxweb tools/shaders/pack.mts): every stage dumped from the game (?shaderdumpkeys=all, sh-<key>.bin
+    # in NXEM_SHADER_DUMPS) translated offline, so a fresh profile or a new chain does not translate them in the page. Incremental: only the stages whose entry
+    # is missing or no longer current are translated (after a narrow pass change, the stages it touched). NXEM_PACK=0 skips it
+    dumps = os.environ.get("NXEM_SHADER_DUMPS", "/ctl/reports")
+    if os.environ.get("NXEM_PACK", "1") != "0" and os.path.isdir(dumps):
+        env = dict(os.environ); env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + (" --import=/ctl/cpfix.mjs" if os.path.exists("/ctl/cpfix.mjs") else "")).strip()
+        M = os.environ.get("NXWEB_MAIN", "/mnt")   # the main checkout: its build/shaders holds the translator and naga the page serves
+        subprocess.run(["node", f"{M}/tools/shaders/pack.mts", dumps, "--out", os.path.join(os.path.dirname(dest), "shader-pack")], cwd=M, env=env, check=True)
 
 def p2():
     mem, env, gb = ARGS.mem, ARGS.env, ARGS.gb

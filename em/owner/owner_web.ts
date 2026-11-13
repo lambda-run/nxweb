@@ -11,6 +11,7 @@ import { REAL_AUDIT } from "./lockfree_real.ts";
 import { OpfsStorage } from "../../src/glue/fs_dev_opfs.ts";
 import { GfxHost } from "../../src/glue/gfx_host.ts";
 import { RtShaders, workerTranslator, webShaderStore } from "../../src/glue/rt_shaders.ts";
+import { translationCurrent, packDir } from "../../src/shaders/passes.ts";
 import { NupTree } from "../../src/prepare/host/nup.ts";
 import { gameBytes } from "./game_file.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
@@ -151,7 +152,27 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
     if (qs.get("shaders") === "new" && typeof caches !== "undefined") { try { await caches.delete("nxweb-shaders"); log("page: shaders=new: the store of earlier shader translations is deleted first (every stage is translated again)"); } catch (e) { log(`[RED] page: shaders=new: ${(e as Error).message}`); } }
     // Where a stage is on its way (the status line and the wait's red line say it): reading the store, at the translator, being stored
     const sw = owner.shaderWait, store0 = typeof caches !== "undefined" ? webShaderStore() : undefined;
-    const store = store0 && { get: (id: string) => { sw.storeReads++; return store0.get(id).finally(() => { sw.storeReads--; }); }, put: (id: string, t: any) => { sw.storeWrites++; return store0.put(id, t).finally(() => { sw.storeWrites--; }); }, ids: store0.ids ? () => store0.ids!() : undefined };
+    // The shader pack of the chain (tools/shaders/pack.mts, shipped beside the page in shader-pack/<chain>/<key>.json.gz): a stage the store has no current
+    // translation of is fetched from it once and put in the store, before the translator is asked. A stage not in the pack is a 404 and goes on to the translator
+    const packOf = translator ? abs(`shader-pack/${packDir(translator.chain)}/`) : "";
+    let packHits = 0, packMisses = 0;
+    const fromPack = async (id: string): Promise<any> => {
+      if (!packOf || !id.endsWith("/" + translator.chain)) return null;
+      try {
+        const r = await fetch(packOf + id.slice(0, id.indexOf("/")) + ".json.gz");
+        if (!r.ok) { packMisses++; return null; }
+        let b = new Uint8Array(await r.arrayBuffer());
+        if (b[0] === 0x1f && b[1] === 0x8b) b = new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+        const t = JSON.parse(new TextDecoder().decode(b));
+        if (!translationCurrent(t)) { packMisses++; return null; }
+        packHits++;
+        if (packHits === 1 || packHits % 500 === 0) log(`page: shader pack: ${packHits} stages read from ${packOf} (${packMisses} not in it)`);
+        try { await store0!.put(id, t); } catch { /* read again next time */ }
+        return t;
+      } catch { packMisses++; return null; }
+    };
+    const getOrPack = async (id: string) => { const t = await store0!.get(id).catch(() => null); return t && translationCurrent(t) ? t : (await fromPack(id)) ?? t; };
+    const store = store0 && { get: (id: string) => { sw.storeReads++; return getOrPack(id).finally(() => { sw.storeReads--; }); }, put: (id: string, t: any) => { sw.storeWrites++; return store0.put(id, t).finally(() => { sw.storeWrites--; }); }, ids: store0.ids ? () => store0.ids!() : undefined };
     // (a stage that goes to the translator: the calls waiting for it are told, below)
     const atTranslator = new Set<string>(), told = new Map<string, () => void>();
     if (translator) { const t0 = translator.translate.bind(translator); translator.translate = (b: any) => { sw.translating++; atTranslator.add(b.key); told.get(b.key)?.(); told.delete(b.key); return t0(b).finally(() => { sw.translating--; sw.translated++; atTranslator.delete(b.key); }); }; }
