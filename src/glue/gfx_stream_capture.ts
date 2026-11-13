@@ -360,6 +360,15 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
   };
   const xlate = (a: number): number => { const at = a ? pageAt(Math.floor(a / CAP_PAGE)) : 0; return at ? at + a % CAP_PAGE : 0; };
   const h = makeHost(memory, l => log.push(l));
+  // the mirror of global memory looks addresses up as the guest's shaders hold them (guest addresses in guest memory, not rewritten): its table is written in
+  // guest addresses, and an address its miss log names is placed back in this layout
+  const unxlate = (a: number): number => {
+    const pg = Math.floor((a - BASE) / CAP_PAGE);
+    let lo = 0, hi = starts.length - 1;
+    while (lo <= hi) { const m = (lo + hi) >> 1, n = ends[m] - starts[m]; if (pg < ranks[m]) hi = m - 1; else if (pg >= ranks[m] + n) lo = m + 1; else return (starts[m] + pg - ranks[m]) * CAP_PAGE + (a - BASE) % CAP_PAGE; }
+    return a;
+  };
+  h.gmVa = unxlate; h.gmHost = xlate;
   const x = {
     gfx_hash: (a: number, n: number) => {      // (four lanes, as the recorder's: a single chain of multiplies held a 3D frame's replay to ~0.6 GB/s)
       let v0 = 0x811c9dc5 ^ n, v1 = 0x9e3779b9, v2 = 0x85ebca6b, v3 = 0xc2b2ae35, i = a; const e = a + n;

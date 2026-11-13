@@ -8,7 +8,10 @@
 //   Ranges start and end on 4 bytes (a word of the mirror is a word of guest memory) and keep their address modulo 256 in the mirror (a part of a range can
 //   be bound as a uniform, storage, vertex or index buffer where the guest's own alignment allows it).
 //   The first GM_RESERVED bytes of the mirror belong to no range and stay zero: the base of a storage slot with nothing bound points there.
-export const GM_ENTRIES = 8192, GM_ENTRY_WORDS = 8, GM_RESERVED = 256, GM_ALIGN = 256, GM_HINT_SHIFT = 21, GM_LOG_BYTES = 1024;
+export const GM_ENTRIES = 8192, GM_ENTRY_WORDS = 8, GM_RESERVED = 256, GM_ALIGN = 256, GM_HINT_SHIFT = 21, GM_LOG_BYTES = 1024 + 2048;
+// the write log's buffer: 256 words of the translator's bitmap, then the miss log (src/shaders/spv.ts gmemMissLog): 256 slots of {address lo, hi}, the slot a hash of
+// the address's 64 KiB window
+export const GM_MISS_WORD = 256, GM_MISS_SLOTS = 256, GM_MISS_WINDOW = 0x10000;
 
 export interface GmRange {
   start: number; end: number;      // guest bytes [start, end)
@@ -86,18 +89,19 @@ export class GmemMap {
     if (last && last.off + last.size === this.size) { this.size = last.off; this.free.pop(); }
   }
   // The table as the shaders read it
-  table(): Uint32Array {
+  // va: the address a shader holds for a byte the replayer keeps at `a` (a replay's layout; identity in the page)
+  table(va: (a: number) => number = a => a): Uint32Array {
     const t = new Uint32Array(GM_ENTRIES * GM_ENTRY_WORDS), lo = (v: number) => v >>> 0, hi = (v: number) => Math.floor(v / 4294967296) >>> 0;
     for (let k = this.ranges.length + 1; k < GM_ENTRIES; k++) { t[k * 8] = 0xffffffff; t[k * 8 + 1] = 0xffffffff; }
     this.ranges.forEach((r, n) => {
-      const k = n + 1, d = BigInt.asUintN(64, BigInt(r.off) - BigInt(r.start));
+      const k = n + 1, vs = va(r.start), ve = vs + r.end - r.start, d = BigInt.asUintN(64, BigInt(r.off) - BigInt(vs));
       r.index = k;
-      t[k * 8] = lo(r.start); t[k * 8 + 1] = hi(r.start); t[k * 8 + 2] = lo(r.end); t[k * 8 + 3] = hi(r.end);
+      t[k * 8] = lo(vs); t[k * 8 + 1] = hi(vs); t[k * 8 + 2] = lo(ve); t[k * 8 + 3] = hi(ve);
       t[k * 8 + 4] = Number(d & 0xffffffffn); t[k * 8 + 5] = Number(d >> 32n);
     });
     // hints, after the entries (word 6 of an entry belongs to the chunk whose low bits are the entry's number, not to the entry)
     const C = 2 ** GM_HINT_SHIFT;
-    for (const r of this.ranges) for (let c = Math.ceil(r.start / C); (c + 1) * C <= r.end && c < 2 ** 19; c++) t[(c & (GM_ENTRIES - 1)) * 8 + 6] = ((c << 13) | r.index) >>> 0;
+    for (const r of this.ranges) for (let c = Math.ceil(va(r.start) / C); (c + 1) * C <= va(r.start) + r.end - r.start && c < 2 ** 19; c++) t[(c & (GM_ENTRIES - 1)) * 8 + 6] = ((c << 13) | r.index) >>> 0;
     return t;
   }
 }

@@ -613,7 +613,34 @@ function emitGmem(st: u32, rf: usize, from: u32): void {
     store<u64>(r, gmemStart, 16); store<u32>(r, <u32>gmemSize, 24); store<u32>(r, w, 28);
     if (w) wrNote(gmemStart, gmemSize);
   }
+  // Tables of addresses in uniform slots (RF_gmem bits 8..15; the shader indexes them at run time): every 64-bit word of the bound range (up to 2 KiB) that
+  // lies in a live buffer names that buffer, as storage "slot" 48 + j (up to 16 buffers a stage; the rest are not named, with a red line once)
+  const tm = (load<u32>(rf, RF_gmem) >> 8) & 0xff, tw: u32 = (load<u32>(rf, RF_gmem) >> 16) & 1;
+  if (!tm) return;
+  let j: u32 = 0;
+  for (let t: u32 = 0; t < 8; t++) {
+    if (!((tm >> t) & 1)) continue;
+    const b = UBO + (<usize>(from * 16 + t) << 4), addr = load<u64>(b), size = min<u64>(load<u64>(b, 8), 2048);
+    if (!addr) continue;
+    for (let o: u64 = 0; o + 8 <= size; o += 8) {
+      const p = load<u64>(<usize>(addr + o));
+      if (p < 0x10000 || (p >> 40)) continue;
+      const buf = gmemFind(p, 0);
+      if (!buf || gmemSize > GMEM_MAX_BYTES) continue;
+      let seen = false;
+      for (let q: u32 = 0; q < j; q++) if (load<u64>(GMT + (<usize>q << 3)) == gmemStart) { seen = true; break; }
+      if (seen) continue;
+      if (j == 16) { if (once(44)) L.redLine("a shader's table of addresses names more than 16 buffers: the others read 0"); break; }
+      store<u64>(GMT + (<usize>j << 3), gmemStart);
+      const r = H.hostRec(H.H_SSBO, 32);
+      store<u32>(r, st, 8); store<u32>(r, 48 + j, 12); store<u64>(r, gmemStart, 16); store<u32>(r, <u32>gmemSize, 24); store<u32>(r, tw, 28);
+      if (tw) wrNote(gmemStart, gmemSize);
+      j++;
+    }
+  }
+  for (; j < 16; j++) { const r = H.hostRec(H.H_SSBO, 32); store<u32>(r, st, 8); store<u32>(r, 48 + j, 12); }
 }
+const GMT: usize = memory.data(128);          // the buffers a stage's tables named so far (emitGmem)
 // Storage buffers and images of a draw's or dispatch's stage. A written range is noted for the read-back at the end of the pass
 function emitStorage(st: u32, id: i32, from: u32 = 0xff): void {
   if (from == 0xff) from = st;

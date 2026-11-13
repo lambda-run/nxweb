@@ -49,7 +49,7 @@ for (const f of files) {
     const opts = { bindings: "nxweb" as const, sbufs: res.sbufs ?? [], mesh, c1: (job as any).c1, subgroups: subgroups ? "native" as const : "single" as const, samplers, storageBuffers: storage };
     if (out) { try { writeFileSync(join(out, `${key}.fixed.spv`), fixForWgsl(spv, opts as any).spv); } catch { /* the pass failed: convertStage says why */ } }
     const c = convertStage({ spvToWgsl(s: Uint8Array, flags?: number) { phase = "naga"; const w = naga.spvToWgsl(s, flags); phase = "fix"; return w; } }, spv, opts);
-    if (out) writeFileSync(join(out, `${key}.wgsl`), c.wgsl);
+    if (out) { writeFileSync(join(out, `${key}.wgsl`), c.wgsl); writeFileSync(join(out, `${key}.pass.json`), JSON.stringify(c.reflection)); }
     ok++;
     if (!quiet) console.log(`${key} ${stage}: ok (${c.wgsl.length} bytes of WGSL)`);
   } catch (e) {
