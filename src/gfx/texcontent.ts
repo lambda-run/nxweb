@@ -121,11 +121,12 @@ function hashSample(p: usize, n: usize): u64 {
 // H_TEX_DATA: +8 u64 serial, +16 u32 level, +20 u32 z (layer or first slice), +24 u32 y, +28 u32 width, +32 u32 height (texels, whole blocks),
 // +36 u32 slices, +40 u64 address of the rows (the scratch area, or the guest's pool memory itself: anywhere in a 64-bit
 // memory), +48 u32 bytes per row, +52 u32 x, +56 u32 what the rows are: 0 texels of the
-// host texture's format, 1 depth as f32, 2 stencil as u8 (WebGPU takes depth only through a draw, stencil as its own aspect)
-function emitData(serial: u64, level: u32, z: u32, x: u32, y: u32, w: u32, h: u32, slices: u32, ptr: usize, pitch: usize, what: u32 = 0): void {
+// host texture's format, 1 depth as f32, 2 stencil as u8 (WebGPU takes depth only through a draw, stencil as its own aspect), +60 u32 the bytes
+// the rows span from +40 (pitch x rows x slices; a guest thread may copy them next to the batch and point +40 there: em/kernel/nx_guest.js)
+function emitData(serial: u64, level: u32, z: u32, x: u32, y: u32, w: u32, h: u32, slices: u32, ptr: usize, pitch: usize, what: u32, nrows: u32): void {
   const r = H.hostRec(H.H_TEX_DATA, 64);
   store<u64>(r, serial, 8); store<u32>(r, level, 16); store<u32>(r, z, 20); store<u32>(r, y, 24); store<u32>(r, w, 28); store<u32>(r, h, 32); store<u32>(r, slices, 36);
-  store<u64>(r, ptr, 40); store<u32>(r, <u32>pitch, 48); store<u32>(r, x, 52); store<u32>(r, what, 56); store<u32>(r, 0, 60);
+  store<u64>(r, ptr, 40); store<u32>(r, <u32>pitch, 48); store<u32>(r, x, 52); store<u32>(r, what, 56); store<u32>(r, <u32>min<u64>(<u64>pitch * nrows * max<u32>(slices, 1), 0xffffffff), 60);
   nUploadBytes += <u64>pitch * (h / fBh) * slices;
 }
 // Bytes of OUT one row of nbx blocks takes once converted (0: the format goes as it is stored)
@@ -144,18 +145,18 @@ function outRowBytes(f: u32, nbx: u32): usize {
 // 24 bits, stencil in the low 8; D32F_S8: a float, then a word with the stencil in its low byte; packed: red at bit 0)
 function send(serial: u64, f: u32, level: u32, z: u32, x: u32, y: u32, nbx: u32, nby: u32, slices: u32, ptr: usize, pitch: usize): void {
   const k = fmtXform(f), rows = nby * slices;
-  if (k == X_NONE) { emitData(serial, level, z, x, y, nbx * fBw, nby * fBh, slices, ptr, pitch); return; }
+  if (k == X_NONE) { emitData(serial, level, z, x, y, nbx * fBw, nby * fBh, slices, ptr, pitch, 0, nby); return; }
   if (outRowBytes(f, nbx) * rows > OUT_BYTES) { L.redLine("texels to convert do not fit the conversion area: not uploaded"); return; }
   if (k == X_ASTC) {
     const op: usize = <usize>nbx * fBw * 4;
     astcRows(ptr, pitch, nbx, rows, fBw, fBh, OUT, op, f >= 0x87);
     // slices of an ASTC texture are layers: one record each keeps rows = nby * bh
-    emitData(serial, level, z, x, y, nbx * fBw, nby * fBh, slices, OUT, op);
+    emitData(serial, level, z, x, y, nbx * fBw, nby * fBh, slices, OUT, op, 0, nby * fBh);
     return;
   }
   if (k == X_PACKED) {
     for (let r: u32 = 0; r < rows; r++) { const s = ptr + <usize>r * pitch, o = OUT + (<usize>r * nbx << 2); for (let i: usize = 0; i < nbx; i++) store<u32>(o + (i << 2), unpack16(f, load<u16>(s + (i << 1)))); }
-    emitData(serial, level, z, x, y, nbx, nby, slices, OUT, <usize>nbx << 2);
+    emitData(serial, level, z, x, y, nbx, nby, slices, OUT, <usize>nbx << 2, 0, nby);
     return;
   }
   if (k == X_NORM16 || k == X_SNORM16) {
@@ -165,7 +166,7 @@ function send(serial: u64, f: u32, level: u32, z: u32, x: u32, y: u32, nbx: u32,
       if (k == X_NORM16) for (let i: usize = 0; i < n; i++) store<u16>(o + (i << 1), toHalf(<f32>load<u16>(s + (i << 1)) / 65535));
       else for (let i: usize = 0; i < n; i++) store<u16>(o + (i << 1), toHalf(max<f32>(<f32>load<i16>(s + (i << 1)) / 32767, -1)));
     }
-    emitData(serial, level, z, x, y, nbx, nby, slices, OUT, n << 1);
+    emitData(serial, level, z, x, y, nbx, nby, slices, OUT, n << 1, 0, nby);
     return;
   }
   const so = OUT + (<usize>rows * nbx << 2), hasDepth = k != X_S8, hasStencil = k == X_D24S8 || k == X_D32FS8 || k == X_S8;
@@ -182,8 +183,8 @@ function send(serial: u64, f: u32, level: u32, z: u32, x: u32, y: u32, nbx: u32,
       }
     }
   }
-  if (hasDepth) emitData(serial, level, z, x, y, nbx, nby, slices, OUT, <usize>nbx << 2, 1);
-  if (hasStencil) emitData(serial, level, z, x, y, nbx, nby, slices, so, nbx, 2);
+  if (hasDepth) emitData(serial, level, z, x, y, nbx, nby, slices, OUT, <usize>nbx << 2, 1, nby);
+  if (hasStencil) emitData(serial, level, z, x, y, nbx, nby, slices, so, nbx, 2, nby);
 }
 // @ts-ignore: decorator
 @inline function mipExt(v: u32, l: u32): u32 { v >>= l; return v ? v : 1; }
