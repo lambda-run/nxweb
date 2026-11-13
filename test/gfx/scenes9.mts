@@ -22,6 +22,13 @@ const CS_NOFORMAT: ShaderInfo = { stage: "compute", images: [{ slot: 0, format: 
   let v = textureLoad(rw, vec2i(id.xy));
   textureStore(back, vec2i(id.xy), vec4f(v.x * 2.0, 0.0, 0.0, 1.0)); }` };
 SHADERS.cs_noformat = CS_NOFORMAT;
+// a shader that names no format and stores one word a texel, which it packed as RGB9E5 itself (exponent 16: a channel is its 9 bits / 256): area3.gfxcap's pass before the upscaler
+SHADERS.cs_rgb9e5_bits = { stage: "compute", images: [{ slot: 0, format: "rgba8unorm", access: "write-only", bound: true, type: "float" }],
+  wgsl: `@group(1) @binding(272) var img: texture_storage_2d<rgba8unorm,write>;
+@compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) id: vec3u) {
+  let c = vec3u(round(vec3f(f32(id.x) / 15.0, f32(id.y) / 15.0, 0.5) * 256.0));
+  let word = c.x | (c.y << 9u) | (c.z << 18u) | (16u << 27u);
+  textureStore(img, vec2i(id.xy), vec4<f32>(bitcast<f32>(word), 0f, 0f, 0f)); }` };
 
 // writes one BC4 block as an RGBA16UI texel: both endpoints 200, every index 0
 SHADERS.fs_bc4_block = { stage: "fragment", outputs: [0], wgsl: `@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4u { return vec4u(0xc8c8u, 0u, 0u, 0u); }` };
@@ -71,6 +78,18 @@ export const scenes9: Scene[] = [
     // texel (x, y) of the image holds (x / 15, y / 15, 0.5): 9 bits a channel under one exponent, well inside a step of the 8-bit window
     for (const [x, y] of [[0, 0], [15, 15], [3, 12], [8, 5], [15, 0]]) { const px = img.px(x * 4 + 2, y * 4 + 2); t.ok(Math.abs(px[0] - x * 17) <= 2 && Math.abs(px[2] - 128) <= 2 && (Math.abs(px[1] - y * 17) <= 2 || Math.abs(px[1] - (15 - y) * 17) <= 2), `texel ${x},${y}: ${px}`); }
     t.noRed(e); t.eq([e.host.stats.dispatches, e.host.stats.imageStandIns], [1, 1], "the dispatch ran on a stand-in");
+  } },
+  { name: "a storage image without a format on an RGB9E5 texture: the shader's words are the texels (it packs the format itself), not a colour to pack", async run(e, t) {
+    const G = e.G, cmd = G.cmd, cbits = await e.computeProgram("cs_rgb9e5_bits"), show = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
+    const hdr = G.texture({ w: 16, h: 16, format: 0x40 /* RGB9E5 */ }), i = G.acquire(e.win);
+    G.begin();
+    G.c("CommandBufferBindProgram", [cmd, cbits, 0x20]);
+    G.c("CommandBufferBindImage", [cmd, STAGE.COMPUTE, 0, G.c("DeviceGetImageHandle", [G.dev, G.texId(hdr)])]); G.c("CommandBufferDispatchCompute", [cmd, 2, 2, 1]);
+    e.frame(cmd, e.wtex[i], show); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]); e.bindTexture(cmd, G.texId(hdr), nearest); e.drawQuad(cmd);
+    e.finish(i);
+    const img = await e.read();
+    for (const [x, y] of [[0, 0], [15, 15], [3, 12], [8, 5], [15, 0]]) { const px = img.px(x * 4 + 2, y * 4 + 2); t.ok(Math.abs(px[0] - x * 17) <= 2 && Math.abs(px[2] - 128) <= 2 && (Math.abs(px[1] - y * 17) <= 2 || Math.abs(px[1] - (15 - y) * 17) <= 2), `texel ${x},${y}: ${px}`); }
+    t.noRed(e); t.eq([e.host.stats.dispatches, e.host.stats.imageStandIns], [1, 1], "the dispatch ran on a stand-in of words");
   } },
   { name: "a render target view of a BC4 texture as RGBA16UI (a block a texel: a GPU compressor): drawn into a texture of the view's format and copied over the level, then sampled as BC4", async run(e, t) {
     const G = e.G, cmd = G.cmd, comp = await e.program("vs_quad", "fs_bc4_block"), show = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
