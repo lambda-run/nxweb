@@ -256,28 +256,44 @@ function mulExtended(c: Ctx) {
   c.m.insts = out;
 }
 
-// 1c'. OpShiftRightLogical of a signed operand and OpShiftRightArithmetic of an unsigned one: naga reads both as WGSL's `>>` on the operand's own type
-// (front/spv: "TODO: convert input and result to unsigned"), so a logical shift of an i32 is arithmetic and fills with the sign. The translator keeps integers
-// as i32 (Maxwell SHR.U32, the SHF funnel shifts, BFE), so every logical shift of a word with bit 31 set came out wrong: bit-packed data (meshlet vertex
-// streams, quantized positions) decoded to garbage. The operand is bitcast to the shift's signedness, and the result back to the instruction's type
-function shiftSigns(c: Ctx) {
+// 1c'. Integer operations whose signedness SPIR-V puts in the opcode while naga takes it from the operand's type: a logical right shift of an i32 is WGSL's
+// arithmetic `>>` (front/spv: "TODO: convert input and result to unsigned"), UDiv / UMod of i32 words divide signed, ConvertUToF of an i32 converts it as
+// signed, BitFieldUExtract of an i32 sign-extends, GLSL UMin / UMax / UClamp / FindUMsb of i32 compare signed, and the reverse for the signed forms; subgroup
+// min / max the same. The translator keeps integers as i32 (Maxwell SHR.U32, SHF, BFE, I2F.U32, IMNMX.U32, FLO.U32, ...), so each of these came out wrong
+// for a word with bit 31 set: bit-packed meshlet data decoded to garbage positions (the spiky triangles of the first 3D area). Each such operand is bitcast to
+// the opcode's signedness, and an integer result is made in that type and bitcast back to the instruction's type
+// (atomic min / max take theirs from the pointer and are left as they are)
+function intSigns(c: Ctx) {
+  const glsl = c.m.insts.find(i => i.op === Op.ExtInstImport && str(i.w, 1) === "GLSL.std.450")?.w[0];
+  // opcode -> [signedness wanted (1 signed), operand word positions]; the GLSL.std.450 ones by instruction number
+  const OPS = new Map<number, [number, number[]]>([[194, [0, [2]]], [195, [1, [2]]], [134, [0, [2, 3]]], [137, [0, [2, 3]]], [112, [0, [2]]], [111, [1, [2]]],
+    [201, [1, [2]]], [202, [0, [2]]], [353, [1, [4]]], [354, [0, [4]]], [356, [1, [4]]], [357, [0, [4]]]]);
+  const EXT = new Map<number, [number, number[]]>([[5, [1, [4]]], [7, [1, [4]]], [38, [0, [4, 5]]], [39, [1, [4, 5]]], [41, [0, [4, 5]]], [42, [1, [4, 5]]],
+    [44, [0, [4, 5, 6]]], [45, [1, [4, 5, 6]]], [74, [1, [4]]], [75, [0, [4]]]]);
   const intOf = (t: number): [Inst, Inst | undefined] | null => { const d = c.def.get(t); if (!d) return null; if (d.op === Op.TypeInt) return [d, undefined]; if (d.op === 23) { const e = c.def.get(d.w[1]); return e && e.op === Op.TypeInt ? [e, d] : null; } return null; };
   const typeOf = (id: number) => { const d = c.def.get(id); return d ? d.w[0] : -1; };
-  const bad = c.m.insts.filter(i => { if (i.op !== 194 && i.op !== 195) return false; const t = intOf(typeOf(i.w[2])); return !!t && t[0].w[2] === (i.op === 194 ? 1 : 0); });
+  const ruleOf = (i: Inst) => i.op === 12 ? (glsl !== undefined && i.w[2] === glsl ? EXT.get(i.w[3]) : undefined) : OPS.get(i.op);
+  const wrong = (i: Inst) => { const r = ruleOf(i); if (!r) return false; return r[1].some(k => { const t = intOf(typeOf(i.w[k])); return !!t && t[0].w[2] !== r[0]; }); };
+  const bad = c.m.insts.filter(wrong);
   if (!bad.length) return;
   let at = c.firstFunction(), r;
   const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
   const want = new Map<string, number>();
   const typeFor = (signed: number, vec: Inst | undefined) => { const k = `${signed}:${vec ? vec.w[2] : 0}`; let t = want.get(k); if (t === undefined) { t = add(Op.TypeInt, [32, signed], false); if (vec) t = add(23, [t, vec.w[2]], false); want.set(k, t); } return t; };
-  const plan = new Map<Inst, number>();
-  for (const i of bad) { const [, vec] = intOf(typeOf(i.w[2]))!; plan.set(i, typeFor(i.op === 194 ? 0 : 1, vec)); }
+  const plan = new Map<Inst, [number, number[], number | undefined, number]>();   // operand type, operands, result type (an integer result)
+  for (const i of bad) {
+    const [sg, ks] = ruleOf(i)!, ops = ks.filter(k => intOf(typeOf(i.w[k])));
+    const [, vec] = intOf(typeOf(i.w[ops[0]]))!, res = intOf(i.w[0]);
+    plan.set(i, [typeFor(sg, vec), ops, res ? typeFor(sg, res[1]) : undefined, sg]);
+  }
   const out: Inst[] = [];
   for (const i of c.m.insts) {
-    const T = plan.get(i);
-    if (T === undefined) { out.push(i); continue; }
-    const base = c.id(); out.push({ op: 124 /* Bitcast */, w: [T, base, i.w[2]] });
-    if (i.w[0] === T) { out.push({ op: i.op, w: [T, i.w[1], base, i.w[3]] }); continue; }
-    const res = c.id(); out.push({ op: i.op, w: [T, res, base, i.w[3]] }); out.push({ op: 124, w: [i.w[0], i.w[1], res] });
+    const p = plan.get(i);
+    if (!p) { out.push(i); continue; }
+    const [T, ops, R, sg] = p, w = [...i.w];
+    for (const k of ops) { if (intOf(typeOf(w[k]))![0].w[2] === sg) continue; const x = c.id(); out.push({ op: 124 /* Bitcast */, w: [T, x, w[k]] }); w[k] = x; }
+    if (R === undefined || R === i.w[0]) { out.push({ op: i.op, w }); continue; }
+    const res = c.id(); w[0] = R; w[1] = res; out.push({ op: i.op, w }); out.push({ op: 124, w: [i.w[0], i.w[1], res] });
   }
   c.m.insts = out;
 }
@@ -1301,7 +1317,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   nanTests(c); c.index();
   nonFiniteConstants(c); c.index();
   mulExtended(c); c.index();
-  shiftSigns(c); c.index();
+  intSigns(c); c.index();
   dropUnreferenced(c); c.index();
   privatizeBoundSizes(c); c.index();
   helperInvocation(c); c.index();
