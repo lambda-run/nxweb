@@ -36,7 +36,7 @@
 // ?skipmovie=1 (A TEST AID, said in the status line): story movies (Dm_*.webm, not the title's) end after their first
 //   two clusters, so the way to the first area is not an hour of movie. ?saves=mem: saves end with the page (default:
 //   stored in the browser's private file system, so a later run can continue); ?saves=new: the stored saves are deleted first.
-// ?fsworker=1: guest threads call the fs module themselves and a dedicated worker reads the game file (owner/fs_worker.ts).
+// fs worker (default; ?fsworker=0 off): guest threads call the fs module themselves and a dedicated worker reads the game file (owner/fs_worker.ts).
 // ?lfaudit=1: the real-call audit: the first 12 real calls of every entry point the dynamic audit left under the lock
 //   are watched for writes to the recorder's shared state (the owner's report has the result: lfAudit; tools/lf_real.mjs
 //   reads it from a console log). ?lfreal=0: what that audit cleared (owner/lockfree_real.ts) stays under the lock.
@@ -123,6 +123,10 @@ if (q.get("game")) (async function () {
 function start(file) {
   if (started) return; started = true; $("continue").hidden = true;
   window.nxem.state = "starting";
+  // the fs worker (owner/fs_worker.ts) reads the game file for the guest threads: the default for a file (?fsworker=0: the
+  // owner reads, as before 2026-11-13); a game read from a URL (?game=) keeps the owner's reads unless ?fsworker=1 (the
+  // worker's synchronous requests were 80-220 ms each against the VM's server)
+  var fsw = file.remote ? q.get("fsworker") === "1" : q.get("fsworker") !== "0";
   window.Module = {
     arguments: ["/exefs", "/rt/translator64.shared.wasm", "/rt/helpers64.shared.wasm", "/rt/loader64.wasm", q.get("secs") || "86400"],
     nxEnv: Object.assign({ NX_CORES: q.get("cores") === "1" ? "1" : "0", NX_COREEXCL: q.get("coreexcl") === "1" ? "1" : "0", NX_WAKE_HANDOFF: q.get("handoff") === "1" ? "1" : "0", NX_VPIPE: q.get("vpipe") === "1" ? "1" : "0" }, q.get("pollpark") !== null ? { NX_POLL_PARK_US: q.get("pollpark") } : {}, q.get("yieldpark") !== null ? { NX_YIELD_PARK_US: q.get("yieldpark") } : {}),
@@ -130,7 +134,7 @@ function start(file) {
     onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; if (!window.nxem.reason) Module.nxStopped("abort() in host code: " + w); },
     nxStopped: function (why) { if (window.nxem.reason) return; window.nxem.reason = why; $("stage").textContent = "stopped: " + why; $("stage").style.color = "#f66"; },
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
-    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") !== "0", gfxAsync: q.get("asyncsubmit") === "1", vdec: q.get("vdec"), search: location.search, saves: q.get("saves"), gfxProfile: q.get("gfxprofile") !== "0", shaderWait: q.get("shaderwait") !== "0", gfxRealAudit: q.get("lfaudit") === "1", gfxRealPromote: q.get("lfreal") !== "0", skipMovie: q.get("skipmovie") === "1", vpipe: q.get("vpipe") === "1", fsDirect: q.get("fsdirect") === "1" || q.get("fsworker") === "1", fsWorker: q.get("fsworker") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") !== "0", gfxAsync: q.get("asyncsubmit") === "1", vdec: q.get("vdec"), search: location.search, saves: q.get("saves"), gfxProfile: q.get("gfxprofile") !== "0", shaderWait: q.get("shaderwait") !== "0", gfxRealAudit: q.get("lfaudit") === "1", gfxRealPromote: q.get("lfreal") !== "0", skipMovie: q.get("skipmovie") === "1", vpipe: q.get("vpipe") === "1", fsDirect: q.get("fsdirect") === "1" || fsw, fsWorker: fsw, pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
   };
   // The runtime (and the owner thread with it) runs in a dedicated worker, em_worker.js; the page keeps the DOM, the
   // input and the audio device. ?owner=page: as it was until 78bdc16, the runtime's main thread is this page's (the

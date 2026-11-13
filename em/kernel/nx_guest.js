@@ -205,15 +205,18 @@ addToLibrary({
           // (a cut at a full buffer: the recorder's buffer is 1 MB and no record is over 4 KB; it goes on lowering and
           // touches no guest memory because of the cut, so the batch can wait in the ring like a submission's end)
           const full = n >= 1048576 - 4096;
-          cause = !ok ? 2 : last === 22 || full ? 4 : 3;
-          if (ok && (last === 22 || full)) {
+          // (a batch that ends with a fence, 21: nvnQueueFenceSync and nvnQueueFinish flush after it; the game waits for
+          // the fence with nvnSyncWait, which is the owner's and comes after the ring. Three a frame, each waited before)
+          const end = last === 22 || last === 21;
+          cause = !ok ? 2 : end || full ? 4 : 3;
+          if (ok && (end || full)) {
             const need = 8 + Math.ceil(n / 8) * 8, head = Atomics.load(HEAP32, r); let tail = Atomics.load(HEAP32, r + 1), at = -1;
             if (tail >= head) { if (tail + need <= size - 8) at = tail; else if (need < head) { HEAPU32[(R + 16 + tail) / 4] = 0xFFFFFFFF; at = 0; } }
             else if (tail + need < head) at = tail;
             if (at >= 0) {
               HEAPU32[(R + 16 + at) / 4] = n; HEAPU32[(R + 16 + at) / 4 + 1] = 0; HEAPU8.copyWithin(R + 16 + at + 8, p, p + n);
               Atomics.store(HEAP32, r + 1, at + need); Atomics.add(HEAP32, r + 2, 1); Atomics.notify(HEAP32, r + 2);
-              NX.ringPuts = (NX.ringPuts || 0) + 1; cnt(last === 22 ? 0 : 1, 0);
+              NX.ringPuts = (NX.ringPuts || 0) + 1; cnt(end ? 0 : 1, 0);
               return;
             }
           }
