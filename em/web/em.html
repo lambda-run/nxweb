@@ -111,6 +111,15 @@ lastHandle().then(async function (h) {
   if (q.get("auto")) { try { var f = await fileOf(h, false); if (f) start(f); else say("[RED] page: ?auto=1, but reading " + h.name + " needs a click here (the permission is not standing): use the button"); } catch (e) { say("[RED] page: ?auto=1: " + e.message); } }
 });
 $("fileinput").addEventListener("change", function () { var file = $("fileinput").files[0]; if (file) start(file); });
+// ?game=<url>: the game container from a server that answers Range requests (web/game_serve.mjs), for a browser that
+// cannot be given a file (a headless one driven over CDP). Read where it lies, range by range; nothing is kept.
+if (q.get("game")) (async function () {
+  try { var u = q.get("game"), r = await fetch(u, { method: "HEAD" }), n = Number(r.headers.get("X-Size") || r.headers.get("Content-Length"));
+    if (!r.ok || !(n > 0)) throw new Error("HTTP " + r.status + ", size " + n);
+    say("page: game=" + u + ": the game container is read from that server by ranges (" + (n / 1073741824).toFixed(2) + " GB)");
+    start({ remote: true, url: u, size: n, name: u.split("/").pop().split("?")[0] || "game.nup" });
+  } catch (e) { say("[RED] page: ?game=: " + e.message); }
+})();
 function start(file) {
   if (started) return; started = true; $("continue").hidden = true;
   window.nxem.state = "starting";

@@ -166,7 +166,7 @@ addToLibrary({
   // put into the memory (owner/owner.ts GFX_MOD), over the shared memory. Its imports: gfx_exec (the replayer), the
   // stub of an entry point and more table memory are the owner's, asked through the lock holder's request words at
   // NXG; a callback into guest code runs here, on the calling thread. Addresses are i64 in this build (nx.abi).
-  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'nx_gfx_flush_ns', 'nx_gfx_ring', 'nx_gfx_ring_bytes', 'nx_core_out', 'malloc'],
+  $nxGfx__deps: ['$NX', 'nx_gfx_guest_call', 'nx_gfx_flush_ns', 'nx_gfx_ring', 'nx_gfx_ring_bytes', 'nx_gfx_flush_causes', 'nx_core_out', 'malloc'],
   $nxGfx: function() {
     const G = 0x1FF1F000, MOD = 0x1FF20000, s = (G + 8) / 4, f = G / 8, t0 = performance.now();
     const mod = new WebAssembly.Module(HEAPU8.slice(MOD, MOD + HEAPU32[(G + 40) / 4]));
@@ -189,26 +189,39 @@ addToLibrary({
       // is not held while the owner's replayer works. A batch with texels in the recorder's scratch area (H_TEX_DATA, 24)
       // or one flushed in the middle of a submission (before the recorder writes guest memory) waits as before; the
       // owner runs what is in the ring first, so the order of the stream is kept.
+      // Causes (nx_gfx.c g_flush_cause, owner.ts flushCauses): 0 into the ring, the end of a submission; 1 into the ring,
+      // cut because the recorder's stream buffer was full; then the ones that WAIT for the owner: 2 texels in the
+      // batch; 3 cut in the middle of a submission (the recorder is about to read or write guest memory: 8 it then
+      // wrote guest memory (UpdateUniformBuffer, ClearBuffer, a copy that landed), 9 a texture-to-buffer copy, 10 other);
+      // 4 no room in the ring; 5 the ring is off; 6 an entry point's address; 7 more arena
       gfx_exec: (p, n) => { p = Number(p); n >>>= 0;
         const R = NX.ring || (NX.ring = _nx_gfx_ring()), r = R / 4, size = NX.ringBytes || (NX.ringBytes = _nx_gfx_ring_bytes());
+        const FC = (NX.fc || (NX.fc = _nx_gfx_flush_causes())) / 4, cnt = (c, us) => { Atomics.add(HEAPU32, FC + 2 * c, 1); if (us) Atomics.add(HEAPU32, FC + 2 * c + 1, us); };
+        if (NX.midCut && n >= 8) { const op0 = HEAPU32[p / 4]; cnt(op0 === 23 ? 8 : op0 === 25 ? 9 : 10, 0); } NX.midCut = false;
+        let cause = 5;
         if (HEAP32[r + 3] === 1 && n >= 8) {
           let last = 0, ok = true;
           for (let q = p; q < p + n;) { const op = HEAPU32[q / 4], sz = HEAPU32[q / 4 + 1]; if (op === 24 || sz < 8) { ok = false; break; } last = op; q += sz; }
-          if (ok && last === 22) {
+          // (a cut at a full buffer: the recorder's buffer is 1 MB and no record is over 4 KB; it goes on lowering and
+          // touches no guest memory because of the cut, so the batch can wait in the ring like a submission's end)
+          const full = n >= 1048576 - 4096;
+          cause = !ok ? 2 : last === 22 || full ? 4 : 3;
+          if (ok && (last === 22 || full)) {
             const need = 8 + Math.ceil(n / 8) * 8, head = Atomics.load(HEAP32, r); let tail = Atomics.load(HEAP32, r + 1), at = -1;
             if (tail >= head) { if (tail + need <= size - 8) at = tail; else if (need < head) { HEAPU32[(R + 16 + tail) / 4] = 0xFFFFFFFF; at = 0; } }
             else if (tail + need < head) at = tail;
             if (at >= 0) {
               HEAPU32[(R + 16 + at) / 4] = n; HEAPU32[(R + 16 + at) / 4 + 1] = 0; HEAPU8.copyWithin(R + 16 + at + 8, p, p + n);
               Atomics.store(HEAP32, r + 1, at + need); Atomics.add(HEAP32, r + 2, 1); Atomics.notify(HEAP32, r + 2);
-              NX.ringPuts = (NX.ringPuts || 0) + 1;
+              NX.ringPuts = (NX.ringPuts || 0) + 1; cnt(last === 22 ? 0 : 1, 0);
               return;
             }
           }
-        }
-        ask(0, p, n); },
-      gfx_proc_address: (id) => BigInt(ask(1, id, 0)),
-      gfx_arena_more: (n) => ask(2, n >>> 0, 0),
+        } else if (n >= 8) { let last = 0; for (let q = p; q < p + n;) { const sz = HEAPU32[q / 4 + 1]; if (sz < 8) break; last = HEAPU32[q / 4]; q += sz; } if (last !== 22 && n < 1048576 - 4096) NX.midCut = true; }
+        if (cause === 3) NX.midCut = true;
+        const w0 = performance.now(); ask(0, p, n); cnt(cause, Math.round((performance.now() - w0) * 1000)); },
+      gfx_proc_address: (id) => { Atomics.add(HEAPU32, (NX.fc || (NX.fc = _nx_gfx_flush_causes())) / 4 + 12, 1); return BigInt(ask(1, id, 0)); },
+      gfx_arena_more: (n) => { Atomics.add(HEAPU32, (NX.fc || (NX.fc = _nx_gfx_flush_causes())) / 4 + 14, 1); return ask(2, n >>> 0, 0); },
       gfx_guest_call: (fn, a0, a1, a2, a3) => { const q = blk / 8, v = [fn, a0, a1, a2, a3]; for (let i = 0; i < 5; i++) HEAPU64[q + i] = BigInt.asUintN(64, v[i]); _nx_gfx_guest_call(blk); return HEAPU64[q]; },
     };
     const x = new WebAssembly.Instance(mod, { env }).exports;

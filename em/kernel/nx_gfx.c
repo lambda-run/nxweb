@@ -104,6 +104,10 @@ EMSCRIPTEN_KEEPALIVE void nx_gfx_stats(double out_) { double *o = (double *)(uin
 static _Alignas(16) uint8_t g_gfx_ring[16 + RING_BYTES];
 EMSCRIPTEN_KEEPALIVE double nx_gfx_ring(void) { return (double)(uintptr_t)g_gfx_ring; }
 EMSCRIPTEN_KEEPALIVE double nx_gfx_ring_bytes(void) { return (double)RING_BYTES; }
+// What a guest thread's instance of the recorder handed to the replayer, by cause (kernel/nx_guest.js gfx_exec counts,
+// owner/owner.ts flushCauses names them): u32 count and u32 microseconds waited for the owner, 16 causes
+static _Atomic uint32_t g_flush_cause[32];
+EMSCRIPTEN_KEEPALIVE double nx_gfx_flush_causes(void) { return (double)(uintptr_t)g_flush_cause; }
 
 // ---- nxweb's fs module the same way (owner/owner.ts NXF): nn::fs calls run in the calling thread's instance under the
 // module's lock; the storage (the dev_* imports) is the owner's, asked through the lock holder's request words, and a

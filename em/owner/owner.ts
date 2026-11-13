@@ -50,7 +50,7 @@ export interface OwnerConfig {
   fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
   gfxModule: WebAssembly.Module;
   fsShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };    // the same for fsModule
-  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean; tls?: { base: number; span: number; consts: number } | null; lockTable?: Uint8Array; lockLine?: string; realAudit?: boolean; promote?: string[] };   // realAudit (?lfaudit=1): the first real calls of the entry points the dynamic audit left under the lock are watched; promote: the names that audit cleared (lockfree_real.ts)   // lockTable: the dynamic audit's verdict by NVN id (lockFreeAudit below); without it nothing is lock-free   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
+  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean; streamWrites?: boolean; tls?: { base: number; span: number; consts: number } | null; lockTable?: Uint8Array; lockLine?: string; realAudit?: boolean; promote?: string[] };   // realAudit (?lfaudit=1): the first real calls of the entry points the dynamic audit left under the lock are watched; promote: the names that audit cleared (lockfree_real.ts)   // lockTable: the dynamic audit's verdict by NVN id (lockFreeAudit below); without it nothing is lock-free   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
   saves: FsStorage;
   programId: bigint;
   scratch: number;                      // 8 KB of the memory nothing else uses
@@ -377,9 +377,12 @@ export class Owner {
       } catch (e) { this.log(`[RED] owner: recorder audit failed, every direct call stays under the lock: ${(e as Error).message}`); }
     }
     if (sh?.direct && sh.asyncSubmit && (globalThis as any).NXGFXRING) { new Int32Array(this.memory.buffer, (globalThis as any).NXGFXRING, 4)[3] = 1; this.log("owner: a guest thread's submission is handed to the replayer through a ring and does not wait for it (asyncsubmit)"); }
+    if (sh?.direct && sh.streamWrites) { const x: any = this.gfx.x; if (x.gfx_stream_writes) { x.gfx_stream_writes(1); this.log("owner: UpdateUniformBuffer / CopyBufferToBuffer bytes travel in the stream and the replayer writes guest memory (stream writes; ?streamwrites=0: the recorder writes and flushes, the caller waits)"); } else this.log("owner: this recorder build has no stream writes (gfx_stream_writes): every UpdateUniformBuffer makes its thread wait for the replayer (?gfxown=1 has them)"); }
     if (sh?.direct) { Atomics.store(this.gl, 11, 1); this.log(`owner: the recorder's ${sh.globals.length} globals are in the memory at 0x${GFX_GLOBALS.toString(16)}: every guest thread calls it in its own instance under one lock; the owner keeps the replayer (gfx_exec) and the calls that wait or pace`); }
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
+  // waits of a program's stages (owner_web.ts): calls that waited, waiting now, ms in all and the longest, waits that ran out; what is on its way where
+  shaderWait = { waits: 0, waiting: 0, ms: 0, maxMs: 0, timeouts: 0, off: false, storeReads: 0, translating: 0, translated: 0, storeWrites: 0 };
   private varSize: RegExp | null = null;
   private lfa: { blk: number; names: string[]; n: number } | null = null; private nvnNameList: string[] | null = null;
   nvnNames(): string[] { if (!this.nvnNameList) { const x: any = this.gfx!.x, u8 = new Uint8Array(this.memory.buffer), out: string[] = []; for (let id = 0, n = x.nvn_count(); id < n; id++) { const p = Number(x.nvn_name(id)); let e = p; while (u8[e]) e++; out.push(String.fromCharCode(...u8.subarray(p, e))); } this.nvnNameList = out; } return this.nvnNameList; }
@@ -607,7 +610,7 @@ export class Owner {
       replayerBatches: Object.fromEntries([...this.rep.kinds].map(([k, v]) => [k, { n: v.n, ms: r1(v.ms), maxMs: r1(v.max) }])), replayerSlowBatches: this.rep.slow.slice(),
       presentSteps: { n: this.presentSteps.n, ms: r1(this.presentSteps.ms), maxMs: r1(this.presentSteps.max), over8ms: this.presentSteps.over8, steps: Object.fromEntries(Object.entries(this.presentSteps.steps).map(([k, v]) => [k, { ms: r1(v.ms), maxMs: r1(v.max) }])), slow: this.presentSteps.slow.slice() },
       nvnCalls: this.nvnCalls(), lfAudit: this.lfAudit(), frameWork: reset ? this.frameWork() : null,
-      ring: this.ringStats, presents: this.presents };
+      ring: this.ringStats, shaderWait: { ...this.shaderWait, ms: r1(this.shaderWait.ms), maxMs: r1(this.shaderWait.maxMs) }, flushCauses: this.flushCauses(), presents: this.presents };
     if (reset) { const ps = this.presentSteps; ps.n = 0; ps.ms = 0; ps.max = 0; ps.over8 = 0; ps.steps = {}; ps.slow = []; this.rep.kinds.clear(); this.rep.slow = []; a.t0 = now; a.sec.clear(); a.long.clear(); a.req.clear(); a.lag = { n: 0, sum: 0, max: 0 }; a.video = { packets: 0, pictures: 0 }; (this as any).execSeen0 = g ? g.times.execMs : 0; }
     return out;
   }
@@ -642,6 +645,20 @@ export class Owner {
     this.workLine = ` · per present: ${out.drawsPerPresent} draws, ${out.submitsPerPresent ?? "?"} submits, ${out.commandBuffersPerPresent ?? "?"} command buffers, ${out.passesPerPresent} passes, lowering ${out.loweringMsPerPresent ?? "?"} ms`;
     return out; }
   frameWorkLine(): string { return this.workLine; }
+  // What the guest threads' recorder instances handed over since the last call, by cause (kernel/nx_guest.js gfx_exec):
+  // per present, and for the ones that waited for the owner the ms waited per present
+  private fcLast: Uint32Array | null = null; private fcPresents = 0; private fcLine = "";
+  flushCauses(): any { const M: any = (globalThis as any).Module; if (!M?._nx_gfx_flush_causes) return null;
+    const cur = new Uint32Array(this.memory.buffer, Number(M._nx_gfx_flush_causes()), 32).slice(), last = this.fcLast, f = Math.max(1, this.presents - this.fcPresents); this.fcLast = cur; this.fcPresents = this.presents;
+    if (!last) return null;
+    const NAME = ["ring: submission end", "ring: stream buffer full", "WAITED: texels in the batch", "WAITED: cut inside a submission", "WAITED: no room in the ring", "WAITED: ring off", "WAITED: entry point address", "WAITED: more arena", "(cut inside a submission) then the recorder wrote guest memory", "(cut) then a texture-to-buffer copy", "(cut) then other"];
+    const out: any = {}, parts: string[] = []; let waited = 0, waitedMs = 0;
+    for (let c = 0; c < NAME.length; c++) { const n = cur[2 * c] - last[2 * c], us = cur[2 * c + 1] - last[2 * c + 1]; if (!n) continue; out[NAME[c]] = { perPresent: +(n / f).toFixed(1), waitMsPerPresent: +(us / 1000 / f).toFixed(1) }; if (c >= 2 && c <= 7) { waited += n; waitedMs += us / 1000; } }
+    out.waitedPerPresent = +(waited / f).toFixed(1); out.waitedMsPerPresent = +(waitedMs / f).toFixed(1);
+    const pp = (c: number) => ((cur[2 * c] - last[2 * c]) / f).toFixed(1);
+    this.fcLine = ` · flushes per present: ${pp(0)}+${pp(1)} in the ring, ${out.waitedPerPresent} waited ${out.waitedMsPerPresent} ms (texels ${pp(2)}, memory writes ${pp(8)}, copies to buffers ${pp(9)}, other cuts ${pp(10)}, ring full ${pp(4)})`;
+    return out; }
+  flushCauseLine(): string { return this.fcLine; }
   private batchDone(p: number, n: number, ms: number): void {
     const u32 = new Uint32Array(this.memory.buffer), ops = new Map<number, number>(); let texels = 0;
     for (let q = p; q + 8 <= p + n; ) { const op = u32[q / 4], sz = u32[q / 4 + 1]; if (sz < 8) break; ops.set(op, (ops.get(op) ?? 0) + 1); if (op === 24) texels += sz; q += sz; }

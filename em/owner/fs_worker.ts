@@ -14,7 +14,8 @@
 // RomFS read, and by the owner otherwise, through the lock holder's request words, as for a guest thread.
 // NXW: i32 +0 the slot (0 free, 1 a request; the worker empties it into its own queue)  +4 1: the worker serves  +8 how many RomFS device ids follow  +12.. the ids (4)
 //      i64 +32 dev, offset, address, length, token, context block   f64 +96 reads, bytes, ms reading, longest read ms
-import { NupTree, blobBytes } from "../../src/prepare/host/nup.ts";
+import { NupTree } from "../../src/prepare/host/nup.ts";
+import { gameBytes } from "./game_file.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { romDevice } from "./rom.ts";
 
@@ -27,7 +28,7 @@ const say = (line: string) => (self as any).postMessage({ line });
     const memory: WebAssembly.Memory = d.memory, buf = memory.buffer, i32 = new Int32Array(buf), u8 = new Uint8Array(buf), i64 = new BigInt64Array(buf), u64 = new BigUint64Array(buf), f64 = new Float64Array(buf);
     const t0 = performance.now();
     const prep = new PrepWasm(d.prep, say), sha256 = (b: Uint8Array) => prep.sha256(b);
-    const tree = await NupTree.open(blobBytes(d.file, true), d.file.name, { sha256, log: say });
+    const tree = await NupTree.open(gameBytes(d.file, true), d.file.name, { sha256, log: say });
     const rom = await romDevice(tree, prep, { skipMovie: d.skipMovie === true });
     if (!rom.dev.readSync) throw new Error("no synchronous reads here (FileReaderSync)");
     // this worker's instance of the fs module (the build for further instances, as a guest thread's)

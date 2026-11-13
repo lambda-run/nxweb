@@ -4,14 +4,20 @@
 // a screenshot to logs/<name>.png at the end. Stops early when the browser's memory passes LIMIT_MB (the VM is shared).
 // Environment: GAME (/gamefs/zelda-oot.nup), PROFILE (build/profile: its own, so the AssemblyScript runs' profile is
 // not touched; shaders are translated again in it once), URL, LIMIT_MB (6500), KEEP=1 (leave the browser up).
-import { launch, evaluate } from "/ctl/headless/cdp.mjs";
+import { launch, evaluate, connect } from "/ctl/headless/cdp.mjs";
 import { readFileSync, readdirSync, writeFileSync, appendFileSync, openSync, readSync, closeSync } from "node:fs";
 const secs = Number(process.argv[2] ?? 300), name = process.argv[3] ?? "em", L = "/ctl/nxweb-em/em/logs";
 const profile = process.env.PROFILE ?? "/ctl/nxweb-em/em/build/profile", game = process.env.GAME ?? "/gamefs/zelda-oot.nup";
 const url = process.env.URL ?? `http://localhost:8080/em/index.html?secs=${secs + 600}`, limit = Number(process.env.LIMIT_MB ?? 6500);
 const con = `${L}/${name}.console.txt`; writeFileSync(con, "");
-const { child, cdp } = await launch({ profile, port: 9447, log: `${L}/${name}.chromium.log` });
-const pss = () => { let kb = 0;
+// CDP=http://192.168.64.1:9334: a browser that is already running (the headless Chrome on the Mac, real GPU) instead of
+// a Chromium launched here; with it GAME_URL (the game over HTTP, web/game_serve.mjs: that browser cannot be given the
+// VM's file) and the page's Mac-side URL. No memory probe (not this machine's processes); the target is closed at the end.
+const CDP = process.env.CDP ?? "", gameUrl = process.env.GAME_URL ?? "";
+const { child, cdp } = CDP ? await (async () => { const v = await (await fetch(CDP + "/json/version")).json(), u = new URL(v.webSocketDebuggerUrl), c = new URL(CDP); u.host = c.host; return { child: { kill() {} }, cdp: await connect(u.href) }; })()
+  : await launch({ profile, port: 9447, log: `${L}/${name}.chromium.log` });
+if (CDP) process.env.MEM = "0";
+const pss = () => { let kb = 0; if (CDP) return 0;
   for (const d of readdirSync("/proc")) { if (!/^\d+$/.test(d)) continue;
     try { if (!readFileSync(`/proc/${d}/cmdline`, "utf8").includes(profile)) continue; kb += Number(/^Pss:\s+(\d+)/m.exec(readFileSync(`/proc/${d}/smaps_rollup`, "utf8"))[1]); } catch { /* gone */ } }
   return Math.round(kb / 1024); };
@@ -52,11 +58,13 @@ const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" 
 const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
 await cdp.send("Runtime.enable", {}, sessionId); await cdp.send("Inspector.enable", {}, sessionId); await cdp.send("DOM.enable", {}, sessionId); await cdp.send("Page.enable", {}, sessionId);
 await cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, sessionId);
-await cdp.send("Page.navigate", { url }, sessionId);
-let result = {};   // (a loaded machine takes longer than the 2.5 s this waited once: looked for up to 40 s)
+const closeTarget = async () => { if (CDP) { try { await cdp.send("Target.closeTarget", { targetId }); } catch { /* gone */ } } };
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { closeTarget().finally(() => process.exit(1)); });
+await cdp.send("Page.navigate", { url: gameUrl ? url + (url.includes("?") ? "&" : "?") + "game=" + encodeURIComponent(gameUrl) : url }, sessionId);
+let result = gameUrl ? { objectId: "none" } : {};   // (a loaded machine takes longer than the 2.5 s this waited once: looked for up to 40 s)
 for (let i = 0; i < 16 && !result.objectId; i++) { await new Promise(r => setTimeout(r, 2500)); try { ({ result } = await cdp.send("Runtime.evaluate", { expression: `document.getElementById("fileinput")` }, sessionId)); } catch { /* not there yet */ } }
 if (!result.objectId) { try { child.kill("SIGKILL"); } catch { /* gone */ } throw new Error("em_run: the page has no #fileinput (did it load? " + url + ")"); }
-await cdp.send("DOM.setFileInputFiles", { files: [game], objectId: result.objectId }, sessionId);
+if (!gameUrl) await cdp.send("DOM.setFileInputFiles", { files: [game], objectId: result.objectId }, sessionId);
 console.log(`em_run: ${url} with ${game}`);
 const t0 = Date.now(); let how = "time", last = null;
 // KEYS="60:KeyZ,65:Enter,70-200/10:KeyZ": key presses for the page (em.html: Z/X/C/V = A/B/X/Y, Enter = +, Backspace = -),
@@ -102,7 +110,7 @@ if (process.env.MEMINFRA && !crashed) { try {
 // the picture itself, two ways: the canvas as the page sees it, and the replayer's own frame capture (its last pass's target)
 if (shotTimer) clearInterval(shotTimer);
 // (after a crash the page answers nothing: the pictures are not asked for, and nothing below may wait for ever)
-setTimeout(() => { console.log(`em_run: ended (${how}; the pictures at the end did not come back within 90 s)`); try { child.kill("SIGKILL"); } catch { /* gone */ } process.exit(0); }, 90000).unref();
+setTimeout(async () => { console.log(`em_run: ended (${how}; the pictures at the end did not come back within 90 s)`); try { child.kill("SIGKILL"); } catch { /* gone */ } await closeTarget(); process.exit(0); }, 90000).unref();
 if (!crashed) try {
   const d = await evaluate(cdp, sessionId, `new Promise(res => requestAnimationFrame(() => { try { res(document.getElementById("screen").toDataURL("image/png")); } catch (e) { res("error " + e.message); } }))`);
   if (d.startsWith("data:image/png;base64,")) writeFileSync(`${L}/${name}.canvas.png`, Buffer.from(d.slice(22), "base64")); else console.log("em_run: canvas: " + d.slice(0, 80));
@@ -116,5 +124,5 @@ if (!crashed) try {
 } catch (e) { console.log("em_run: no capture: " + String(e.message).slice(0, 200)); }
 if (!crashed) try { const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, sessionId); writeFileSync(`${L}/${name}.png`, Buffer.from(shot.data, "base64")); } catch (e) { console.log("em_run: no screenshot: " + e.message); }
 console.log(`em_run: ended (${how}); last ${last}; console in ${con}, screenshot ${L}/${name}.png`);
-if (!process.env.KEEP) { cdp.close(); child.kill("SIGKILL"); }
+if (!process.env.KEEP) { await closeTarget(); cdp.close(); child.kill("SIGKILL"); }
 process.exit(0);

@@ -11,7 +11,8 @@ import { REAL_AUDIT } from "./lockfree_real.ts";
 import { OpfsStorage } from "../../src/glue/fs_dev_opfs.ts";
 import { GfxHost } from "../../src/glue/gfx_host.ts";
 import { RtShaders, workerTranslator, webShaderStore } from "../../src/glue/rt_shaders.ts";
-import { NupTree, blobBytes } from "../../src/prepare/host/nup.ts";
+import { NupTree } from "../../src/prepare/host/nup.ts";
+import { gameBytes } from "./game_file.ts";
 import { PrepWasm } from "../../src/prepare/host/wasm.ts";
 import { WebCodecsVideo } from "../../src/glue/video_webcodecs.ts";
 import { startOwner, sharedBuild, gfxShared, lockFreeAudit, FS_GLOBALS, GFX_GLOBALS, type Owner, type OwnerConfig } from "./owner.ts";
@@ -53,7 +54,11 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   const sha256 = (b: Uint8Array) => prep.sha256(b);
   const shared = async (n: string) => WebAssembly.compile(sharedBuild(await bytes(`wasm/${n}64.wasm`), pages) as unknown as BufferSource);
   // ?lockfree=1: the recorder's audit first (kept in the browser's store by the binary's hash: it takes seconds)
-  const gfxRaw = await bytes("wasm/gfx64.wasm");
+  // ?gfxown=1: the recorder built from this tree (build/gfx/gfx64.wasm, staged beside the page as gfx64.own.wasm: recorder
+  // changes that are not in the main checkout yet: the live-buffer table found by address, stream writes), with this tree's replayer
+  const q0 = new URLSearchParams(p.search ?? ""), gfxOwn = q0.get("gfxown") === "1";
+  const gfxRaw = gfxOwn ? await (async () => { const r = await fetch(new URL("gfx64.own.wasm", location.href).href); if (!r.ok) throw new Error("owner: gfxown=1, but there is no gfx64.own.wasm beside the page"); return new Uint8Array(await r.arrayBuffer()); })() : await bytes("wasm/gfx64.wasm");
+  if (gfxOwn) log("page: gfxown=1: the recorder is this tree's own build (gfx64.own.wasm), not the nxweb page's");
   const kv = { load: async (k: string) => { const r = await (await caches.open("nxem-a64")).match("/em-gfx-audit/" + k); return r ? await r.text() : null; }, save: async (k: string, v: string) => { await (await caches.open("nxem-a64")).put("/em-gfx-audit/" + k, new Response(v)); } };
   const audit = p.gfxLockFree === true && p.gfxDirect !== false ? await lockFreeAudit(gfxRaw, "v1-" + sha256(gfxRaw), log, typeof caches !== "undefined" ? kv.load : undefined, typeof caches !== "undefined" ? kv.save : undefined) : null;
   const g = gfxShared(sharedBuild(gfxRaw, pages), p.gfxDirect !== false, GFX_GLOBALS, audit?.statics ?? []);
@@ -70,7 +75,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
     log(n ? `page: translation cache: ${n} entries, ${(total / 1048576).toFixed(1)} MB from the browser's store` : "page: no translation cache yet: this run translates everything (it is stored about 30 s after the start, and again every 2 minutes)");
   } catch (e) { log(`[RED] page: the translation cache could not be read (${(e as Error).message})`); }
   p.stage("game container");
-  const tree = await NupTree.open(blobBytes(p.file, false), p.file.name, { sha256, log });
+  const tree = await NupTree.open(gameBytes(p.file, false), p.file.name, { sha256, log });
   p.stage("WebGPU device");
   let device: any = null, gpuInfo = "no WebGPU here: the null replayer (nothing is drawn)";
   const requestDevice = async () => {
@@ -121,7 +126,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   }
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
-    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true, realAudit: p.gfxRealAudit === true, promote: audit && p.gfxRealPromote !== false && REAL_AUDIT.key === sha256(gfxRaw) ? REAL_AUDIT.names : [] }, fsShare: f.share, saves, skipMovie: p.skipMovie === true, programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
+    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true, streamWrites: p.gfxAsync === true && q0.get("streamwrites") !== "0", realAudit: p.gfxRealAudit === true, promote: audit && p.gfxRealPromote !== false && REAL_AUDIT.key === sha256(gfxRaw) ? REAL_AUDIT.names : [] }, fsShare: f.share, saves, skipMovie: p.skipMovie === true, programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
     gfx: device ? { profile: p.gfxProfile === false ? undefined : gfxSettingsFor((gameProfile as any).apply), shaderWait: p.shaderWait !== false, capture: p.search || false, ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");
@@ -142,7 +147,28 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
       if ((await fetch(abs("shaders/xlate_wasm/_framework/dotnet.js"), { method: "HEAD" })).ok && (await fetch(abs("shaders/nx_naga.wasm"), { method: "HEAD" })).ok)
         translator = workerTranslator({ worker: abs("shader_worker.js"), framework: abs("shaders/xlate_wasm/_framework"), naga: abs("shaders/nx_naga.wasm"), subgroups: GfxHost.hasSubgroups(device) });
     } catch { /* none */ }
-    new RtShaders(owner.gfx, { translator, store: typeof caches !== "undefined" ? webShaderStore() : undefined });
+    const qs = new URLSearchParams(p.search ?? "");
+    if (qs.get("shaders") === "new" && typeof caches !== "undefined") { try { await caches.delete("nxweb-shaders"); log("page: shaders=new: the store of earlier shader translations is deleted first (every stage is translated again)"); } catch (e) { log(`[RED] page: shaders=new: ${(e as Error).message}`); } }
+    // Where a stage is on its way (the status line and the wait's red line say it): reading the store, at the translator, being stored
+    const sw = owner.shaderWait, store0 = typeof caches !== "undefined" ? webShaderStore() : undefined;
+    const store = store0 && { get: (id: string) => { sw.storeReads++; return store0.get(id).finally(() => { sw.storeReads--; }); }, put: (id: string, t: any) => { sw.storeWrites++; return store0.put(id, t).finally(() => { sw.storeWrites--; }); }, ids: store0.ids ? () => store0.ids!() : undefined };
+    if (translator) { const t0 = translator.translate.bind(translator); translator.translate = (b: any) => { sw.translating++; return t0(b).finally(() => { sw.translating--; sw.translated++; }); }; }
+    const sh = new RtShaders(owner.gfx, { translator, store });
+    // A program's stages are waited for (RtGfx.afterStages parks the caller on RtShaders.pending; the owner goes on).
+    // The wait has an end: after WAIT_MS the call returns as it does with shaderwait=0 (the program's draws are skipped
+    // until the stages arrive) and a red line says where the stages were; after three such waits no call waits any more.
+    { const pending0 = sh.pending.bind(sh), WAIT_MS = Number(qs.get("shaderwaitms") ?? 20000);
+      (sh as any).pending = (keys: string[]) => {
+        if (sw.off) return null;
+        const p0 = pending0(keys); if (!p0) return null;
+        const t0 = performance.now(); sw.waits++; sw.waiting++;
+        let timer: any; const late = new Promise<void>(res => { timer = setTimeout(() => {
+          sw.timeouts++; const st: any = translator?.stats;
+          log(`[RED] shaders: a program's stages (${keys.join(", ")}) were not there after ${(WAIT_MS / 1000).toFixed(0)} s: the call returns without them (draws that use them are skipped until they arrive). On their way: ${sw.storeReads} store reads, ${sw.translating} at the translator (${st ? `${st.started} of ${st.workers} workers started, ${st.batches} batches sent, queue up to ${st.maxQueued}` : "none here"}; ${sw.translated} answered so far), ${sw.storeWrites} store writes`);
+          if (sw.timeouts >= 3 && !sw.off) { sw.off = true; log("[RED] shaders: three waits ran out: programs' stages are not waited for any more in this run (as shaderwait=0)"); }
+          res(); }, WAIT_MS); });
+        return Promise.race([p0, late]).then(() => { clearTimeout(timer); sw.waiting--; const ms = performance.now() - t0; sw.ms += ms; if (ms > sw.maxMs) sw.maxMs = ms; });
+      }; }
     log(translator ? "page: shaders are translated in the page (nxweb's shader Workers) and kept in its store" : "[RED] page: nxweb's shader translator is not beside this page: only stored shaders are used");
   }
   p.stage("code modules");
