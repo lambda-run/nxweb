@@ -157,3 +157,15 @@ stretches were seen (not reached headless); saves through this path; real Chrome
 `/em-next/` and, promoted by copying, `/em/`: the commit named in their `build.json`, built 2026-11-13 02:53 (lock-free
 recording on by default, `?fsworker=1` behind its flag). The run that passed on the default path: `logs/r7` (headless,
 200 s, first present 27.8 s, 697 presents, 13 red lines as before, renderer 6,298 MB).
+
+## Round two, item 1 (the road to the 3D area): first findings only
+- `web/em_run.mjs` takes `KEYS` (key presses over CDP: `KEYS="50-290/10:KeyZ,55-290/10:Enter"` = A and + every 10 s);
+  `tools/movie_trace.mjs <console.txt>` prints per 10 s the AV1 packets in, the presents and the nn::fs entries.
+- Without keys (logs/r7) the title movie plays from 50 s on and nothing else happens: 0 fs entries through 212 s.
+  With A and + every 10 s (logs/k1, 300 s): from 170 s the game reads files again (504-1,274 fs entries per 10 s),
+  sets 3,471 programs in one 11 s report, and writes `save commit #1` (the save mount, kind 3). So the buttons take it
+  off the title into a load within 3 minutes of headless time. Whether + then cuts the story movie short was not
+  followed (the run ended at 300 s with packets still arriving, 4-28 per 10 s).
+- Saves: the page's save storage is `MemStorage` (owner_web.ts): a save does not outlive the page, so "Continue" in a
+  later boot cannot work until saves go to OPFS. Not built.
+- `?skipmovie=1` was not built.
