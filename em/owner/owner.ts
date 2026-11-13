@@ -50,7 +50,7 @@ export interface OwnerConfig {
   fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
   gfxModule: WebAssembly.Module;
   fsShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };    // the same for fsModule
-  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean; streamWrites?: boolean; tls?: { base: number; span: number; consts: number } | null; lockTable?: Uint8Array; lockLine?: string; realAudit?: boolean; promote?: string[] };   // realAudit (?lfaudit=1): the first real calls of the entry points the dynamic audit left under the lock are watched; promote: the names that audit cleared (lockfree_real.ts)   // lockTable: the dynamic audit's verdict by NVN id (lockFreeAudit below); without it nothing is lock-free   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
+  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean; streamWrites?: boolean; getters?: boolean; tls?: { base: number; span: number; consts: number } | null; lockTable?: Uint8Array; lockLine?: string; realAudit?: boolean; promote?: string[] };   // realAudit (?lfaudit=1): the first real calls of the entry points the dynamic audit left under the lock are watched; promote: the names that audit cleared (lockfree_real.ts)   // lockTable: the dynamic audit's verdict by NVN id (lockFreeAudit below); without it nothing is lock-free   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
   saves: FsStorage;
   programId: bigint;
   scratch: number;                      // 8 KB of the memory nothing else uses
@@ -357,6 +357,15 @@ export class Owner {
         { const names = this.nvnNames(), VAR = /^nvnCommandBuffer(Bind\w+s(Deferred)?|Set(Viewports|Scissors|DepthRanges)|UpdateUniformBuffer|Push\w+|\w*Multi\w+|SetProgramSubroutines|BindCoverageModulationTable)$/; let n = 0;
           for (let id = 0; id < names.length; id++) if (sh.lockTable[id] === 3 && VAR.test(names[id])) { sh.lockTable[id] = 0; n++; }
           this.varSize = VAR; if (n) this.log(`owner: ${n} recording commands whose record's size depends on a count stay under the recorder's lock (the 32 KB room check covers fixed-size records only)`); }
+        // Getters that only read their arguments or an object's fields (src/gfx/dispatch.ts: one `return load<...>` each, read
+        // there for this list). The static audit rejects them because they are cases of the one big dispatch function,
+        // which writes globals in other cases. They were 25 % of the title's NVN calls, each under the lock, behind
+        // whichever thread held it through a flush. ?lfgetters=0: under the lock as before.
+        if (sh.getters !== false) { const names = this.nvnNames(), PURE = new Set(["nvnEventGetValue", "nvnDeviceGetTextureHandle", "nvnDeviceGetImageHandle", "nvnDeviceGetTexelFetchHandle", "nvnDeviceGetSeparateTextureHandle", "nvnDeviceGetSeparateSamplerHandle",
+            "nvnTextureGetFlags", "nvnTextureGetTarget", "nvnTextureGetWidth", "nvnTextureGetHeight", "nvnTextureGetDepth", "nvnTextureGetLevels", "nvnTextureGetFormat", "nvnTextureGetSamples",
+            "nvnMemoryPoolGetFlags", "nvnMemoryPoolGetSize", "nvnMemoryPoolMap", "nvnBufferMap", "nvnBufferGetAddress", "nvnBufferGetMemoryPool", "nvnBufferGetMemoryOffset", "nvnBufferGetSize"]); let n = 0;
+          for (let id = 0; id < names.length; id++) if (!sh.lockTable[id] && PURE.has(names[id])) { sh.lockTable[id] = 1; n++; }
+          this.log(`owner: ${n} getters that only read their arguments or an object's fields are answered without the recorder's lock`); }
         // the real-call audit: its candidates are what the static audit lets through and the dynamic audit did not
         if (sh.plain && (sh.realAudit || sh.promote?.length)) {
           const names = this.nvnNames(), st = lockFreeTable(sh.plain, (id: number) => names[id], names.length), tab = sh.lockTable;

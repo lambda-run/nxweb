@@ -47,12 +47,34 @@ const memProbe = (deep) => { const out = [];
 const memLine = (deep) => { const ps = memProbe(deep); let s = "mem (MB resident+swapped): " + ps.map(p => `${p.type} ${p.rss}+${p.swap}`).join(", ") + `; total ${ps.reduce((a, p) => a + p.pss + p.swap, 0)} (pss+swap)`;
   for (const p of ps) { if (p.kinds) s += `\n  ${p.type} ${p.pid}: ` + p.kinds.join("; "); if (p.wasmByGB) s += `\n  ${p.type} ${p.pid}: the largest reservation by GB of address, MB resident+swapped: ${p.wasmByGB}`; }
   return s; };
-let crashed = false;
+let crashed = false; const workers = new Map();
+// PROF="480:15": at 480 s after the file was given, V8's sampling profiler runs for 15 s in every worker that answers
+// (a worker blocked in a wait answers when it wakes; one that does not within 5 s is left out); logs/<name>.prof.txt has,
+// for the busiest workers, the functions by self time (wasm functions by name where the module has names).
+const cpuProfile = async (secs, name) => {
+  const ids = [...workers.keys()], within = (pr, ms) => Promise.race([pr, new Promise(r => setTimeout(() => r(null), ms))]);
+  const on = (await Promise.all(ids.map(async id => (await within(cdp.send("Profiler.enable", {}, id).then(() => cdp.send("Profiler.setSamplingInterval", { interval: 250 }, id)).then(() => cdp.send("Profiler.start", {}, id)).then(() => id).catch(() => null), 5000))))).filter(x => x);
+  await new Promise(r => setTimeout(r, secs * 1000));
+  const out = [];
+  await Promise.all(on.map(async id => { const r = await within(cdp.send("Profiler.stop", {}, id).catch(() => null), 20000); if (!r || !r.profile) return;
+    const pf = r.profile, self = new Map(), dt = pf.timeDeltas ?? [], byId = new Map(pf.nodes.map(n => [n.id, n])); let total = 0, idle = 0;
+    for (let i = 0; i < pf.samples.length; i++) { const n = byId.get(pf.samples[i]), d = dt[i] ?? 0; if (!n) continue; const f = n.callFrame, nm = (f.functionName || "(anonymous)") + (f.url ? " " + f.url.split("/").pop().slice(0, 40) + (f.functionName ? "" : ":" + f.lineNumber) : "");
+      total += d; if (f.functionName === "(idle)" || f.functionName === "(program)" && false) idle += d; self.set(nm, (self.get(nm) ?? 0) + d); }
+    out.push({ who: workers.get(id) ?? id, busy: total - idle, total, top: [...self].sort((a, b) => b[1] - a[1]).slice(0, 45) }); }));
+  out.sort((a, b) => b.busy - a.busy);
+  const lines = [`profile of ${secs} s: ${ids.length} workers known, ${on.length} started, ${out.length} answered; self time in ms`];
+  for (const w of out.slice(0, 8)) { lines.push(`== ${w.who}: busy ${(w.busy / 1000).toFixed(0)} ms of ${(w.total / 1000).toFixed(0)}`); for (const [nm, us] of w.top) if (us > w.total / 400) lines.push(`  ${(us / 1000).toFixed(1).padStart(9)}  ${nm}`); }
+  writeFileSync(`${L}/${name}.prof.txt`, lines.join("\n") + "\n");
+};
 cdp.on((method, p) => {
   if (method === "Runtime.consoleAPICalled") appendFileSync(con, p.args.map(a => a.value ?? a.description ?? "").join(" ") + "\n");
   else if (method === "Runtime.exceptionThrown") appendFileSync(con, "[RED] exception: " + (p.exceptionDetails.exception?.description ?? p.exceptionDetails.text).split("\n")[0] + "\n");
   else if (method === "Inspector.targetCrashed") { crashed = true; appendFileSync(con, "[RED] the tab crashed\n"); }
-  else if (method === "Target.attachedToTarget") { cdp.send("Runtime.enable", {}, p.sessionId).catch(() => {}); }
+  else if (method === "Target.attachedToTarget") { cdp.send("Runtime.enable", {}, p.sessionId).catch(() => {});
+    // (the guest threads' workers are children of the runtime's worker: attached through it; PROF profiles them)
+    workers.set(p.sessionId, p.targetInfo?.title || p.targetInfo?.url || p.targetInfo?.type || "?");
+    cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, p.sessionId).catch(() => {}); }
+  else if (method === "Target.detachedFromTarget") workers.delete(p.sessionId);
 });
 const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
 const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
@@ -74,6 +96,7 @@ for (const item of (process.env.KEYS ?? "").split(",").filter(x => x)) { const [
   if (m) for (let t = Number(m[1]); t <= Number(m[2]); t += Number(m[3])) ts.push(t); else ts.push(Number(when));
   const key = code === "Enter" ? "Enter" : code === "Backspace" ? "Backspace" : code.replace(/^Key/, "").toLowerCase(), vk = code === "Enter" ? 13 : code === "Backspace" ? 8 : code.charCodeAt(code.length - 1);
   for (const t of ts) setTimeout(async () => { try { await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", code, key, windowsVirtualKeyCode: vk }, sessionId); await new Promise(r => setTimeout(r, hold)); await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", code, key, windowsVirtualKeyCode: vk }, sessionId); appendFileSync(con, `[em_run] key ${code} at ${t} s\n`); } catch (e) { appendFileSync(con, `[em_run] key ${code}: ${e.message}\n`); } }, t * 1000); }
+if (process.env.PROF) { const [at, len] = process.env.PROF.split(":").map(Number); setTimeout(() => { cpuProfile(len || 10, name).then(() => appendFileSync(con, `[em_run] profile written\n`), e => appendFileSync(con, `[em_run] profile: ${e.message}\n`)); }, at * 1000); }
 const shots = (process.env.SHOTS ?? "").split(",").filter(x => x).map(Number).sort((a, b) => a - b); let shotBusy = false;
 const shotTimer = shots.length ? setInterval(async () => { if (shotBusy || !shots.length) return; shotBusy = true;
   try { const n = Number(await evaluate(cdp, sessionId, `nxem.presents`)); if (n >= shots[0]) { const want = shots.shift();

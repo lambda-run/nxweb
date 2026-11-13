@@ -126,7 +126,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   }
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
-    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true, streamWrites: p.gfxAsync === true && q0.get("streamwrites") !== "0", realAudit: p.gfxRealAudit === true, promote: audit && p.gfxRealPromote !== false && REAL_AUDIT.key === sha256(gfxRaw) ? REAL_AUDIT.names : [] }, fsShare: f.share, saves, skipMovie: p.skipMovie === true, programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
+    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true, streamWrites: p.gfxAsync === true && q0.get("streamwrites") !== "0", getters: q0.get("lfgetters") !== "0", realAudit: p.gfxRealAudit === true, promote: audit && p.gfxRealPromote !== false && REAL_AUDIT.key === sha256(gfxRaw) ? REAL_AUDIT.names : [] }, fsShare: f.share, saves, skipMovie: p.skipMovie === true, programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
     gfx: device ? { profile: p.gfxProfile === false ? undefined : gfxSettingsFor((gameProfile as any).apply), shaderWait: p.shaderWait !== false, capture: p.search || false, ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");
