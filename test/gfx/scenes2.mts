@@ -17,7 +17,7 @@ function fill(e: Env, cmd: number, tex: number, w: number, h: number, bytes: Arr
 }
 const solid = (w: number, h: number, c: number[]) => Uint8Array.from({ length: w * h * 4 }, (_, i) => c[i & 3]);
 // The states of the pipelines the recorder has (ids are slots of its hash table): 1 Building, 2 Ready, 3 Failed
-const pipeStates = (e: Env) => Array.from({ length: 2048 }, (_, k) => e.g.x.gfx_pipeline_state(k) as number).filter(v => v >= 0).sort();
+const pipeStates = (e: Env) => Array.from({ length: 16384 }, (_, k) => e.g.x.gfx_pipeline_state(k) as number).filter(v => v >= 0).sort();
 // Waits until no pipeline is still being built (createRenderPipelineAsync takes as long as it takes)
 async function pipesBuilt(e: Env) { for (let k = 0; k < 1000 && pipeStates(e).includes(1); k++) await new Promise(r => setTimeout(r, 10)); await e.settle(); }
 const halfToFloat = (h: number) => { const ex = (h >> 10) & 31, m = h & 1023; return (h & 0x8000 ? -1 : 1) * (ex === 0 ? m * 2 ** -24 : (1 + m / 1024) * 2 ** (ex - 15)); };

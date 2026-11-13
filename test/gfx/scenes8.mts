@@ -57,8 +57,10 @@ export const scenes8: Scene[] = [
     }
     t.eq([e.host.stats.ndveSkipped, e.host.stats.ndveStandIns], [14 + 14 + 13, 3], "on: dispatches the recorder could not run, told to the replayer; frames the stand-in wrote");
     const red = e.g.red();
-    t.eq(red.length, 1, `on: one red line: ${JSON.stringify(red)}`);
-    t.ok(/\[RED\] ndve=bypass: nn::ndve's movie network did not run .*a stand-in replaced it, the 6x3 picture resampled bilinearly into the network's 8x4 rgba8unorm output/.test(red[0]), red[0]);
+    // the stand-in says once that it replaced the network, and (diagnostics of the same switch) which source it took and that no decoder planes were among the textures
+    t.ok(red.length >= 1 && red.every(l => l.startsWith("[RED] ndve=bypass: ")), `on: only the stand-in's own red lines: ${JSON.stringify(red)}`);
+    const said = red.filter(l => /\[RED\] ndve=bypass: nn::ndve's movie network did not run .*a stand-in replaced it, the 6x3 picture resampled bilinearly into the network's 8x4 rgba8unorm output/.test(l));
+    t.eq(said.length, 1, `on: the replacement is said once: ${JSON.stringify(red)}`);
     t.eq(e.host.stats.errors, 0, "WebGPU errors");
   } },
 ];

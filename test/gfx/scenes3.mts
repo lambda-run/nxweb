@@ -6,7 +6,7 @@ import { FMT, STAGE, SIZEOF, FILTER, POOL_FLAGS } from "./nvn.mts";
 import { type Scene, T, rgba8, RED, GREEN, BLUE, upload, ubo } from "./scenes.mts";
 
 const BLACK = [0, 0, 0, 255];
-const pipeStates = (e: Env) => Array.from({ length: 2048 }, (_, k) => e.g.x.gfx_pipeline_state(k) as number).filter(v => v >= 0).sort();
+const pipeStates = (e: Env) => Array.from({ length: 16384 }, (_, k) => e.g.x.gfx_pipeline_state(k) as number).filter(v => v >= 0).sort();
 async function pipesBuilt(e: Env) { for (let k = 0; k < 1000 && pipeStates(e).includes(1); k++) await new Promise(r => setTimeout(r, 10)); await e.settle(); }
 const lim = (e: Env, name: string) => e.host.device.limits[name] as number;
 // The red line of a pipeline over a limit: what it needs, what the device allows, the WebGPU limit's name, by how much

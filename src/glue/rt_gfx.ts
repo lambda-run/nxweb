@@ -23,6 +23,9 @@ export interface GfxOptions {
   // A new device after GPUDevice.lost (adapter.requestDevice(GfxHost.deviceDescriptor(adapter)) again); null: none.
   // Omitted: a lost device stays lost and nothing more is drawn.
   requestDevice?: () => Promise<any>;
+  // A stream capture for the replayer to arm (GfxHostOptions.capture: the page's location.search with ?gfxcapture=, or its bare value). Omitted: the
+  // replayer looks at globalThis.NX_GFXCAPTURE and at the location.search of the page or worker it runs in
+  capture?: string | false;
   // Tests, null replayer only: while it returns true the "GPU" does not finish (fences stay pending until releaseFences())
   holdFences?: () => boolean;
   // "bypass": the diagnostic stand-in for nn::ndve's movie network (GfxHost.ndveBypass, src/glue/ndve.ts; the page's ?ndve=bypass). Omitted: off
@@ -69,7 +72,7 @@ export class RtGfx implements HleGfx {
     this.rt = rt; this.opts = opts; this.live = !!opts.device;
     const dec = new TextDecoder();
     this.host = new GfxHost(opts.device ?? { queue: {} }, rt.memory, { canvas: this.live ? opts.canvas : undefined, log: l => rt.log(l), requestDevice: this.live ? opts.requestDevice : undefined,
-      now: () => this.guestNow() });
+      now: () => this.guestNow(), capture: this.live ? opts.capture : false });
     // (addresses the recorder hands over are numbers in either build: wasm_abi.ts)
     const env = {
       memory: rt.memory, ...rt.memImports,

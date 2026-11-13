@@ -5,10 +5,11 @@
 // Browser code (WebGPU types are left loose: the tree has no @webgpu/types).
 import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
 import { imageVariant, formatClass } from "../shaders/images.ts";
-import { fragmentInputVariant, missingInputs } from "../shaders/variants.ts";
+import { fragmentInputVariant, fragmentOutputVariant, missingInputs } from "../shaders/variants.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, STORAGE_RW_FORMATS, MAYBE_UNFILTERABLE, VERTEX_CONV, convertVertices, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
 import { FrameLedger } from "./gfx_ledger.ts";
+import { StreamCapture, parseCaptureSpec, httpSink, type CaptureSpec, type CaptureSink, type CaptureSummary } from "./gfx_stream_capture.ts";
 import { NdveBypass, NDVE_KEYS, NDVE_OUTPUT_IMAGE, NDVE_FLIP_ON, NDVE_FLIP_BASE } from "./ndve.ts";
 export type { Capture, CaptureImage } from "./gfx_capture.ts";
 
@@ -110,6 +111,9 @@ export interface GfxHostOptions {
   // false: do not use WebGPU timestamp queries even when the device has them (counter reports then take times estimated
   // on the CPU from when a segment was handed to the GPU and when the GPU reported it done)
   timestampQuery?: boolean;
+  // A stream capture to arm (gfx_stream_capture.ts parseCaptureSpec: a location.search with gfxcapture=, or its bare value). Omitted: globalThis.NX_GFXCAPTURE,
+  // else the location.search of the page or worker the replayer runs in; false: none
+  capture?: string | false;
 }
 
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
@@ -233,6 +237,30 @@ export class GfxHost {
     this.log = opts.log ?? (l => console.log(l));
     this.uniformArena = opts.uniformArena ?? true;
     this.adopt(device);
+    const g = globalThis as any, spec = opts.capture === false ? null : parseCaptureSpec(opts.capture ?? g.NX_GFXCAPTURE ?? g.location?.search);
+    if (spec) void this.streamCapture(spec);
+  }
+  // ---- stream capture (gfx_stream_capture.ts; test/gfx/REPLAY.md): N frames of the host stream with everything a replay needs, written to `sink`
+  // (default: the log receiver the spec names). Starts after the present the spec names; resolves with the summary when the file is written
+  private sc: StreamCapture | null = null;
+  private scArm: { spec: CaptureSpec; sink: CaptureSink; go: (s: CaptureSummary) => void; draws0: number } | null = null;
+  streamCapture(spec: CaptureSpec | string, sink?: CaptureSink): Promise<CaptureSummary> {
+    const s = typeof spec === "string" ? parseCaptureSpec(spec) : spec;
+    if (!s) return Promise.reject(new Error(`not a capture spec: ${spec}`));
+    if (this.sc || this.scArm) return Promise.reject(new Error("a stream capture is already armed or running"));
+    this.log(`gfxcapture: armed for ${s.frames} frame${s.frames === 1 ? "" : "s"} ${s.present !== undefined ? `after present ${s.present}` : s.draws !== undefined ? `from the first frame of at least ${s.draws} draws` : "from the next present"}${sink ? "" : `, to ${s.to}/${s.name}`}`);
+    return new Promise<CaptureSummary>(go => { this.scArm = { spec: s, sink: sink ?? httpSink(s.to, s.name, l => this.log(l)), go, draws0: this.stats.draws }; });
+  }
+  // After a present was executed (nothing is encoded and not submitted, no pass is open): the armed capture begins when its condition holds
+  private scBegin(): StreamCapture | null {
+    const a = this.scArm!, draws = this.stats.draws - a.draws0;
+    a.draws0 = this.stats.draws;
+    if (this.pass || this.enc || this.lost || (a.spec.present !== undefined ? this.stats.presents < a.spec.present : a.spec.draws !== undefined ? draws < a.spec.draws : false)) return null;
+    this.scArm = null;
+    this.log(`gfxcapture: begins after present ${this.stats.presents} (${draws} draws in its frame)`);
+    const c = this.sc = new StreamCapture(this, a.spec, a.sink);
+    void c.done.then(a.go);
+    return c;
   }
   // What to ask an adapter for: every feature the replayer can use that it has, and the per-stage limits raised to
   // what it offers (WebGPU's defaults are 12 uniform buffers, 16 sampled textures and 16 samplers a stage; a game's
@@ -489,11 +517,24 @@ export class GfxHost {
   private module(id: number): GPU { const s = this.shaders[id]; return (s.module ??= this.device.createShaderModule({ code: s.info.wgsl })); }
   // The fragment module for this vertex shader: its own, or (src/shaders/variants.ts) one whose inputs the vertex stage does not write read a constant instead
   // (NVN leaves such a varying undefined; WebGPU refuses the pipeline)
-  private fragModule(vsId: number, fsId: number): GPU {
-    const f = this.shaders[fsId], vw: string = this.shaders[vsId].info.wgsl ?? "", sig = missingInputs(f.info.wgsl ?? "", vw);
-    if (!sig) return this.module(fsId);
-    let m = (f.variants ??= new Map()).get("in:" + sig);
-    if (m === undefined) { const w = fragmentInputVariant(f.info.wgsl, vw); m = w ? this.device.createShaderModule({ code: w }) : null; f.variants.set("in:" + sig, m); }
+  // and (`out`: colour target index -> the class of its format, for the targets the shader writes) one whose outputs have the classes of the targets: a float
+  // output drawn into an integer target hands over its bits (fragmentOutputVariant). vsId < 0: a mesh draw, whose vertex stage is made from the fragment's inputs
+  private foutShown = 0;
+  private fragModule(vsId: number, fsId: number, out?: Record<number, VinClass>): GPU {
+    const f = this.shaders[fsId], vw: string = vsId < 0 ? "" : this.shaders[vsId].info.wgsl ?? "", sig = vsId < 0 ? "" : missingInputs(f.info.wgsl ?? "", vw);
+    const osig = out ? Object.keys(out).map(Number).sort((a, b) => a - b).map(l => `${l}:${out[l]}`).join(",") : "";
+    if (!sig && !osig) return this.module(fsId);
+    const key = "in:" + sig + (osig ? "|out:" + osig : "");
+    let m = (f.variants ??= new Map()).get(key);
+    if (m === undefined) {
+      let w: string = f.info.wgsl, changed = false;
+      if (sig) { const v = fragmentInputVariant(w, vw); if (v) { w = v; changed = true; } }
+      if (osig) {
+        const v = fragmentOutputVariant(w, out!);
+        if (v) { w = v; changed = true; if (this.foutShown++ < 8) this.log(`fragment shader ${f.key} is drawn into colour targets of another class than its outputs declare (${osig}): its outputs hand their bits over (a variant of its text)`); }
+      }
+      m = changed ? this.device.createShaderModule({ code: w }) : null; f.variants.set(key, m);
+    }
     return m ?? this.module(fsId);
   }
   // WebGPU wants a vertex output and the fragment input at the same location to name the same interpolation; the translator puts flat / linear on
@@ -591,6 +632,7 @@ export class GfxHost {
     if (m === undefined) {
       const wgsl = s.info.variants?.[sig] ?? s.info.variant?.(classes) ?? this.onShaderVariant?.(s.key, classes);
       m = wgsl ? this.device.createShaderModule({ code: wgsl }) : null;
+      if (wgsl && !s.info.variants?.[sig]) s.info.variants = { ...s.info.variants, [sig]: wgsl };   // kept as text too: a stream capture carries it
       s.variants.set(sig, m);
       if (!m) this.log(`[RED] vertex shader ${s.key} is bound with attribute classes ${sig}, but declares ${(s.info.attributes ?? []).map(l => `${l}:${s.info.attributeTypes?.[l] ?? "float"}`).join(",")}: WebGPU needs a variant of its text from the shader chain (ShaderInfo.variants / onShaderVariant); its draws are skipped`);
     }
@@ -1158,10 +1200,11 @@ export class GfxHost {
     if (itype) primitive.stripIndexFormat = itype === 3 ? "uint32" : "uint16";
     if (flags & 1) { if (this.device.features?.has?.("depth-clip-control")) primitive.unclippedDepth = true; else this.red("clamp", "depth clamp needs the WebGPU feature depth-clip-control, which this device lacks: depth is clipped"); }
     const ncolor = dv.getUint8(k + PK.ncolor), chmask = dv.getUint32(k + PK.chmask, true), blendEn = dv.getUint8(k + PK.blendEn), written = new Set(fs.outputs ?? []);
-    const targets: any[] = [];
+    const targets: any[] = [], outClasses: Record<number, VinClass> = {};
     for (let i = 0; i < ncolor; i++) {
       const f = hostFormat(dv.getUint8(k + PK.colorFmt + i), this.caps);
       if (!f?.tex) { targets.push(null); continue; }
+      if (written.has(i) && f.kind !== "depth") outClasses[i] = f.kind;
       const nib = (chmask >>> (4 * i)) & 15, t: any = { format: f.tex, writeMask: written.has(i) ? nib : 0 };
       if ((blendEn >> i) & 1) {
         const b = dv.getBigUint64(k + PK.blend + i * 8, true), fld = (s: number, w: number) => Number((b >> BigInt(s)) & ((1n << BigInt(w)) - 1n));
@@ -1185,7 +1228,7 @@ export class GfxHost {
       layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }),
       vertex: { module: vmod, entryPoint: mesh ? "main" : vs.entry, buffers: mesh ? [] : buffers }, primitive,
       multisample: { count: dv.getUint8(k + PK.samples) || 1, alphaToCoverageEnabled: dv.getUint8(k + PK.a2c) !== 0 && (dv.getUint8(k + PK.samples) || 1) > 1 },
-      fragment: { module: mesh ? this.module(fsId) : this.fragModule(vsId, fsId), entryPoint: fs.entry, targets },
+      fragment: { module: this.fragModule(mesh ? -1 : vsId, fsId, outClasses), entryPoint: fs.entry, targets },
     };
     const df = NVN_FORMATS[dv.getUint8(k + PK.depthFmt)];
     if (df?.tex) {
@@ -1417,7 +1460,7 @@ export class GfxHost {
         if (!tx || !direct) { this.red(`noimg${m.slot}${tx?.fmt.tex ?? ""}${whyNot}`, `a dispatch or draw uses image slot ${m.slot}, where ${tx ? `a ${tx.fmt.tex} texture is bound, which WebGPU cannot bind as a ${access} storage image${SRGB_TWIN[tx.fmt.tex!] && STORAGE_FORMATS.has(SRGB_TWIN[tx.fmt.tex!]) ? ` (an sRGB format: the texture would have to be created as ${SRGB_TWIN[tx.fmt.tex!]} and viewed as sRGB everywhere else)` : ""}${whyNot ? ` (no stand-in: ${whyNot})` : ""}` : "no live texture is bound"}: it is skipped`); return false; }
         const f = tx.fmt.tex!;
         if (f !== m.format) {
-          if (formatClass(f) !== (m.type ?? formatClass(m.format))) { this.red(`imgclass${m.slot}${f}`, `a dispatch or draw uses image slot ${m.slot} as a ${m.type ?? formatClass(m.format)} image (the shader ${this.shaders[sid].key} declares ${m.bound ? "no format" : m.format}), and a ${f} texture is bound: the shader would have to be translated again for ${formatClass(f)} texels; it is skipped`); return false; }
+          if (formatClass(f) !== (m.type ?? formatClass(m.format)) && !(m.bound && (c.compute || st === 1))) { this.red(`imgclass${m.slot}${f}`, `a dispatch or draw uses image slot ${m.slot} as a ${m.type ?? formatClass(m.format)} image (the shader ${this.shaders[sid].key} declares ${m.bound ? "no format" : m.format}), and a ${f} texture is bound: the shader would have to be translated again for ${formatClass(f)} texels; it is skipped`); return false; }
           (ivar ??= []).push({ sid, st, slot: m.slot, format: f });
         }
         const iview = this.view(tx, tx.gpu, b!.view, m.dim ?? (tx.gpu.dimension === "3d" ? "3d" : "2d"), true);
@@ -2043,6 +2086,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.imageEvent(win, index, 0);
     const gen = this.gen;
     this.device.queue.onSubmittedWorkDone().then(() => { if (gen === this.gen) this.imageEvent(win, index, 1); }, () => {});
+    if (this.sc) { this.sc.presented(serial, dv.getUint32(p + 44, true)); if (!this.sc.active) this.sc = null; }
     if (this.cap) this.captureEnd();
   }
 
@@ -2051,6 +2095,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   account(ptr: number, len: number) { if (!this.disposed) this.ledger.walk(this.dv, ptr < 0 ? ptr + 4294967296 : ptr, len); }
   exec(ptr: number, len: number) {
     if (this.disposed) return;
+    if (this.sc) this.sc.batch(ptr, len);
     let dv = this.dv;
     for (let p = ptr, end = ptr + len; p < end;) {
       const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
@@ -2113,7 +2158,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.COPY_T2T: this.copyT2T(dv, p); break;
         case H.CLEAR_TEX: this.clearTex(dv, p); break;
         case H.SNAPSHOT: this.snapshot(this.u64(dv, p + 8)); break;
-        case H.PRESENT: this.present(dv, p); break;
+        case H.PRESENT: this.present(dv, p); if (this.scArm) this.scBegin()?.batch(p + size, end - p - size); break;
         case H.FENCE: {
           // Done when the GPU has finished what was submitted before it and the read-backs issued before it have landed
           const n = this.u64(dv, p + 8); this.flush(); this.fencesPending.add(n);

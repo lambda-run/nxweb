@@ -11,6 +11,9 @@ export const GUEST_BASE = 0x0200_0000;      // the "game" lives from 32 MB up
 // memory, vertex and texel data) above 4 GB. The recorder's arena is host-area memory and stays low.
 export const SPACE = { mode: "32", mem64: false, base: GUEST_BASE };
 export function setMemMode(mode: string): void { SPACE.mode = mode; SPACE.mem64 = mode !== "32"; SPACE.base = mode === "64hi" ? 0x1_8000_0000 : GUEST_BASE; }
+// The recorder's tables that outgrew its arena (env.gfx_arena_more: programs, pipelines, the shader library): 24 MB of low memory from GUEST_BASE up, zeroed
+// (fresh memory), never freed; low in every mode because the recorder hands 32-bit addresses of pipeline keys to the replayer
+export const BIG_TABLES = 24 << 20;
 export const ARENA_BASE = 0x0010_0000;      // the recorder's tables (gfx_arena_bytes(): 31 MB) from 1 MB up to the game; its static data is at 64 KB
 
 export class Guest {
@@ -26,10 +29,12 @@ export class Guest {
 
   static async create(wasm: BufferSource | WebAssembly.Module, imports: GuestImports, pages = 2048): Promise<Guest> {
     const g = new Guest();
+    pages += BIG_TABLES >> 16;
+    let big = GUEST_BASE;
     const mem = SPACE.mem64 ? makeMemory64({ initial: pages, maximum: MEM64_MAX_PAGES }) : null;
     g.memory = mem ? mem.memory : new WebAssembly.Memory({ initial: pages });
     if (mem && SPACE.base > GUEST_BASE) mem.grow((SPACE.base - GUEST_BASE) / 65536);   // the same room for the game, higher up
-    g.top = SPACE.base;
+    g.top = SPACE.base === GUEST_BASE ? GUEST_BASE + BIG_TABLES : SPACE.base;
     const module = wasm instanceof WebAssembly.Module ? wasm : await WebAssembly.compile(wasm);
     const dec = new TextDecoder();
     // addresses are numbers on this side in every mode (src/glue/wasm_abi.ts)
@@ -38,6 +43,7 @@ export class Guest {
       log: (p: number, n: number) => g.logs.push(dec.decode(new Uint8Array(g.memory.buffer, p, n).slice())),
       abort: () => { throw new Error("abort"); },
       gfx_exec: (p: number, n: number) => imports.gfx_exec(p, n),
+      gfx_arena_more: (n: number) => { const at = big, top = at + (((n >>> 0) + 0xffff) & ~0xffff); if (top > GUEST_BASE + BIG_TABLES) return 0; big = top; return at; },
       // The recorder calls the game back (the command memory callback): fn is a fake code address
       gfx_guest_call: (fn: bigint, a0: bigint, a1: bigint, a2: bigint, a3: bigint) => BigInt(g.callbacks[Number(fn - 0xF000_0000n) >> 2](a0, a1, a2, a3) ?? 0),
       // nvnDeviceGetProcAddress: the "address" of an entry point is 0xE0000000 + id * 16 in this fake guest

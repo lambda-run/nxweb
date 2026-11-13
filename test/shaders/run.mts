@@ -18,7 +18,7 @@ import { load } from "../../tools/shaders/naga_node.mts";
 import { jobFor, keyControl, ctlLens } from "../../src/shaders/job.ts";
 import { convertStage } from "../../src/shaders/convert.ts";
 import { imageVariant, formatClass } from "../../src/shaders/images.ts";
-import { vertexInputVariant, fragmentInputVariant, missingInputs, stageInterface } from "../../src/shaders/variants.ts";
+import { vertexInputVariant, fragmentInputVariant, fragmentOutputVariant, missingInputs, stageInterface } from "../../src/shaders/variants.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../.."), OUT = join(ROOT, "build/shaders");
 mkdirSync(OUT, { recursive: true });
@@ -151,6 +151,15 @@ await test("variants: a vertex stage's inputs declared with the bound attribute 
   const f = fragmentInputVariant(fs, [])!;
   if (!/fn main\(\) -> @location\(0\) vec4<f32> \{\s*let v = vec4<f32>\(0f, 0f, 0f, 1f\);/.test(f)) throw new Error(`the fragment variant:\n${f}`);
   eq([fragmentInputVariant(fs, [0]), fragmentInputVariant(fs, vs), missingInputs(fs, []), missingInputs(fs, vs), missingInputs(fs, [0, 3])], [null, null, "0", "", ""], "nothing missing: null; the signature names the inputs left out");
+});
+await test("variants: a fragment stage's outputs take the class of the colour targets they are drawn into (the bits are handed over), one output or a struct of them", () => {
+  const fs = byName(corpus, "tex_ops").entry!.wgsl;
+  const o = fragmentOutputVariant(fs, { 0: "uint" })!;
+  if (!/fn main_nx_body\(v: vec4<f32>\) -> vec4<f32> \{/.test(o) || !/@fragment\s*fn main\(@location\(0\) v: vec4<f32>\) -> @location\(0\) vec4<u32> \{\s*return bitcast<vec4<u32>>\(main_nx_body\(v\)\);/.test(o)) throw new Error(`the uint output variant:\n${o.slice(-600)}`);
+  eq([fragmentOutputVariant(fs, { 0: "float" }), fragmentOutputVariant(fs, { 1: "uint" }), fragmentOutputVariant("fn f() {}", { 0: "uint" })], [null, null, undefined], "the declared class, or a target the stage does not write: null; no fragment entry point: undefined");
+  const two = `struct FragmentOutput {\n    @location(0) member: vec4<f32>,\n    @location(1) member_1: vec4<f32>,\n    @builtin(frag_depth) member_2: f32,\n}\n@fragment\nfn main(@location(0) v: vec4<f32>, @builtin(position) p: vec4<f32>) -> FragmentOutput {\n    return FragmentOutput(v, p, 0.5f);\n}\n`;
+  const m = fragmentOutputVariant(two, { 0: "float", 1: "sint" })!;
+  if (!/struct FragmentOutput_nx \{\s*@location\(0\) member: vec4<f32>,\s*@location\(1\) member_1: vec4<i32>,\s*@builtin\(frag_depth\) member_2: f32,\s*\}/.test(m) || !m.includes("return FragmentOutput_nx(nx_r.member, bitcast<vec4<i32>>(nx_r.member_1), nx_r.member_2);") || !m.includes("fn main_nx_body(v: vec4<f32>, p: vec4<f32>) -> FragmentOutput {")) throw new Error(`the mixed variant:\n${m}`);
 });
 await test("SPIR-V pass: uniform blocks are cut to what is read; a computed index keeps the whole array", () => {
   eq(byName(corpus, "ubo_const_index").entry!.reflection.uboSize, { "0": 96 }, "data[0] and data[5] read");
@@ -438,6 +447,10 @@ void main() {
     const v = imageVariant(got.wgsl, 1, 273, "rg11b10ufloat")!;
     eq([v.length - got.wgsl.length, /@binding\(273\)\s*var \w+: texture_storage_2d<rg11b10ufloat,\s*write>;/.test(v), /@binding\(279\)\s*var \w+: texture_storage_3d<rgba8unorm,\s*write>;/.test(v)], [3, true, true], "one declaration changed");
     eq([imageVariant(got.wgsl, 1, 275, "r32float"), imageVariant(got.wgsl, 0, 273, "r32float")], [undefined, undefined], "no such declaration: no variant");
+    // another class than declared: the stores and loads of that image alone hand the bits over
+    const two = "@group(1) @binding(272) var a: texture_storage_2d<rgba8unorm,write>;\n@group(1) @binding(273) var b: texture_storage_2d<r32float,read_write>;\nfn f(c: vec2<i32>) {\n    textureStore(a, c, vec4<f32>(1f, g(2f, 3f), 0f, 1f));\n    textureStore(b, c, textureLoad(b, c));\n}\n";
+    eq(imageVariant(two, 1, 273, "r32uint"), two.replace("r32float", "r32uint").replace("textureStore(b, c, textureLoad(b, c));", "textureStore(b, c, bitcast<vec4<u32>>(vec4<f32>(bitcast<vec4<f32>>(textureLoad(b, c)))));"), "float -> uint: image b's store and load, not image a's");
+    eq(imageVariant(two, 1, 272, "rgba16sint"), two.replace("rgba8unorm", "rgba16sint").replace("vec4<f32>(1f, g(2f, 3f), 0f, 1f));", "bitcast<vec4<i32>>(vec4<f32>(vec4<f32>(1f, g(2f, 3f), 0f, 1f))));"), "float -> sint: the value with its commas is one argument");
     eq(["rgba8unorm", "rg11b10ufloat", "rgba8snorm", "r32uint", "rgba16sint", "bgra8unorm-srgb"].map(formatClass), ["float", "float", "float", "uint", "sint", "float"], "format classes");
     // refused by name
     throws(() => fixForWgsl(spvOf("a.comp", `#version 450\nlayout(local_size_x = 1) in;\nlayout(binding = 0) uniform writeonly image2D cp_i_tcb_5A_;\nvoid main() { imageStore(cp_i_tcb_5A_, ivec2(0), vec4(1)); }\n`)), /handle word at c2 \+ 0x168 is not one of the 8 image slots/, "a word past the image table");
