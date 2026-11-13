@@ -267,7 +267,7 @@ function intSigns(c: Ctx) {
   const glsl = c.m.insts.find(i => i.op === Op.ExtInstImport && str(i.w, 1) === "GLSL.std.450")?.w[0];
   // opcode -> [signedness wanted (1 signed), operand word positions]; the GLSL.std.450 ones by instruction number
   const OPS = new Map<number, [number, number[]]>([[194, [0, [2]]], [195, [1, [2]]], [134, [0, [2, 3]]], [137, [0, [2, 3]]], [112, [0, [2]]], [111, [1, [2]]],
-    [201, [1, [2]]], [202, [0, [2]]], [353, [1, [4]]], [354, [0, [4]]], [356, [1, [4]]], [357, [0, [4]]]]);
+    [202 /* BitFieldSExtract */, [1, [2]]], [203 /* BitFieldUExtract */, [0, [2]]], [353, [1, [4]]], [354, [0, [4]]], [356, [1, [4]]], [357, [0, [4]]]]);
   const EXT = new Map<number, [number, number[]]>([[5, [1, [4]]], [7, [1, [4]]], [38, [0, [4, 5]]], [39, [1, [4, 5]]], [41, [0, [4, 5]]], [42, [1, [4, 5]]],
     [44, [0, [4, 5, 6]]], [45, [1, [4, 5, 6]]], [74, [1, [4]]], [75, [0, [4]]]]);
   const intOf = (t: number): [Inst, Inst | undefined] | null => { const d = c.def.get(t); if (!d) return null; if (d.op === Op.TypeInt) return [d, undefined]; if (d.op === 23) { const e = c.def.get(d.w[1]); return e && e.op === Op.TypeInt ? [e, d] : null; } return null; };
