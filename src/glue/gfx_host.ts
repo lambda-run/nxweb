@@ -163,8 +163,9 @@ const LIMITS_SHOWN = ["maxSampledTexturesPerShaderStage", "maxSamplersPerShaderS
   "maxTextureArrayLayers", "maxUniformBufferBindingSize", "maxStorageBufferBindingSize", "maxBufferSize"];
 const UA_CHUNK = 1 << 20, UA_ALIGN = 256;
 const HASH_PAGE = 4096;      // GfxHost.hashOf
-const PG_STABLE = 2;         // GfxHost.pageHash
-type PgRec = { h: number; ep: number; fr: number; st: number };
+const PG_STABLE = 2, PG_STILL = 8, PG_STEADY = 32;         // GfxHost.pageHash
+const PG_CHUNK = 4096;       // pages a chunk of GfxHost.pgChunks
+type PgChunk = { h: Float64Array; ep: Int32Array; fr: Int32Array; st: Uint8Array };
 FEATURES.push("timestamp-query");
 const H_REPORT = 33, H_REPORT_COMMIT = 34;       // hostops.ts
 const TS_QUERIES = 512;                          // two a render pass: its start and its end
@@ -197,7 +198,7 @@ export class GfxHost {
   canvasFormat = "bgra8unorm";
   lastPresented = 0;
   ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
-  stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, hashedPages: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
+  stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, hashedPages: 0, changedPages: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0, gmemRanges: 0, gmemBytes: 0, gmemUploads: 0, gmemUploadBytes: 0, gmemReadbacks: 0, gmemGrows: 0, gmemLogged: 0,
     meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0, zeroUploads: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
@@ -834,16 +835,26 @@ export class GfxHost {
   // A page whose bytes were the same at its first look in each of the last PG_STABLE frames (presents) is trusted for the rest of a frame once looked at
   // in it: the guest's unannounced writes between two submissions of one frame into memory that had stayed still for frames are found at the next
   // frame's first look (a frame late; announced writes, H_MEM_DIRTY and read-backs, are seen at once). Every other page is hashed again each epoch.
-  // (Profile of the first 3D area: the mirror's ranges, ~60 MB, hashed again in each of ~15 epochs a frame were 95% of the replayer's time.)
-  private pg = new Map<number, PgRec>(); private frameNo = 1;
+  // (Profile of the first 3D area: the mirror's ranges, ~240 MB, hashed again in each of several epochs a frame were 95% of the replayer's time.)
+  // (the pages' records in chunks of PG_CHUNK pages, typed arrays: ep 0 = never looked at; a Map of objects was 10% of a 3D frame's replay)
+  private pgChunks = new Map<number, PgChunk>(); private pgLast: PgChunk | null = null; private pgLastNo = -1; private frameNo = 1;
+  private pgChunk(c: number): PgChunk {
+    if (c === this.pgLastNo) return this.pgLast!;
+    let k = this.pgChunks.get(c);
+    if (!k) this.pgChunks.set(c, k = { h: new Float64Array(PG_CHUNK), ep: new Int32Array(PG_CHUNK), fr: new Int32Array(PG_CHUNK), st: new Uint8Array(PG_CHUNK) });
+    this.pgLast = k; this.pgLastNo = c; return k;
+  }
   private pageHash(pg: number): number {
-    let r = this.pg.get(pg);
-    if (r && (r.ep === this.epoch || (r.ep !== -2 && r.fr === this.frameNo && r.st >= PG_STABLE))) return r.h;
+    const k = this.pgChunk(Math.floor(pg / PG_CHUNK)), i = pg % PG_CHUNK, ep = k.ep[i], st = k.st[i], fr = k.fr[i];
+    if (ep === this.epoch || (ep !== -2 && ep !== 0 && st >= PG_STABLE && (fr === this.frameNo || (st >= PG_STILL && !this.pageDue(pg, st, fr))))) return k.h[i];
     const h = this.x.gfx_hash(pg * HASH_PAGE, HASH_PAGE); this.stats.hashedPages++;
-    if (!r) this.pg.set(pg, r = { h, ep: this.epoch, fr: this.frameNo, st: 0 });
-    else { if (h !== r.h) r.st = 0; else if (r.fr !== this.frameNo) r.st++; r.h = h; r.ep = this.epoch; r.fr = this.frameNo; }
+    if (ep === 0) k.st[i] = 0; else if (h !== k.h[i]) { k.st[i] = 0; this.stats.changedPages++; } else if (fr !== this.frameNo && st < 255) k.st[i] = st + 1;
+    k.h[i] = h; k.ep[i] = this.epoch; k.fr[i] = this.frameNo;
     return h;
   }
+  // A page still at PG_STILL looks (PG_STEADY) is looked at again one frame in 4 (16), pages spread over the frames by number: a 3D frame of the
+  // first area binds ~240 MB of guest memory (the mirror's ranges), a few dozen pages of which change a frame
+  private pageDue(pg: number, st: number, fr: number): boolean { const P = st >= PG_STEADY ? 16 : 4, d = this.frameNo - fr; return d >= P || (d > 0 && (pg + this.frameNo) % P === 0); }
   private hashOf(addr: number, size: number): number {
     if (size < 2 * HASH_PAGE) return this.x.gfx_hash(addr, size);
     const end = addr + size, p0 = Math.ceil(addr / HASH_PAGE), p1 = Math.floor(end / HASH_PAGE);
@@ -865,8 +876,10 @@ export class GfxHost {
     if (this.gm) for (const r of this.gm.ranges) if (r.start < end && addr < r.end) r.checked = -1;      // the mirror's ranges over it too
     // (ep -1: looked at again, a stable page trusted as in any epoch; -2: hashed again at its next look whatever it is)
     const p0 = Math.floor(addr / HASH_PAGE), p1 = Math.floor((end - 1) / HASH_PAGE), ep = soft ? -1 : -2;
-    if (p1 - p0 > this.pg.size) { for (const [pg, r] of this.pg) if (pg >= p0 && pg <= p1 && r.ep !== -2) r.ep = ep; }
-    else for (let pg = p0; pg <= p1; pg++) { const r = this.pg.get(pg); if (r && r.ep !== -2) r.ep = ep; }
+    for (const [c, k] of this.pgChunks) {
+      const a = Math.max(p0, c * PG_CHUNK), z = Math.min(p1, c * PG_CHUNK + PG_CHUNK - 1);
+      for (let pg = a; pg <= z; pg++) { const i = pg - c * PG_CHUNK; if (k.ep[i] > 0 || k.ep[i] === -1) k.ep[i] = ep; }
+    }
     this.vconvKey = ""; this.bindDirty = true; this.uaEpoch++;
   }
 
@@ -2410,10 +2423,12 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   private allZero(ptr: number, n: number): boolean {
     const m = this.u8, end = Math.min(ptr + n, m.length);
     let i = ptr;
-    for (; i < end && (i & 7); i++) if (m[i]) return false;
-    const w = new BigUint64Array(m.buffer, i, (end - i) >> 3);
-    for (let k = 0; k < w.length; k++) if (w[k]) return false;
-    for (i += w.length << 3; i < end; i++) if (m[i]) return false;
+    for (; i < end && (i & 3); i++) if (m[i]) return false;
+    const w = new Int32Array(m.buffer, i, (end - i) >> 2);      // (32-bit words, OR-ed 16 at a time: a BigUint64Array's BigInts were 5% of a 3D frame's replay)
+    let k = 0;
+    for (const n16 = w.length & ~15; k < n16; k += 16) if (w[k] | w[k + 1] | w[k + 2] | w[k + 3] | w[k + 4] | w[k + 5] | w[k + 6] | w[k + 7] | w[k + 8] | w[k + 9] | w[k + 10] | w[k + 11] | w[k + 12] | w[k + 13] | w[k + 14] | w[k + 15]) return false;
+    for (; k < w.length; k++) if (w[k]) return false;
+    for (i += w.length << 2; i < end; i++) if (m[i]) return false;
     return true;
   }
   private texData(dv: DataView, p: number) {
