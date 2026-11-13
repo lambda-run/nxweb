@@ -14,7 +14,11 @@
 export const PASSES: Record<string, [number, number]> = {
   subgroups: [1, 1], nanTests: [1, 1], nonFiniteConstants: [1, 1], mulExtended: [1, 1], intSigns: [2, 2], privatizeBoundSizes: [1, 1],
   helperInvocation: [1, 1], arrayedFetchTypes: [1, 1], sizeQueryPast: [1, 1], queryLod: [1, 1], imageAtomics: [1, 1],
+  gmemUntraced: [1, 1],
 };
+// Rewrites added after translations were stored: a stamp without them is current when the stage could not have needed them (they are made again otherwise).
+// gmemUntraced (addresses read from a table in a uniform slot; the miss log) can only change a stage that had accesses the pass could not follow
+const ADDED: Record<string, (r: { gmem?: { untraced?: number } }) => boolean> = { gmemUntraced: r => !r.gmem?.untraced };
 export interface PassStamp { fired: Record<string, string>; quiet: Record<string, number> }
 export function passStamp(fired: Iterable<string>): PassStamp {
   const f = new Set(fired), s: PassStamp = { fired: {}, quiet: {} };
@@ -29,11 +33,12 @@ export const failureStamp = (): FailureStamp => ({ table: table() });
 // a stored translation ({ wgsl, reflection } or { failed, passes }) is still what the current pass makes of its stage
 export function translationCurrent(t: { reflection?: { passes?: PassStamp } | null; failed?: string; passes?: FailureStamp } | null | undefined): boolean {
   if (!t) return false;
-  if (t.failed) { if (!t.passes) return initial(); const now = table(); return Object.keys(now).length === Object.keys(t.passes.table).length && Object.entries(now).every(([n, x]) => t.passes!.table[n] === x); }
+  if (t.failed) { if (!t.passes) return initial(); const now = Object.entries(table()).filter(([n]) => n in t.passes!.table || !ADDED[n]); return now.length === Object.keys(t.passes.table).length && now.every(([n, x]) => t.passes!.table[n] === x); }
   const s = t.reflection?.passes;
   if (!s) return initial();
   for (const [n, [v, tr]] of Object.entries(PASSES)) {
     if (n in s.fired) { if (s.fired[n] !== `${v}.${tr}`) return false; }
+    else if (!(n in s.quiet) && ADDED[n]) { if (!ADDED[n](t.reflection as any)) return false; }
     else if (s.quiet[n] !== tr) return false;
   }
   return true;

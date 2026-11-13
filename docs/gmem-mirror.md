@@ -146,6 +146,21 @@ render pass), and writable storage in a vertex stage.
   the indirect ring, zeroed when `i >= count` read from the mirror, and draws with `drawIndirect` /
   `drawIndexedIndirect`; converted primitives and 8-bit indices stay on the CPU path. Batch the copies up to the next
   GPU write (nxnative `g_wr_epoch` / `g_mdx_epoch`), or every draw splits the render pass.
-- Vertex / fragment writers (above); no read log / learning (above).
+- Vertex / fragment writers (above).
+
+## Untraced addresses: uniform tables and the miss log
+
+- **Tables.** An address read from a compute uniform slot at an offset computed at run time (a table of addresses, as
+  `5a2e37058f21c8a5`, the frame's first dispatch in the first 3D area, reads from c4) is `gmem.tables` `{slot, write}`; the
+  host sets RF_gmem bits 8..15 (slot mask) and 16 (stored through), and the recorder (`lower.ts emitGmem`) names the live
+  buffer of every 64-bit word of the bound range (up to 2 KiB, 16 buffers) as `H_SSBO` slots 48..63.
+- **Miss log.** In a module that still has untraced accesses and a write log, each lookup helper's miss path stores the
+  address in the log's buffer after the bitmap (words 256..767: 256 slots `{lo, hi}`, slot = hash of the 64 KiB window).
+  The host, reading the log as before, learns the window (`gmLearned`, up to 512) and places it in the mirror, written
+  when the shader writes, at every later dispatch of a stage with untraced accesses: one submission late.
+- Versioned as `gmemUntraced` (`passes.ts`): stored translations without the stamp stay current unless they had untraced
+  accesses. A module with untraced accesses and no write log (loads only) gets no miss log yet.
+- Replays: the table is written in guest addresses (`gmVa`, a replay's layout back to the guest's) since shaders hold
+  guest addresses read from guest memory; before this every followed address missed in a replay.
 - Merging two placed ranges into a larger one (a new buffer overlapping both) moves GPU-held bytes through a temporary
   buffer; read-backs still in flight for the old ranges land in guest memory but do not clear the new range's GPU flag.

@@ -12,7 +12,7 @@ import { FrameLedger } from "./gfx_ledger.ts";
 import { StreamCapture, parseCaptureSpec, httpSink, type CaptureSpec, type CaptureSink, type CaptureSummary } from "./gfx_stream_capture.ts";
 import { NdveBypass, NDVE_KEYS, NDVE_OUTPUT_IMAGE, NDVE_FLIP_ON, NDVE_FLIP_BASE } from "./ndve.ts";
 export type { Capture, CaptureImage } from "./gfx_capture.ts";
-import { GmemMap, GM_ENTRIES, GM_LOG_BYTES, type GmRange } from "./gfx_gmem.ts";
+import { GmemMap, GM_ENTRIES, GM_LOG_BYTES, GM_MISS_WORD, GM_MISS_SLOTS, GM_MISS_WINDOW, type GmRange } from "./gfx_gmem.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type GPU = any;
@@ -77,7 +77,7 @@ export interface ShaderInfo {
   // global memory through addresses the shader loads (src/shaders/library.ts Reflection.gmem; "the mirror of global memory" below): `storage` then lists the
   // mirror (slot 32), its range table (33) and the write log (34) and nothing else; `slots` are the stage's own storage slots, which the module reads in the
   // mirror at bases the "gmem" block of `extra` holds; `pointers` are the address words the recorder follows (it sends the buffers they name as slots 32 + k)
-  gmem?: { pointers: { slot: number; word: number; write?: boolean }[]; slots?: { slot: number; write: boolean }[]; write?: boolean; log?: boolean; untraced?: number };
+  gmem?: { pointers: { slot: number; word: number; write?: boolean }[]; slots?: { slot: number; write: boolean }[]; write?: boolean; log?: boolean; untraced?: number; tables?: { slot: number; write?: boolean }[] };
   // storage images. `format`: the texel format the WGSL declares. A texture of another format of the same class (`type`; default: the format's) is bound through
   // a variant of the module and the pipeline made for that format (imagePipe); `bound`: the shader names no format, `format` is a stand-in (src/shaders/spv.ts placeImage)
   images?: { slot: number; format: string; access?: "write-only" | "read-only" | "read-write"; dim?: "2d" | "2d-array" | "3d"; type?: "float" | "sint" | "uint"; bound?: boolean }[];
@@ -199,7 +199,7 @@ export class GfxHost {
   lastPresented = 0;
   ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
   stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, hashedPages: 0, changedPages: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
-    clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0, gmemRanges: 0, gmemBytes: 0, gmemUploads: 0, gmemUploadBytes: 0, gmemReadbacks: 0, gmemGrows: 0, gmemLogged: 0,
+    clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0, gmemRanges: 0, gmemBytes: 0, gmemUploads: 0, gmemUploadBytes: 0, gmemReadbacks: 0, gmemGrows: 0, gmemLogged: 0, gmemLearned: 0,
     meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0, zeroUploads: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
   caps = 0;
@@ -519,7 +519,10 @@ export class GfxHost {
       if (info.gmem.write && st < 2) { this.log(`[RED] ${info.stage} shader ${keyHex} stores into global memory: the mirror would be writable storage in a render pass whose other draws read it, which WebGPU refuses (the draw would have to run as compute or in a pass of its own): not registered`); return -1; }
       if (info.gmem.untraced) this.red(`gmuntraced${keyHex}`, `shader ${keyHex} reaches global memory through ${info.gmem.untraced} address${info.gmem.untraced === 1 ? "" : "es"} the translator could not follow to a bound word: it reads 0 there unless the mirror holds that memory for another shader`);
       const ptrs = info.gmem.pointers.slice(0, 16);
-      dv.setUint32(r + 400, ptrs.length, true);
+      // RF_gmem bits 8..15: uniform slots read as tables of addresses (spv.ts GmemInfo.tables), bit 16: one is stored through
+      const tabs = (info.gmem.tables ?? []).filter(t => t.slot < 8);
+      if (tabs.length < (info.gmem.tables ?? []).length) this.red(`gmtab${keyHex}`, `shader ${keyHex} reads a table of addresses in a uniform slot past 7: its memory is not named`);
+      dv.setUint32(r + 400, (ptrs.length | bit(tabs.map(t => t.slot)) << 8 | (tabs.some(t => t.write) ? 1 << 16 : 0)) >>> 0, true);
       ptrs.forEach((q, k) => { dv.setUint8(r + 404 + k * 4, q.slot | (q.write ? 0x80 : 0)); dv.setUint16(r + 406 + k * 4, q.word, true); });
     }
     dv.setUint32(r + 28, (bit((info.images ?? []).map(b => b.slot)) | bit((info.images ?? []).filter(b => (b.access ?? "write-only") !== "read-only").map(b => b.slot)) << 8) >>> 0, true);
@@ -937,9 +940,12 @@ export class GfxHost {
   private gmGen = 0; private gmGrown = 0; private gmWriting = false; private gmLogUsed = false; private gmOld: GPU[] = [];
   private gmQueued: { buf: GPU; r: GmRange; addr: number; size: number }[] = [];
   private gmLogs: { buf: GPU; ranges: GmRange[]; flush: number }[] = [];
+  // a replay's layout (src/glue/gfx_stream_capture.ts): guest address of a byte kept at `a`, and back (0: not captured). Null in the page: the same
+  gmVa: ((a: number) => number) | null = null; gmHost: ((va: number) => number) | null = null;
+  private gmLearned = new Map<number, { a: number; size: number }>();   // 64 KiB windows of guest memory the miss log named (gmFlush)
   private gmLate: GmRange[] = [];
   private gmRead = new Map<GmRange, number>();   // the submission a range was last read back in
-  private gmReset() { this.gm = null; this.gmBuf = this.gmTable = this.gmLog = null; this.gmOld = []; this.gmQueued = []; this.gmLogs = []; this.gmLate = []; this.gmRead.clear(); this.gmLogUsed = false; this.gmGen = 0; }
+  private gmReset() { this.gm = null; this.gmBuf = this.gmTable = this.gmLog = null; this.gmOld = []; this.gmQueued = []; this.gmLogs = []; this.gmLearned.clear(); this.gmLate = []; this.gmRead.clear(); this.gmLogUsed = false; this.gmGen = 0; }
   private gmMap(): GmemMap {
     if (this.gm) return this.gm;
     const limit = Math.min(this.gmemLimit, this.limit("maxStorageBufferBindingSize", 134217728), this.limit("maxBufferSize", 268435456));
@@ -1015,9 +1021,12 @@ export class GfxHost {
       base[s.slot] = (r.off + b.addr - r.start) >>> 2;
     }
     for (let k = 0; k < Math.min(16, gi.pointers.length); k++) { const b = this.ssbo.get(st * 64 + 32 + k); if (b && b.addr && b.size) this.gmRange(b.addr, b.size, b.write); }
+    // slots 48..63: the buffers the addresses of the stage's uniform tables lie in (src/gfx/lower.ts emitGmem)
+    if (gi.tables?.length) for (let k = 48; k < 64; k++) { const b = this.ssbo.get(st * 64 + k); if (b && b.addr && b.size) this.gmRange(b.addr, b.size, b.write); }
+    if (gi.untraced) for (const w of this.gmLearned.values()) this.gmRange(w.a, w.size, !!gi.write);
     if (g.gen !== this.gmGen) {
       if (this.gmLogUsed) this.gmOrdered(() => this.gmLogTake());    // the log's bits number the entries of the table that goes
-      this.device.queue.writeBuffer(this.gmTable, 0, g.table()); this.gmGen = g.gen;
+      this.device.queue.writeBuffer(this.gmTable, 0, this.gmVa ? g.table(this.gmVa) : g.table()); this.gmGen = g.gen;
     }
     if (gi.log) this.gmLogUsed = true;
     this.ubo.set(uboKey(st, 20), { addr: 0, size: 0, need: 0, data: new Uint8Array(base.buffer) });
@@ -1071,7 +1080,21 @@ export class GfxHost {
     for (const l of this.gmLogs.splice(0)) this.readbacks.push(l.buf.mapAsync(1).then(() => {
       if (gen !== this.gen) return;
       const w = new Uint32Array(l.buf.getMappedRange().slice(0)); l.buf.unmap(); this.kill(l.buf);
-      for (let k = 0; k < w.length; k++) for (let m = w[k]; m; m &= m - 1) {
+      // the miss log (words 256..767): addresses a shader reached through an address the translator could not follow and the mirror did not hold, one 64 KiB
+      // window a slot; each window is held in the mirror from now on for every stage with such accesses (docs/gmem-mirror.md, learned windows)
+      for (let i = 0; i < GM_MISS_SLOTS; i++) {
+        const lo = w[GM_MISS_WORD + 2 * i], hi = w[GM_MISS_WORD + 2 * i + 1];
+        if (!lo && !hi) continue;
+        let va = (hi * 2 ** 32 + lo) - (lo % GM_MISS_WINDOW), size = GM_MISS_WINDOW;
+        if (this.gmLearned.has(va)) continue;
+        // a replay holds only the captured pages: the window shrinks to the page of the address when its ends are not one run of them
+        const at = (v: number) => this.gmHost ? this.gmHost(v) : v;
+        if (this.gmHost && (!at(va) || at(va + size - 1) !== at(va) + size - 1)) { const p = (hi * 2 ** 32 + lo) - (lo % 4096); if (!at(p) || this.gmLearned.has(p)) continue; va = p; size = 4096; }
+        const a = at(va);
+        if (a + size > this.memory.buffer.byteLength || this.gmLearned.size >= 512) { this.red(`gmmiss${va}`, `a shader reached 0x${va.toString(16)} through an address the translator could not follow, and it is not learned (outside guest memory, or 512 windows learned)`); continue; }
+        this.gmLearned.set(va, { a, size }); this.stats.gmemLearned++;
+      }
+      for (let k = 0; k < GM_MISS_WORD; k++) for (let m = w[k]; m; m &= m - 1) {
         const r = l.ranges[k * 32 + 31 - Math.clz32(m & -m)];
         if (!r || (this.gmRead.get(r) ?? 0) >= l.flush || this.gmLate.includes(r)) continue;
         r.gpu = true; this.gmLate.push(r); this.stats.gmemLogged++;
