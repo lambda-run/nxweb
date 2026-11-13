@@ -259,18 +259,19 @@ export class GfxHost {
   // ---- stream capture (gfx_stream_capture.ts; test/gfx/REPLAY.md): N frames of the host stream with everything a replay needs, written to `sink`
   // (default: the log receiver the spec names). Starts after the present the spec names; resolves with the summary when the file is written
   private sc: StreamCapture | null = null;
-  private scArm: { spec: CaptureSpec; sink: CaptureSink; go: (s: CaptureSummary) => void; draws0: number } | null = null;
+  private scArm: { spec: CaptureSpec; sink: CaptureSink; go: (s: CaptureSummary) => void; draws0: number; run: number } | null = null;
   streamCapture(spec: CaptureSpec | string, sink?: CaptureSink): Promise<CaptureSummary> {
     const s = typeof spec === "string" ? parseCaptureSpec(spec) : spec;
     if (!s) return Promise.reject(new Error(`not a capture spec: ${spec}`));
     if (this.sc || this.scArm) return Promise.reject(new Error("a stream capture is already armed or running"));
-    this.log(`gfxcapture: armed for ${s.frames} frame${s.frames === 1 ? "" : "s"} ${s.present !== undefined ? `after present ${s.present}` : s.draws !== undefined ? `from the first frame of at least ${s.draws} draws` : "from the next present"}${sink ? "" : `, to ${s.to}/${s.name}`}`);
-    return new Promise<CaptureSummary>(go => { this.scArm = { spec: s, sink: sink ?? httpSink(s.to, s.name, l => this.log(l)), go, draws0: this.stats.draws }; });
+    this.log(`gfxcapture: armed for ${s.frames} frame${s.frames === 1 ? "" : "s"} ${s.present !== undefined ? `after present ${s.present}` : s.draws !== undefined ? `from the first frame of at least ${s.draws} draws${s.run ? ` after ${s.run} such frames in a row` : ""}` : "from the next present"}${sink ? "" : `, to ${s.to}/${s.name}`}`);
+    return new Promise<CaptureSummary>(go => { this.scArm = { spec: s, sink: sink ?? httpSink(s.to, s.name, l => this.log(l)), go, draws0: this.stats.draws, run: 0 }; });
   }
   // After a present was executed (nothing is encoded and not submitted, no pass is open): the armed capture begins when its condition holds
   private scBegin(): StreamCapture | null {
     const a = this.scArm!, draws = this.stats.draws - a.draws0;
     a.draws0 = this.stats.draws;
+    if (a.spec.draws !== undefined && a.spec.run) { a.run = draws >= a.spec.draws ? a.run + 1 : 0; if (a.run < a.spec.run) return null; }
     if (this.pass || this.enc || this.lost || (a.spec.present !== undefined ? this.stats.presents < a.spec.present : a.spec.draws !== undefined ? draws < a.spec.draws : false)) return null;
     this.scArm = null;
     this.log(`gfxcapture: begins after present ${this.stats.presents} (${draws} draws in its frame)`);

@@ -31,7 +31,7 @@ const SAMPLER_TABLE_BYTES = 8192 * 48;               // src/gfx/tables.ts SAMPDE
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11, DRAW_IDX: 15, COPY_B2T: 17, COPY_T2T: 18, SNAPSHOT: 19, PRESENT: 20,
   TEX_DATA: 24, COPY_T2B: 25, SSBO: 28, IMG: 29, DISPATCH: 31, BUF_READBACK: 32, MESH_BEGIN: 35, MESH_TASK: 36, MESH_RUN: 37, CLEAR_TEX: 39, DISPATCH_SKIPPED: 40 };
 
-export interface CaptureSpec { frames: number; present?: number; draws?: number; to: string; name: string; maxTexMB: number }
+export interface CaptureSpec { frames: number; present?: number; draws?: number; run?: number; to: string; name: string; maxTexMB: number }
 export interface CaptureSink { write(bytes: Uint8Array): Promise<void> | void; close?(): Promise<void> | void }
 export interface CaptureSummary { name: string; frames: number; batches: number; bytes: number; pages: number; textures: number; textureBytes: number; texturesWithoutContent: string[]; shaders: number; pipelines: number }
 
@@ -39,6 +39,8 @@ export interface CaptureSummary { name: string; frames: number; batches: number;
 //   <frames>             that many frames from the next present on
 //   <frames>@<n>         from the n-th present of this replayer on (the frames after it)
 //   <frames>@draws<n>    from the first present on whose frame issued at least n draws on the replayer
+//   <frames>@draws<n>x<k>  the same, once k presents in a row had at least n draws each (a loading screen's one busy frame does not start it)
+//   <frames>@area        = @draws500x30: the first settled frames of a 3D area
 //   gfxcapto=<url>       the receiver (vm/ctl/recv.mjs); default: ?logto=, else http://localhost:8082
 //   gfxcapname=<name>    the file's name there (default area.gfxcap); gfxcaptex=<MB> the budget for texture contents (default 2048)
 export function parseCaptureSpec(s: string | null | undefined): CaptureSpec | null {
@@ -48,9 +50,9 @@ export function parseCaptureSpec(s: string | null | undefined): CaptureSpec | nu
     const q = new URLSearchParams(s.startsWith("?") ? s.slice(1) : s);
     v = q.get("gfxcapture"); to = q.get("gfxcapto") ?? q.get("logto") ?? ""; name = q.get("gfxcapname") ?? ""; tex = Number(q.get("gfxcaptex") ?? 0);
   }
-  const m = v ? /^(\d+)(?:@(draws)?(\d+))?$/.exec(v.trim()) : null;
-  if (!m || !+m[1]) return null;
-  return { frames: +m[1], ...(m[3] === undefined ? {} : m[2] ? { draws: +m[3] } : { present: +m[3] }), to: (to || "http://localhost:8082").replace(/\/+$/, ""),
+  const m = v ? /^(\d+)(?:@(draws)?(\d+)(?:x(\d+))?)?$/.exec(v.trim().replace(/@area$/, "@draws500x30")) : null;
+  if (!m || !+m[1] || (m[4] !== undefined && !m[2])) return null;
+  return { frames: +m[1], ...(m[3] === undefined ? {} : m[2] ? { draws: +m[3], ...(+(m[4] ?? 0) > 1 ? { run: +m[4] } : {}) } : { present: +m[3] }), to: (to || "http://localhost:8082").replace(/\/+$/, ""),
     name: (name || "area.gfxcap").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 80) || "area.gfxcap", maxTexMB: tex > 0 ? tex : 2048 };
 }
 // The log receiver (vm/ctl/recv.mjs): POST /<name> starts the file, POST /append/<name> adds to it; bodies of at most 8 MB, one after the other
