@@ -82,6 +82,7 @@ export interface Binding {
 }
 export interface FixResult {
   spv: Uint8Array;
+  fired: string[];          // the versioned rewrites (src/shaders/passes.ts) that changed this stage
   stage: "vertex" | "fragment" | "compute";
   bindings: Binding[];
   inputs: { location: number; type: "float" | "sint" | "uint" }[];
@@ -271,7 +272,10 @@ function intSigns(c: Ctx) {
   const EXT = new Map<number, [number, number[]]>([[5, [1, [4]]], [7, [1, [4]]], [38, [0, [4, 5]]], [39, [1, [4, 5]]], [41, [0, [4, 5]]], [42, [1, [4, 5]]],
     [44, [0, [4, 5, 6]]], [45, [1, [4, 5, 6]]], [74, [1, [4]]], [75, [0, [4]]]]);
   const intOf = (t: number): [Inst, Inst | undefined] | null => { const d = c.def.get(t); if (!d) return null; if (d.op === Op.TypeInt) return [d, undefined]; if (d.op === 23) { const e = c.def.get(d.w[1]); return e && e.op === Op.TypeInt ? [e, d] : null; } return null; };
-  const typeOf = (id: number) => { const d = c.def.get(id); return d ? d.w[0] : -1; };
+  // the type of every value (c.def holds only the declarations, loads and access chains): an operand is mostly another instruction's result
+  const vtype = new Map<number, number>();
+  for (const i of c.m.insts) if (i.op > 40 && !(i.op >= 71 && i.op <= 78) && i.op !== 332 && i.op < 5632 && i.w.length >= 2 && resultIdOf(i)) vtype.set(i.w[1], i.w[0]);
+  const typeOf = (id: number) => vtype.get(id) ?? -1;
   const ruleOf = (i: Inst) => i.op === 12 ? (glsl !== undefined && i.w[2] === glsl ? EXT.get(i.w[3]) : undefined) : OPS.get(i.op);
   const wrong = (i: Inst) => { const r = ruleOf(i); if (!r) return false; return r[1].some(k => { const t = intOf(typeOf(i.w[k])); return !!t && t[0].w[2] !== r[0]; }); };
   const bad = c.m.insts.filter(wrong);
@@ -1312,23 +1316,27 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   if (ep.length !== 1) throw new Error(`${ep.length} entry points: one stage per module is expected`);
   const model = ep[0].w[0], stage = model === 0 ? "vertex" : model === 4 ? "fragment" : model === 5 ? "compute" : undefined;
   if (!stage) throw new Error(`execution model ${model} (geometry, tessellation, task or mesh): WebGPU has no such stage`);
-  const sg = subgroups(c, stage, opts.subgroups ?? "single"); c.index();
+  // the rewrites src/shaders/passes.ts versions: which of them changed this stage (a hash of the module's words before and after)
+  const fired: string[] = [];
+  const fp = () => { const b = serialize(c.m), w = new Uint32Array(b.buffer, b.byteOffset, b.length >> 2); let h = 0x811c9dc5; for (let k = 0; k < w.length; k++) h = Math.imul(h ^ w[k], 0x01000193); return `${w.length}:${h >>> 0}`; };
+  const run = <T>(name: string, f: () => T): T => { const a = fp(); const r = f(); c.index(); if (fp() !== a) fired.push(name); return r; };
+  const sg = run("subgroups", () => subgroups(c, stage, opts.subgroups ?? "single"));
   dropUnused(c); c.index();
-  nanTests(c); c.index();
-  nonFiniteConstants(c); c.index();
-  mulExtended(c); c.index();
-  intSigns(c); c.index();
+  run("nanTests", () => nanTests(c));
+  run("nonFiniteConstants", () => nonFiniteConstants(c));
+  run("mulExtended", () => mulExtended(c));
+  run("intSigns", () => intSigns(c));
   dropUnreferenced(c); c.index();
-  privatizeBoundSizes(c); c.index();
-  helperInvocation(c); c.index();
-  arrayedFetchTypes(c); c.index();
-  sizeQueryPast(c); c.index();
+  run("privatizeBoundSizes", () => privatizeBoundSizes(c));
+  run("helperInvocation", () => helperInvocation(c));
+  run("arrayedFetchTypes", () => arrayedFetchTypes(c));
+  run("sizeQueryPast", () => sizeQueryPast(c));
   const posVar = perVertex(c); c.index();
   const pools = (opts.bindings ?? "nxweb") === "nxweb" ? poolTextures(c, stage, opts.sbufs ?? [], opts.mesh?.kind) : undefined; c.index();
   const samplerOf = splitSamplers(c); c.index();
   if ((opts.bindings ?? "nxweb") === "nxweb") { fetchOnlySamplers(c, samplerOf); c.index(); }
-  queryLod(c, stage); c.index();
-  imageAtomics(c); c.index();
+  run("queryLod", () => queryLod(c, stage));
+  run("imageAtomics", () => imageAtomics(c));
   const sizes = opts.shrinkUniforms === false ? new Map<number, number>(c.m.insts.filter(i => i.op === Op.Variable && i.w[2] === SC.Uniform).map(v => [v.w[1], structSize(c, c.def.get(c.def.get(v.w[0])!.w[2])!)])) : shrinkUniforms(c);
   const gm = (opts.bindings ?? "nxweb") === "nxweb" && opts.sbufs ? globalMemory(c, stage, opts.sbufs, opts.mesh) : undefined; c.index();
   const bindings = place(c, stage, samplerOf, sizes, opts.bindings ?? "nxweb", opts.sbufs, opts.mesh?.kind, gm, pools); c.index();
@@ -1340,5 +1348,5 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   const draw = drawParameters(c); c.index();
   if (draw) bindings.push(draw);
   for (const i of c.m.insts) delete (i as any).image, delete (i as any).sampler, delete (i as any).standIn, delete (i as any).nosampler;
-  return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, ...(sg ? { subgroups: sg } : {}), ...(gm ? { gmem: { pointers: gm.pointers, slots: gm.slots, write: gm.write, log: gm.log, ...(gm.untraced ? { untraced: gm.untraced } : {}) } } : {}) };
+  return { spv: serialize(c.m), stage, bindings, inputs: interface_(c, SC.Input), outputs: interface_(c, SC.Output), notes: c.notes, fired, ...(sg ? { subgroups: sg } : {}), ...(gm ? { gmem: { pointers: gm.pointers, slots: gm.slots, write: gm.write, log: gm.log, ...(gm.untraced ? { untraced: gm.untraced } : {}) } } : {}) };
 }

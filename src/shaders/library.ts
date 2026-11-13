@@ -19,6 +19,7 @@ import type { MeshStage } from "./meshstage.ts";
 export interface Reflection {
   // the record src/gfx asks for (src/gfx/README.md, "what the shader chain must emit", item 5): GfxHost.registerShader(key, { wgsl, ...reflection })
   stage: "vertex" | "fragment" | "compute" | "task" | "mesh";
+  passes?: import("./passes.ts").PassStamp;   // the versioned rewrites of the SPIR-V pass that made it (src/shaders/passes.ts)
   entry: string;
   mesh?: MeshStage;                                                      // task / mesh: the stage's facts (src/shaders/meshstage.ts); its WGSL is compute, wrapped
   ubos: number[];                                                        // game uniform slots read
