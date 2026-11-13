@@ -43,7 +43,7 @@ addToLibrary({
         if (own.svc()) { until = performance.now() + 0.2; continue; }   // the request of the thread that is inside the recorder (gfx_exec)
         if (Atomics.load(HEAP32, s) === 1) {
           let r = 0;
-          try { r = own.call(HEAP32[s + 1], HEAPF64[slot / 8 + 2]); } catch (e) { err('[RED] owner: ' + (e && e.stack || e)); }
+          try { r = own.call(HEAP32[s + 1], HEAPF64[slot / 8 + 2], HEAPF64[slot / 8 + 3]); } catch (e) { err('[RED] owner: ' + (e && e.stack || e)); }
           HEAP32[s + 2] = r;
           Atomics.store(HEAP32, s, 2); Atomics.notify(HEAP32, s);
           until = performance.now() + 0.2;

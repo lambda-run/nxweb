@@ -52,7 +52,8 @@ export class WebCodecsVideo implements VideoBackend {
           this.noneBefore(st, gen, null);
         },
       });
-      st.d.configure({ codec, codedWidth: st.w || undefined, codedHeight: st.h || undefined, hardwareAcceleration: "prefer-software", optimizeForLatency: true });
+      st.d.configure({ codec, codedWidth: st.w || undefined, codedHeight: st.h || undefined, hardwareAcceleration: (globalThis as any).NXVDEC ?? "prefer-software",   // (em/: ?vdec=hardware asks for the hardware decoder, to compare)
+        optimizeForLatency: true });
       st.configured = codec;
       if (!st.logged) { st.logged = true; this.sink.log(`[codec] ${VCODEC_NAME[st.codec]} decoder ${st.id}: WebCodecs ${codec}`); }
       return true;

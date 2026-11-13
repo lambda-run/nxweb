@@ -203,7 +203,7 @@ export class Owner {
     const g = this.fl;
     if (!g || Atomics.load(g, 2) !== 1) return false;
     const a = this.fl64, im = this.fs.imports, N = (i: number) => Number(a[4 + i]), B = (i: number) => a[4 + i], kind = g[3], ctx = Number(a[10]), was = this.flLent, t0 = performance.now();
-    let r: any = 0, tok = 0;
+    let r: any = 0, tok = 0; const top = this.secIn("fs storage for a guest thread");
     this.flLent = true;
     try {
       switch (kind) {
@@ -219,7 +219,7 @@ export class Owner {
       // a storage call in flight: its completion (FsHost.park -> completed) wakes the thread that made the fs call
       if (r === DEV.PENDING && (kind === 0 || kind === 2 || kind === 4 || kind === 5)) { this.stats.fsPending++; this.waiting.set(tok, ctx); }
     } catch (e) { this.log(`[RED] owner: the fs module's request ${kind} from a guest thread failed: ${(e as Error).stack ?? e}`); r = DEV.IO; }
-    this.flLent = was; this.flStats.served++; this.flStats.ms += performance.now() - t0;
+    this.flLent = was; this.flStats.served++; this.flStats.ms += performance.now() - t0; this.secOut();
     a[2] = BigInt(r ?? 0);
     Atomics.store(g, 2, 2); Atomics.notify(g, 2);
     return true;
@@ -234,7 +234,7 @@ export class Owner {
     if (!R || this.draining || !this.gfx) return false;
     const i32 = new Int32Array(this.memory.buffer, R, 4), u32 = new Uint32Array(this.memory.buffer);
     if (Atomics.load(i32, 0) === Atomics.load(i32, 1)) return false;
-    this.draining = true; const t0 = performance.now(); let n = 0;
+    this.draining = true; const t0 = performance.now(); let n = 0; const top = this.secIn("ring batches (replayer)");
     try {
       for (let head = Atomics.load(i32, 0); head !== Atomics.load(i32, 1); ) {
         const len = u32[(R + 16 + head) / 4];
@@ -242,7 +242,7 @@ export class Owner {
         try { this.gfx.env.gfx_exec(R + 16 + head + 8, len); } catch (e) { this.log(`[RED] owner: a batch from the ring failed: ${(e as Error).stack ?? e}`); }
         head += 8 + Math.ceil(len / 8) * 8; Atomics.store(i32, 0, head); n++;
       }
-    } finally { this.draining = false; }
+    } finally { this.draining = false; this.secOut(); }
     this.ringStats.batches += n; this.ringStats.ms += performance.now() - t0;
     return n > 0;
   }
@@ -274,13 +274,14 @@ export class Owner {
     if (!g || this.draining || Atomics.load(g, 2) !== 1) return false;
     this.drainRing();   // what was handed over before this request comes first
     const f = this.glf, env = this.gfx!.env, was = this.lent, t0 = performance.now(); let r = 0;
+    const top = this.secIn(g[3] === 0 ? "flush for a guest thread (replayer)" : "recorder import " + g[3]);
     this.lent = true;
     try {
       if (g[3] === 0) env.gfx_exec(f[2], f[3]);
       else if (g[3] === 1) r = Number(env.gfx_proc_address(f[2]));
       else if (g[3] === 2) r = Number(env.gfx_arena_more(f[2]));
     } catch (e) { this.log(`[RED] owner: the recorder's request ${g[3]} from a guest thread failed: ${(e as Error).stack ?? e}`); }
-    this.lent = was; this.glStats.served++; this.glStats.execMs += performance.now() - t0;
+    this.lent = was; this.glStats.served++; this.glStats.execMs += performance.now() - t0; this.secOut();
     f[4] = r;
     Atomics.store(g, 2, 2); Atomics.notify(g, 2);
     return true;
@@ -342,7 +343,7 @@ export class Owner {
     if (op === 3) { b.reset(dec, 0); for (const [k, c] of [...this.videoWait]) if (k.startsWith(dec + ":")) { this.videoWait.delete(k); new DataView(this.memory.buffer).setBigUint64(c, 0n, true); this.wake(c); } set0(0); return DONE; }
     if (op === 4) { b.close(dec); set0(0); return DONE; }
     const seq = dv.getBigUint64(ctx + 48, true);
-    this.videoStats.packets++;
+    this.videoStats.packets++; this.acct.video.packets++;
     new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0;
     this.videoWait.set(dec + ":" + seq, ctx);
     const r = b.decode(dec, 0, seq, new Uint8Array(this.memory.buffer, n(2), n(3)), false);
@@ -352,7 +353,11 @@ export class Owner {
   }
   private videoDone(dec: number, seq: bigint, pic: VideoPicture | null): void {
     const ctx = this.videoWait.get(dec + ":" + seq);
+    if (pic) this.acct.video.pictures++;
     if (ctx === undefined) return;
+    const top = this.secIn("codec: a picture into guest memory"); try { this.videoDone1(dec, seq, pic, ctx); } finally { this.secOut(); }
+  }
+  private videoDone1(dec: number, seq: bigint, pic: VideoPicture | null, ctx: number): void {
     this.videoWait.delete(dec + ":" + seq);
     const dv = new DataView(this.memory.buffer), u8 = new Uint8Array(this.memory.buffer), buf = Number(dv.getBigUint64(ctx + 32, true)), cap = Number(dv.getBigUint64(ctx + 40, true));
     let ok = 0;
@@ -401,7 +406,8 @@ export class Owner {
     return cpu;
   }
   private store(ctx: number, r: any): void { if (typeof r === "bigint") this.u64[ctx / 8] = BigInt.asUintN(64, r); else if (typeof r === "number") this.u64[ctx / 8] = BigInt.asUintN(64, BigInt(r)); }
-  private wake(ctx: number): void { const cell = new Int32Array(this.memory.buffer, ctx + CELL, 1); Atomics.store(cell, 0, 1); Atomics.notify(cell, 0); }
+  private wake(ctx: number): void { const pk = this.parkAt.get(ctx); if (pk) { this.parkAt.delete(ctx); this.reqOf(pk.nm).parked += performance.now() - pk.at; }
+    const cell = new Int32Array(this.memory.buffer, ctx + CELL, 1); Atomics.store(cell, 0, 1); Atomics.notify(cell, 0); }
   // A wait a handler returned: the calling thread stays blocked until `done` has settled and time `at` has come (or the
   // deadline passed), then resume runs here and its result is the call's
   private arm(ctx: number, cpu: any, w: Wait): void {
@@ -409,8 +415,9 @@ export class Owner {
     const go = (timedOut: boolean) => {
       if (over) return; over = true;
       let r: any;
+      const top = this.secIn("a handler's step after its wait");
       this.lock();
-      try { r = w.resume(cpu, timedOut); } catch (e) { this.log(`[RED] owner: a host function failed after its wait: ${(e as Error).message}`); r = 0; } finally { this.unlock(); }
+      try { r = w.resume(cpu, timedOut); } catch (e) { this.log(`[RED] owner: a host function failed after its wait: ${(e as Error).message}`); r = 0; } finally { this.unlock(); this.secOut(); }
       if (r && r.__wait) this.arm(ctx, cpu, r); else { this.store(ctx, r); this.wake(ctx); }
     };
     const timed = () => { const ms = w.at === undefined ? 0 : Number(w.at - nowNs()) / 1e6; if (ms > 0.05) setTimeout(() => go(false), ms); else go(false); };
@@ -444,7 +451,46 @@ export class Owner {
   lookup(name: string): number { const id = this.fsIds.get(name); if (id) return KIND_FS << 24 | id; const h = this.rt?.byName.get(name); return h ? KIND_HOST << 24 | h : 0; }
   // One host call on the context block of the calling guest thread (x0..x7 at its start). DONE: x0 holds the result.
   // PENDING: the thread waits on the block's cell. RETRY: the same call again after a moment, registers as they were.
-  call(code: number, ctx: number): number {
+  // ---- where the owner thread's wall-clock time goes (report(); the page prints it every 10 s). A section is what one
+  // entry into the owner did, by name; what no section covers is `outside` (tasks of the page, the decoder's and the
+  // GPU's callbacks, the shader workers' messages) or idle: the lag probe tells the two apart.
+  private acct = { t0: performance.now(), sec: new Map<string, { n: number; ms: number; max: number }>(), depth: 0, at: 0, name: "", long: new Map<string, { n: number; ms: number }>(),
+    req: new Map<string, { n: number; queued: number; work: number; parked: number; parks: number }>(), lag: { n: 0, sum: 0, max: 0 }, video: { packets: 0, pictures: 0 }, probe: false };
+  private secIn(name: string): boolean { const a = this.acct; if (a.depth++) return false; a.at = performance.now(); a.name = name; return true; }
+  private secOut(): void { const a = this.acct; /* every secIn has its secOut; only the outermost is a section */ if (--a.depth) return; const d = performance.now() - a.at; let s = a.sec.get(a.name); if (!s) a.sec.set(a.name, s = { n: 0, ms: 0, max: 0 }); s.n++; s.ms += d; if (d > s.max) s.max = d;
+    if (d > 8) { let l = a.long.get(a.name); if (!l) a.long.set(a.name, l = { n: 0, ms: 0 }); l.n++; l.ms += d; } }
+  private reqOf(name: string) { let r = this.acct.req.get(name); if (!r) this.acct.req.set(name, r = { n: 0, queued: 0, work: 0, parked: 0, parks: 0 }); return r; }
+  private hname = new Map<number, string>();
+  private nameOfCode(code: number): string {
+    const k = code >>> 24, h = code & 0xFFFFFF;
+    if (k === KIND_FS) return "fs:" + (this.fsNames.get(h) ?? h); if (k === KIND_VIDEO) return "codec"; if (k === 4) return "guest-wrote"; if (k !== KIND_HOST) return "kind" + k;
+    let n = this.hname.get(h);
+    if (n === undefined) { n = ""; for (const [nm, hh] of this.rt.byName) if (hh === h) n = nm; if (!n) for (const [id, hh] of this.rt.late) if (hh === h) n = this.lateNames.get(id) ?? ""; this.hname.set(h, n = n || "host#" + h); }
+    return n;
+  }
+  // Everything since the last report(reset = true): ms unless said otherwise
+  report(reset = false): any {
+    const a = this.acct, now = performance.now(), wall = now - a.t0, r1 = (v: number) => +v.toFixed(1);
+    if (!a.probe) { a.probe = true; let due = performance.now() + 100; const tick = () => { const late = performance.now() - due; a.lag.n++; a.lag.sum += late; if (late > a.lag.max) a.lag.max = late; due = performance.now() + 100; setTimeout(tick, 100); }; setTimeout(tick, 100); }
+    let covered = 0; const sections: any = {}; for (const [k, v] of [...a.sec].sort((x, y) => y[1].ms - x[1].ms)) { covered += v.ms; sections[k] = { n: v.n, ms: r1(v.ms), pctOfWall: r1(100 * v.ms / wall), maxMs: r1(v.max) }; }
+    const requests: any = {}; for (const [k, v] of [...a.req].sort((x, y) => (y[1].queued + y[1].work + y[1].parked) - (x[1].queued + x[1].work + x[1].parked)).slice(0, 14)) requests[k] = { n: v.n, queuedBeforeOwnerStartedMs: r1(v.queued), ownerWorkedMs: r1(v.work), parkedWaits: v.parks, parkedMs: r1(v.parked) };
+    const long: any = {}; for (const [k, v] of a.long) long[k] = { n: v.n, ms: r1(v.ms) };
+    const g: any = this.gfx, decs: any[] = []; try { for (const [id, st] of (this.videoBack as any)?.decs ?? []) decs.push({ id, queue: st.d?.decodeQueueSize, state: st.d?.state }); } catch { /* not the WebCodecs back end */ }
+    const out = { wallMs: r1(wall), ownerBusyPct: r1(100 * covered / wall), outsideOrIdleMs: r1(wall - covered), sections, replayerExecMs: g ? r1(g.times.execMs - ((this as any).execSeen0 ?? 0)) : 0, synchronousStretchesOver8ms: long, requests,
+      eventLoopLag: { probes: a.lag.n, meanMs: a.lag.n ? r1(a.lag.sum / a.lag.n) : 0, maxMs: r1(a.lag.max) },
+      video: { packetsIn: a.video.packets, picturesOut: a.video.pictures, perSecondIn: r1(a.video.packets * 1000 / wall), perSecondOut: r1(a.video.pictures * 1000 / wall), decoders: decs, hardwareAcceleration: (globalThis as any).NXVDEC ?? "prefer-software" },
+      ring: this.ringStats, presents: this.presents };
+    if (reset) { a.t0 = now; a.sec.clear(); a.long.clear(); a.req.clear(); a.lag = { n: 0, sum: 0, max: 0 }; a.video = { packets: 0, pictures: 0 }; (this as any).execSeen0 = g ? g.times.execMs : 0; }
+    return out;
+  }
+  call(code: number, ctx: number, treq = 0): number {
+    const nm = this.nameOfCode(code), q = this.reqOf(nm), top = this.secIn(nm), w0 = performance.now(); q.n++;
+    if (treq > 0) { const queued = performance.timeOrigin + w0 - treq; if (queued > 0 && queued < 60000) q.queued += queued; }
+    try { const r = this.call1(code, ctx); if (r === PENDING) { q.parks++; this.parkAt.set(ctx, { nm, at: performance.now() }); } return r; }
+    finally { q.work += performance.now() - w0; this.secOut(); }
+  }
+  private parkAt = new Map<number, { nm: string; at: number }>();
+  private call1(code: number, ctx: number): number {
     const t0 = performance.now();
     try {
       if (code >>> 24 === KIND_HOST) { const h0 = performance.now(); try { return this.hostCall(code & 0xFFFFFF, ctx); } finally { this.hostNs += (performance.now() - h0) * 1e6; } }

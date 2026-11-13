@@ -21,6 +21,7 @@ export interface PageSide {
   modulesList: string[];                                 // the code modules to load, in order
   nativeImage: OwnerConfig["nativeImage"];
   fsDirect?: boolean;    // false (?fsdirect=0): every nn::fs call goes to the owner thread, as before
+ vdec?: string | null;
   gfxAsync?: boolean;      // true (?asyncsubmit=1): a submission does not wait for the replayer
   gfxLockFree?: boolean;   // false (?lockfree=0): every direct NVN call takes the recorder's lock
   gfxDirect?: boolean;   // false (?gfxdirect=0): every NVN call goes to the owner thread, as before
@@ -31,6 +32,7 @@ export interface PageSide {
 export async function start(memory: WebAssembly.Memory, malloc: (n: number) => number, log: (line: string) => void, modules: OwnerConfig["modules"], p: PageSide): Promise<Owner> {
   const pages = memory.buffer.byteLength / 65536, abs = (u: string) => new URL(p.root + u, location.href).href;
   const bytes = async (u: string) => { const r = await fetch(abs(u)); if (!r.ok) throw new Error(`owner: ${u}: HTTP ${r.status}`); return new Uint8Array(await r.arrayBuffer()); };
+  if (p.vdec === "hardware") { (globalThis as any).NXVDEC = "prefer-hardware"; log("page: vdec=hardware: the AV1 decoder is asked for with hardwareAcceleration prefer-hardware"); }
   p.stage("runtime modules");
   const prep = new PrepWasm(await WebAssembly.compile(await bytes("wasm/prepare.wasm") as unknown as BufferSource), log);
   const sha256 = (b: Uint8Array) => prep.sha256(b);

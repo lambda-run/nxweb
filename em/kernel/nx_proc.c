@@ -282,7 +282,7 @@ void dm_host_lock(pthread_mutex_t *m);
 // The request slot of the owner realm (kernel/nx_owner.js nx_owner_serve): one caller at a time, in arrival order.
 // Emscripten's own synchronous proxy costs a wake-up of the main thread's event loop per call (measured: about 150 us
 // under node); here the owner keeps watching the slot between the calls of a burst.
-static struct { _Atomic uint32_t state; int32_t code; int32_t result; int32_t pad; double ctx; } g_slot;
+static struct { _Atomic uint32_t state; int32_t code; int32_t result; int32_t pad; double ctx; double t_req; } g_slot;   // t_req: when the caller came for the slot, ms on the clock the owner reads too (its time behind other callers is queueing)
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER; static int g_slot_on;
 static uint64_t g_slot_queue_ns, g_slot_serve_ns, g_slot_n;
 static _Atomic int g_slot_waiting; static _Atomic uint64_t g_slot_depth[8];   // callers at the slot when one arrives: 0, 1, 2, 3, 4-7, 8-15, 16-31, 32+
@@ -296,13 +296,14 @@ static void serve_start(void) { g_slot_on = 1; nx_owner_serve((double)(uintptr_t
 static void owner_serve_start(void) { pthread_once(&g_serve_once, serve_start); }
 static int owner_request(int code, uint64_t *regs) {
     int gl = nx_gfx_release_all();   // (a callback of the recorder into guest code that asks the owner for something)
+    uint64_t treq_ns = nx_now_ns();   // (the raw clock: in a page the time origin + performance.now(), which the owner can read too)
     nx_core_release();   // waiting for the owner thread is not running: the caller's core is free (taken again at the end of the host call)
     uint64_t t0 = now_ns();
     { int d = atomic_fetch_add(&g_slot_waiting, 1); atomic_fetch_add_explicit(&g_slot_depth[d < 4 ? d : d < 8 ? 4 : d < 16 ? 5 : d < 32 ? 6 : 7], 1, memory_order_relaxed); }
     dm_host_lock(&g_slot_mu);   // a guest thread that waits here holds no guest core (hle_thread.c)
     uint64_t t1 = now_ns();
     owner_serve_start();
-    g_slot.code = code; g_slot.ctx = (double)(uintptr_t)regs;
+    g_slot.code = code; g_slot.ctx = (double)(uintptr_t)regs; g_slot.t_req = (double)treq_ns / 1e6;
     atomic_store(&g_slot.state, 1); emscripten_futex_wake(&g_slot.state, 1);
     for (int spin = 0; atomic_load(&g_slot.state) != 2; spin++) if (spin > 20000) emscripten_futex_wait(&g_slot.state, 1, 5.0);
     int r = g_slot.result;

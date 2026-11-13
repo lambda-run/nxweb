@@ -24,6 +24,7 @@
 // WebGPU replayer. ?ndve=off: without nxweb's stand-in for the movie upscaler (on by default: ?ndve=bypass is accepted too).
 // ?fsdirect=1: guest threads call the fs module in their own instance and the owner is asked only for the storage itself
 //   (off by default until it has run at game scale once; then the default and ?fsdirect=0 the way back).
+// ?vdec=hardware: ask WebCodecs for the hardware AV1 decoder (nxweb's glue asks for software).
 // ?asyncsubmit=1: a guest thread's nvnQueueSubmitCommands leaves its batch in a ring for the replayer and returns: the
 //   recorder's lock is not held while the owner works (off by default until a ride has compared frames).
 // ?lockfree=1: recording commands and builder setters do not take the recorder's lock (off by default: the proof test
@@ -105,7 +106,7 @@ function start(file) {
     onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; if (!window.nxem.reason) Module.nxStopped("abort() in host code: " + w); },
     nxStopped: function (why) { if (window.nxem.reason) return; window.nxem.reason = why; $("stage").textContent = "stopped: " + why; $("stage").style.color = "#f66"; },
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
-    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") === "1", gfxAsync: q.get("asyncsubmit") === "1", fsDirect: q.get("fsdirect") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") === "1", gfxAsync: q.get("asyncsubmit") === "1", vdec: q.get("vdec"), fsDirect: q.get("fsdirect") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
   };
   var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s);
   // input: the keyboard and the first controller, as the nxweb page maps them (web/main.ts): Z = A, X = B, C = X, V = Y,
@@ -145,6 +146,8 @@ function start(file) {
     // (waiting behind other threads for the slot + the hand-over and the owner's work), summed over threads
     var M0 = window.Module, slot = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     try { if (M0._nx_slot_stats) { if (!window.nxSlotBuf) window.nxSlotBuf = M0._malloc(96); M0._nx_slot_stats(window.nxSlotBuf); slot = Array.from(new Float64Array(M0.HEAPU8.buffer, window.nxSlotBuf, 11)); } } catch (e) {}
+    // every 10 s: where the owner thread's time went (owner/owner.ts report), into the log and window.nxem.owner
+    if (o.report && (!window.nxOwnerAt || now - window.nxOwnerAt >= 10000)) { window.nxOwnerAt = now; try { var rep = o.report(true); window.nxem.owner = rep; if (rep.wallMs > 5000) { var line = "[owner] time, last " + (rep.wallMs / 1000).toFixed(0) + " s: " + JSON.stringify(rep); say(line); console.log(line); } } catch (e) { say("[RED] owner report: " + e.message); console.log("[RED] owner report: " + (e && e.stack || e)); } }
     var tsplit = "", coresBusy = -1;
     try { if (M0._nx_thread_split) { if (!window.nxSplitBuf) window.nxSplitBuf = M0._malloc(2400); coresBusy = M0._nx_thread_split(window.nxSplitBuf, 2400, n - last0, 0);
         var u8s = M0.HEAPU8, e0 = window.nxSplitBuf, e1 = e0; while (u8s[e1] && e1 < e0 + 2399) e1++; tsplit = new TextDecoder().decode(u8s.slice(e0, e1)); } } catch (e) {}
