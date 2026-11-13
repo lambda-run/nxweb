@@ -14,6 +14,7 @@ const ROOT = resolve(import.meta.dirname, "../.."), args = process.argv.slice(2)
 const opt = (name: string) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const trace = args.includes("--trace") ? (args.splice(args.indexOf("--trace"), 1), true) : false;
 const skipbig = opt("--skipbig") ?? "", keepKeys = opt("--keep") ?? "";
+const nonan = args.includes("--nonan") ? (args.splice(args.indexOf("--nonan"), 1), true) : false;   // --nonan: NaN and infinite texels of captured float textures are loaded as 0
 const raw = args.includes("--raw") ? (args.splice(args.indexOf("--raw"), 1), true) : false;   // --raw: every dumped texture also as its texel bytes (f<frame>-tex<serial>.<format>.<w>x<h>.raw)
 const outDir = opt("--out"), limits = opt("--limits") ?? "", shaderDir = opt("--shaders"), dump = opt("--dump") ?? "", dumpat = opt("--dumpat") ?? "", texmax = opt("--texmax") ?? "", file = args[0];
 if (!file || !existsSync(file)) { console.error("usage: node test/gfx/replay.mts <capture file> [--out <dir>] [--limits maxStorageBuffersPerShaderStage:8,...]"); process.exit(1); }
@@ -77,7 +78,7 @@ try {
   });
   page.on("pageerror", (e: Error) => errors.push(String(e)));
   page.on("console", (m: any) => { if (m.type() === "error" || m.type() === "warning") errors.push(m.text()); });
-  await page.goto(`${pageUrl}/test/gfx/replay.html?limits=${encodeURIComponent(limits)}&dump=${encodeURIComponent(dump)}&texmax=${encodeURIComponent(texmax)}&trace=${trace ? 1 : 0}&raw=${raw ? 1 : 0}&dumpat=${encodeURIComponent(dumpat)}&skipbig=${encodeURIComponent(skipbig)}&keep=${encodeURIComponent(keepKeys)}`);
+  await page.goto(`${pageUrl}/test/gfx/replay.html?limits=${encodeURIComponent(limits)}&dump=${encodeURIComponent(dump)}&texmax=${encodeURIComponent(texmax)}&trace=${trace ? 1 : 0}&raw=${raw ? 1 : 0}&nonan=${nonan ? 1 : 0}&dumpat=${encodeURIComponent(dumpat)}&skipbig=${encodeURIComponent(skipbig)}&keep=${encodeURIComponent(keepKeys)}`);
   const r = await page.evaluate("window.__replay");
   if (r.fatal) throw new Error(`the replay page failed: ${r.fatal}\n${errors.join("\n")}`);
   writeFileSync(join(out, "summary.json"), JSON.stringify({ file, size, meta, ...r, browser: errors }, null, 1));

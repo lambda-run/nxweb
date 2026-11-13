@@ -4,7 +4,7 @@
 // Record layouts: src/gfx/hostops.ts. Pipeline key: src/gfx/pipeline.ts. Texture description: nvn_texdesc (obj.ts).
 // Browser code (WebGPU types are left loose: the tree has no @webgpu/types).
 import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
-import { imageVariant, formatClass } from "../shaders/images.ts";
+import { imageVariant, formatClass, supportLayout } from "../shaders/images.ts";
 import { fragmentInputVariant, fragmentOutputVariant, missingInputs } from "../shaders/variants.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, STORAGE_RW_FORMATS, MAYBE_UNFILTERABLE, VERTEX_CONV, convertVertices, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
@@ -477,6 +477,7 @@ export class GfxHost {
   // keyHex: the 16 hex digits of a stage's key, sha256(control section + code)[0..8] (src/gfx/shader.ts). info: the
   // shader chain's reflection record with the WGSL. -1 (with a red line) when it needs a binding the replayer lacks
   registerShader(keyHex: string, info: ShaderInfo): number {
+    if (info.wgsl) info = { ...info, wgsl: supportLayout(info.wgsl) };   // the support buffer as the recorder fills it (std140), whatever chain or store the text is from
     const dv = this.dv, r = Number(this.x.gfx_scratch()), bit = (a?: number[]) => (a ?? []).reduce((m, i) => m | (1 << i), 0) >>> 0;
     const unknown = (info.extra ?? []).filter(e => e.kind !== "support" && HOST_BLOCK(e) < 0);
     if (unknown.length) { this.log(`[RED] shader ${keyHex} needs bindings the replayer does not provide (${unknown.map(e => e.kind).join(", ")}): not registered`); return -1; }
@@ -661,7 +662,7 @@ export class GfxHost {
     s.variants ??= new Map();
     let m = s.variants.get(sig);
     if (m === undefined) {
-      const wgsl = s.info.variants?.[sig] ?? s.info.variant?.(classes) ?? this.onShaderVariant?.(s.key, classes);
+      const made = s.info.variants?.[sig] ?? s.info.variant?.(classes) ?? this.onShaderVariant?.(s.key, classes), wgsl = made ? supportLayout(made) : made;   // (a variant is made from the chain's text: its support block too)
       m = wgsl ? this.device.createShaderModule({ code: wgsl }) : null;
       if (wgsl && !s.info.variants?.[sig]) s.info.variants = { ...s.info.variants, [sig]: wgsl };   // kept as text too: a stream capture carries it
       s.variants.set(sig, m);

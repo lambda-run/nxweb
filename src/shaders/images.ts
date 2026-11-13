@@ -44,3 +44,37 @@ function castCalls(text: string, name: string, from: string, to: string): string
     else { const pre = `bitcast<vec4<${from}>>(`; text = text.slice(0, hit.index) + pre + text.slice(hit.index, c.close + 1) + ")" + text.slice(c.close + 1); at += pre.length; }
   }
 }
+
+// The translator's support buffer (viewport size and inverse, render scales; the recorder fills it, src/gfx/lower.ts emitSupport) is a std140 block: its
+// arrays of scalars have a stride of 16 bytes. naga's WGSL says `array<u32, 8>` and `array<f32, 73>`, which WGSL lays out 4 bytes apart (Chrome takes
+// such arrays in uniform blocks), so every member after the first was read at the wrong place: render scale 0 where the block holds 1, and a fragment
+// position divided by it is infinite (area3.gfxcap: the sky's lookup table was NaN in every texel, and the scene with it). The declaration is made over
+// to the block's layout: the arrays' elements become 16-byte structures and every index of them reads `.v`. Text without that block, or where the
+// arrays are used otherwise than by an index, comes back as it is.
+export function supportLayout(wgsl: string): string {
+  const v = /var<uniform>\s+support_buffer\s*:\s*(\w+)\s*;/.exec(wgsl);
+  if (!v || wgsl.includes("NxStd140")) return wgsl;
+  const st = new RegExp(`struct\\s+${v[1]}\\s*\\{([^}]*)\\}`).exec(wgsl);
+  if (!st) return wgsl;
+  const names: string[] = [];
+  const body = st[1].replace(/(\w+)\s*:\s*array<\s*(u32|i32|f32)\s*,\s*(\d+)\s*>/g, (_m, name, ty, n) => { names.push(name); return `${name}: array<NxStd140_${ty}, ${n}>`; });
+  if (!names.length) return wgsl;
+  let out = wgsl.slice(0, st.index) + `struct NxStd140_u32 { @size(16) @align(16) v: u32 }\nstruct NxStd140_i32 { @size(16) @align(16) v: i32 }\nstruct NxStd140_f32 { @size(16) @align(16) v: f32 }\nstruct ${v[1]} {${body}}` + wgsl.slice(st.index + st[0].length);
+  for (const name of names) {
+    const use = `support_buffer.${name}`;
+    let res = "", at = 0;
+    for (;;) {
+      const i = out.indexOf(use, at);
+      if (i < 0) { res += out.slice(at); break; }
+      let j = i + use.length;
+      if (/\w/.test(out[j] ?? "")) { res += out.slice(at, j); at = j; continue; }      // a longer member name
+      if (out[j] !== "[") return wgsl;                                                   // the whole array is taken: not made over
+      let depth = 0;
+      for (; j < out.length; j++) { if (out[j] === "[") depth++; else if (out[j] === "]" && --depth === 0) break; }
+      if (j >= out.length) return wgsl;
+      res += out.slice(at, j + 1) + ".v"; at = j + 1;
+    }
+    out = res;
+  }
+  return out;
+}
