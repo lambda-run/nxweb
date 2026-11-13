@@ -311,6 +311,9 @@ export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | v
   texMax?: number;
   // textures to read back (level 0, layer 0) after each present: the intermediate targets of the frame, as it left them
   dump?: number[]; onDump?: (d: ReplayDump) => Promise<void> | void;
+  // the same textures also when a render pass ends whose number (every render and compute pass, copy, upload and clear of the capture counts one, from 0:
+  // vm/ctl/tools/caprec.py prints them) lies in [from, to]: where in a frame a target's contents turn wrong (ReplayDump.pass)
+  dumpPasses?: [number, number];
   noReadback?: boolean;      // presented images are not read back (and not compared): a profile wants the replayer's work alone
   repeat?: ReplayRepeat }
 // Profiling (web/gfxprof.ts): frame `frame` of the capture, once it has been replayed, is handed to `run`, which may execute it again as often as it likes.
@@ -319,12 +322,13 @@ export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | v
 //                GfxHost.exec. With `hook` the records are executed one by one and each one's op and ms are handed to it.
 //   settle()     the read-backs have landed and the GPU has finished what was submitted
 export interface ReplayRepeat { frame: number; run(r: { host: any; batches: number; records: number; once(hook?: (op: number, ms: number) => void): number; settle(): Promise<void> }): Promise<void> }
-export interface ReplayDump { frame: number; serial: number; width: number; height: number; format: string; data: Uint8Array; nonZero: number; note: string }
+export interface ReplayDump { pass?: number; frame: number; serial: number; width: number; height: number; format: string; data: Uint8Array; nonZero: number; note: string }
 
 // Replays a capture on a GfxHost made by `makeHost(memory, log)` (the caller owns the device and the options; the host must not be attached to a recorder).
 // `payload(i)`: the payload bytes of chunk i. Every presented image is read back (level 0) and compared with the live one in the capture.
 export async function replayCapture(index: CaptureIndex, payload: (i: number) => Promise<Uint8Array> | Uint8Array, makeHost: (memory: { buffer: ArrayBuffer }, log: (l: string) => void) => any, opts: ReplayOptions = {}): Promise<ReplayResult> {
   const t0 = performance.now(), notes: string[] = [], log: string[] = [], frames: ReplayFrame[] = [];
+  let passNo = 0, inRender = false;
   const meta = index.chunks.find(c => c.h.type === "meta")?.h;
   if (!meta) throw new Error("the capture has no meta chunk");
   if (!index.complete) notes.push("the capture file is incomplete (no end chunk): it is replayed as far as it goes");
@@ -477,6 +481,18 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
         }
         const flip = op === H.PRESENT && (dv.getUint32(p + 44, true) & 1) !== 0;
         p += size;
+        if (op === 3) inRender = true; else if (op === 30 || op === 35) inRender = false;
+        if (op === 3 || op === 30 || op === 35 || op === 18 || op === 17 || op === 24 || op === 39) passNo++;
+        if (op === 4 && inRender && opts.dumpPasses && passNo - 1 >= opts.dumpPasses[0] && passNo - 1 <= opts.dumpPasses[1]) {
+          h.exec(from, p - from); from = p;
+          for (const serial of opts.dump ?? []) {
+            const t = h.textures.get(serial);
+            if (!t?.gpu) continue;
+            try { const r = await h.readTexture(serial); let nz = 0; for (let i = 0; i < r.data.length; i += r.bytesPerPixel) for (let k = 0; k < r.bytesPerPixel; k++) if (r.data[i + k]) { nz++; break; }
+              await opts.onDump?.({ pass: passNo - 1, frame: frames.length, serial, width: r.width, height: r.height, format: t.fmt.tex, data: r.data, nonZero: nz, note: "" }); } catch { /* not readable here */ }
+          }
+          if (p >= end) continue;
+        }
         if (op === H.PRESENT || p >= end) {
           const rep = !!rp && frames.length === rp.frame;
           if (rep) {      // (the pipeline creations of the frame are not repeated)

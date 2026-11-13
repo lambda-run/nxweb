@@ -61,8 +61,8 @@ async function main() {
     shader,
     onLive: async (n, head, data) => { flips.set(n, !!head.flip); const p = image(head.format, head.width, head.height, data, !!head.flip); if (p) await out(`frame-${n}.live.png`, p); },
     texMax: Number(q.get("texmax") ?? 0) || undefined,
-    dump, onDump: async d => { const p = d.data.length ? image(d.format, d.width, d.height, d.data, false) : null; if (p) await out(`f${d.frame}-tex${d.serial}.png`, p);
-      dumps.push({ frame: d.frame, serial: d.serial, width: d.width, height: d.height, format: d.format, nonZero: d.nonZero, note: d.note || (p ? "" : "no PNG for this format") }); },
+    dump, dumpPasses: /^\d+-\d+$/.test(q.get("dumpat") ?? "") ? (q.get("dumpat")!.split("-").map(Number) as [number, number]) : undefined, onDump: async d => { const at = d.pass !== undefined ? `-p${d.pass}` : ""; const p = d.data.length ? image(d.format, d.width, d.height, d.data, false) : null; if (q.get("raw") === "1" && d.data.length) await out(`f${d.frame}${at}-tex${d.serial}.${d.format}.${d.width}x${d.height}.raw`, d.data);  /* --raw: the texels as they were read, for NaN and range checks */ if (p) await out(`f${d.frame}${at}-tex${d.serial}.png`, p);
+      dumps.push({ pass: d.pass, frame: d.frame, serial: d.serial, width: d.width, height: d.height, format: d.format, nonZero: d.nonZero, note: d.note || (p ? "" : "no PNG for this format") }); },
     onFrame: async f => { const p = f.data ? image(f.format, f.width, f.height, f.data, f.flip) : null; if (p) await out(`frame-${f.n}.png`, p); },
   });
   const adapterName = adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "";

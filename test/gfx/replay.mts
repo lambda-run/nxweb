@@ -14,7 +14,8 @@ const ROOT = resolve(import.meta.dirname, "../.."), args = process.argv.slice(2)
 const opt = (name: string) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const trace = args.includes("--trace") ? (args.splice(args.indexOf("--trace"), 1), true) : false;
 const skipbig = opt("--skipbig") ?? "", keepKeys = opt("--keep") ?? "";
-const outDir = opt("--out"), limits = opt("--limits") ?? "", shaderDir = opt("--shaders"), dump = opt("--dump") ?? "", texmax = opt("--texmax") ?? "", file = args[0];
+const raw = args.includes("--raw") ? (args.splice(args.indexOf("--raw"), 1), true) : false;   // --raw: every dumped texture also as its texel bytes (f<frame>-tex<serial>.<format>.<w>x<h>.raw)
+const outDir = opt("--out"), limits = opt("--limits") ?? "", shaderDir = opt("--shaders"), dump = opt("--dump") ?? "", dumpat = opt("--dumpat") ?? "", texmax = opt("--texmax") ?? "", file = args[0];
 if (!file || !existsSync(file)) { console.error("usage: node test/gfx/replay.mts <capture file> [--out <dir>] [--limits maxStorageBuffersPerShaderStage:8,...]"); process.exit(1); }
 const out = resolve(outDir ?? file + ".replay");
 mkdirSync(out, { recursive: true });
@@ -76,7 +77,7 @@ try {
   });
   page.on("pageerror", (e: Error) => errors.push(String(e)));
   page.on("console", (m: any) => { if (m.type() === "error" || m.type() === "warning") errors.push(m.text()); });
-  await page.goto(`${pageUrl}/test/gfx/replay.html?limits=${encodeURIComponent(limits)}&dump=${encodeURIComponent(dump)}&texmax=${encodeURIComponent(texmax)}&trace=${trace ? 1 : 0}&skipbig=${encodeURIComponent(skipbig)}&keep=${encodeURIComponent(keepKeys)}`);
+  await page.goto(`${pageUrl}/test/gfx/replay.html?limits=${encodeURIComponent(limits)}&dump=${encodeURIComponent(dump)}&texmax=${encodeURIComponent(texmax)}&trace=${trace ? 1 : 0}&raw=${raw ? 1 : 0}&dumpat=${encodeURIComponent(dumpat)}&skipbig=${encodeURIComponent(skipbig)}&keep=${encodeURIComponent(keepKeys)}`);
   const r = await page.evaluate("window.__replay");
   if (r.fatal) throw new Error(`the replay page failed: ${r.fatal}\n${errors.join("\n")}`);
   writeFileSync(join(out, "summary.json"), JSON.stringify({ file, size, meta, ...r, browser: errors }, null, 1));
@@ -84,7 +85,7 @@ try {
   for (const n of r.notes) console.log(`note: ${n}`);
   for (const f of r.frames) console.log(`frame ${f.n}: tex#${f.serial} ${f.width}x${f.height} ${f.format} -> frame-${f.n}.png; against the live image: ${f.live === "same" ? "identical" : f.live === "differs" ? `${f.differing} of ${f.width * f.height} texels differ` : "none to compare"}${f.note ? ` (${f.note})` : ""}${f.line ? `\n         ${f.line}` : ""}`);
   for (const f of r.frames) { console.log(`frame ${f.n}, causes of red lines by count:`); for (const [l, n] of (f.reds ?? []).slice(0, 25)) console.log(`${String(n).padStart(6)}  ${l.length > 220 ? l.slice(0, 220) + "…" : l}`); }
-  for (const d of r.dumps ?? []) console.log(`  frame ${d.frame} tex#${d.serial} ${d.width}x${d.height} ${d.format}: ${d.nonZero} of ${d.width * d.height} texels not zero${d.note ? ` (${d.note})` : ` -> f${d.frame}-tex${d.serial}.png`}`);
+  for (const d of r.dumps ?? []) console.log(`  frame ${d.frame}${d.pass !== undefined ? ` pass ${d.pass}` : ""} tex#${d.serial} ${d.width}x${d.height} ${d.format}: ${d.nonZero} of ${d.width * d.height} texels not zero${d.note ? ` (${d.note})` : ` -> f${d.frame}-tex${d.serial}.png`}`);
   const total = r.errors.reduce((n: number, e: [string, number]) => n + e[1], 0);
   console.log(`${r.errors.length} distinct red lines (${total} in all)${r.errors.length ? ", by count:" : ""}`);
   for (const [l, n] of r.errors.slice(0, 40)) console.log(`${String(n).padStart(6)}  ${l.length > 300 ? l.slice(0, 300) + "…" : l}`);
