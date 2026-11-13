@@ -183,8 +183,8 @@ def page():
     open(f"{B}/build.json", "w").write(json.dumps({"rev": rev, "built": time.strftime("%Y-%m-%d %H:%M")}))
     # the page is served by the nxweb page's server, under /em/ (the one directory of the main checkout's build output this track writes)
     dest = os.environ.get("NXEM_SERVE", "/mnt/build/web/em-next")   # a staging directory: the page at /em/ may be running (its workers load em.js when they start). NXEM_SERVE=/mnt/build/web/em to replace it; os.makedirs(dest, exist_ok=True)
-    sh(["cp", f"{R}/web/em_worker.js", f"{B}/em_worker.js"])
-    for f in ("index.html", "em.js", "em.wasm", "build.json", "audio.js", "em_worker.js"): sh(["cp", f"{B}/{f}", f"{dest}/{f}"])
+    sh(["cp", f"{R}/web/em_worker.js", f"{B}/em_worker.js"]); sh(["cp", f"{R}/web/em_status.js", f"{B}/em_status.js"])
+    for f in ("index.html", "em.js", "em.wasm", "build.json", "audio.js", "em_worker.js", "em_status.js"): sh(["cp", f"{B}/{f}", f"{dest}/{f}"])
     print(f"build: page copied to {dest} (http://localhost:8080/{os.path.basename(dest)}/index.html)")
 
 def p2():

@@ -30,22 +30,16 @@ function boot(d) {
   };
   say("page: the runtime and its owner thread are in a dedicated worker (?owner=worker): the page does the DOM, the input and the audio device only");
   importScripts("em.js");
-  var last = 0, lastT = performance.now(), sentMem = false, ownerAt = 0, buf = 0;
-  setInterval(function () {
-    var o = self.NXOWNER, M = self.Module; if (!o || !M) return;
-    var now = performance.now(), n = o.presents, dN = n - last, fps = dN * 1000 / (now - lastT), threads = 0; last = n; lastT = now;
-    try { threads = M.nxLiveThreads ? M.nxLiveThreads() : 0; } catch (e) {}
-    if (!sentMem && M._nx_audio_ring) { try { postMessage({ mem: wasmMemory, audioRing: Number(M._nx_audio_ring()) }); sentMem = true; } catch (e) {} }
-    var split = "", running = -1;
-    try { if (M._nx_thread_split) { if (!buf) buf = M._malloc(2400); running = M._nx_thread_split(buf, 2400, dN, 0); var e1 = buf; while (HEAPU8[e1] && e1 < buf + 2399) e1++; split = new TextDecoder().decode(HEAPU8.slice(buf, e1)); } } catch (e) {}
-    var owner = null;
-    if (o.report && now - ownerAt >= 10000) { ownerAt = now; try { owner = o.report(true); if (owner.wallMs > 5000) say("[owner] time, last " + (owner.wallMs / 1000).toFixed(0) + " s: " + JSON.stringify(owner)); } catch (e) { say("[RED] owner report: " + e.message); } }
-    if (n > 0 && !nxem.reason && nxem.state !== "aborted" && nxem.state !== "exited") nxem.state = "running";
-    nxem.presents = n; nxem.threads = threads; nxem.fps = fps;
-    var st = { nxem: { state: nxem.state, reason: nxem.reason, presents: n, threads: threads, fps: fps, threadSplit: split, threadsRunning: running, redCount: red }, threads: threads,
-               fps: fps.toFixed(1) + " fps · frame " + n + (running >= 0 ? " · guest threads running at once " + running.toFixed(2) + " · per frame ms: " + split : "") };
-    if (owner) st.nxem.owner = owner;
-    postMessage({ status: st });
-  }, 1000);
+  // the status, as on the page (em_status.js): its writes to the page's elements are collected and sent after each tick
+  importScripts("em_status.js");
+  self.window = self; self.nxem = nxem; nxem.lines = []; nxem.label = "";
+  var texts = {}, sentMem = false;
+  var el = function (id) { return { style: {}, set textContent(v) { texts[id] = v; if (id === "fps") flush(); }, get textContent() { return texts[id]; } }; };
+  var flush = function () {
+    if (!sentMem && self.Module && Module._nx_audio_ring) { try { postMessage({ mem: wasmMemory, audioRing: Number(Module._nx_audio_ring()) }); sentMem = true; } catch (e) {} }
+    var copy = {}; for (var k in nxem) if (typeof nxem[k] !== "function" && k !== "lines") copy[k] = nxem[k];
+    try { postMessage({ status: { nxem: copy, texts: texts } }); } catch (e) { say("[RED] worker: status: " + e.message); }
+  };
+  nxStartStatus(el, say, function (threads) { return "rt C/C++ (nxnative) → Emscripten · " + (navigator.gpu ? "WebGPU" : "no WebGPU") + " · " + threads + " real threads"; });
 }
 })();
