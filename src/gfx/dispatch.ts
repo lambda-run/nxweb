@@ -120,7 +120,26 @@ function swizzleOut(set: bool, w: u32, a: usize): void {
   if (!set) w = 2 | 3 << 3 | 4 << 6 | 5 << 9;
   for (let i: usize = 0; i < 4; i++) { const q = P(a, 1 + i); if (q) store<i32>(q, <i32>((w >> (<u32>i * 3)) & 7)); }
 }
+// nvnTextureFinalize while commands that name the texture are recorded and not yet submitted (a game makes its frame's render targets anew and finalizes the
+// old ones before it submits what drew into them): the commands are lowered at the submission, and found no live texture ("draw with render targets that have no
+// live texture: skipped"). The texture stays as it is until the next submission has been lowered, or until its object is initialized again
+const DOOMED: usize = memory.data(8 * 512);
+let nDoomed: i32 = 0;
+function texFinalize(t: usize): void {
+  if (load<u32>(t) != O.MAGIC_TEX) return;
+  for (let i = 0; i < nDoomed; i++) if (<usize>load<u64>(DOOMED + (<usize>i << 3)) == t) return;
+  if (nDoomed == 512) texDoomedRelease();
+  store<u64>(DOOMED + (<usize>nDoomed << 3), <u64>t); nDoomed++;
+}
+function texDoomedRelease(): void {
+  for (let i = 0; i < nDoomed; i++) { const t = <usize>load<u64>(DOOMED + (<usize>i << 3)); if (load<u32>(t) == O.MAGIC_TEX) { texRelease(t); store<u32>(t, 0); } }
+  nDoomed = 0;
+}
+function texDoomedTake(t: usize): void {      // the object is used again: the texture it was goes now
+  for (let i = 0; i < nDoomed; i++) if (<usize>load<u64>(DOOMED + (<usize>i << 3)) == t) { nDoomed--; store<u64>(DOOMED + (<usize>i << 3), load<u64>(DOOMED + (<usize>nDoomed << 3))); return; }
+}
 function textureInitialize(t: usize, b: usize): u64 {
+  if (nDoomed) texDoomedTake(t);
   if (load<u32>(t) == O.MAGIC_TEX && T.texEntry(load<u64>(t, O.TEX_serial))) texRelease(t);   // initialized again without Finalize
   memory.fill(t, 0, O.TEX_SIZE);
   store<u32>(t, O.MAGIC_TEX);
@@ -347,7 +366,7 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnTextureBuilderGetMemoryPool: return load<u64>(P(a, 0), O.TB_pool);
     case F.nvnTextureBuilderGetMemoryOffset: return load<u64>(P(a, 0), O.TB_off);
     case F.nvnTextureInitialize: return textureInitialize(P(a, 0), P(a, 1));
-    case F.nvnTextureFinalize: texRelease(P(a, 0)); store<u32>(P(a, 0), 0); return 0;
+    case F.nvnTextureFinalize: texFinalize(P(a, 0)); return 0;
     case F.nvnTextureSetDebugLabel: return 0;
     case F.nvnTextureGetFlags: return <u64><u32>load<i32>(P(a, 0), O.TEX_d + O.TD_flags);
     case F.nvnTextureGetTarget: return <u64><u32>load<i32>(P(a, 0), O.TEX_d + O.TD_target);
@@ -516,7 +535,7 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnQueueFinalize: store<u32>(P(a, 0), 0); return 0;
     case F.nvnQueueSetDebugLabel: return 0;
     case F.nvnQueueGetError: return 0;                     // GPU_NO_ERROR
-    case F.nvnQueueSubmitCommands: { const q = P(a, 0); store<u64>(q, load<u64>(q, O.QUEUE_submits) + 1, O.QUEUE_submits); submit(I(a, 1), P(a, 2)); return 0; }
+    case F.nvnQueueSubmitCommands: { const q = P(a, 0); store<u64>(q, load<u64>(q, O.QUEUE_submits) + 1, O.QUEUE_submits); submit(I(a, 1), P(a, 2)); texDoomedRelease(); return 0; }
     case F.nvnQueueFlush: hostFlush(); return 0;           // everything submitted so far is with the replayer
     // DEPARTS: nxnative's Finish blocks until the GPU is done. A browser turn cannot block: the work is flushed with a
     // fence behind it (fences also wait for texture and buffer read-backs to land in guest memory), and the embedder

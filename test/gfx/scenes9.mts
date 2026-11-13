@@ -27,6 +27,19 @@ SHADERS.cs_noformat = CS_NOFORMAT;
 SHADERS.fs_bc4_block = { stage: "fragment", outputs: [0], wgsl: `@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4u { return vec4u(0xc8c8u, 0u, 0u, 0u); }` };
 
 export const scenes9: Scene[] = [
+  { name: "a texture finalized after the commands that draw into it and sample it were recorded, before they are submitted: the commands still find it", async run(e, t) {
+    const G = e.G, cmd = G.cmd, flat = await uboProgram(e), show = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
+    const rt = G.texture({ w: 16, h: 16, format: FMT.RGBA8 }), id = G.texId(rt), i = G.acquire(e.win);
+    G.begin();
+    e.frame(cmd, rt, flat); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 16, 16]); bindUbos(e, cmd, ubo(e, [1, 1, 0, 0, 0, 0, 0, 0]), ubo(e, [1, 0, 1, 1])); e.drawQuad(cmd);
+    e.frame(cmd, e.wtex[i], show); G.clear(cmd, [0, 0, 1, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]); e.bindTexture(cmd, id, nearest); e.drawQuad(cmd);
+    const h = G.end();
+    G.c("TextureFinalize", [rt]);                 // the game is done with it; the GPU is not
+    G.submit([h]); G.present(e.win, i);
+    t.rect(await e.read(), 0, 0, 64, 64, [255, 0, 255, 255], "the window shows what was drawn into the finalized texture");
+    t.noRed(e);
+    t.eq(e.g.dv.getUint32(rt, true), 0, "after the submission the object is finalized");
+  } },
   { name: "a pipeline WebGPU refuses, built for a draw in the middle of a submission: what was drawn before it is kept, the pipeline is dropped and reported with the reason", async run(e, t) {
     const G = e.G, cmd = G.cmd, good = await uboProgram(e), bad = await e.program("vs_bad", "fs_ubo"), i = G.acquire(e.win);
     G.begin();
