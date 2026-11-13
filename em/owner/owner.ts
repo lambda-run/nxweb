@@ -312,7 +312,7 @@ export class Owner {
     if (c.nativeImage) this.gfx.nativeImageOf = c.nativeImage;
     const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
     host.account = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
-    host.exec = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; return exec(p, n); };   // (the owner's own flushes too come after what is in the ring)
+    host.exec = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; const t0 = performance.now(); try { return exec(p, n); } finally { this.batchDone(p, n, performance.now() - t0); } };   // (the owner's own flushes too come after what is in the ring)
     if (sh?.direct && sh.plain && sh.lockFree !== false) {
       try {
         const x: any = this.gfx.x, u8 = new Uint8Array(this.memory.buffer), n = x.nvn_count();
@@ -491,8 +491,9 @@ export class Owner {
     const out = { wallMs: r1(wall), ownerBusyPct: r1(100 * covered / wall), outsideOrIdleMs: r1(wall - covered), sections, replayerExecMs: g ? r1(g.times.execMs - ((this as any).execSeen0 ?? 0)) : 0, synchronousStretchesOver8ms: long, requests,
       eventLoopLag: { probes: a.lag.n, meanMs: a.lag.n ? r1(a.lag.sum / a.lag.n) : 0, maxMs: r1(a.lag.max) },
       video: { packetsIn: a.video.packets, picturesOut: a.video.pictures, perSecondIn: r1(a.video.packets * 1000 / wall), perSecondOut: r1(a.video.pictures * 1000 / wall), decoders: decs, hardwareAcceleration: (globalThis as any).NXVDEC ?? "prefer-software" },
+      replayerBatches: Object.fromEntries([...this.rep.kinds].map(([k, v]) => [k, { n: v.n, ms: r1(v.ms), maxMs: r1(v.max) }])), replayerSlowBatches: this.rep.slow.slice(),
       ring: this.ringStats, presents: this.presents };
-    if (reset) { a.t0 = now; a.sec.clear(); a.long.clear(); a.req.clear(); a.lag = { n: 0, sum: 0, max: 0 }; a.video = { packets: 0, pictures: 0 }; (this as any).execSeen0 = g ? g.times.execMs : 0; }
+    if (reset) { this.rep.kinds.clear(); this.rep.slow = []; a.t0 = now; a.sec.clear(); a.long.clear(); a.req.clear(); a.lag = { n: 0, sum: 0, max: 0 }; a.video = { packets: 0, pictures: 0 }; (this as any).execSeen0 = g ? g.times.execMs : 0; }
     return out;
   }
   call(code: number, ctx: number, treq = 0): number {
@@ -502,6 +503,19 @@ export class Owner {
     finally { q.work += performance.now() - w0; this.secOut(); }
   }
   private parkAt = new Map<number, { nm: string; at: number }>();
+  // What the replayer's time went to, from outside it: every batch is timed whole and counted under what it holds
+  // (the host stream's record types, nxweb src/gfx/hostops.ts): a present, texels uploaded, textures or pipelines made,
+  // copies; the slow ones (over 8 ms) are kept with their record counts.
+  private rep = { kinds: new Map<string, { n: number; ms: number; max: number }>(), slow: [] as { ms: number; bytes: number; records: string }[] };
+  private batchDone(p: number, n: number, ms: number): void {
+    const u32 = new Uint32Array(this.memory.buffer), ops = new Map<number, number>(); let texels = 0;
+    for (let q = p; q + 8 <= p + n; ) { const op = u32[q / 4], sz = u32[q / 4 + 1]; if (sz < 8) break; ops.set(op, (ops.get(op) ?? 0) + 1); if (op === 24) texels += sz; q += sz; }
+    const has = (op: number) => ops.has(op);
+    const kind = has(20) ? "with a present" : has(24) ? "with texels uploaded" : has(7) ? "with pipelines made" : has(1) ? "with textures made" : has(17) || has(18) || has(25) ? "with copies" : has(14) || has(15) ? "draws only" : "state only";
+    let k = this.rep.kinds.get(kind); if (!k) this.rep.kinds.set(kind, k = { n: 0, ms: 0, max: 0 }); k.n++; k.ms += ms; if (ms > k.max) k.max = ms;
+    if (ms > 8 && this.rep.slow.length < 12) { const NAME: Record<number, string> = { 1: "texCreate", 3: "beginPass", 7: "pipelineCreate", 14: "draw", 15: "drawIndexed", 17: "copyB2T", 18: "copyT2T", 19: "snapshot", 20: "present", 21: "fence", 22: "flush", 24: "texData", 25: "copyT2B", 27: "uboData" };
+      this.rep.slow.push({ ms: +ms.toFixed(1), bytes: n, records: [...ops].filter(([op]) => NAME[op]).map(([op, c]) => `${NAME[op]} ${c}`).join(", ") + (texels ? `, ${(texels / 1048576).toFixed(1)} MB of texels` : "") }); }
+  }
   private call1(code: number, ctx: number): number {
     const t0 = performance.now();
     try {
