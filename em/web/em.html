@@ -108,7 +108,25 @@ function start(file) {
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
     nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") === "1", gfxAsync: q.get("asyncsubmit") === "1", vdec: q.get("vdec"), fsDirect: q.get("fsdirect") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
   };
-  var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s);
+  // ?owner=worker: the runtime (and the owner thread with it) in a dedicated worker, em_worker.js; the page keeps the
+  // DOM, the input and the audio device. Without it, as before: the runtime's main thread is this page's.
+  if (q.get("owner") === "worker") {
+    var M1 = window.Module, pg = {}; for (var k1 in M1.nxPage) if (typeof M1.nxPage[k1] !== "function" && k1 !== "file" && k1 !== "canvas") pg[k1] = M1.nxPage[k1];
+    window.Module = undefined;
+    var off = $("screen").transferControlToOffscreen(), w = new Worker("em_worker.js"); window.nxWorker = w;
+    w.onerror = function (e) { say("[RED] worker: " + (e.message || e)); };
+    w.onmessage = function (e) { var d = e.data;
+      if (d.lines) d.lines.forEach(say);
+      if (d.stage !== undefined && !window.nxem.reason) { $("stage").textContent = d.stage; window.nxem.state = d.stage; }
+      if (d.stopped) { window.nxem.reason = d.stopped; $("stage").textContent = "stopped: " + d.stopped; $("stage").style.color = "#f66"; }
+      if (d.status) { Object.assign(window.nxem, d.status.nxem); window.nxem.label = rtLabel(d.status.threads) + " · owner in a worker"; $("rt").textContent = window.nxem.label; $("fps").textContent = d.status.fps;
+        if (window.nxem.state === "running" && !window.nxem.reason) $("stage").textContent = "running"; }
+      // the audio device's page side (audio.js) looks for the runtime's memory and three functions on this page
+      if (d.mem) { window.wasmMemory = d.mem; var ring = d.audioRing; window.Module = { _nx_audio_ring: function () { return ring; }, _nx_audio_config: function (a, b) { w.postMessage({ call: ["_nx_audio_config", a, b] }); }, _nx_audio_tone: function (a) { w.postMessage({ call: ["_nx_audio_tone", a] }); } }; }
+    };
+    window.nxInputSink = function () { w.postMessage({ input: Array.prototype.slice.call(arguments) }); };
+    w.postMessage({ start: true, file: file, canvas: off, search: location.search, cfg: { arguments: M1.arguments, nxEnv: M1.nxEnv, page: pg } }, [off]);
+  } else { var s = document.createElement("script"); s.src = "em.js"; document.body.appendChild(s); }
   // input: the keyboard and the first controller, as the nxweb page maps them (web/main.ts): Z = A, X = B, C = X, V = Y,
   // Enter = Plus, Backspace = Minus, Q / E = L / R, arrows or WASD = left stick, IJKL = right stick; a controller in the
   // standard mapping. Sent to nn::hid (nxnative's hle_hid.c) when it changes.
@@ -121,7 +139,7 @@ function start(file) {
   addEventListener("blur", function () { keys.clear(); });
   var pollInput = function () {
     requestAnimationFrame(pollInput);
-    var M = window.Module; if (!M || !M._nx_input || !globalThis.NXOWNER) return;
+    var M = window.nxInputSink ? { _nx_input: window.nxInputSink } : window.Module; if (!M || !M._nx_input || (!window.nxInputSink && !globalThis.NXOWNER)) return;
     var ax = function (neg, pos) { return (pos.some(function (k) { return keys.has(k); }) ? 32767 : 0) - (neg.some(function (k) { return keys.has(k); }) ? 32767 : 0); };
     var b = 0; keys.forEach(function (k) { b |= KEY_BTN[k] || 0; });
     var k = [b, ax(["ArrowLeft", "KeyA"], ["ArrowRight", "KeyD"]), ax(["ArrowDown", "KeyS"], ["ArrowUp", "KeyW"]), ax(["KeyJ"], ["KeyL"]), ax(["KeyK"], ["KeyI"])];

@@ -110,7 +110,7 @@ addToLibrary({
   nx_js_cache_store__sig: 'vd',
   nx_js_cache_store__deps: ['$UTF8ToString', '$FS'],
   nx_js_cache_store: function(path) {
-    if (typeof caches === 'undefined' || typeof window === 'undefined') return;
+    if (typeof caches === 'undefined' || typeof process !== 'undefined') return;   // (a page, or the worker the runtime is in)
     const p = UTF8ToString(path), name = p.split('/').pop(); let b;
     try { b = FS.readFile(p); FS.unlink(p); } catch (e) { err('[RED] translation cache: ' + name + ': ' + e.message); return; }
     caches.open('nxem-a64').then(async (c) => {
