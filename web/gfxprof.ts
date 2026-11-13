@@ -10,6 +10,8 @@
 //           `Document-Policy: js-profiling`); Chrome samples every 10 ms at best, so the time is what buys samples
 //   to      where the result goes: POST <to>/<name> (vm/ctl/recv.mjs); when that fails, POST /__report/<name> of this server
 //   notex   the textures that were live before the capture are not filled (blank): a quicker load, the same CPU work
+//   texmax  those textures are made without the levels that have a side over this many texels (ReplayOptions.texMax): for a device with little memory
+//           (SwiftShader in the VM loses the device on the area capture's 1 GB of textures)
 //   wrap    0: the sampled profile runs without the counting wrappers around WebGPU's methods (with them, the time inside a WebGPU call shows as
 //           the self time of `gpu_<Interface>_<method>`, apart from the replayer function that called it)
 //   manual  the page waits for a driver (test/gfx/prof.mts: CDP's profiler around the phases) instead of running the phases itself
@@ -124,6 +126,7 @@ async function main() {
     host = r.host;
     result.loadMs = Math.round(performance.now() - t0); result.batches = r.batches; result.records = r.records; result.ledger = host.ledger.lastLine ?? "";
     say(`frame ${frame} reached after ${result.loadMs} ms: ${r.batches} batches, ${r.records} records\n  ${result.ledger}`);
+    if (host.lost) throw new Error("the WebGPU device was lost while the capture was replayed up to the frame (out of memory?): nothing to measure; try &texmax=256 or &notex=1");
     const statsOf = () => ({ ...host.stats }), delta = (a: any, b: any) => { const o: any = {}; for (const k of Object.keys(b)) if (b[k] !== a[k]) o[k] = b[k] - a[k]; return o; };
     const phases = {
       // the timings: nothing wrapped, nothing sampled
@@ -151,9 +154,13 @@ async function main() {
       async methods(n: number) {
         const counts = new Map<string, MCount>();
         await wrapGpu("time", counts);
+        // (the hash of a guest range, by which an upload is found unchanged: the recorder's export in the game, the replay's own loop here)
+        const hash: MCount = { count: 0, ms: 0, bytes: 0 }, x = host.x, origHash = x.gfx_hash;
+        counts.set("(recorder) gfx_hash", hash);
+        x.gfx_hash = (a: number, len: number) => { hash.count++; hash.bytes += len; const t = performance.now(); try { return origHash(a, len); } finally { hash.ms += performance.now() - t; } };
         let total = 0;
-        try { for (let i = 0; i < n; i++) { total += r.once(); await r.settle(); } } finally { unwrapGpu(); }
-        const tab = methodTable(counts, n), inGpu = Object.values(tab).reduce((s, v) => s + v.msPerFrame, 0);
+        try { for (let i = 0; i < n; i++) { total += r.once(); await r.settle(); } } finally { unwrapGpu(); x.gfx_hash = origHash; }
+        const tab = methodTable(counts, n), inGpu = Object.entries(tab).reduce((s, [k, v]) => s + (k.startsWith("(") ? 0 : v.msPerFrame), 0);
         result.methods = { execMsPerFrame: round(total / n), inWebGpuMsPerFrame: round(inGpu), byMethod: tab };
         say(`WebGPU methods per frame (exec ${round(total / n)} ms, of it ${round(inGpu)} ms inside WebGPU calls, settle's included):\n` + Object.entries(tab).slice(0, 24).map(([k, v]) => `  ${k.padEnd(40)} ${String(v.perFrame).padStart(8)} x  ${String(v.msPerFrame).padStart(8)} ms${v.bytesPerFrame ? `  ${v.bytesPerFrame} bytes` : ""}`).join("\n"));
         return result.methods;
@@ -182,7 +189,8 @@ async function main() {
     await phases.methods(Math.min(N, 10));
     if (profMs > 0) await phases.selfProfile(profMs, wrap);
   };
-  const r = await replayCapture(index, payload, (memory, log) => (host = new GfxHost(device, memory as any, { log, capture: false })), { noReadback: true, repeat: { frame, run } });
+  const r = await replayCapture(index, payload, (memory, log) => (host = new GfxHost(device, memory as any, { log, capture: false })), { noReadback: true, texMax: num("texmax", 0) || undefined, repeat: { frame, run } });
+  result.deviceLost = !!host?.lost; if (result.deviceLost) say("[RED] the WebGPU device was LOST during the run: the timings after that moment mean nothing");
   result.redLines = r.errors.slice(0, 20); result.redDistinct = r.errors.length; result.notes = r.notes; result.totalMs = Math.round(performance.now() - t0);
   const body = JSON.stringify(result, null, 1);
   let posted = "";

@@ -1,4 +1,4 @@
-// node test/gfx/prof.mts <capture file> [--frame k] [--n 30] [--spin 20000] [--interval 100] [--nowrap] [--notex] [--out <json>] [--auto]      (test/gfx/REPLAY.md, "Profiling")
+// node test/gfx/prof.mts <capture file> [--frame k] [--n 30] [--spin 20000] [--interval 100] [--nowrap] [--notex] [--texmax 256] [--out <json>] [--auto]      (test/gfx/REPLAY.md, "Profiling")
 // The replayer's CPU profile on a stream capture, in headless Chromium: serves build/web as `npm run web` does, opens gfxprof.html (web/gfxprof.ts) with
 // manual=1 and drives its phases: the timings of frame k executed n times, time per record type, count / ms / bytes per WebGPU method, and CDP's
 // sampling profiler (every --interval microseconds) over --spin ms of that frame executed again and again, the WebGPU methods behind named wrappers
@@ -11,11 +11,11 @@ import { createRequire } from "node:module";
 const args = process.argv.slice(2);
 const opt = (name: string) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const flag = (name: string) => { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; };
-const frame = opt("--frame"), n = +(opt("--n") ?? 30), spin = +(opt("--spin") ?? 20000), interval = +(opt("--interval") ?? 100), outFile = opt("--out"), nowrap = flag("--nowrap"), auto = flag("--auto"), notex = flag("--notex"), file = args[0];
+const frame = opt("--frame"), n = +(opt("--n") ?? 30), spin = +(opt("--spin") ?? 20000), interval = +(opt("--interval") ?? 100), outFile = opt("--out"), nowrap = flag("--nowrap"), auto = flag("--auto"), notex = flag("--notex"), texmax = opt("--texmax"), pageName = opt("--page") ?? "gfxprof.html", file = args[0];
 if (!file || !existsSync(file)) { console.error("usage: node test/gfx/prof.mts <capture file> [--frame k] [--n 30] [--spin ms] [--interval us] [--nowrap] [--notex] [--out <json>]"); process.exit(1); }
 process.env.NX_REPORTS = dirname(resolve(file));
 const { buildGfxProf } = await import("../../web/build.mts"), { serve } = await import("../../web/serve.mts");
-buildGfxProf();
+if (pageName === "gfxprof.html") buildGfxProf();      // --page <other>.html: a page built by hand (another build of the replayer to compare with), served from build/web as it is
 const { server, url } = await serve(0);
 const req = createRequire(import.meta.url);
 let pw: any;
@@ -43,14 +43,14 @@ try {
   const page = await browser.newPage(), errors: string[] = [];
   page.on("pageerror", (e: Error) => errors.push(String(e)));
   if (auto) {      // the page by itself, as a browser with a real GPU runs it (the Self-Profiling API's samples, the result POSTed to the receiver): its text
-    await page.goto(`${url}gfxprof.html?cap=${encodeURIComponent(basename(file))}&n=${n}&prof=${spin}${frame !== undefined ? `&frame=${frame}` : ""}${notex ? "&notex=1" : ""}${nowrap ? "&wrap=0" : ""}`);
+    await page.goto(`${url}${pageName}?cap=${encodeURIComponent(basename(file))}&n=${n}&prof=${spin}${frame !== undefined ? `&frame=${frame}` : ""}${notex ? "&notex=1" : ""}${texmax ? `&texmax=${texmax}` : ""}${nowrap ? "&wrap=0" : ""}`);
     const r: any = await page.evaluate("window.__result");
     console.log(await page.evaluate("document.getElementById('out').textContent"));
     if (r.fatal || errors.length) throw new Error(`the profile page failed: ${r.fatal ?? ""}\n${errors.join("\n")}`);
     throw null;
   }
   const cdp = await page.context().newCDPSession(page);
-  await page.goto(`${url}gfxprof.html?cap=${encodeURIComponent(basename(file))}&manual=1&to=http://127.0.0.1:9${frame !== undefined ? `&frame=${frame}` : ""}${notex ? "&notex=1" : ""}`);
+  await page.goto(`${url}${pageName}?cap=${encodeURIComponent(basename(file))}&manual=1&to=http://127.0.0.1:9${frame !== undefined ? `&frame=${frame}` : ""}${notex ? "&notex=1" : ""}${texmax ? `&texmax=${texmax}` : ""}`);
   for (;;) {
     const s = await page.evaluate("Promise.race([window.__result, new Promise(r => setTimeout(() => r(window.__gfxprofReady ? 'ready' : 'wait'), 2000))])");
     if (s === "ready") break;
@@ -88,6 +88,7 @@ try {
     console.log(`   total time:`);
     for (const e of cpu.total.slice(0, 25)) console.log(`  ${pad((e.ms / spun.frames).toFixed(2), 8)} ${pad(e.pct, 5)}%  ${e.fn}`);
   }
+  if (r.deviceLost) console.log("[RED] the WebGPU device was LOST during the run: the timings after that moment mean nothing");
   console.log(`${r.redDistinct} distinct red lines; written to ${outFile ?? file + ".prof.json"}`);
 } catch (e) { if (e !== null) { console.error(e instanceof Error ? e.message : e); code = 1; } }
 finally { await browser.close(); server.close(); }

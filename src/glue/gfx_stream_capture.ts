@@ -386,11 +386,13 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
       for (let i = 0; i < made.length; i++) { const q = batchAt + i * 16; dv.setUint32(q, H.TEX_DESTROY, true); dv.setUint32(q + 4, 16, true); dv.setUint32(q + 8, made[i] >>> 0, true); dv.setUint32(q + 12, Math.floor(made[i] / 4294967296), true); h.exec(q, 16); }
       for (const [s, t] of repTex!) if (!h.textures.has(s)) h.textures.set(s, { ...t, views: new Map() });
       for (const [pg, bytes] of repPre) u8.set(bytes, pageAt(pg));
+      // Memory went back to the frame's start: every upload is checked again. Between the batches it changes as it did under the live replayer, which
+      // looks again only where the stream says so (a submission's end, H_MEM_DIRTY, a read-back landing): the same here, so the hashing is the game's
+      h.dropUploads();
       let ms = 0;
       for (const b of repBatches) {
         for (const [at, bytes] of b.pages) u8.set(bytes, at);
         u8.set(b.body!, batchAt);
-        h.dropUploads();
         for (const [off, len] of b.segs) {
           if (!hook) { const t = performance.now(); h.exec(batchAt + off, len); ms += performance.now() - t; continue; }
           for (let p = batchAt + off, end = p + len; p < end;) { const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true), t = performance.now(); h.exec(p, size); const d = performance.now() - t; ms += d; hook(op, d); p += size; }
