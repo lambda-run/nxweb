@@ -304,7 +304,15 @@ export interface ReplayFrame { n: number; serial: number; width: number; height:
   live: "same" | "differs" | "none"; differing: number; note: string }
 export interface ReplayResult { host: any; frames: ReplayFrame[]; log: string[]; errors: [string, number][]; notes: string[]; stats: any; ms: number }
 // shader: a shader of the capture is about to be taken: what it returns (when anything) replaces its record (a stage translated again by a newer chain)
-export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | void; onLive?: (n: number, head: any, data: Uint8Array) => Promise<void> | void; keepData?: boolean; shader?: (key: string, info: any) => any }
+export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | void; onLive?: (n: number, head: any, data: Uint8Array) => Promise<void> | void; keepData?: boolean; shader?: (key: string, info: any) => any;
+  noReadback?: boolean;      // presented images are not read back (and not compared): a profile wants the replayer's work alone
+  repeat?: ReplayRepeat }
+// Profiling (web/gfxprof.ts): frame `frame` of the capture, once it has been replayed, is handed to `run`, which may execute it again as often as it likes.
+//   once(hook)   memory and the set of textures as they were when the frame began (textures the frame destroyed come back blank), then the frame's records
+//                again, up to and including its present (which submits). Pipeline creations are left out: they are made. Returns the ms spent inside
+//                GfxHost.exec. With `hook` the records are executed one by one and each one's op and ms are handed to it.
+//   settle()     the read-backs have landed and the GPU has finished what was submitted
+export interface ReplayRepeat { frame: number; run(r: { host: any; batches: number; records: number; once(hook?: (op: number, ms: number) => void): number; settle(): Promise<void> }): Promise<void> }
 
 // Replays a capture on a GfxHost made by `makeHost(memory, log)` (the caller owns the device and the options; the host must not be attached to a recorder).
 // `payload(i)`: the payload bytes of chunk i. Every presented image is read back (level 0) and compared with the live one in the capture.
@@ -358,6 +366,36 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
     for (let i = 0, n = f.width * f.height; i < n; i++) for (let k = 0; k < bpp; k++) if (a[i * bpp + k] !== b[i * bpp + k]) { d++; break; }
     f.live = d ? "differs" : "same"; f.differing = d;
   };
+  // ---- ReplayOptions.repeat ----
+  interface RepBatch { pages: [number, Uint8Array][]; body: Uint8Array | null; segs: [number, number][] }
+  const rp = opts.repeat, repBatches: RepBatch[] = [], repPre = new Map<number, Uint8Array>();
+  let repTex: Map<number, any> | null = null;
+  const repeatFrame = async () => {
+    const settle = async () => { await h.landed(); try { await h.device.queue.onSubmittedWorkDone(); } catch { /* a lost device says so in the log */ } };
+    const once = (hook?: (op: number, ms: number) => void): number => {
+      // the textures as the frame found them: the ones it made are destroyed (by records, as the stream would), the ones it destroyed are known again
+      const made = [...h.textures.keys()].filter((s: number) => !repTex!.has(s));
+      for (let i = 0; i < made.length; i++) { const q = batchAt + i * 16; dv.setUint32(q, H.TEX_DESTROY, true); dv.setUint32(q + 4, 16, true); dv.setUint32(q + 8, made[i] >>> 0, true); dv.setUint32(q + 12, Math.floor(made[i] / 4294967296), true); h.exec(q, 16); }
+      for (const [s, t] of repTex!) if (!h.textures.has(s)) h.textures.set(s, { ...t, views: new Map() });
+      for (const [pg, bytes] of repPre) u8.set(bytes, pageAt(pg));
+      let ms = 0;
+      for (const b of repBatches) {
+        for (const [at, bytes] of b.pages) u8.set(bytes, at);
+        u8.set(b.body!, batchAt);
+        h.dropUploads();
+        for (const [off, len] of b.segs) {
+          if (!hook) { const t = performance.now(); h.exec(batchAt + off, len); ms += performance.now() - t; continue; }
+          for (let p = batchAt + off, end = p + len; p < end;) { const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true), t = performance.now(); h.exec(p, size); const d = performance.now() - t; ms += d; hook(op, d); p += size; }
+        }
+      }
+      return ms;
+    };
+    let records = 0;
+    for (const b of repBatches) { const bd = new DataView(b.body!.buffer); for (const [off, len] of b.segs) for (let p = off; p < off + len; p += bd.getUint32(p + 4, true)) records++; }
+    await settle();
+    await rp!.run({ host: h, batches: repBatches.length, records, once, settle });
+    await settle();
+  };
   for (let ci = 0; ci < index.chunks.length; ci++) {
     const c = index.chunks[ci], hd = c.h;
     if (hd.type === "shader") { const info = JSON.parse(JSON.stringify(hd.info), (_k, v) => v && typeof v === "object" && Array.isArray(v.__u8) ? Uint8Array.from(v.__u8) : v); h.shaders[hd.id] = { key: hd.key, info: opts.shader?.(hd.key, info) ?? info }; }
@@ -390,7 +428,15 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
     } else if (hd.type === "batch") {
       const data = await payload(ci), n = hd.len, body = (n + 7) & ~7;
       let o = body;
-      for (const [pg, count] of hd.runs as [number, number][]) { u8.set(data.subarray(o, o + count * CAP_PAGE), pageAt(pg)); o += count * CAP_PAGE; }
+      const cur: RepBatch = { pages: [], body: null, segs: [] };
+      for (const [pg, count] of hd.runs as [number, number][]) {
+        const at = pageAt(pg), bytes = data.subarray(o, o + count * CAP_PAGE);
+        if (rp && frames.length === rp.frame) {      // the frame to repeat: what its pages held before it, and what each batch brings
+          for (let i = 0; i < count; i++) if (!repPre.has(pg + i)) repPre.set(pg + i, u8.slice(at + i * CAP_PAGE, at + (i + 1) * CAP_PAGE));
+          cur.pages.push([at, bytes]);
+        }
+        u8.set(bytes, at); o += count * CAP_PAGE;
+      }
       u8.set(data.subarray(0, n), batchAt);
       for (const p of pendingPipes.splice(0)) {
         const k = xlate(p.key);
@@ -410,16 +456,29 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
         const flip = op === H.PRESENT && (dv.getUint32(p + 44, true) & 1) !== 0;
         p += size;
         if (op === H.PRESENT || p >= end) {
+          const rep = !!rp && frames.length === rp.frame;
+          if (rep) {      // (the pipeline creations of the frame are not repeated)
+            if (!repTex) repTex = new Map([...h.textures].map(([s, t]: [number, any]) => [s, { ...t, gpu: undefined, snap: undefined, imgScratch: undefined, shapes: undefined }]));
+            for (let q = from, a = from; q < p;) { const qs = dv.getUint32(q + 4, true), pc = dv.getUint32(q, true) === H.PIPELINE_CREATE; if (pc && q > a) cur.segs.push([a - batchAt, q - a]); q += qs; if (pc) a = q; else if (q >= p) cur.segs.push([a - batchAt, q - a]); }
+          }
           h.exec(from, p - from); from = p;
           if (op !== H.PRESENT) continue;
           await h.landed();
           const fr: ReplayFrame = { n: frames.length, serial: h.lastPresented, width: 0, height: 0, bytesPerPixel: 0, format: "", flip, data: null, line: h.ledger.lastLine ?? "", live: "none", differing: 0, note: "" };
-          try { const r = await h.readTexture(h.lastPresented); fr.width = r.width; fr.height = r.height; fr.bytesPerPixel = r.bytesPerPixel; fr.data = r.data; fr.format = h.textures.get(h.lastPresented)?.fmt?.tex ?? ""; }
+          if (opts.noReadback) fr.note = "not read back";
+          else try { const r = await h.readTexture(h.lastPresented); fr.width = r.width; fr.height = r.height; fr.bytesPerPixel = r.bytesPerPixel; fr.data = r.data; fr.format = h.textures.get(h.lastPresented)?.fmt?.tex ?? ""; }
           catch (e: any) { fr.note = `the presented image could not be read: ${e?.message ?? e}`; }
           frames.push(fr);
           await opts.onFrame?.(fr);
+          if (rep) {
+            const whole = u8.slice(batchAt, batchAt + n);      // the batch as it stands (addresses rewritten up to here): put back after the repeats
+            cur.body = whole; repBatches.push({ ...cur }); cur.segs = [];
+            await repeatFrame();
+            u8.set(whole, batchAt);
+          }
         }
       }
+      if (cur.segs.length) { cur.body = u8.slice(batchAt, batchAt + n); repBatches.push(cur); }
     }
   }
   await h.landed();
