@@ -402,7 +402,7 @@ export class Owner {
       u8.set(new Uint8Array(t16.buffer, 0, need * 2), buf + w * h);
       dv.setBigUint64(ctx + 8, BigInt(w), true); dv.setBigUint64(ctx + 16, BigInt(h), true); dv.setBigUint64(ctx + 24, BigInt(pic.matrix), true); dv.setBigUint64(ctx + 32, BigInt(pic.fullRange ? 1 : 0), true);
       ok = 1; if (!this.videoStats.pictures++) this.log(`[codec] first AV1 picture ${w}x${h} handed to the game`);
-    } else if (pic) this.log(`[RED] nn::codec: a ${pic.w}x${pic.h} picture does not fit the buffer`);
+    } else if (pic) this.log(`[RED] nn::codec: a ${pic.w}x${pic.h} picture does not fit the buffer (room ${cap} bytes at 0x${buf.toString(16)}; the call's op ${Number(dv.getBigUint64(ctx + 0, true))}, decoder ${Number(dv.getBigUint64(ctx + 8, true))}, packet ${seq})`);
     dv.setBigUint64(ctx, BigInt(ok), true);
     this.wake(ctx);
   }
