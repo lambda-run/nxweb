@@ -5,7 +5,7 @@
 // replay ran (red lines or not), 1 when it could not.
 import { createServer } from "node:http";
 import { openSync, readSync, fstatSync, readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, extname, normalize, resolve } from "node:path";
+import { join, extname, normalize, resolve, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { indexCapture } from "../../src/glue/gfx_stream_capture.ts";
@@ -54,13 +54,29 @@ const req = createRequire(import.meta.url);
 let pw: any;
 for (const p of ["playwright", "/opt/node-tools/node_modules/playwright"]) { try { pw = req(p); break; } catch { /* next */ } }
 if (!pw) { console.error("playwright is not installed"); process.exit(1); }
-const browser = await pw.chromium.launch({ args: (process.env.GPU_FLAGS ?? "--enable-unsafe-webgpu --enable-features=Vulkan --use-angle=swiftshader --use-vulkan=swiftshader --disable-gpu-watchdog --disable-gpu-process-crash-limit").split(" ") });
+// --cdp <http endpoint>: a browser that is already running (the Mac's headless Chrome with the real GPU, http://192.168.64.1:9334) instead of one
+// launched here. It cannot reach this server, and WebGPU needs a secure origin: the page's requests to a localhost origin are answered over the
+// DevTools connection from this server (page.route), so nothing has to be forwarded
+const cdp = opt("--cdp"), capUrl = opt("--capurl") ?? "http://localhost:8080", pageUrl = cdp ? "http://localhost:8099" : url;
+const browser = cdp ? await pw.chromium.connectOverCDP(cdp) : await pw.chromium.launch({ args: (process.env.GPU_FLAGS ?? "--enable-unsafe-webgpu --enable-features=Vulkan --use-angle=swiftshader --use-vulkan=swiftshader --disable-gpu-watchdog --disable-gpu-process-crash-limit").split(" ") });
 let code = 0;
 try {
-  const page = await browser.newPage(), errors: string[] = [];
+  const ctx = cdp ? await browser.newContext() : null; (globalThis as any).__ctx = ctx;
+  // (the page's origin is answered over DevTools, so Chrome sees its fetch of the web server as a public page reaching the loopback network: allowed by hand)
+  if (ctx && capUrl) for (const perm of ["local-network-access", "loopback-network", "local-network"]) { try { await ctx.grantPermissions([perm], { origin: pageUrl }); } catch { /* a name this Chrome does not have */ } }
+  const page = ctx ? await ctx.newPage() : await browser.newPage(), errors: string[] = [];
+  if (cdp) await page.route(pageUrl + "/**", async (route: any) => {
+    // the capture's bytes come from the web server the browser reaches itself (web/serve.mts on the Mac's localhost:8080, /__cap/<name> in ranges, for a
+    // capture in its reports directory): a gigabyte through the DevTools connection took over half an hour. --capurl "" sends them through it all the same
+    if (capUrl && route.request().url().startsWith(pageUrl + "/__cap")) { await route.continue({ url: `${capUrl}/__cap/${basename(file)}` }); return; }
+    const rq = route.request(), h = rq.headers(), init: any = { method: rq.method(), headers: h.range ? { range: h.range } : {} };
+    if (rq.method() === "POST") init.body = rq.postDataBuffer() ?? Buffer.alloc(0);
+    try { const r = await fetch(url + rq.url().slice(pageUrl.length), init), headers: Record<string, string> = {}; r.headers.forEach((v, k) => { if (!/^(content-length|connection|transfer-encoding|date|keep-alive)$/.test(k)) headers[k] = v; });
+      await route.fulfill({ status: r.status, headers, body: Buffer.from(await r.arrayBuffer()) }); } catch (e) { await route.abort().catch(() => {}); }
+  });
   page.on("pageerror", (e: Error) => errors.push(String(e)));
   page.on("console", (m: any) => { if (m.type() === "error" || m.type() === "warning") errors.push(m.text()); });
-  await page.goto(`${url}/test/gfx/replay.html?limits=${encodeURIComponent(limits)}&dump=${encodeURIComponent(dump)}&texmax=${encodeURIComponent(texmax)}&trace=${trace ? 1 : 0}&skipbig=${encodeURIComponent(skipbig)}&keep=${encodeURIComponent(keepKeys)}`);
+  await page.goto(`${pageUrl}/test/gfx/replay.html?limits=${encodeURIComponent(limits)}&dump=${encodeURIComponent(dump)}&texmax=${encodeURIComponent(texmax)}&trace=${trace ? 1 : 0}&skipbig=${encodeURIComponent(skipbig)}&keep=${encodeURIComponent(keepKeys)}`);
   const r = await page.evaluate("window.__replay");
   if (r.fatal) throw new Error(`the replay page failed: ${r.fatal}\n${errors.join("\n")}`);
   writeFileSync(join(out, "summary.json"), JSON.stringify({ file, size, meta, ...r, browser: errors }, null, 1));
@@ -75,5 +91,5 @@ try {
   if (r.errors.length > 40) console.log(`        … ${r.errors.length - 40} more in ${join(out, "errors.txt")}`);
   console.log(`written to ${out}`);
 } catch (e) { console.error(e instanceof Error ? e.message : e); code = 1; }
-finally { await browser.close(); server.close(); }
+finally { if (cdp) { for (const c of browser.contexts()) if (c === (globalThis as any).__ctx) await c.close(); } else await browser.close(); server.close(); }
 process.exit(code);

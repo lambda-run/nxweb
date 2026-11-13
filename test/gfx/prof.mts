@@ -29,7 +29,7 @@ if (cdpAt) {      // (the endpoint names its socket by the address the browser l
   ws.hostname = at.hostname; ws.port = at.port;
   browser = await pw.chromium.connectOverCDP(ws.href);
 } else browser = await pw.chromium.launch({ args: (process.env.GPU_FLAGS ?? "--enable-unsafe-webgpu --enable-features=Vulkan --use-angle=swiftshader --use-vulkan=swiftshader").split(" ") });
-let code = 0, closePage: () => Promise<void> = async () => {};
+let finished = false, code = 0, closePage: () => Promise<void> = async () => {};
 // CDP's profile: self and total time per function
 function tables(profile: any, top: number) {
   const byId = new Map<number, any>(), parent = new Map<number, number>();
@@ -50,6 +50,10 @@ try {
   const page = cdpAt ? await (browser.contexts()[0] ?? await browser.newContext()).newPage() : await browser.newPage(), errors: string[] = [];
   closePage = () => page.close();
   page.on("pageerror", (e: Error) => errors.push(String(e)));
+  const said: string[] = [];      // what the page said (when it dies, the last of it is all there is)
+  page.on("console", (m: any) => { const t = m.text(); if (t.startsWith("gfxprof: ")) said.push(t.slice(9)); });
+  page.on("crash", () => errors.push("the page's renderer crashed (out of memory?)"));
+  page.on("close", () => { if (!finished) console.error(`the page closed; it had said:\n${said.slice(-12).map(l => l.slice(0, 400)).join("\n")}\n${errors.join("\n")}`); });
   if (auto) {      // the page by itself, as a browser with a real GPU runs it (the Self-Profiling API's samples, the result POSTed to the receiver): its text
     await page.goto(`${url}${pageName}?cap=${encodeURIComponent(basename(file))}&n=${n}&prof=${spin}${frame !== undefined ? `&frame=${frame}` : ""}${notex ? "&notex=1" : ""}${texmax ? `&texmax=${texmax}` : ""}${nowrap ? "&wrap=0" : ""}`);
     const r: any = await page.evaluate("window.__result");
@@ -99,5 +103,5 @@ try {
   if (r.deviceLost) console.log("[RED] the WebGPU device was LOST during the run: the timings after that moment mean nothing");
   console.log(`${r.redDistinct} distinct red lines; written to ${outFile ?? file + ".prof.json"}`);
 } catch (e) { if (e !== null) { console.error(e instanceof Error ? e.message : e); code = 1; } }
-finally { try { await closePage(); } catch { /* gone */ } await browser.close(); server?.close(); }
+finally { finished = true; try { await closePage(); } catch { /* gone */ } await browser.close(); server?.close(); }
 process.exit(code);

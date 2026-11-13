@@ -139,15 +139,25 @@ export function progSetKeys(entry: usize, n: i32, sd: usize): void {
 
 // Keys a draw or dispatch was skipped for while the embedder has them on their way (pending), since the embedder last
 // asked (gfx_shader_waited): it can hand those to its translator first
-const WAITED: usize = memory.data(256);
+// (as many as a loading frame skips for: the stages of the frame's LAST draws, the ones that put the picture together, must be among them. With 32
+// the same first 32 of a frame were handed over at every present and a composite pass at the frame's end stayed behind the whole queue)
+const WAITED_N: u32 = 1024;
+const WAITED: usize = memory.data(8192);
 let nWaited: u32 = 0;
 function waited(key: u64): void {
   if (shaderKeyState(key) != GfxShaderS.Pending) return;
   for (let i: u32 = 0; i < nWaited; i++) if (load<u64>(WAITED + (<usize>i << 3)) == key) return;
-  if (nWaited < 32) { store<u64>(WAITED + (<usize>nWaited << 3), key); nWaited++; }
+  if (nWaited < WAITED_N) { store<u64>(WAITED + (<usize>nWaited << 3), key); nWaited++; }
 }
-// Copies the waited-on keys to `out` (8 bytes each, at most 32) and forgets them; their number
-export function shaderWaited(out: usize): u32 { const n = nWaited; memory.copy(out, WAITED, <usize>n << 3); nWaited = 0; return n; }
+// Copies waited-on keys to `out` (8 bytes each, at most 64 a call: the scratch area's size) and forgets those; their number. In the order of their first
+// skipped draw; the caller asks again until it gets 0
+export function shaderWaited(out: usize): u32 {
+  const n: u32 = nWaited < 64 ? nWaited : 64;
+  memory.copy(out, WAITED, <usize>n << 3);
+  nWaited -= n;
+  if (nWaited) memory.copy(WAITED, WAITED + (<usize>n << 3), <usize>nWaited << 3);
+  return n;
+}
 
 // Keys already reported missing (one red line a key)
 const MISSING: usize = memory.data(512);

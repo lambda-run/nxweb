@@ -28,7 +28,7 @@ const OP: Record<number, string> = { 1: "TEX_CREATE", 2: "TEX_DESTROY", 3: "BEGI
   40: "DISPATCH_SKIPPED", 41: "SKIP" };
 const q = new URLSearchParams(location.search), G = globalThis as any;
 const num = (k: string, d: number) => { const v = q.get(k); return v === null || v === "" || !isFinite(+v) ? d : +v; };
-const say = (l: string) => { const pre = document.getElementById("out"); if (pre) pre.textContent += l + "\n"; };
+const say = (l: string) => { const pre = document.getElementById("out"); if (pre) pre.textContent += l + "\n"; console.log(`gfxprof: ${l}`); };
 const round = (v: number, d = 3) => +v.toFixed(d);
 function summary(a: number[]) { const s = a.slice().sort((x, y) => x - y), n = s.length; return n ? { n, min: round(s[0]), median: round(s[n >> 1]), mean: round(s.reduce((x, y) => x + y, 0) / n), p90: round(s[Math.min(n - 1, Math.floor(n * 0.9))]), max: round(s[n - 1]) } : { n: 0 }; }
 

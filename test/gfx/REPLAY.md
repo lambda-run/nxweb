@@ -55,7 +55,14 @@ on SwiftShader) and writes:
 | `replay.log` | the replayer's whole log |
 | `summary.json` | adapter, statistics, per frame: size, format, texels that differ from the live image, the frame ledger's line |
 
-and prints the same as text. A frame "identical" to the live image means the replay reproduces the live replayer
+and prints the same as text.
+
+**On the real GPU** (the area captures do not fit SwiftShader): `--cdp http://192.168.64.1:9334` replays in a browser that is already running (the
+Mac's headless Chrome; take `/ctl/host.lock` first) instead of launching one. The page's origin (`http://localhost:8099`, never listened on) is answered
+over the DevTools connection from the harness's own server; the capture's bytes come from the web server the browser reaches itself
+(`--capurl`, default `http://localhost:8080`: `web/serve.mts`, for a capture in its reports directory). `--dump <serial>,...` writes those textures as
+they are at each present (`f<frame>-tex<serial>.png`, with the number of texels that are not zero). `area2.gfxcap`: 175 s on apple metal-3, the three
+frames identical to the live ones. A frame "identical" to the live image means the replay reproduces the live replayer
 exactly (same device class); on another GPU (the Mac's Metal against SwiftShader) some texels differ by rounding.
 
 ## What a capture holds, and what a replay can and cannot test

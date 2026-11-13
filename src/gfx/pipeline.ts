@@ -36,7 +36,7 @@ export const PK_vin: usize = 376;           // u64: 2 bits a location: the class
 export const PK_SIZE: usize = 384;
 
 const N: u32 = 16384;                      // entries, a power of two; the table is open-addressed by the key's hash
-const E_SIZE: usize = 408;                 // key, +384 Inst, +400 u32 hash, +404 u32 used
+const E_SIZE: usize = 408;                 // key, +384 Inst, +400 u32 hash, +404 u32 used (1; 3 when its failure has been said)
 let TAB: usize = 0;
 export function pipelineInit(): void { TAB = arenaBig(<usize>N * E_SIZE); }
 let count: u32 = 0;
@@ -71,7 +71,9 @@ export function pipelineGet(): i32 {
     }
     if (load<u32>(e, 400) == h && memory.compare(e, KEY, PK_SIZE) == 0) {
       if (instOf(i).state == GfxPipelineS.Failed) {
-        if (lastRed != <i32>i) { lastRed = <i32>i; L.red("pipeline "); L.u(i); L.str(" failed to build: its draws are skipped"); L.end(); }
+        // said once a pipeline (+404 becomes 3): each skipped draw leaves a skip record, which the frame ledger counts by cause. (Six failed pipelines
+        // used in turn made 15,000 of these lines in one run)
+        if (load<u32>(e, 404) != 3) { store<u32>(e, 3, 404); L.red("pipeline "); L.u(i); L.str(" failed to build: its draws are skipped"); L.end(); }
         return -1;
       }
       return <i32>i;
@@ -91,7 +93,7 @@ export function pipelineReset(): void {
   for (let i: u32 = 0; i < N; i++) {
     const e = entry(i);
     if (!load<u32>(e, 404)) continue;
-    instOf(i).step(GfxPipelineE.Reset);
+    instOf(i).step(GfxPipelineE.Reset); store<u32>(e, 1, 404);
     const r = hostRec(H_PIPELINE_CREATE, 16); store<u32>(r, i, 8); store<u32>(r, <u32>e, 12);
   }
   lastRed = -1;
@@ -105,7 +107,7 @@ export function pipelineResetShader(lib: u32): u32 {
     if (!load<u32>(e, 404)) continue;
     const compute = load<u8>(e, PK_prim) == 0xff;
     if (<u32>load<u16>(e, PK_fs) != lib && (compute || <u32>load<u16>(e, PK_vs) != lib)) continue;
-    instOf(i).step(GfxPipelineE.Reset);
+    instOf(i).step(GfxPipelineE.Reset); store<u32>(e, 1, 404);
     const r = hostRec(H_PIPELINE_CREATE, 16); store<u32>(r, i, 8); store<u32>(r, <u32>e, 12);
     n++;
   }
