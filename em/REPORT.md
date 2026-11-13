@@ -169,3 +169,55 @@ recording on by default, `?fsworker=1` behind its flag). The run that passed on 
 - Saves: the page's save storage is `MemStorage` (owner_web.ts): a save does not outlive the page, so "Continue" in a
   later boot cannot work until saves go to OPFS. Not built.
 - `?skipmovie=1` was not built.
+
+# Round two (2026-11-13, second session): the road to the area, saves, and what is built but not yet run
+
+Headless numbers: Chromium in the VM, 1-3 presents a second at the title and after (SwiftShader), runs end at 600-700 s
+when the tab runs out of memory. Logs under `em/logs/` (k2, s1, s2, s3).
+
+## The road to the first area
+- **No button skips the story movie** as far as tested: A and + every 10 s (logs/k2) take the game off the title
+  (`save commit #1`, then `content:/Event/Movie/Dm_Kokiri_0000.webm` is opened: the owner now logs every movie file
+  opened); packets kept arriving until the run was stopped at 380 s. B and long holds: not tested.
+- The story movie is 116,983,337 bytes, video only (V_AV1, Lavf), 154.2 s, 56 clusters, Cues at the end. The game
+  feeds one packet per game frame, so its length in wall time is the frame rate's.
+- **`?skipmovie=1`** (a test aid; the status line says so; `owner/rom.ts`): every `Dm_*.webm` but the title's is read
+  as a valid short WebM that ends after its first cluster: the file's size in the RomFS tables is the start of the
+  second cluster, and the Segment's size, the Info's Duration and the SeekHead entries that point past the cut are
+  patched in every read (40 files, 2,287 MB read as 133 MB, 4.6 s each on average; Kokiri_0000: 5.0 s).
+  - cut without the patches (logs/s2 headless, and the coordinator's Chrome ride): the player never ends, the last
+    picture stays with the subtitles running (a parser that finds the file shorter than its Segment waits for data);
+  - cut with the patches (logs/s3): title movie opened 76 s after the owner started, story movie 161 s, its last packet
+    at about 440 s, then a BLACK screen (mean brightness 0.0 in the screenshots at presents 600-800) with file reads
+    going on (200-500 nn::fs entries per 10 s) and units translated 8,512 -> 8,717, until the tab crashed at 615 s.
+    The area itself is not reached headless; whether the black screen is the load into it has to be seen in Chrome.
+- **Saves are stored** (`owner/owner_web.ts`: nxweb's `OpfsStorage`, directory `nxem-saves` of the origin's private file
+  system, both containers opened before the game starts; needs the runtime in a worker, the default; `?saves=mem`,
+  `?saves=new`). Verified: the second headless run with the same profile says "save 8768 bytes ... from earlier runs"
+  and commits generation 2, the third generation 3. NOT verified: "Continue" (the only save written so far is the
+  one at New Game; a save from inside the area needs a Chrome ride).
+- Keys: the page latches a press for 150 ms (taps between two HID samples were lost); the headless runner takes
+  `KeyZ*1500` (held 1.5 s) and `SHOTS="250,600"` (the canvas as PNG at present counts; `tools/png_diff.mjs a b`).
+- Fastest known road: `…/em-next/index.html?skipmovie=1`, A and + alternately from the title.
+
+## Built in this session, not yet run on the game (queue, one heavy run each)
+1. `?vpipe=1` (owner.ts videoCall / vpDrop / vpAnswer, kernel/nx_video.c): a reset is a new generation (pictures of
+   before it are dropped: `pipeline.stale`), a reset or close empties the pipeline and releases a waiting call,
+   `[RED]` when pictures are handed over out of packet order (owner) or out of timestamp order (C, both modes);
+   the report's `video.pipeline` counts. To do: title run with and without, compare `[codec] AV1 timing` pictures/s,
+   look for the "does not fit the buffer" line; default only if clean. (Window: a call waits at 4 packets inside.)
+2. `?asyncsubmit=1`: `ringKeys` checks the key record of every pipeline-create record when its batch runs (entry in
+   use, hash as stored): the record points at the pipeline cache's own entry, written once and never moved or freed
+   (src/gfx/pipeline.ts), so the batch is self-contained in effect; `ring.keys / keysBad` in the report. To do: title
+   run against a plain one (and plain against plain as the control): SHOTS at presents 60,100,130 + png_diff, the
+   `recorder lock held by:` table.
+3. Lock-free coverage: `?lfaudit=1` (owner.ts startGfx, nx_guest.js nx_js_gfx_call): the first 12 real calls of each
+   entry point the static audit lets through and the dynamic audit left locked are made under the lock with the
+   recorder's static data, globals block and arena compared around them; `node em/tools/lf_real.mjs <console>` prints
+   the clean names (to paste into `owner/lockfree_real.ts` with the SHA-256 of gfx64.wasm as `key`; `?lfreal=0` off)
+   and, from `nvnCalls` in the report (kernel/nx_gfx.c counts by id), the top 20 entry points and the lock-free share.
+4. Slow presents: the report's `presentSteps` (getCurrentTexture, blit, flush, queueSubmit, imageEvent per present,
+   the slow ones listed). To do: read it from a title run (and from a Chrome ride's `nxem.owner`).
+5. `?fsworker=1` with saves: not looked at.
+Also: `local/zelda-loop` is merged (stream capture `?gfxcapture=`; the page's query is handed to the replayer:
+`owner_web.ts` `capture: p.search`); the capture has not been seen working on this page yet.
