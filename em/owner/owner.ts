@@ -241,7 +241,7 @@ export class Owner {
         if (len === 0xFFFFFFFF) { head = 0; Atomics.store(i32, 0, 0); continue; }
         this.ringKeys(R + 16 + head + 8, len);
         try { this.gfx.env.gfx_exec(R + 16 + head + 8, len); } catch (e) { this.log(`[RED] owner: a batch from the ring failed: ${(e as Error).stack ?? e}`); }
-        head += 8 + Math.ceil(len / 8) * 8; Atomics.store(i32, 0, head); n++;
+        head += 8 + Math.ceil(len / 8) * 8 + u32[(R + 16 + head) / 4 + 1]; Atomics.store(i32, 0, head); n++;      // (+4: the bytes of texels the guest copied after the batch)
       }
     } finally { this.draining = false; this.secOut(); }
     this.ringStats.batches += n; this.ringStats.ms += performance.now() - t0;

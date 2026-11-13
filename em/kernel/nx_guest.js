@@ -200,21 +200,31 @@ addToLibrary({
         if (NX.midCut && n >= 8) { const op0 = HEAPU32[p / 4]; cnt(op0 === 23 ? 8 : op0 === 25 ? 9 : 10, 0); } NX.midCut = false;
         let cause = 5;
         if (HEAP32[r + 3] === 1 && n >= 8) {
-          let last = 0, ok = true;
-          for (let q = p; q < p + n;) { const op = HEAPU32[q / 4], sz = HEAPU32[q / 4 + 1]; if (op === 24 || sz < 8) { ok = false; break; } last = op; q += sz; }
+          // (texels, H_TEX_DATA 24, whose record says the bytes its rows span (+60) are copied next to the batch in the ring and
+          // the record points there: the recorder's scratch area is free again when the call returns, so the batch need not wait.
+          // A batch that ends with them was cut so that the scratch area could be read: it goes into the ring like a submission's end)
+          let last = 0, ok = true, extra = 0; const tex = [];
+          for (let q = p; q < p + n;) { const op = HEAPU32[q / 4], sz = HEAPU32[q / 4 + 1]; if (sz < 8) { ok = false; break; }
+            if (op === 24) { if (NX.texRing === undefined) NX.texRing = !/[?&]texring=0/.test((globalThis.location && location.search) || '');      // (?texring=0: they wait as before)
+              const bytes = sz >= 64 && NX.texRing ? HEAPU32[q / 4 + 15] : 0, src = sz >= 64 ? HEAPU32[q / 4 + 10] + HEAPU32[q / 4 + 11] * 4294967296 : 0;
+              if (!bytes || !src || src + bytes > HEAPU8.length) { ok = false; break; } tex.push(q - p, src, bytes, extra); extra += Math.ceil(bytes / 8) * 8; }
+            last = op; q += sz; }
           // (a cut at a full buffer: the recorder's buffer is 1 MB and no record is over 4 KB; it goes on lowering and
           // touches no guest memory because of the cut, so the batch can wait in the ring like a submission's end)
           const full = n >= 1048576 - 4096;
           // (a batch that ends with a fence, 21: nvnQueueFenceSync and nvnQueueFinish flush after it; the game waits for
           // the fence with nvnSyncWait, which is the owner's and comes after the ring. Three a frame, each waited before)
-          const end = last === 22 || last === 21;
+          const end = last === 22 || last === 21 || last === 24;
           cause = !ok ? 2 : end || full ? 4 : 3;
           if (ok && (end || full)) {
-            const need = 8 + Math.ceil(n / 8) * 8, head = Atomics.load(HEAP32, r); let tail = Atomics.load(HEAP32, r + 1), at = -1;
+            const body = Math.ceil(n / 8) * 8, need = 8 + body + extra, head = Atomics.load(HEAP32, r); let tail = Atomics.load(HEAP32, r + 1), at = -1;
             if (tail >= head) { if (tail + need <= size - 8) at = tail; else if (need < head) { HEAPU32[(R + 16 + tail) / 4] = 0xFFFFFFFF; at = 0; } }
             else if (tail + need < head) at = tail;
             if (at >= 0) {
-              HEAPU32[(R + 16 + at) / 4] = n; HEAPU32[(R + 16 + at) / 4 + 1] = 0; HEAPU8.copyWithin(R + 16 + at + 8, p, p + n);
+              HEAPU32[(R + 16 + at) / 4] = n; HEAPU32[(R + 16 + at) / 4 + 1] = extra; HEAPU8.copyWithin(R + 16 + at + 8, p, p + n);
+              for (let k = 0; k < tex.length; k += 4) { const rec = R + 16 + at + 8 + tex[k], dst = R + 16 + at + 8 + body + tex[k + 3];
+                HEAPU8.copyWithin(dst, tex[k + 1], tex[k + 1] + tex[k + 2]); HEAPU32[rec / 4 + 10] = dst >>> 0; HEAPU32[rec / 4 + 11] = Math.floor(dst / 4294967296); }
+              if (tex.length) NX.ringTexels = (NX.ringTexels || 0) + tex.length / 4;
               Atomics.store(HEAP32, r + 1, at + need); Atomics.add(HEAP32, r + 2, 1); Atomics.notify(HEAP32, r + 2);
               NX.ringPuts = (NX.ringPuts || 0) + 1; cnt(end ? 0 : 1, 0);
               return;
