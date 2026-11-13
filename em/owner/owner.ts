@@ -444,8 +444,10 @@ export class Owner {
     this.vpStats.answered++;
     if (e.seq <= v.last) { if (this.vpStats.outOfOrder++ < 4) this.log(`[RED] nn::codec: decoder ${dec}'s pipeline hands over the picture of packet ${e.seq} after that of packet ${v.last}`); }
     v.last = e.seq;
-    this.videoDone1(dec, e.seq, e.pic, ctx);
-    new DataView(this.memory.buffer).setBigUint64(ctx + 40, e.seq, true);
+    // (the packet's number is written BEFORE the caller is woken: written after, the woken thread read its buffer's size
+    // there as the packet number (wrong timestamps), or had already made its next request in the same block, whose
+    // buffer size then was the packet number: "a picture does not fit the buffer", the dropped picture)
+    this.videoDone1(dec, e.seq, e.pic, ctx, true);
   }
   private videoDone(dec: number, seq: bigint, pic: VideoPicture | null): void {
     const v = this.vp.get(dec);
@@ -460,7 +462,7 @@ export class Owner {
     if (ctx === undefined) return;
     const top = this.secIn("codec: a picture into guest memory"); try { this.videoDone1(dec, seq, pic, ctx); } finally { this.secOut(); }
   }
-  private videoDone1(dec: number, seq: bigint, pic: VideoPicture | null, ctx: number): void {
+  private videoDone1(dec: number, seq: bigint, pic: VideoPicture | null, ctx: number, pipe = false): void {
     this.videoWait.delete(dec + ":" + seq);
     const dv = new DataView(this.memory.buffer), u8 = new Uint8Array(this.memory.buffer), buf = Number(dv.getBigUint64(ctx + 32, true)), cap = Number(dv.getBigUint64(ctx + 40, true));
     let ok = 0;
@@ -478,6 +480,7 @@ export class Owner {
       dv.setBigUint64(ctx + 8, BigInt(w), true); dv.setBigUint64(ctx + 16, BigInt(h), true); dv.setBigUint64(ctx + 24, BigInt(pic.matrix), true); dv.setBigUint64(ctx + 32, BigInt(pic.fullRange ? 1 : 0), true);
       ok = 1; if (!this.videoStats.pictures++) this.log(`[codec] first AV1 picture ${w}x${h} handed to the game`);
     } else if (pic) this.log(`[RED] nn::codec: a ${pic.w}x${pic.h} picture does not fit the buffer (room ${cap} bytes at 0x${buf.toString(16)}; the call's op ${Number(dv.getBigUint64(ctx + 0, true))}, decoder ${Number(dv.getBigUint64(ctx + 8, true))}, packet ${seq})`);
+    if (pipe) dv.setBigUint64(ctx + 40, seq, true);
     dv.setBigUint64(ctx, BigInt(ok), true);
     this.wake(ctx);
   }
