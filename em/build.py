@@ -196,6 +196,8 @@ def page():
     # the fs worker (?fsworker=1): the game file read off the owner thread (owner/fs_worker.ts)
     sh([f"{W}/node_modules/.bin/esbuild", f"{R}/owner/fs_worker.ts", "--bundle", "--platform=browser", "--format=iife", f"--outfile={B}/fs_worker.js", "--log-level=warning"])
     for f in ("index.html", "em.js", "em.wasm", "build.json", "audio.js", "em_worker.js", "em_status.js", "fs_worker.js"): sh(["cp", f"{B}/{f}", f"{dest}/{f}"])
+    # this tree's own recorder (?gfxown=1), when tools/build_gfx_own.mjs has built it
+    if os.path.exists(f"{R}/build/gfxown/gfx64.wasm"): sh(["cp", f"{R}/build/gfxown/gfx64.wasm", f"{dest}/gfx64.own.wasm"])
     print(f"build: page copied to {dest} (http://localhost:8080/{os.path.basename(dest)}/index.html)")
 
 def p2():

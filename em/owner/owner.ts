@@ -657,8 +657,8 @@ export class Owner {
   // What the guest threads' recorder instances handed over since the last call, by cause (kernel/nx_guest.js gfx_exec):
   // per present, and for the ones that waited for the owner the ms waited per present
   private fcLast: Uint32Array | null = null; private fcPresents = 0; private fcLine = "";
-  flushCauses(): any { const M: any = (globalThis as any).Module; if (!M?._nx_gfx_flush_causes) return null;
-    const cur = new Uint32Array(this.memory.buffer, Number(M._nx_gfx_flush_causes()), 32).slice(), last = this.fcLast, f = Math.max(1, this.presents - this.fcPresents); this.fcLast = cur; this.fcPresents = this.presents;
+  flushCauses(): any { const M: any = (globalThis as any).Module; if (!M?._nx_gfx_fc) return null;
+    const cur = new Uint32Array(this.memory.buffer, Number(M._nx_gfx_fc()), 32).slice(), last = this.fcLast, f = Math.max(1, this.presents - this.fcPresents); this.fcLast = cur; this.fcPresents = this.presents;
     if (!last) return null;
     const NAME = ["ring: submission end", "ring: stream buffer full", "WAITED: texels in the batch", "WAITED: cut inside a submission", "WAITED: no room in the ring", "WAITED: ring off", "WAITED: entry point address", "WAITED: more arena", "(cut inside a submission) then the recorder wrote guest memory", "(cut) then a texture-to-buffer copy", "(cut) then other"];
     const out: any = {}, parts: string[] = []; let waited = 0, waitedMs = 0;

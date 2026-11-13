@@ -108,6 +108,7 @@ EMSCRIPTEN_KEEPALIVE double nx_gfx_ring_bytes(void) { return (double)RING_BYTES;
 // owner/owner.ts flushCauses names them): u32 count and u32 microseconds waited for the owner, 16 causes
 static _Atomic uint32_t g_flush_cause[32];
 EMSCRIPTEN_KEEPALIVE double nx_gfx_flush_causes(void) { return (double)(uintptr_t)g_flush_cause; }
+EMSCRIPTEN_KEEPALIVE double nx_gfx_fc(void) { return (double)(uintptr_t)g_flush_cause; }   // the same for the owner (Module._nx_gfx_fc: a function a JS library depends on is not put on Module)
 
 // ---- nxweb's fs module the same way (owner/owner.ts NXF): nn::fs calls run in the calling thread's instance under the
 // module's lock; the storage (the dev_* imports) is the owner's, asked through the lock holder's request words, and a
