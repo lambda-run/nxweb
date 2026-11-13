@@ -152,14 +152,24 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
     // Where a stage is on its way (the status line and the wait's red line say it): reading the store, at the translator, being stored
     const sw = owner.shaderWait, store0 = typeof caches !== "undefined" ? webShaderStore() : undefined;
     const store = store0 && { get: (id: string) => { sw.storeReads++; return store0.get(id).finally(() => { sw.storeReads--; }); }, put: (id: string, t: any) => { sw.storeWrites++; return store0.put(id, t).finally(() => { sw.storeWrites--; }); }, ids: store0.ids ? () => store0.ids!() : undefined };
-    if (translator) { const t0 = translator.translate.bind(translator); translator.translate = (b: any) => { sw.translating++; return t0(b).finally(() => { sw.translating--; sw.translated++; }); }; }
+    // (a stage that goes to the translator: the calls waiting for it are told, below)
+    const atTranslator = new Set<string>(), told = new Map<string, () => void>();
+    if (translator) { const t0 = translator.translate.bind(translator); translator.translate = (b: any) => { sw.translating++; atTranslator.add(b.key); told.get(b.key)?.(); told.delete(b.key); return t0(b).finally(() => { sw.translating--; sw.translated++; atTranslator.delete(b.key); }); }; }
     const sh = new RtShaders(owner.gfx, { translator, store });
-    // A program's stages are waited for (RtGfx.afterStages parks the caller on RtShaders.pending; the owner goes on).
-    // The wait has an end: after WAIT_MS the call returns as it does with shaderwait=0 (the program's draws are skipped
-    // until the stages arrive) and a red line says where the stages were; after three such waits no call waits any more.
-    { const pending0 = sh.pending.bind(sh), WAIT_MS = Number(qs.get("shaderwaitms") ?? 20000);
+    // A program's stages are waited for (RtGfx.afterStages parks the caller on RtShaders.pending; the owner goes on) WHILE
+    // THEY ARE READ FROM THE STORE of earlier translations: milliseconds, and the program is usable when the call returns.
+    // A stage that has to be translated is not waited for: the game hands over its 3,471 programs one call at a time, so
+    // a wait per call made the translator work on one program at a time, one Worker, no batches. Measured headless with
+    // an empty store: 609 waits took 108.7 s (the first 17.5 s: the translator's runtime starting) and the boot had not
+    // reached a present after 150 s; in Chrome that was the "hang" in the first nvnProgramSetShadersExt. Without the
+    // wait the stages queue up and four Workers translate them in batches while the game goes on (draws that use them
+    // are skipped until they arrive, and the replayer says so in red). ?shaderwait=all: wait for translations too.
+    // Any wait ends after WAIT_MS with a red line saying where the stages were; after three such, none waits any more.
+    { const pending0 = sh.pending.bind(sh), WAIT_MS = Number(qs.get("shaderwaitms") ?? 20000), all = qs.get("shaderwait") === "all";
+      if (all) log("page: shaderwait=all: a program's stages are waited for also while they are translated (slow with an empty store)");
       (sh as any).pending = (keys: string[]) => {
         if (sw.off) return null;
+        if (!all && keys.some(k => atTranslator.has(k))) { sw.notWaited++; return null; }
         const p0 = pending0(keys); if (!p0) return null;
         const t0 = performance.now(); sw.waits++; sw.waiting++;
         let timer: any; const late = new Promise<void>(res => { timer = setTimeout(() => {
@@ -167,7 +177,9 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
           log(`[RED] shaders: a program's stages (${keys.join(", ")}) were not there after ${(WAIT_MS / 1000).toFixed(0)} s: the call returns without them (draws that use them are skipped until they arrive). On their way: ${sw.storeReads} store reads, ${sw.translating} at the translator (${st ? `${st.started} of ${st.workers} workers started, ${st.batches} batches sent, queue up to ${st.maxQueued}` : "none here"}; ${sw.translated} answered so far), ${sw.storeWrites} store writes`);
           if (sw.timeouts >= 3 && !sw.off) { sw.off = true; log("[RED] shaders: three waits ran out: programs' stages are not waited for any more in this run (as shaderwait=0)"); }
           res(); }, WAIT_MS); });
-        return Promise.race([p0, late]).then(() => { clearTimeout(timer); sw.waiting--; const ms = performance.now() - t0; sw.ms += ms; if (ms > sw.maxMs) sw.maxMs = ms; });
+        const toXl = all ? [] : keys.map(k => new Promise<void>(res => { const prev = told.get(k); told.set(k, () => { prev?.(); res(); }); }));
+        let xl = false; for (const t of toXl) void t.then(() => { xl = true; });
+        return Promise.race([p0, late, ...toXl]).then(() => { clearTimeout(timer); sw.waiting--; if (xl) sw.notWaited++; const ms = performance.now() - t0; sw.ms += ms; if (ms > sw.maxMs) sw.maxMs = ms; });
       }; }
     log(translator ? "page: shaders are translated in the page (nxweb's shader Workers) and kept in its store" : "[RED] page: nxweb's shader translator is not beside this page: only stored shaders are used");
   }

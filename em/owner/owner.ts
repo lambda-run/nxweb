@@ -391,7 +391,7 @@ export class Owner {
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
   // waits of a program's stages (owner_web.ts): calls that waited, waiting now, ms in all and the longest, waits that ran out; what is on its way where
-  shaderWait = { waits: 0, waiting: 0, ms: 0, maxMs: 0, timeouts: 0, off: false, storeReads: 0, translating: 0, translated: 0, storeWrites: 0 };
+  shaderWait = { waits: 0, waiting: 0, ms: 0, maxMs: 0, timeouts: 0, off: false, notWaited: 0,   /* notWaited: calls that returned because a stage went to the translator */ storeReads: 0, translating: 0, translated: 0, storeWrites: 0 };
   private varSize: RegExp | null = null;
   private lfa: { blk: number; names: string[]; n: number } | null = null; private nvnNameList: string[] | null = null;
   nvnNames(): string[] { if (!this.nvnNameList) { const x: any = this.gfx!.x, u8 = new Uint8Array(this.memory.buffer), out: string[] = []; for (let id = 0, n = x.nvn_count(); id < n; id++) { const p = Number(x.nvn_name(id)); let e = p; while (u8[e]) e++; out.push(String.fromCharCode(...u8.subarray(p, e))); } this.nvnNameList = out; } return this.nvnNameList; }
@@ -639,12 +639,12 @@ export class Owner {
   // What the game asks for per presented frame (report().frameWork, the status line): the host stream's draws, passes
   // and flushes, the game's submits and command buffers (the calls counted by id on the calling threads), and the time
   // of the recorder's entry points without the waits for the owner: nvnQueueSubmitCommands' is the submit's lowering.
-  private work = { batches: 0, bytes: 0, draws: 0, passes: 0, flushes: 0, pipelines: 0, texUploads: 0 }; private workLast: any = null; private workLine = "";
+  private work = { batches: 0, bytes: 0, draws: 0, passes: 0, flushes: 0, pipelines: 0, texUploads: 0, memWrites: 0, memDirty: 0 }; private workLast: any = null; private workLine = "";
   frameWork(): any { const M: any = (globalThis as any).Module, g = this.gfx; if (!g) return null;
     const names = this.nvnNames(), cur: any = { ...this.work, presents: this.presents, calls: null as Uint32Array | null, ns: null as Float64Array | null };
     if (M?._nx_gfx_id_calls && M?._nx_gfx_id_ns) { cur.calls = new Uint32Array(this.memory.buffer, Number(M._nx_gfx_id_calls()), 1024).slice(); cur.ns = Float64Array.from(new BigUint64Array(this.memory.buffer, Number(M._nx_gfx_id_ns()), 1024), v => Number(v)); }
     const last = this.workLast; this.workLast = cur; if (!last) return null;
-    const f = Math.max(1, cur.presents - last.presents), per = (k: string) => +((cur[k] - last[k]) / f).toFixed(1), out: any = { presents: cur.presents - last.presents, drawsPerPresent: per("draws"), passesPerPresent: per("passes"), flushesPerPresent: per("flushes"), batchesPerPresent: per("batches"), streamKBPerPresent: +((cur.bytes - last.bytes) / f / 1024).toFixed(1), pipelinesMade: cur.pipelines - last.pipelines, texUploadsPerPresent: per("texUploads") };
+    const f = Math.max(1, cur.presents - last.presents), per = (k: string) => +((cur[k] - last[k]) / f).toFixed(1), out: any = { presents: cur.presents - last.presents, drawsPerPresent: per("draws"), passesPerPresent: per("passes"), flushesPerPresent: per("flushes"), batchesPerPresent: per("batches"), streamKBPerPresent: +((cur.bytes - last.bytes) / f / 1024).toFixed(1), pipelinesMade: cur.pipelines - last.pipelines, texUploadsPerPresent: per("texUploads"), streamWritesPerPresent: per("memWrites"), memDirtyPerPresent: per("memDirty") };
     if (cur.calls && last.calls) { const idOf = (n: string) => names.indexOf(n), dc = (n: string) => { const i = idOf(n); return i < 0 ? 0 : cur.calls[i] - last.calls[i]; }, dms = (i: number) => (cur.ns[i] - last.ns[i]) / 1e6;
       const sub = idOf("nvnQueueSubmitCommands");
       out.submitsPerPresent = +(dc("nvnQueueSubmitCommands") / f).toFixed(1); out.commandBuffersPerPresent = +(dc("nvnCommandBufferBeginRecording") / f).toFixed(1);
@@ -671,7 +671,7 @@ export class Owner {
   private batchDone(p: number, n: number, ms: number): void {
     const u32 = new Uint32Array(this.memory.buffer), ops = new Map<number, number>(); let texels = 0;
     for (let q = p; q + 8 <= p + n; ) { const op = u32[q / 4], sz = u32[q / 4 + 1]; if (sz < 8) break; ops.set(op, (ops.get(op) ?? 0) + 1); if (op === 24) texels += sz; q += sz; }
-    const has = (op: number) => ops.has(op), w = this.work; w.batches++; w.bytes += n; w.draws += (ops.get(14) ?? 0) + (ops.get(15) ?? 0); w.passes += ops.get(3) ?? 0; w.flushes += ops.get(22) ?? 0; w.pipelines += ops.get(7) ?? 0; w.texUploads += ops.get(24) ?? 0;
+    const has = (op: number) => ops.has(op), w = this.work; w.batches++; w.bytes += n; w.draws += (ops.get(14) ?? 0) + (ops.get(15) ?? 0); w.passes += ops.get(3) ?? 0; w.flushes += ops.get(22) ?? 0; w.pipelines += ops.get(7) ?? 0; w.texUploads += ops.get(24) ?? 0; w.memWrites += ops.get(42) ?? 0; w.memDirty += ops.get(23) ?? 0;
     const kind = has(20) ? "with a present" : has(24) ? "with texels uploaded" : has(7) ? "with pipelines made" : has(1) ? "with textures made" : has(17) || has(18) || has(25) ? "with copies" : has(14) || has(15) ? "draws only" : "state only";
     let k = this.rep.kinds.get(kind); if (!k) this.rep.kinds.set(kind, k = { n: 0, ms: 0, max: 0 }); k.n++; k.ms += ms; if (ms > k.max) k.max = ms;
     if (ms > 8 && this.rep.slow.length < 12) { const NAME: Record<number, string> = { 1: "texCreate", 3: "beginPass", 7: "pipelineCreate", 14: "draw", 15: "drawIndexed", 17: "copyB2T", 18: "copyT2T", 19: "snapshot", 20: "present", 21: "fence", 22: "flush", 24: "texData", 25: "copyT2B", 27: "uboData" };

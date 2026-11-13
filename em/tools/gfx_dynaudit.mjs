@@ -62,7 +62,10 @@ export function dynamicAudit(raw, deps) {
   // what is watched: the static data, the globals block, the arena up to what the set-up used (and a margin)
   let hw = arena.lo; { const a64 = new BigUint64Array(memory.buffer, arena.lo, (arena.hi - arena.lo) / 8); for (let i = a64.length - 1; i >= 0; i--) if (a64[i]) { hw = arena.lo + 8 * i; break; } }
   let sHi = stat.lo; { const a64 = new BigUint64Array(memory.buffer, stat.lo, (stat.hi - stat.lo) / 8); for (let i = a64.length - 1; i >= 0; i--) if (a64[i]) { sHi = stat.lo + 8 * i; break; } }
-  const regs = [{ lo: stat.lo, hi: Math.min(stat.hi, (sHi + 0x20000) & ~0xFFFF), kind: "static" }, { lo: GLOBALS, hi: GLOBALS + Math.max(16, first.size), kind: "globals" }, { lo: arena.lo, hi: Math.min(arena.hi, (hw + 0x20000) & ~0xFFFF), kind: "arena" }];
+  // (the whole static range: scratch the module only reserves, memory.data(n), is zero until used and can lie past the last
+  // initialized byte; a build whose data ended earlier had the BindVertexBuffer scratch outside a window cut at that byte)
+  void sHi;
+  const regs = [{ lo: stat.lo, hi: stat.hi, kind: "static" }, { lo: GLOBALS, hi: GLOBALS + Math.max(16, first.size), kind: "globals" }, { lo: arena.lo, hi: Math.min(arena.hi, (hw + 0x20000) & ~0xFFFF), kind: "arena" }];
   for (const r of regs) { r.live = new BigUint64Array(memory.buffer, r.lo, (r.hi - r.lo) / 8); r.shadow = r.live.slice(); }
   // the words that changed since the last look, by kind (addresses); the shadow follows
   const changed = () => { const out = { static: [], globals: [], arena: [] };
