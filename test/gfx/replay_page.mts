@@ -33,7 +33,20 @@ async function main() {
       hostBlocks: (a.refl.extra ?? []).filter((e: any) => blockOf(e) >= 0).map((e: any) => ({ k: blockOf(e), size: e.size ?? 0 })).sort((x: any, y: any) => x.k - y.k) };
   };
   const flips = new Map<number, boolean>(), dumps: any[] = [], dump = (q.get("dump") ?? "").split(",").filter(Boolean).map(Number);
-  const r = await replayCapture(index, payload, (memory, log) => new GfxHost(device, memory as any, { log, capture: false, limits }), {
+  // ?trace=1: every pipeline the replayer builds at its first use and every device call that takes over 50 ms, with wall-clock times (trace.txt): what a
+  // software device was doing when its process died
+  const trace: string[] = [], tr = q.get("trace") === "1";
+  const stamp = () => new Date().toISOString().slice(11, 23);
+  if (tr) for (const m of ["createComputePipeline", "createRenderPipeline", "createShaderModule", "createTexture", "createBuffer"]) {
+    const f = (device as any)[m].bind(device);
+    (device as any)[m] = (d: any) => { const t0 = performance.now(), at = stamp(); try { return f(d); } finally { const ms = performance.now() - t0; if (ms > 50 || m.endsWith("Pipeline")) trace.push(`${at} ${m} ${ms.toFixed(0)} ms ${m === "createShaderModule" ? `${d.code.length} chars` : m === "createTexture" ? `${d.format} ${JSON.stringify(d.size)}` : m === "createBuffer" ? `${d.size} bytes` : (d.compute?.module ?? d.fragment?.module)?.__key ?? ""}`); } };
+  }
+  const mk = (memory: any, log: (l: string) => void) => {
+    const h: any = new GfxHost(device, memory, { log: l => { if (tr) trace.push(`${stamp()} log ${l.slice(0, 200)}`); log(l); }, capture: false, limits });
+    if (tr) { const use = h.usePipeline.bind(h); h.usePipeline = (id: number) => { const pp = h.pipes.get(id); if (pp && !pp.gpu && pp.desc) trace.push(`${stamp()} pipeline ${id} built at its use: ${pp.stages.map((sid: number) => `${h.shaders[sid]?.info.stage} ${h.shaders[sid]?.key} (${h.shaders[sid]?.info.wgsl.length} chars)`).join(", ")}`); return use(id); }; }
+    return h;
+  };
+  const r = await replayCapture(index, payload, mk, {
     shader,
     onLive: async (n, head, data) => { flips.set(n, !!head.flip); const p = image(head.format, head.width, head.height, data, !!head.flip); if (p) await out(`frame-${n}.live.png`, p); },
     texMax: Number(q.get("texmax") ?? 0) || undefined,
@@ -43,6 +56,7 @@ async function main() {
   });
   const adapterName = adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "";
   await out("replay.log", r.log.join("\n") + "\n");
+  if (tr) await out("trace.txt", trace.join("\n") + "\n");
   await out("errors.txt", r.errors.map(([l, n]) => `${String(n).padStart(6)}  ${l}`).join("\n") + (r.errors.length ? "\n" : ""));
   if (replaced.length) r.notes.push(`${replaced.length} shaders of the capture replaced by ones translated again (--shaders)`);
   return { adapter: adapterName, notes: r.notes, ms: r.ms, stats: r.stats, errors: r.errors, dumps, frames: r.frames.map(f => ({ n: f.n, serial: f.serial, width: f.width, height: f.height, format: f.format, live: f.live, differing: f.differing, note: f.note, line: f.line })) };

@@ -12,6 +12,7 @@ import { indexCapture } from "../../src/glue/gfx_stream_capture.ts";
 
 const ROOT = resolve(import.meta.dirname, "../.."), args = process.argv.slice(2);
 const opt = (name: string) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
+const trace = args.includes("--trace") ? (args.splice(args.indexOf("--trace"), 1), true) : false;
 const outDir = opt("--out"), limits = opt("--limits") ?? "", shaderDir = opt("--shaders"), dump = opt("--dump") ?? "", texmax = opt("--texmax") ?? "", file = args[0];
 if (!file || !existsSync(file)) { console.error("usage: node test/gfx/replay.mts <capture file> [--out <dir>] [--limits maxStorageBuffersPerShaderStage:8,...]"); process.exit(1); }
 const out = resolve(outDir ?? file + ".replay");
@@ -58,7 +59,7 @@ try {
   const page = await browser.newPage(), errors: string[] = [];
   page.on("pageerror", (e: Error) => errors.push(String(e)));
   page.on("console", (m: any) => { if (m.type() === "error" || m.type() === "warning") errors.push(m.text()); });
-  await page.goto(`${url}/test/gfx/replay.html?limits=${encodeURIComponent(limits)}&dump=${encodeURIComponent(dump)}&texmax=${encodeURIComponent(texmax)}`);
+  await page.goto(`${url}/test/gfx/replay.html?limits=${encodeURIComponent(limits)}&dump=${encodeURIComponent(dump)}&texmax=${encodeURIComponent(texmax)}&trace=${trace ? 1 : 0}`);
   const r = await page.evaluate("window.__replay");
   if (r.fatal) throw new Error(`the replay page failed: ${r.fatal}\n${errors.join("\n")}`);
   writeFileSync(join(out, "summary.json"), JSON.stringify({ file, size, meta, ...r, browser: errors }, null, 1));
