@@ -22,7 +22,7 @@ import * as H from "./hostops";
 import { dpoolBase, texEntry, texDesc, TDE_view, TDE_has_view, originLowerLeft, depthZeroToOne, fenceNew } from "./tables";
 import { progShader, progMissingKey, progMissingKeys, libKey, watched, libRefl, RF_ubo, RF_tex, RF_io, RF_ssbo, RF_ssbo_w, RF_img, RF_ubo_size, RF_vin, RF_flags, RF_bl, RF_blh, BL_OR, BL_SAMPLER_ID, BL_POOL, BL_POOL_AT, C2_POOL, RF_gmem, RF_gmem_ptr } from "./shader";
 import { gmemFind, gmemStart, gmemSize, GMEM_MAX_BYTES } from "./gmem";
-import { fmtClass, fmtCanon, fmtTwin } from "./fmt";
+import { fmtClass, fmtCanon, fmtBlockView, fmtTwin } from "./fmt";
 import * as PK from "./pipeline";
 import { syncFence } from "./sync";
 import { contentNeed, contentGpuWrite, contentStage, contentState, contentInUse, regionCopy, submitDone } from "./texcontent";
@@ -166,17 +166,20 @@ function rtFill(e: usize, t: usize, view: usize, hasView: bool): void {
   store<u64>(e, load<u64>(t, O.TEX_serial));
   // A view may only switch between a format and its sRGB twin (WebGPU): any other view format renders in the texture's
   // own, here and therefore in the pipeline key and in the attachment alike
-  let fmt = load<u32>(t, O.TEX_d + O.TD_format);
+  let fmt = load<u32>(t, O.TEX_d + O.TD_format), blocks = false;
   if (bits & 4) {
     const vf = <u32>load<u16>(view, O.VIEW_format);
     if (fmtCanon(vf) != fmtCanon(fmt)) {
       if (fmtTwin(fmtCanon(fmt)) == fmtCanon(vf)) fmt = vf;
+      // the blocks of a compressed texture as integer texels: the replayer renders into a texture of the view's format, a block a texel, and copies it over the level
+      else if (fmtBlockView(fmtCanon(fmt), vf)) { fmt = vf; blocks = true; }
       else if (once(32)) { L.red("a render target view reads format 0x"); L.hex(fmt); L.str(" as 0x"); L.hex(vf); L.str(": WebGPU views can only switch sRGB, the texture's own format is rendered"); L.end(); }
     }
   }
   store<u32>(e, fmt, RT_fmt);
   store<u32>(e, level, RT_level); store<u32>(e, bits & 2 ? <u32>load<u16>(view, O.VIEW_min_layer) : 0, RT_layer);
   store<u32>(e, mipExt(load<u32>(t, O.TEX_d + O.TD_width), level), RT_w); store<u32>(e, mipExt(load<u32>(t, O.TEX_d + O.TD_height), level), RT_h);
+  if (blocks) { store<u32>(e, (load<u32>(e, RT_w) + 3) >> 2, RT_w); store<u32>(e, (load<u32>(e, RT_h) + 3) >> 2, RT_h); }
   // WebGPU has 1 and 4 samples: 2, 8 and 16 are rendered with 4
   const s = load<i32>(t, O.TEX_d + O.TD_samples); store<u32>(e, s > 1 ? 4 : 1, RT_samples);
   if (s > 1 && s != 4 && once(33)) { L.red("a render target has "); L.i(s); L.str(" samples: WebGPU has 1 and 4, it is rendered with 4"); L.end(); }
@@ -856,20 +859,23 @@ function copyT2B(r: usize, size: u32): void {
 // A CPU-visible write in stream order: everything before it is executed first (the replayer uploads what the earlier
 // draws bound), then guest memory changes, then the replayer is told to forget its uploads
 // nvnCommandBufferClearBuffer: the range takes the 32-bit value (as nxnative's OP_CLEAR_BUF), in stream order like memWrite
+// The replayer is told which bytes changed: it checks again only the uploads that overlap them (a frame of the game has some 80 such writes, and hundreds of
+// megabytes of bound ranges that none of them touches)
+function memDirty(dst: usize, n: usize): void { const r = H.hostRec(H.H_MEM_DIRTY, 24); store<u64>(r, <u64>dst, 8); store<u32>(r, n > 0xffffffff ? 0 : <u32>n, 16); }
 function memFill(dst: usize, n: usize, v: u32): void {
   if (!dst || !n) return;
   H.hostFlush();
   R.reportOverwrite(dst, n);
   if (!v) memory.fill(dst, 0, n);
   else { let i: usize = 0; for (; i + 4 <= n; i += 4) store<u32>(dst + i, v); for (; i < n; i++) store<u8>(dst + i, <u8>(v >> (<u32>(i & 3) * 8))); }
-  H.hostRec(H.H_MEM_DIRTY, 8);
+  memDirty(dst, n);
   dirty |= D_VBUF | D_UBO;
 }
 function memWrite(dst: usize, src: usize, n: usize): void {
   H.hostFlush();
   R.reportOverwrite(dst, n);
   memory.copy(dst, src, n);
-  H.hostRec(H.H_MEM_DIRTY, 8);
+  memDirty(dst, n);
   dirty |= D_VBUF | D_UBO;
 }
 

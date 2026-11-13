@@ -48,6 +48,7 @@ async function buildWebFiles(): Promise<void> {
   mkdirSync(join(WEB, "wasm"), { recursive: true }); mkdirSync(join(WEB, "demo"), { recursive: true });
   for (const entry of ["main", "worker"]) buildSync({ entryPoints: [`web/${entry}.ts`], bundle: true, format: "iife", outfile: `build/web/${entry}.js`, logLevel: "warning", absWorkingDir: ROOT });
   copyFileSync(join(ROOT, "web", "index.html"), join(WEB, "index.html"));
+  buildGfxProf();
   buildPreparePage();   // the game-folder intake (web/prepare.html) is a frame of the page
   buildSync({ entryPoints: ["src/glue/rt_shader_worker.ts"], bundle: true, format: "esm", outfile: "build/web/shader_worker.js", logLevel: "warning", absWorkingDir: ROOT });
   buildSync({ entryPoints: ["src/glue/rt_helper_worker.ts"], bundle: true, format: "iife", outfile: "build/web/helper_worker.js", logLevel: "warning", absWorkingDir: ROOT });   // ?helpers=N (RuntimeOptions.helpers)
@@ -80,6 +81,12 @@ if (process.argv[1] && import.meta.filename === process.argv[1]) {
 
 // build/web/build.json: which build a page or report is (shown at the top of the page and in the report): the
 // commit, whether the tree had changes, the build time, and an md5 of every built file
+// The replayer's profile page (web/gfxprof.ts; test/gfx/REPLAY.md, "Profiling"): a page of its own beside the app's, nothing of the app's bundles
+export function buildGfxProf(): void {
+  mkdirSync(WEB, { recursive: true });
+  buildSync({ entryPoints: ["web/gfxprof.ts"], bundle: true, format: "esm", outfile: "build/web/gfxprof.js", logLevel: "warning", absWorkingDir: ROOT });
+  copyFileSync(join(ROOT, "web", "gfxprof.html"), join(WEB, "gfxprof.html"));
+}
 function writeStamp(): void {
   const git = (a: string) => { try { return execSync("git " + a, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
   const md5 = createHash("md5");

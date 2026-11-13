@@ -95,3 +95,37 @@ up to that moment.
   browser process: 3 frames, identical, 0 red lines.
 - The demo page with the URL flag (`test/gfx/demo.html?gfxcapture=3@20&gfxcapname=demo.gfxcap`), the capture POSTed
   to the receiver, then replayed from `vm/ctl/reports/demo.gfxcap`: 3 frames of 640x400, identical.
+
+## Counting and profiling (no game)
+
+**What a capture holds, counted without a GPU:**
+
+    node test/gfx/capstat.mts <capture> [--json <file>] [--passes]
+
+Per presented frame: batches, render and compute passes, draws (indexed or not, with a count of 0, skipped by the
+recorder and why), dispatches, pipeline creations, binds (and how many name what is already bound), the vertex,
+index and uniform ranges named (distinct and in all), texel uploads and copies; the draws per kind of pass (named by
+its targets' size and format); and how many draws repeat an earlier draw of the frame, by pipeline + vertex ranges +
+arguments and, stricter, by the uniform ranges, textures and targets too (a draw repeated in that strict sense is
+drawn twice for nothing).
+
+**The replayer's CPU profile** (headless Chromium, SwiftShader: the JavaScript is what is measured):
+
+    /ctl/heavy.sh gfxprof node test/gfx/prof.mts /ctl/reports/area.gfxcap [--frame k] [--n 30] [--spin 20000] [--interval 100] [--notex]
+
+replays the capture up to frame k (default: its last), then executes that frame again and again
+(`ReplayOptions.repeat`: memory and the set of textures are put back as the frame found them, its pipeline creations
+are left out) and prints: ms per frame inside `GfxHost.exec` (the CPU side up to the submit) and until the GPU is
+done, the replayer's own counters per frame, time and count per record type, count / ms / bytes per WebGPU method
+(wrappers around the interfaces' prototypes), and CDP's sampling profile (self and total time per function; the time
+inside a WebGPU call is the self time of `gpu_<Interface>_<method>`). Everything goes to `<capture>.prof.json`.
+
+**The same on a real GPU**: the page `gfxprof.html` of the web server (`web/gfxprof.ts`, built by `npm run web:build`
+and by `test/gfx/prof.mts`; `web/serve.mts` serves the capture from the reports directory in ranges and sends the
+page with `Document-Policy: js-profiling`):
+
+    http://localhost:8080/gfxprof.html?cap=area.gfxcap&frame=2&n=30&prof=20000
+
+It shows the same tables as text, with the JS Self-Profiling API's samples (Chrome samples every 10 ms, so `prof` ms
+of wall time buy `prof / 10` samples), and POSTs the result to the receiver as `gfxprof-<capture>.json`
+(`&to=`, `&name=`; `&notex=1` leaves the textures blank for a quick load: the same CPU work).

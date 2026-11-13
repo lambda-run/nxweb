@@ -173,6 +173,13 @@ export function toRgba8(format: string, data: Uint8Array, n: number): Uint8Array
     case "rgba32float": for (let i = 0; i < n * 4; i++) out[i] = c8(dv.getFloat32(i * 4, true)); return out;
     case "rgb10a2unorm": for (let i = 0; i < n; i++) { const v = dv.getUint32(i * 4, true); out[i * 4] = (v & 1023) >> 2; out[i * 4 + 1] = ((v >> 10) & 1023) >> 2; out[i * 4 + 2] = ((v >> 20) & 1023) >> 2; out[i * 4 + 3] = (v >>> 30) * 85; } return out;
     case "depth32float": case "r32float": for (let i = 0; i < n; i++) { const v = c8(dv.getFloat32(i * 4, true)); out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255; } return out;
+    // HDR colour as it is (clamped to 0..1, no tone curve): 11-11-10 floats (6 or 5 bits of mantissa, 5 of exponent, no sign), shared-exponent 9-9-9-5
+    case "rg11b10ufloat": { const uf = (v: number, mb: number) => { const e = v >> mb, m = v & ((1 << mb) - 1); return e === 0 ? m * 2 ** (-14 - mb) : e === 31 ? (m ? 0 : Infinity) : (1 + m / (1 << mb)) * 2 ** (e - 15); };
+      for (let i = 0; i < n; i++) { const v = dv.getUint32(i * 4, true); out[i * 4] = c8(uf(v & 2047, 6)); out[i * 4 + 1] = c8(uf((v >>> 11) & 2047, 6)); out[i * 4 + 2] = c8(uf(v >>> 22, 5)); out[i * 4 + 3] = 255; } return out; }
+    case "rgb9e5ufloat": for (let i = 0; i < n; i++) { const v = dv.getUint32(i * 4, true), sc = 2 ** ((v >>> 27) - 24); out[i * 4] = c8((v & 511) * sc); out[i * 4 + 1] = c8(((v >>> 9) & 511) * sc); out[i * 4 + 2] = c8(((v >>> 18) & 511) * sc); out[i * 4 + 3] = 255; } return out;
+    case "r16float": for (let i = 0; i < n; i++) { const v = c8(half(dv.getUint16(i * 2, true))); out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255; } return out;
+    case "rg16float": for (let i = 0; i < n; i++) { out[i * 4] = c8(half(dv.getUint16(i * 4, true))); out[i * 4 + 1] = c8(half(dv.getUint16(i * 4 + 2, true))); out[i * 4 + 3] = 255; } return out;
+    case "r8uint": for (let i = 0; i < n; i++) { const v = Math.min(255, data[i] * 32); out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255; } return out;
     case "depth16unorm": for (let i = 0; i < n; i++) { const v = dv.getUint16(i * 2, true) >> 8; out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255; } return out;
   }
   return null;

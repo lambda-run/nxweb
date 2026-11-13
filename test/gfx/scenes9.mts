@@ -23,7 +23,33 @@ const CS_NOFORMAT: ShaderInfo = { stage: "compute", images: [{ slot: 0, format: 
   textureStore(back, vec2i(id.xy), vec4f(v.x * 2.0, 0.0, 0.0, 1.0)); }` };
 SHADERS.cs_noformat = CS_NOFORMAT;
 
+// writes one BC4 block as an RGBA16UI texel: both endpoints 200, every index 0
+SHADERS.fs_bc4_block = { stage: "fragment", outputs: [0], wgsl: `@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4u { return vec4u(0xc8c8u, 0u, 0u, 0u); }` };
+
 export const scenes9: Scene[] = [
+  { name: "a storage image on an RGB9E5 texture (WebGPU neither stores to the format nor draws into it): the dispatch writes a stand-in that a compute pass packs into the texture; sampled afterwards", async run(e, t) {
+    const G = e.G, cmd = G.cmd, cimage = await e.computeProgram("cs_image"), show = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
+    const hdr = G.texture({ w: 16, h: 16, format: 0x40 /* RGB9E5 */ }), i = G.acquire(e.win);
+    G.begin();
+    G.c("CommandBufferBindProgram", [cmd, cimage, 0x20]); G.c("CommandBufferBindUniformBuffer", [cmd, STAGE.COMPUTE, 0, ubo(e, [0, 0, 0.5, 0]), 16]);
+    G.c("CommandBufferBindImage", [cmd, STAGE.COMPUTE, 0, G.c("DeviceGetImageHandle", [G.dev, G.texId(hdr)])]); G.c("CommandBufferDispatchCompute", [cmd, 2, 2, 1]);
+    e.frame(cmd, e.wtex[i], show); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]); e.bindTexture(cmd, G.texId(hdr), nearest); e.drawQuad(cmd);
+    e.finish(i);
+    const img = await e.read();
+    // texel (x, y) of the image holds (x / 15, y / 15, 0.5): 9 bits a channel under one exponent, well inside a step of the 8-bit window
+    for (const [x, y] of [[0, 0], [15, 15], [3, 12], [8, 5], [15, 0]]) { const px = img.px(x * 4 + 2, y * 4 + 2); t.ok(Math.abs(px[0] - x * 17) <= 2 && Math.abs(px[2] - 128) <= 2 && (Math.abs(px[1] - y * 17) <= 2 || Math.abs(px[1] - (15 - y) * 17) <= 2), `texel ${x},${y}: ${px}`); }
+    t.noRed(e); t.eq([e.host.stats.dispatches, e.host.stats.imageStandIns], [1, 1], "the dispatch ran on a stand-in");
+  } },
+  { name: "a render target view of a BC4 texture as RGBA16UI (a block a texel: a GPU compressor): drawn into a texture of the view's format and copied over the level, then sampled as BC4", async run(e, t) {
+    const G = e.G, cmd = G.cmd, comp = await e.program("vs_quad", "fs_bc4_block"), show = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
+    const bc = G.texture({ w: 8, h: 8, format: 0x49 /* BC4 */ }), i = G.acquire(e.win);
+    G.begin();
+    e.frame(cmd, bc, comp); G.targets(cmd, [bc], 0, [G.view({ format: 0x2c /* RGBA16UI */ })]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 2, 2]); G.c("CommandBufferSetScissor", [cmd, 0, 0, 2, 2]); e.drawQuad(cmd);
+    e.frame(cmd, e.wtex[i], show); G.clear(cmd, [0, 0, 1, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]); G.c("CommandBufferSetScissor", [cmd, 0, 0, 64, 64]); e.bindTexture(cmd, G.texId(bc), nearest); e.drawQuad(cmd);
+    e.finish(i);
+    t.rect(await e.read(), 0, 0, 64, 64, [200, 0, 0, 255], "every texel of the BC4 texture decodes to 200");
+    t.noRed(e); t.eq(e.host.stats.pipelinesFailed, 0, "no pipeline failed");
+  } },
   { name: "a storage image the shader names no format for (declared float) with an unsigned integer texture bound: the dispatch runs on a variant whose stores and loads hand the bits over", async run(e, t) {
     const G = e.G, cmd = G.cmd, prog = await e.computeProgram("cs_noformat"), flat = await uboProgram(e);
     const u = G.texture({ w: 8, h: 8, format: 0x2f /* RGBA32UI */ }), r = G.texture({ w: 8, h: 8, format: 0x0b /* R32UI */ }), f = G.texture({ w: 8, h: 8, format: FMT.RGBA16F }), i = G.acquire(e.win);
