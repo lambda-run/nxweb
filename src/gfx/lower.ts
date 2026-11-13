@@ -702,7 +702,7 @@ function draw(r: usize, size: u32, indexed: bool): void {
   }
   if (!prog || load<u32>(prog) != O.MAGIC_PROG) { if (once(9)) L.redLine("draw without a bound program: skipped"); skipRec(H.SKIP_STATE, 0, 0); nSkipped++; return; }
   const orig = load<i32>(r);
-  if (rastDiscard) return;
+  if (rastDiscard) { skipRec(H.SKIP_DISCARD, 0, 0); return; }      // (counted by the replayer's ledger: nothing is drawn)
   if (indexed && restartSet && !restartOn && (orig == 3 || orig == 5) && once(45)) L.redLine("SetPrimitiveRestart(off) with an indexed strip: WebGPU strips always restart at the all-ones index, a strip that uses that index as a vertex is cut there");
   if (orig == MESH_PRIM) { meshDraw(r); return; }
   // WebGPU has points, lines, line strips, triangles and triangle strips. Loops, fans, quads, quad strips and polygons
@@ -730,7 +730,7 @@ function draw(r: usize, size: u32, indexed: bool): void {
     }
   }
   if (!instances) instances = 1;
-  if (!count) return;
+  if (!count) { skipRec(H.SKIP_EMPTY, 0, 0); return; }      // (an indirect draw's count is read here, on the CPU, at the submission: a count the GPU writes later is 0 now)
   const vs = progShader(prog, 0), fs = progShader(prog, 1);
   if (vs < 0 || fs < 0) { skipRec(H.SKIP_SHADER, 0, prog); nSkipped++; return; }                        // "[RED] shader <key> is not in the shader map", once a key
   if (vs != curVs || fs != curFs || meshMode) { curVs = vs; curFs = fs; meshMode = false; dirty |= D_PIPE | D_UBO | D_TEX | D_VBUF; }
@@ -775,7 +775,7 @@ function meshDraw(r: usize): void {
   const fs = progShader(prog, 1);
   if (fs < 0) { if (once(38)) L.redLine("DrawMeshTasks with a program that has no fragment shader, or whose shaders are not all in the shader map: skipped"); meshSkip(); return; }
   const ind = load<u64>(r, O.P_DRAW_ind), first = load<u32>(r, O.P_DRAW_first), count = load<u32>(r, O.P_DRAW_count);
-  if (!ind && !count) return;
+  if (!ind && !count) { skipRec(H.SKIP_EMPTY, 2, 0); return; }
   const withTask = (load<u32>(libRefl(ms), RF_flags) & 4) != 0, ts = withTask ? progShader(prog, 3) : -1;
   if (withTask && ts < 0) { if (once(39)) L.redLine("a mesh shader that reads its task's payload, in a program with no task shader (or one not in the shader map): its mesh draws are skipped"); meshSkip(); return; }
   const tp = withTask ? computePipe(ts) : -1, mp = computePipe(ms);

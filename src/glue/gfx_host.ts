@@ -128,10 +128,11 @@ const PK = { vs: 0, fs: 2, prim: 4, cull: 5, front: 6, polyMode: 7, offsetEn: 8,
 const DIMS = ["2d", "2d-array", "cube", "3d", "cube-array"], CLASSES: VinClass[] = ["float", "sint", "uint"];
 
 interface Tex { serial: number; target: number; format: number; flags: number; samples: number; width: number; height: number; depth: number; levels: number; swz: number;
-  gpu?: GPU; snap?: GPU; imgScratch?: Map<string, GPU>; blockScratch?: Map<string, GPU>; shapes?: Map<string, { tex: GPU; at: number; view: GPU }>; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
+  gpu?: GPU; snap?: GPU; blank?: boolean; imgScratch?: Map<string, GPU>; blockScratch?: Map<string, GPU>; shapes?: Map<string, { tex: GPU; at: number; view: GPU }>; views: Map<string, GPU>; fmt: NvnFormat & { conv?: boolean } }
 interface Slot { binding: number; st: number; i: number; kind: "ubo" | "ssbo" | "host"; dyn: boolean; write: boolean; size?: number; info?: ShaderInfo }
 interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: number[]; key: number; layouts: GPU[]; g0: Slot[]; gen: number;
   mesh?: boolean; dynOnly?: boolean; last0?: { bufs: GPU[]; sizes: number[]; group: GPU }; empty1?: GPU;
+  g1?: GPU; g1At?: number;      // group 1 as it was last made for a draw, and the state of the texture slots it was made from (GfxHost.texEpoch)
   drawParams?: boolean; vsFixup?: boolean; last2?: { fix: GPU | null; buf: GPU; group: GPU };
   img?: Map<string, { gpu: GPU; l1: GPU } | null>; imgOn?: boolean;
   // vertex inputs the replayer feeds itself: constSlot, the vertex buffer slot of the constant (0, 0, 0, 1) for attributes the game's state lacks;
@@ -141,7 +142,7 @@ interface TexVar { sid: number; st: number; slot: number }   // texture slot `sl
 interface StandIn { t: Tex; sc: GPU; lv: number; ly: number; cls: "float" | "sint" | "uint" }   // the pipeline for storage images of other formats than declared (imagePipe); imgOn: one is set on the pass
 interface ImageFormatVar { sid: number; st: number; slot: number; format: string }   // image slot `slot` of shader `sid` (stage index st) has a texture of `format` bound
 interface Chunk { buf: GPU; staging: Uint8Array; used: number }
-interface UaSlot { c: Chunk; off: number; size: number }
+interface UaSlot { c: Chunk; off: number; size: number; n?: number; ep?: number }      // n: the guest bytes it took; ep: the uaEpoch they were last known equal in
 interface GpuRange { addr: number; size: number; buf: GPU; hash: number; pending: number }
 
 // The one reinterpretation WebGPU allows a view: the sRGB twin of the texture's format
@@ -161,6 +162,7 @@ const LIMITS_SHOWN = ["maxSampledTexturesPerShaderStage", "maxSamplersPerShaderS
   "maxComputeInvocationsPerWorkgroup", "maxComputeWorkgroupSizeX", "maxComputeWorkgroupSizeY", "maxComputeWorkgroupSizeZ", "maxComputeWorkgroupsPerDimension", "maxTextureDimension2D", "maxTextureDimension3D",
   "maxTextureArrayLayers", "maxUniformBufferBindingSize", "maxStorageBufferBindingSize", "maxBufferSize"];
 const UA_CHUNK = 1 << 20, UA_ALIGN = 256;
+const HASH_PAGE = 4096;      // GfxHost.hashOf
 FEATURES.push("timestamp-query");
 const H_REPORT = 33, H_REPORT_COMMIT = 34;       // hostops.ts
 const TS_QUERIES = 512;                          // two a render pass: its start and its end
@@ -176,6 +178,14 @@ struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
 
 const CAPTURE_RECORDS = 200_000, CAPTURE_IMAGES = 64;
 
+// A Map that counts its changes
+class GenMap<K, V> extends Map<K, V> {
+  gen = 0;
+  set(k: K, v: V): this { this.gen++; return super.set(k, v); }
+  delete(k: K): boolean { this.gen++; return super.delete(k); }
+  clear(): void { this.gen++; super.clear(); }
+}
+const NO_STAGES: number[] = [];
 export class GfxHost {
   device: GPU;
   memory: WebAssembly.Memory;
@@ -185,9 +195,9 @@ export class GfxHost {
   canvasFormat = "bgra8unorm";
   lastPresented = 0;
   ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
-  stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
+  stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, hashedPages: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0, gmemRanges: 0, gmemBytes: 0, gmemUploads: 0, gmemUploadBytes: 0, gmemReadbacks: 0, gmemGrows: 0, gmemLogged: 0,
-    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0 };
+    meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0, zeroUploads: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
   caps = 0;
   // Hooks for the embedder (the kernel's waits): a fence completed (everything submitted before it is done on the GPU
@@ -218,9 +228,13 @@ export class GfxHost {
   private pool = new Map<number, GPU[]>();
   private cur: Pipe | null = null;
   private ubo = new Map<number, { addr: number; size: number; need: number; data?: Uint8Array }>();
-  private tex = new Map<number, { serial: number; snap: boolean; view: Uint8Array | null; samp: number }>();
+  private tex = new GenMap<number, { serial: number; snap: boolean; view: Uint8Array | null; samp: number }>();
   private ssbo = new Map<number, { addr: number; size: number; write: boolean }>();
-  private img = new Map<number, { serial: number; view: Uint8Array | null }>();
+  private img = new GenMap<number, { serial: number; view: Uint8Array | null }>();
+  // What group 1 (textures, samplers, images) of a pipeline was made from is the same while nothing was bound to a texture or image slot (the maps'
+  // `gen`) and no texture, snapshot or sampler can have changed (texEpoch: every exec, submission, snapshot, texture made or destroyed): then a draw
+  // that only moved its uniform or vertex ranges takes the group its pipeline had (Pipe.g1) without looking at a texture
+  private texEpoch = 0;
   private bindDirty = true;
   private fix = [1, 1, 1, 0];
   private fixGroups = new Map<string, GPU>();
@@ -358,7 +372,7 @@ export class GfxHost {
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.imgScratch = undefined; t.blockScratch = undefined; t.shapes = undefined; t.views.clear(); }
     this.textures.clear(); this.shaders = [];
     this.pipes.clear(); this.ndvePipes.clear(); this.ndveScratch.clear(); this.layouts.clear(); this.samplers.clear(); this.samplerAt.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
-    this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.gmReset(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
+    this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.gmReset(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear(); this.uaData.clear();
     this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.readbacks = [];
     // nobody waits on a replayer that is gone
@@ -390,7 +404,17 @@ export class GfxHost {
   private ndvePipes = new Map<string, { pipe: GPU; layout: GPU }>();
   private upR8 = 0; private upRg8 = 0;
   private ndveScratch = new Map<string, GPU>();      // the stand-in's own image for an output WebGPU cannot store to (an sRGB format), by format and size
-  private red(key: string, line: string) { if (!this.redOnce.has(key)) { this.redOnce.add(key); this.log(`[RED] ${line}`); } }
+  // A red line is logged once a key; how often its cause came up is counted, and frameReds() hands the counts since it was last called (a replay asks every frame)
+  private redCount = new Map<string, number>(); private redText = new Map<string, string>();
+  private red(key: string, line: string) {
+    this.redCount.set(key, (this.redCount.get(key) ?? 0) + 1);
+    if (!this.redOnce.has(key)) { this.redOnce.add(key); if (this.redText.size < 4096) this.redText.set(key, line); this.log(`[RED] ${line}`); }
+  }
+  frameReds(): [string, number][] {
+    const out: [string, number][] = [...this.redCount].map(([k, n]) => [this.redText.get(k) ?? k, n]);
+    this.redCount.clear();
+    return out.sort((a, b) => b[1] - a[1]);
+  }
   private get dv() { return new DataView(this.memory.buffer); }
   private memView: Uint8Array | null = null;
   private get u8() { let v = this.memView; if (!v || v.buffer !== this.memory.buffer) v = this.memView = new Uint8Array(this.memory.buffer); return v; }
@@ -439,7 +463,7 @@ export class GfxHost {
     for (const t of this.textures.values()) { t.gpu = undefined; t.snap = undefined; t.imgScratch = undefined; t.blockScratch = undefined; t.shapes = undefined; t.views.clear(); }
     for (const s of this.shaders) if (s) { s.module = undefined; s.variants = undefined; }
     this.pipes.clear(); this.ndvePipes.clear(); this.ndveScratch.clear(); this.layouts.clear(); this.samplers.clear(); this.samplerAt.clear(); this.helpers.clear(); this.dummies.clear(); this.fixGroups.clear(); this.groups.clear(); this.ranges.clear(); this.pool.clear();
-    this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.gmReset(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear();
+    this.converted.clear(); this.vconvBufs.clear(); this.constBuf = null; this.gpuRanges.clear(); this.gmReset(); this.uaPool = []; this.uaDone = []; this.uaCur = null; this.uaSeen.clear(); this.uaData.clear();
     this.inUse = []; this.queued = []; this.queuedBufs = []; this.dummy = null; this.zero = null; this.scratchSt = null; this.enc = null; this.pass = null; this.cur = null; this.passInfo = null; this.meshCtls = []; this.meshOut = null; this.meshTask = null; this.meshCur = null; this.meshHelp = null; this.meshSamples = []; this.meshOld = [];
     this.adopt(device);
     this.lost = false;
@@ -781,7 +805,7 @@ export class GfxHost {
     let e = this.ranges.get(key);
     if (e && e.checked === this.epoch) { e.used = this.flushNo; return e.buf; }
     if (!addr || !size || addr + size > this.memory.buffer.byteLength) { this.red(`up${addr}`, `a draw binds memory outside the guest's (address 0x${addr.toString(16)} size ${size}): not bound`); return null; }
-    const hash = this.cacheUploads ? this.x.gfx_hash(addr, size) : NaN;
+    const hash = this.cacheUploads ? this.hashOf(addr, size) : NaN;
     this.stats.hashes++;
     if (e && e.hash === hash) { e.checked = this.epoch; e.used = this.flushNo; return e.buf; }
     const cap = Math.max(256, 2 ** Math.ceil(Math.log2(size))) * (kind === 1 ? 2 : 1);
@@ -797,13 +821,35 @@ export class GfxHost {
     this.ranges.set(key, { buf: b, hash, checked: this.epoch, used: this.flushNo, addr, size });
     return b;
   }
-  private dropUploads() { this.epoch++; this.bindDirty = true; this.uaSeen.clear(); }
+  private dropUploads() { this.epoch++; this.bindDirty = true; this.uaEpoch++; }
+  // The hash of guest [addr, addr + size), by which an upload is found unchanged. Ranges overlap (a vertex buffer bound at many offsets, each time up to
+  // its end; a storage range inside a buffer the mirror of global memory holds whole) and every one is looked at again in every epoch, so a range's
+  // hash is folded from the hashes of its 4 KiB pages, and a page's bytes are hashed (by the recorder, gfx_hash) once an epoch whichever range asks;
+  // the two partial pages at a range's ends are hashed as they are. dropRange forgets the pages it names. (Profile of a 3D frame: 95% of the
+  // replayer's CPU time was these hashes, most bytes several times over.)
+  private pgHash = new Map<number, number>(); private pgEpoch = 0;
+  private hashOf(addr: number, size: number): number {
+    if (size < 2 * HASH_PAGE) return this.x.gfx_hash(addr, size);
+    if (this.pgEpoch !== this.epoch) { this.pgHash.clear(); this.pgEpoch = this.epoch; }
+    const m = this.pgHash, end = addr + size, p0 = Math.ceil(addr / HASH_PAGE), p1 = Math.floor(end / HASH_PAGE);
+    let a = 0x811c9dc5 ^ size, b = 0x9e3779b9, h = 0;
+    if (p0 * HASH_PAGE > addr) { h = this.x.gfx_hash(addr, p0 * HASH_PAGE - addr); a = Math.imul(a ^ (h >>> 0), 0x01000193); b = (Math.imul(b, 31) + Math.floor(h / 4294967296)) | 0; }
+    for (let pg = p0; pg < p1; pg++) {
+      const c = m.get(pg);
+      if (c === undefined) { h = this.x.gfx_hash(pg * HASH_PAGE, HASH_PAGE); m.set(pg, h); this.stats.hashedPages++; } else h = c;
+      a = Math.imul(a ^ (h >>> 0), 0x01000193); a ^= a >>> 15; b = (Math.imul(b, 31) + Math.floor(h / 4294967296)) | 0;
+    }
+    if (end > p1 * HASH_PAGE) { h = this.x.gfx_hash(p1 * HASH_PAGE, end - p1 * HASH_PAGE); a = Math.imul(a ^ (h >>> 0), 0x01000193); b = (Math.imul(b, 31) + Math.floor(h / 4294967296)) | 0; }
+    return (a >>> 0) * 2097152 + ((b >>> 0) & 0x1fffff);
+  }
   // Guest memory changed in [addr, addr + size) and nowhere else (H_MEM_DIRTY with its range): only the uploads that overlap it are checked again at their next use
   private dropRange(addr: number, size: number) {
     const end = addr + size;
     for (const e of this.ranges.values()) if (e.addr < end && addr < e.addr + e.size) e.checked = -1;
     for (const e of this.vconvBufs.values()) if (e.addr < end && addr < e.addr + e.size) e.checked = -1;
-    this.vconvKey = ""; this.bindDirty = true; this.uaSeen.clear();
+    if (this.gm) for (const r of this.gm.ranges) if (r.start < end && addr < r.end) r.checked = -1;      // the mirror's ranges over it too
+    if (size > 1024 * HASH_PAGE) this.pgHash.clear(); else for (let pg = Math.floor(addr / HASH_PAGE), last = Math.floor((end - 1) / HASH_PAGE); pg <= last; pg++) this.pgHash.delete(pg);
+    this.vconvKey = ""; this.bindDirty = true; this.uaEpoch++;
   }
 
   // Storage ranges a compute pass wrote, until their read-back has landed in guest memory: the GPU's copy is the newer
@@ -819,7 +865,7 @@ export class GfxHost {
     if (!addr || !size || addr + size > this.memory.buffer.byteLength) { this.red(`sb${addr}`, `a dispatch binds storage outside the guest's memory (address 0x${addr.toString(16)} size ${size}): not bound`); return null; }
     const bsize = down4(size + 3);
     if (!write) { const b = this.upload(addr, size, 3); return b && { buf: b, off: this.upOff, size: bsize }; }
-    const key = `${addr}:${size}`, hash = this.x.gfx_hash(addr, size);
+    const key = `${addr}:${size}`, hash = this.hashOf(addr, size);
     let r = this.gpuRanges.get(key);
     // Guest memory changed since the GPU's copy was made (the game wrote new input): it is uploaded again
     if (r && r.hash === hash) return { buf: r.buf, off: 0, size: bsize };
@@ -896,7 +942,7 @@ export class GfxHost {
     r.checked = this.epoch;
     const n = this.gmLen(r);
     if (n <= 0) return;
-    const h = this.x.gfx_hash(r.start, n);
+    const h = this.hashOf(r.start, n);
     this.stats.hashes++;
     if (h === r.hash) return;
     r.hash = h; this.stats.gmemUploads++; this.stats.gmemUploadBytes += n;
@@ -982,12 +1028,14 @@ export class GfxHost {
       if (gen !== this.gen) return;
       const r = q.r, n = Math.min(q.size, this.memory.buffer.byteLength - q.addr), len = this.gmLen(r);
       // the guest wrote the range since the mirror last took it: its bytes win where the two differ, at the range's next use
-      const same = this.x.gfx_hash(r.start, len) === r.hash;
+      const same = this.hashOf(r.start, len) === r.hash;
       this.u8.set(new Uint8Array(q.buf.getMappedRange()).subarray(0, n), q.addr);
       q.buf.unmap(); this.kill(q.buf); this.stats.bufferReadbacks++; this.stats.gmemReadbacks++;
       if (--r.pending === 0) r.gpu = false;
-      r.hash = same ? this.x.gfx_hash(r.start, len) : NaN;
-      this.dropUploads();
+      this.dropRange(q.addr, n);      // (only these bytes changed: the uploads elsewhere stay checked)
+      r.hash = same ? this.hashOf(r.start, len) : NaN;
+      // this runs between two execs, where the guest writes without telling: nothing hashed here may count as looked at in this epoch
+      this.dropRange(r.start, len);
     }, (e: any) => { if (!this.lost && gen === this.gen) this.log(`[RED] read-back from the mirror of global memory failed: ${e?.message ?? e}`); }));
     for (const l of this.gmLogs.splice(0)) this.readbacks.push(l.buf.mapAsync(1).then(() => {
       if (gen !== this.gen) return;
@@ -1012,7 +1060,25 @@ export class GfxHost {
   private uaCur: Chunk | null = null;
   private uaDone: Chunk[] = [];
   private uaPool: Chunk[] = [];
-  private uaSeen = new Map<number, UaSlot>();     // by address * 2^17 + bound size: the slot a range has in this epoch
+  private uaSeen = new Map<number, UaSlot>();     // by address * 2^17 + bound size: the slot a range has in this submission
+  // A slot outlives the moments guest memory may have changed (uaEpoch: H_MEM_DIRTY, a read-back landing): at its next use its bytes are compared with
+  // the guest's and it is kept when they are the same. A block the host supplies (c1, the recorder's UBO_DATA) keeps its slot by the identity of its
+  // bytes' array. Before, every such moment and every bind of a host block took a new slot: 28 MB of slots a frame for 3 MB of distinct blocks in a
+  // 3D frame, written to the GPU, and a bind group for every pipeline in each of the 29 chunks they filled.
+  private uaEpoch = 1;
+  private uaData = new Map<Uint8Array, UaSlot>();
+  private uaSame(s: UaSlot, addr: number, n: number): boolean {
+    if (s.n !== n) return false;
+    const m = this.u8, d = s.c.staging, o = s.off;
+    let k = 0;
+    if (addr % 4 === 0 && n >= 64) {
+      const w = n >> 2, a = new Uint32Array(m.buffer, addr, w), b = new Uint32Array(d.buffer, d.byteOffset + o, w);
+      for (let i = 0; i < w; i++) if (a[i] !== b[i]) return false;
+      k = w << 2;
+    }
+    for (; k < n; k++) if (m[addr + k] !== d[o + k]) return false;
+    return true;
+  }
   private uaAlign = UA_ALIGN;
   private uaAlloc(size: number): UaSlot {
     let c = this.uaCur;
@@ -1022,8 +1088,7 @@ export class GfxHost {
     }
     const off = c.used;
     c.used = (off + size + this.uaAlign - 1) & ~(this.uaAlign - 1);
-    c.staging.fill(0, off, off + size);
-    this.stats.uniformSlots++;
+    this.stats.uniformSlots++;      // (the caller fills it: its bytes, zero after them)
     return { c, off, size };
   }
   private uaWrite() {
@@ -1032,7 +1097,7 @@ export class GfxHost {
       if (c.used) { this.device.queue.writeBuffer(c.buf, 0, c.staging, 0, c.used); this.stats.uniformBytes += c.used; this.stats.uniformWrites++; }
       c.used = 0; this.uaPool.push(c);
     }
-    this.uaDone = []; this.uaSeen.clear();
+    this.uaDone = []; this.uaSeen.clear(); this.uaData.clear();
   }
   // The buffer, offset and size uniform binding i of stage st is bound with
   // A block the host supplies (Slot "host"): the shader's c1 from its reflection, the others as the recorder sent them (UBO_DATA). Each is at least the size the
@@ -1061,16 +1126,21 @@ export class GfxHost {
       }
     }
     const key = u ? (u.data ? -1 : u.addr * 131072 + Math.min(u.size, 131071)) : 0;
-    let s = key >= 0 ? this.uaSeen.get(key) : undefined;
+    let s = key >= 0 ? this.uaSeen.get(key) : this.uaData.get(u!.data!);
+    const gn = key > 0 && u!.addr && u!.size ? Math.min(size, u!.size, Math.max(0, this.memory.buffer.byteLength - u!.addr)) : 0;      // the guest bytes a slot takes
+    if (s && s.size >= size && key > 0 && s.ep !== this.uaEpoch) { if (this.uaSame(s, u!.addr, gn)) s.ep = this.uaEpoch; else s = undefined; }
     if (!s || s.size < size) {
       s = this.uaAlloc(size);
-      if (u?.data) s.c.staging.set(u.data.subarray(0, Math.min(size, u.data.length)), s.off);
+      let n = 0;
+      if (u?.data) { n = Math.min(size, u.data.length); s.c.staging.set(n === u.data.length ? u.data : u.data.subarray(0, n), s.off); this.uaData.set(u.data, s); }
       else if (u && u.addr && u.size) {
-        const n = Math.min(size, u.size, Math.max(0, this.memory.buffer.byteLength - u.addr));
+        n = gn;
         if (n < Math.min(size, u.size)) this.red(`up${u.addr}`, `a draw binds memory outside the guest's (address 0x${u.addr.toString(16)} size ${u.size}): zeros are bound`);
         if (n <= 64) { const m = this.u8, d = s.c.staging; for (let k = 0, a = u.addr, o = s.off; k < n; k++) d[o + k] = m[a + k]; }
         else s.c.staging.set(this.u8.subarray(u.addr, u.addr + n), s.off);
       }
+      if (n < size) s.c.staging.fill(0, s.off + n, s.off + size);
+      s.n = n; s.ep = this.uaEpoch;
       if (key >= 0) this.uaSeen.set(key, s);
     }
     return { buf: s.c.buf, off: s.off, size };
@@ -1095,6 +1165,7 @@ export class GfxHost {
   }
   private doomed: GPU[] = [];      // textures of TEX_DESTROY, until the next submit
   private flush() {
+    this.texEpoch++;
     this.endPass();
     this.gmBeforeSubmit();
     if (this.uniformArena) this.uaWrite();
@@ -1114,7 +1185,7 @@ export class GfxHost {
       if (gen !== this.gen) return;
       const src = new Uint8Array(q.buf.getMappedRange()), mem = this.u8;
       for (let z = 0; z < q.depth; z++) for (let y = 0; y < q.rows; y++) mem.set(src.subarray((z * q.rows + y) * q.srcRow, (z * q.rows + y) * q.srcRow + q.wb), q.dst + z * q.img + y * q.row);
-      q.buf.unmap(); this.kill(q.buf); this.dropUploads();
+      q.buf.unmap(); this.kill(q.buf); this.dropRange(q.dst, Math.max(0, q.depth - 1) * q.img + Math.max(0, q.rows - 1) * q.row + q.wb);
     }, (e: any) => { if (!this.lost && gen === this.gen) this.log(`[RED] CopyTextureToBuffer readback failed: ${e?.message ?? e}`); }));
     for (const q of this.queuedBufs.splice(0)) this.readbacks.push(q.buf.mapAsync(1).then(() => {
       if (gen !== this.gen) return;
@@ -1123,11 +1194,11 @@ export class GfxHost {
       q.buf.unmap(); this.kill(q.buf); this.stats.bufferReadbacks++;
       // Guest memory now holds what the GPU wrote: later binds upload from it again
       if (--r.pending === 0 && this.gpuRanges.get(`${r.addr}:${r.size}`) === r) { this.gpuRanges.delete(`${r.addr}:${r.size}`); this.inUse.push(r.buf); }
-      this.dropUploads();
+      this.dropRange(r.addr, r.size);
     }, (e: any) => { if (!this.lost && gen === this.gen) this.log(`[RED] storage buffer readback failed: ${e?.message ?? e}`); }));
     this.gmFlush(gen);
     for (const b of this.inUse) { let l = this.pool.get(b.size); if (!l) this.pool.set(b.size, l = []); l.push(b); }
-    this.inUse = []; this.epoch++; this.flushNo++; this.bindDirty = true;
+    this.inUse = []; this.epoch++; this.flushNo++; this.bindDirty = true; this.splitsLeft = 64;
     if (!this.cacheUploads) { for (const e of this.ranges.values()) this.release(e.buf); this.ranges.clear(); this.groups.clear(); }
     else if (this.flushNo % 64 === 0) {
       for (const [k, e] of this.ranges) if (e.used < this.flushNo - 240) { this.release(e.buf); this.ranges.delete(k); this.groups.clear(); }
@@ -1372,7 +1443,7 @@ export class GfxHost {
       pipe.layouts = layouts; pipe.g0 = g0;
       pipe.desc = { layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }), compute: { module: this.module(csId), entryPoint: cs.entry } };
       this.device.createComputePipelineAsync(pipe.desc).then((p: GPU) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
-        (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.desc = null; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] compute pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
+        (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe || !pipe.desc) return; pipe.desc = null; pipe.gpu = undefined; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] compute pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
       return;
     }
     const vsId = dv.getUint16(k + PK.vs, true), fsId = dv.getUint16(k + PK.fs, true), vs = this.shaders[vsId].info, fs = this.shaders[fsId].info, flags = dv.getUint8(k + PK.flags);
@@ -1460,14 +1531,40 @@ export class GfxHost {
     pipe.desc = desc;
     // Asynchronously, so a pipeline first needed later is ready by then; the draw that needs it now builds it itself (usePipeline)
     this.device.createRenderPipelineAsync(desc).then((p: GPU) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.gpu ??= p; this.stats.pipelinesAsync++; this.x.gfx_pipeline_done(id, 1); },
-      (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe) return; pipe.desc = null; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
+      (e: any) => { if (gen !== this.gen || this.pipes.get(id) !== pipe || !pipe.desc) return; pipe.desc = null; pipe.gpu = undefined; this.stats.pipelinesFailed++; if (!this.lost) this.log(`[RED] pipeline ${id} did not build: ${e?.message ?? e}`); this.x.gfx_pipeline_done(id, 0); });
+  }
+  // The encoder is submitted where it stands and the open pass goes on in a new one (a render pass on the same attachments, loading what was drawn)
+  private splitsLeft = 64;      // a submission: at most so many (flush() fills it up again)
+  private splitEncoder() {
+    const open = !!this.pass, render = !this.computePass, d = this.passDesc, st = this.passState, blocks = this.passBlocks;
+    if (open) { this.passBlocks = []; this.pass.end(); this.pass = null; }
+    // not flush(): the submission's segment (counter reports, time stamps), its upload epoch and its fences stay as they are; only the commands go out
+    if (this.uniformArena) this.uaWrite();
+    if (this.enc) { this.device.queue.submit([this.enc.finish()]); this.enc = null; this.stats.submits++; }
+    if (open && render) { this.passDesc = d; this.passState = st; this.reopenRenderPass(); this.passBlocks = blocks; }
+    else if (open) { this.pass = this.encoder().beginComputePass(); this.computePass = true; }
+    this.bindDirty = true;
   }
   private usePipeline(id: number): boolean {
     const pipe = this.pipes.get(id);
     if (!pipe) { this.red(`nopipe${id}`, `host stream binds pipeline ${id}, which was never created`); this.cur = null; return false; }
     if (!pipe.gpu) {
       if (!pipe.desc) { this.cur = null; return false; }      // it cannot be built (over a limit, no shader variant): its draws are skipped
-      pipe.gpu = pipe.compute ? this.device.createComputePipeline(pipe.desc) : this.device.createRenderPipeline(pipe.desc); this.stats.pipelinesSync++;
+      // Built now, for this draw. Whether WebGPU takes it is known only later (an error scope answers asynchronously), and an invalid pipeline makes the
+      // command buffer it is set in invalid: what was encoded before goes out on its own first, so a refusal costs the rest of this submission and not
+      // all of it; when the answer is a refusal the pipeline is dropped, said in red with the reason and reported to the recorder, which stops sending its draws
+      const plain = !pipe.mesh && (pipe.compute ? this.shaders[pipe.stages[0]]?.info.stage === "compute" : true), scoped = typeof this.device.pushErrorScope === "function";
+      if (plain && this.enc && this.splitsLeft > 0) { this.splitsLeft--; this.splitEncoder(); }
+      if (scoped) this.device.pushErrorScope("validation");
+      const g = pipe.gpu = pipe.compute ? this.device.createComputePipeline(pipe.desc) : this.device.createRenderPipeline(pipe.desc); this.stats.pipelinesSync++;
+      if (scoped) { const gen = this.gen; Promise.resolve(this.device.popErrorScope()).then((e: any) => {
+        if (!e || gen !== this.gen || this.pipes.get(id) !== pipe) return;
+        if (pipe.gpu === g) pipe.gpu = undefined;
+        if (!pipe.desc) return;       // the asynchronous request said so already
+        pipe.desc = null; this.stats.pipelinesFailed++;
+        this.log(`[RED] ${pipe.compute ? "compute " : ""}pipeline ${id} did not build: ${String(e.message ?? e).split("\n")[0]} (it was built for a draw: what the submission encoded after that draw is lost with it)`);
+        this.x.gfx_pipeline_done(id, 0);
+      }, () => {}); }
     }
     this.cur = pipe; this.pass.setPipeline(pipe.gpu); this.bindDirty = true;
     if (!pipe.compute && (this.ownSlots.length || pipe.constSlot !== undefined || pipe.vconv)) this.ownBuffers(pipe);
@@ -1507,7 +1604,7 @@ export class GfxHost {
       const key = `${addr}:${size}:${v.offset}:${v.stride}:${v.fmt}`;
       let e = this.vconvBufs.get(key);
       if (!e || e.checked !== this.epoch) {
-        const hash = this.x.gfx_hash(addr, size);
+        const hash = this.hashOf(addr, size);
         this.stats.hashes++;
         if (e && e.hash === hash) e.checked = this.epoch;
         else {
@@ -1630,7 +1727,8 @@ export class GfxHost {
     let ivar: ImageFormatVar[] | undefined;   // storage images bound with another format than their shader declares
     let tvar: TexVar[] | undefined;           // texture slots declared `float` whose texture is depth or of a format the device does not filter
     const standIns: StandIn[] = [];
-    for (const sid of c.stages) {
+    const tg = this.tex.gen + this.img.gen + this.texEpoch, g1Kept = !c.compute && c.g1At === tg ? c.g1 : undefined;      // nothing a texture slot holds has changed since this pipeline's last draw
+    for (const sid of g1Kept ? NO_STAGES : c.stages) {
       const s = this.shaders[sid].info, st = s.stage === "vertex" ? 0 : s.stage === "fragment" ? 1 : 2;
       const unf = new Set<number>(), samps: { t: NonNullable<ShaderInfo["textures"]>[number]; samp: number; filtering: boolean }[] = [];
       for (const t of s.textures ?? []) {
@@ -1708,7 +1806,9 @@ export class GfxHost {
       if (!g0) { g0 = this.group(layouts[0], e0); c.last0 = { bufs: e0.map(x => x.resource.buffer), sizes: e0.map(x => x.resource.size), group: g0 }; }
     } else g0 = this.group(layouts[0], e0);
     this.pass.setBindGroup(0, g0, offs);
-    this.pass.setBindGroup(1, g1.length ? this.group(iv?.l1 ?? layouts[1], g1) : (c.empty1 ??= this.group(layouts[1], g1)));
+    const group1 = g1Kept ?? (g1.length ? this.group(iv?.l1 ?? layouts[1], g1) : (c.empty1 ??= this.group(layouts[1], g1)));
+    if (!c.compute) { if (!ivar && !tvar && !standIns.length) { c.g1 = group1; c.g1At = tg; } else c.g1At = -1; }
+    this.pass.setBindGroup(1, group1);
     this.drawSet = null;
     if (layouts[2] && !c.mesh && !c.compute && !c.drawParams) {
       const key = this.fix.join(",");
@@ -1845,8 +1945,8 @@ ${planes ? `  // NV12 to RGB as BT.709 limited range (the stand-in's assumption;
     if (!this.pass || !this.computePass) return;
     this.stats.dispatches++;
     if (this.ndve) { this.ndveDispatch(dv, p); return; }
-    if (!this.usePipeline(dv.getUint32(p + 8, true))) return;
-    if (!this.bind()) return;
+    if (!this.usePipeline(dv.getUint32(p + 8, true))) { this.ledger.dropped("pipeline not built on the host", true); return; }
+    if (!this.bind()) { this.ledger.dropped("bindings not made on the host", true); return; }
     this.pass.dispatchWorkgroups(dv.getUint32(p + 12, true), dv.getUint32(p + 16, true), dv.getUint32(p + 20, true));
     this.imgFlush();
     this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear();
@@ -1896,7 +1996,7 @@ ${planes ? `  // NV12 to RGB as BT.709 limited range (the stand-in's assumption;
     const c = this.cur!, d = this.drawSet;
     if (!c.drawParams || (d && d.pipe === c && d.bv === bv && d.bi === bi && d.di === di)) return;
     let buf: GPU, off = 0;
-    if (this.uniformArena) { const s = this.uaAlloc(16), v = new DataView(s.c.staging.buffer, s.c.staging.byteOffset + s.off, 16); v.setInt32(0, bv, true); v.setInt32(4, bi, true); v.setInt32(8, di, true); buf = s.c.buf; off = s.off; }
+    if (this.uniformArena) { const s = this.uaAlloc(16), v = new DataView(s.c.staging.buffer, s.c.staging.byteOffset + s.off, 16); v.setInt32(0, bv, true); v.setInt32(4, bi, true); v.setInt32(8, di, true); v.setInt32(12, 0, true); buf = s.c.buf; off = s.off; }
     else { buf = this.alloc(256); this.device.queue.writeBuffer(buf, 0, new Int32Array([bv, bi, di, 0])); this.inUse.push(buf); }
     const fix = c.vsFixup ? this.fixBuffer() : null, l = c.last2;
     let group = l && l.fix === fix && l.buf === buf ? l.group : undefined;
@@ -2274,9 +2374,23 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   }
   // Texels from the recorder (texcontent.ts): linear rows in memory. Takes effect at once; the recorder only sends
   // them before the submission's first use of the texture, so nothing encoded and not yet submitted reads it
+  // A texture whose GPU object these very records made holds zeros (WebGPU clears a new texture), and zeros are what a game's new render targets have
+  // in memory: such an upload is not made (the game makes its shadow, depth and colour targets anew every frame: 43 MB of zeros a frame, the depth ones a draw
+  // and a submit a layer). `blank` lasts until the first record that is not an upload
+  private blank: Tex[] = [];
+  private allZero(ptr: number, n: number): boolean {
+    const m = this.u8, end = Math.min(ptr + n, m.length);
+    let i = ptr;
+    for (; i < end && (i & 7); i++) if (m[i]) return false;
+    const w = new BigUint64Array(m.buffer, i, (end - i) >> 3);
+    for (let k = 0; k < w.length; k++) if (w[k]) return false;
+    for (i += w.length << 3; i < end; i++) if (m[i]) return false;
+    return true;
+  }
   private texData(dv: DataView, p: number) {
-    const t = this.texture(this.u64(dv, p + 8));
+    const serial = this.u64(dv, p + 8), made = !this.textures.get(serial)?.gpu, t = this.texture(serial);
     if (!t) return;
+    if (made) { t.blank = true; this.blank.push(t); }
     // the last 2D single- and two-channel textures whose texels came from guest memory: a decoder's NV12 planes are such a pair (ndveStandIn)
     if (this.ndve && t.gpu.dimension === "2d") { if (t.gpu.format === "r8unorm") this.upR8 = t.serial; else if (t.gpu.format === "rg8unorm") this.upRg8 = t.serial; }
     const what = dv.getUint32(p + 56, true);
@@ -2285,6 +2399,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     const w = Math.min(dv.getUint32(p + 28, true), lw - x), h = Math.min(dv.getUint32(p + 32, true), lh - y), rows = h / f.bh;
     if (w <= 0 || h <= 0 || level >= t.gpu.mipLevelCount) return;
     if (t.gpu.sampleCount > 1) return;
+    if (t.blank && this.allZero(ptr, pitch * (what === 1 ? h : rows) * slices)) { this.stats.zeroUploads++; return; }
     if (what === 1) {       // depth as f32, one draw a layer
       for (let s = 0; s < slices; s++) this.depthData(t, level, z + s, x, y, w, h, ptr + s * pitch * h, pitch);
       this.stats.uploads++; this.stats.uploadBytes += pitch * h * slices; return;
@@ -2308,6 +2423,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   // Resolves when every texture-to-buffer copy issued so far has landed in guest memory
   async landed() { while (this.readbacks.length) await Promise.all(this.readbacks.splice(0)); }
   private snapshot(serial: number) {
+    this.texEpoch++;
     const t = this.texture(serial);
     if (!t) return;
     this.endPass();
@@ -2347,21 +2463,24 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   account(ptr: number, len: number) { if (!this.disposed) this.ledger.walk(this.dv, ptr < 0 ? ptr + 4294967296 : ptr, len); }
   exec(ptr: number, len: number) {
     if (this.disposed) return;
+    this.texEpoch++;
     if (this.sc) this.sc.batch(ptr, len);
     let dv = this.dv;
     for (let p = ptr, end = ptr + len; p < end;) {
       const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
       if (this.cap) this.captureRecord(op, dv, p);
       this.ledger.record(op, dv, p);
+      if (this.blank.length && op !== H.TEX_DATA) { for (const t of this.blank) t.blank = false; this.blank.length = 0; }
       switch (op) {
         case H.TEX_CREATE: {
           const serial = this.u64(dv, p + 8), d = p + 16, format = dv.getInt32(d + 4, true);
+          this.texEpoch++;
           this.textures.set(serial, { serial, target: dv.getInt32(d, true), format, flags: dv.getInt32(d + 8, true), samples: dv.getInt32(d + 12, true), width: dv.getUint32(d + 16, true), height: dv.getUint32(d + 20, true),
             depth: dv.getUint32(d + 24, true), levels: dv.getUint32(d + 28, true), swz: dv.getUint16(p + 56, true) || 0x0b1a, views: new Map(), fmt: hostFormat(format, this.caps)! });
           break;
         }
         // the texture's objects are destroyed once the commands encoded so far (which may name them) have been submitted: at the next flush, not by one of its own
-        case H.TEX_DESTROY: { const s = this.u64(dv, p + 8), t = this.textures.get(s); if (t) { this.doomed.push(t.gpu, t.snap, ...(t.imgScratch?.values() ?? []), ...(t.blockScratch?.values() ?? []), ...[...(t.shapes?.values() ?? [])].map(sh => sh.tex)); this.textures.delete(s); } break; }
+        case H.TEX_DESTROY: { const s = this.u64(dv, p + 8), t = this.textures.get(s); this.texEpoch++; if (t) { this.doomed.push(t.gpu, t.snap, ...(t.imgScratch?.values() ?? []), ...(t.blockScratch?.values() ?? []), ...[...(t.shapes?.values() ?? [])].map(sh => sh.tex)); this.textures.delete(s); } break; }
         case H.BEGIN_PASS: this.beginPass(dv, p); break;
         case H.END_PASS: { const targets = !this.computePass && this.pass ? this.passInfo?.targets : undefined; this.endPass(); if (this.cap && targets) this.captureTargets(targets); break; }
         case H.BEGIN_COMPUTE: this.endPass(); this.pass = this.encoder().beginComputePass(); this.computePass = true; this.cur = null; this.ubo.clear(); this.tex.clear(); this.ssbo.clear(); this.img.clear(); this.stats.computePasses++; break;
@@ -2384,6 +2503,14 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.UBO: this.ubo.set(dv.getUint32(p + 8, true) * 16 + dv.getUint32(p + 12, true), { addr: this.u64(dv, p + 16), size: dv.getUint32(p + 24, true), need: dv.getUint32(p + 28, true) }); this.bindDirty = true; break;
         case H.TEX: {
           const flags = dv.getUint32(p + 24, true);
+          {      // the slot already holds exactly this (most TEX records of a frame): nothing changes, no bind group is made again
+            const o = this.tex.get(dv.getUint32(p + 8, true) * 64 + dv.getUint32(p + 12, true));
+            if (o && o.serial === this.u64(dv, p + 16) && o.snap === ((flags & 1) !== 0) && o.samp === dv.getUint32(p + 28, true) && (o.view !== null) === ((flags & 2) !== 0)) {
+              let same = true;
+              if (o.view) { const u = this.u8, v = o.view; for (let k = 0; k < 16; k++) if (v[k] !== u[p + 32 + k]) { same = false; break; } }
+              if (same) break;
+            }
+          }
           this.tex.set(dv.getUint32(p + 8, true) * 64 + dv.getUint32(p + 12, true), { serial: this.u64(dv, p + 16), snap: (flags & 1) !== 0, view: flags & 2 ? this.u8.slice(p + 32, p + 48) : null, samp: dv.getUint32(p + 28, true) });
           this.bindDirty = true; break;
         }

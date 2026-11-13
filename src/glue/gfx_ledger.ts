@@ -8,12 +8,14 @@ const R_DRAW = 14, R_DRAW_IDX = 15, R_BEGIN_PASS = 3, R_END_PASS = 4, R_TEX = 11
 export const FRAMES = 64, KEYS = 16384, TEXTURES = 4096, FRAME_TEXTURES = 256, SOURCES = 8;
 
 // H_SKIP's reason (hostops.ts SKIP_*); a shader reason is split by the state of its keys
-const SKIP_REASON = ["shader", "program lacks the stage", "pipeline failed", "unsupported state", "render condition false"];
+const SKIP_REASON = ["shader", "program lacks the stage", "pipeline failed", "unsupported state", "render condition false", "rasterizer discard", "nothing to draw (count 0)"];
 const KEY_STATE = ["unknown", "pending", "failed"] as const;
 export type KeyState = typeof KEY_STATE[number];
 
 export interface KeyUse { seq: number; key: string; frame: number; t: number; ord: string; draws: number; dispatches: number; state: KeyState }
-interface Writer { frame: number; what: string; ord: number }
+// Who wrote a texture: draw (kind 0) or dispatch (1) number `no` of pass `pass` in frame `frame`, then copied on (`via`). The text is made when it is asked for
+interface Writer { frame: number; ord: number; kind: number; no: number; pass: number; via: string }
+const whatOf = (w: Writer) => `${w.kind ? "dispatch" : "draw"} #${w.no} (pass ${w.pass})${w.via}`;
 interface Frame {
   n: number; t: number;
   draws: number; drawSkips: Map<string, number>; dispatches: number; dispatchSkips: Map<string, number>;
@@ -42,6 +44,13 @@ export class FrameLedger {
   private ord = 0;                       // draws (issued or skipped) of this frame so far
   private dord = 0;                      // dispatches of this frame so far
   private passNo = 0;
+  // A pass's targets and the textures sampled so far change with other records than draws, so a draw (thousands a frame) does only what changed since
+  // the draw before it: the first writers once per pass, the links when a texture was bound, and the last writer of the targets is one object per
+  // pass whose draw number moves on
+  private passFirst = false;             // the pass's targets have their first writer of this frame (or the table is full)
+  private passLast: Writer | null = null;
+  private linkDirty = true;              // a texture was bound since the targets were last linked to what is sampled
+  private passReset(): void { this.passFirst = false; this.passLast = null; this.linkDirty = true; }
   private t0 = -1;
   private fold: { line: string; from: number; to: number; t0: number; t1: number } | null = null;
   private readonly now: () => number;
@@ -50,7 +59,7 @@ export class FrameLedger {
   private at(): number { return (this.now() - this.t0) / 1000; }   // seconds since the ledger began
   private newFrame(): Frame {
     if (this.t0 < 0) this.t0 = this.now();
-    this.ord = 0; this.dord = 0; this.passNo = 0;
+    this.ord = 0; this.dord = 0; this.passNo = 0; this.passReset();
     return { n: this.framesSeen + 1, t: 0, draws: 0, drawSkips: new Map(), dispatches: 0, dispatchSkips: new Map(), first: new Map(), from: new Map(), uploads: new Set(), presented: 0, line: "" };
   }
 
@@ -63,44 +72,57 @@ export class FrameLedger {
     const f = this.f;
     switch (op) {
       case R_BEGIN_PASS: {
-        this.pass = []; this.sampled.clear(); this.passNo++;
+        this.pass = []; this.sampled.clear(); this.passNo++; this.passReset();
         const n = Math.min(dv.getUint32(p + 8, true), 8);
         for (let i = 0; i < n; i++) { const s = u64(dv, p + 32 + i * 40); if (s) this.pass.push(s); }
         break;
       }
-      case R_END_PASS: this.pass = []; break;
-      case R_BEGIN_COMPUTE: this.pass = []; this.sampled.clear(); this.imgW.clear(); this.passNo++; break;
-      case R_TEX: { const s = u64(dv, p + 16); if (s && this.sampled.size < SOURCES) this.sampled.add(s); break; }
-      case R_IMG: { const s = u64(dv, p + 16); if (s && dv.getUint32(p + 24, true) & 1) this.imgW.add(s); else if (s && this.sampled.size < SOURCES) this.sampled.add(s); break; }
-      case R_DRAW: case R_DRAW_IDX: case R_MESH_DRAW: this.ord++; f.draws++; this.wrote(this.pass, `draw #${this.ord} (pass ${this.passNo})`, this.ord); break;
-      case R_DISPATCH: this.dord++; f.dispatches++; this.wrote([...this.imgW], `dispatch #${this.dord} (pass ${this.passNo})`, 1e9 + this.dord); this.sampled.clear(); this.imgW.clear(); break;
+      case R_END_PASS: this.pass = []; this.passReset(); break;
+      case R_BEGIN_COMPUTE: this.pass = []; this.sampled.clear(); this.imgW.clear(); this.passNo++; this.passReset(); break;
+      case R_TEX: { const s = u64(dv, p + 16); if (s && this.sampled.size < SOURCES && !this.sampled.has(s)) { this.sampled.add(s); this.linkDirty = true; } break; }
+      case R_IMG: { const s = u64(dv, p + 16); if (s && dv.getUint32(p + 24, true) & 1) this.imgW.add(s); else if (s && this.sampled.size < SOURCES && !this.sampled.has(s)) { this.sampled.add(s); this.linkDirty = true; } break; }
+      case R_DRAW: case R_DRAW_IDX: case R_MESH_DRAW: this.ord++; f.draws++; this.drew(); break;
+      case R_DISPATCH: this.dord++; f.dispatches++; this.passReset(); this.wrote([...this.imgW], { frame: f.n, ord: 1e9 + this.dord, kind: 1, no: this.dord, pass: this.passNo, via: "" }); this.sampled.clear(); this.imgW.clear(); break;
       case R_SKIP: this.skip(dv, p); break;
       case R_COPY_T2T: {
         const src = u64(dv, p + 8), dst = u64(dv, p + 16), w = this.last.get(src);
-        this.link(dst, src);
-        if (w && dst !== src) { this.last.delete(dst); this.last.set(dst, { ...w, what: `${w.what} -> tex#${src}` }); if (this.last.size > TEXTURES) this.last.delete(this.last.keys().next().value!); }
+        this.link(dst, src); this.passReset();
+        if (w && dst !== src) { this.last.delete(dst); this.last.set(dst, { ...w, via: `${w.via} -> tex#${src}` }); if (this.last.size > TEXTURES) this.last.delete(this.last.keys().next().value!); }
         break;
       }
       case R_COPY_B2T: if (f.uploads.size < FRAME_TEXTURES) f.uploads.add(u64(dv, p + 16)); break;
       case R_TEX_DATA: break;
-      case R_TEX_DESTROY: this.last.delete(u64(dv, p + 8)); break;
+      case R_TEX_DESTROY: this.last.delete(u64(dv, p + 8)); this.passReset(); break;
       case R_PRESENT: f.presented = u64(dv, p + 8); this.endFrame(); break;
     }
   }
 
   // the live replayer could not issue the draw it just counted (no pipeline yet, bindings it could not make)
-  dropped(why: string): void {
+  dropped(why: string, dispatch = false): void {
     const f = this.f;
+    if (dispatch) { f.dispatches--; f.dispatchSkips.set(why, (f.dispatchSkips.get(why) ?? 0) + 1); return; }
     f.draws--; f.drawSkips.set(why, (f.drawSkips.get(why) ?? 0) + 1);
-    for (const s of this.pass) if (f.first.get(s)?.ord === this.ord) f.first.delete(s);
+    for (const s of this.pass) if (f.first.get(s)?.ord === this.ord) { f.first.delete(s); this.passFirst = false; }
   }
 
-  private wrote(targets: number[], what: string, ord: number): void {
+  // a draw of the open render pass (this.ord): what wrote() does for the pass's targets, only where something changed since the pass's draw before
+  private drew(): void {
+    const f = this.f, targets = this.pass, ord = this.ord;
+    if (!targets.length) return;
+    if (!this.passFirst) { for (const s of targets) if (!f.first.has(s) && f.first.size < FRAME_TEXTURES) f.first.set(s, { frame: f.n, ord, kind: 0, no: ord, pass: this.passNo, via: "" }); this.passFirst = true; }
+    if (this.linkDirty) { for (const s of targets) for (const src of this.sampled) this.link(s, src); this.linkDirty = false; }
+    const w = this.passLast;
+    if (w) { w.ord = ord; w.no = ord; return; }
+    const nw = this.passLast = { frame: f.n, ord, kind: 0, no: ord, pass: this.passNo, via: "" };
+    for (const s of targets) { this.last.delete(s); this.last.set(s, nw); if (this.last.size > TEXTURES) this.last.delete(this.last.keys().next().value!); }
+  }
+
+  private wrote(targets: number[], by: Writer): void {
     const f = this.f;
     for (const s of targets) {
-      if (!f.first.has(s) && f.first.size < FRAME_TEXTURES) f.first.set(s, { frame: f.n, what, ord });
+      if (!f.first.has(s) && f.first.size < FRAME_TEXTURES) f.first.set(s, { ...by });
       for (const src of this.sampled) this.link(s, src);
-      const w = { frame: f.n, what, ord };
+      const w = { ...by };
       this.last.delete(s); this.last.set(s, w);
       if (this.last.size > TEXTURES) this.last.delete(this.last.keys().next().value!);
     }
@@ -145,10 +167,10 @@ export class FrameLedger {
     let first: (Writer & { tex: number }) | null = null;
     if (f.presented) for (const s of this.chain(f)) { const w = f.first.get(s); if (w && (!first || w.ord < first.ord)) first = { ...w, tex: s }; }
     let wrote: string;
-    if (first) wrote = `${first.what} -> tex#${first.tex}`;
+    if (first) wrote = `${whatOf(first)} -> tex#${first.tex}`;
     else {
       const prev = f.presented ? this.last.get(f.presented) : undefined;
-      wrote = `none${f.presented && f.uploads.has(f.presented) ? " (uploaded)" : ""}${prev ? `; last drawn in frame ${prev.frame} by ${prev.what}` : ""}`;
+      wrote = `none${f.presented && f.uploads.has(f.presented) ? " (uploaded)" : ""}${prev ? `; last drawn in frame ${prev.frame} by ${whatOf(prev)}` : ""}`;
     }
     if (first && !this.firstDrawn) this.firstDrawn = `frame ${f.n} (t ${f.t.toFixed(2)} s): ${wrote}`;
     const ds = sumOf(f.drawSkips), cs = sumOf(f.dispatchSkips);
