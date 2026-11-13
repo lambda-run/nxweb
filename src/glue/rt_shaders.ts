@@ -161,11 +161,33 @@ export class RtShaders {
     this.waiting.push(job); this.jobs.set(key, job);
     void job.finally(() => { if (this.jobs.get(key) === job) this.jobs.delete(key); });
   }
-  // At each present: the keys the frame's draws were skipped for go to the front of the translator's queue
+  // At each present: the keys the frame's draws were skipped for go to the front of the translator's queue, all of them, the frame's last draws' first
+  // (those put the picture together: a composite pass skipped leaves the whole frame black, whatever else was drawn). And the loss is said: a red line
+  // when a frame first skips work for stages on their way, again every 10 s while it lasts, and a line when it is over
+  private skipSaid = 0; private skipping = false; private skipFrames = 0;
   waited(): void {
-    const tr = this.o.translator;
-    if (!tr?.prioritize || !this.gfx.host.shaderWaited) return;
-    for (const k of this.gfx.host.shaderWaited()) if (this.state.get(k) === "pending") { tr.prioritize(k); this.stats.prioritized++; }
+    const tr = this.o.translator, host = this.gfx.host;
+    if (!host.shaderWaited) return;
+    let n = 0;
+    for (let round = 0; round < 32; round++) {
+      const ks = host.shaderWaited();
+      if (!ks.length) break;
+      for (const k of ks) if (this.state.get(k) === "pending") { n++; if (tr?.prioritize) { tr.prioritize(k); this.stats.prioritized++; } }
+    }
+    const now = performance.now();
+    if (n) {
+      this.skipFrames++;
+      if (!this.skipping || now - this.skipSaid >= 10000) {
+        this.log(`[RED] shaders: this frame skipped draws or dispatches for ${n} stage${n == 1 ? "" : "s"} that ${n == 1 ? "is" : "are"} still being fetched or translated (${this.jobs.size} on their way in all` +
+          `${this.o.wait === false || (this.gfx as any).opts?.shaderWait === false ? "; the game is not made to wait for a program's stages: shader wait is off" : ""}): the picture is incomplete or black until they are there` +
+          `${this.skipping ? ` (${this.skipFrames} such frames so far)` : ""}; they were moved to the front of the translator's queue`);
+        this.skipSaid = now;
+      }
+      this.skipping = true;
+    } else if (this.skipping) {
+      this.skipping = false;
+      this.log(`shaders: no draw or dispatch of this frame was skipped for a stage on its way any more (${this.skipFrames} frames were; ${this.jobs.size} stages still on their way, ${this.stats.failed} failed)`);
+    }
   }
   private register(key: string, t: Translated, from: string): boolean {
     const r = t.reflection;
