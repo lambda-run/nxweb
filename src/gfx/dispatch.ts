@@ -18,7 +18,7 @@ import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY, 
 import { contentInit, noteFlush, regionCopy, writeTexels } from "./texcontent";
 import { profileHas, P_RENDER_COND } from "./profile";
 import { nsFromTicks } from "./report";
-import { gmemBufInit, gmemBufDrop } from "./gmem";
+import { gmemBufInit, gmemBufDrop, gmemBufPlace } from "./gmem";
 
 // Device properties: values measured on Tegra X1 (nxnative g_devinfo). Items 0 and 1 are the API version (apiMajor /
 // apiMinor), 0x2E and 0x30 the GPU code version the shader chain translates (1.16)
@@ -279,6 +279,7 @@ export function call(fn: i32, a: usize): u64 {
       memory.fill(buf, 0, O.BUF_SIZE);
       gmemBufInit(buf);
       store<u32>(buf, O.MAGIC_BUF); store<u64>(buf, pool, O.BUF_pool); store<u64>(buf, load<u64>(b, O.BB_off), O.BUF_off); store<u64>(buf, load<u64>(b, O.BB_size), O.BUF_size);
+      gmemBufPlace(buf);
       return 1;
     }
     case F.nvnBufferFinalize: gmemBufDrop(P(a, 0)); store<u32>(P(a, 0), 0); return 0;
