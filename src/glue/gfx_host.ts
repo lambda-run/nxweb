@@ -163,6 +163,8 @@ const LIMITS_SHOWN = ["maxSampledTexturesPerShaderStage", "maxSamplersPerShaderS
   "maxTextureArrayLayers", "maxUniformBufferBindingSize", "maxStorageBufferBindingSize", "maxBufferSize"];
 const UA_CHUNK = 1 << 20, UA_ALIGN = 256;
 const HASH_PAGE = 4096;      // GfxHost.hashOf
+const PG_STABLE = 2;         // GfxHost.pageHash
+type PgRec = { h: number; ep: number; fr: number; st: number };
 FEATURES.push("timestamp-query");
 const H_REPORT = 33, H_REPORT_COMMIT = 34;       // hostops.ts
 const TS_QUERIES = 512;                          // two a render pass: its start and its end
@@ -829,28 +831,42 @@ export class GfxHost {
   // hash is folded from the hashes of its 4 KiB pages, and a page's bytes are hashed (by the recorder, gfx_hash) once an epoch whichever range asks;
   // the two partial pages at a range's ends are hashed as they are. dropRange forgets the pages it names. (Profile of a 3D frame: 95% of the
   // replayer's CPU time was these hashes, most bytes several times over.)
-  private pgHash = new Map<number, number>(); private pgEpoch = 0;
+  // A page whose bytes were the same at its first look in each of the last PG_STABLE frames (presents) is trusted for the rest of a frame once looked at
+  // in it: the guest's unannounced writes between two submissions of one frame into memory that had stayed still for frames are found at the next
+  // frame's first look (a frame late; announced writes, H_MEM_DIRTY and read-backs, are seen at once). Every other page is hashed again each epoch.
+  // (Profile of the first 3D area: the mirror's ranges, ~60 MB, hashed again in each of ~15 epochs a frame were 95% of the replayer's time.)
+  private pg = new Map<number, PgRec>(); private frameNo = 1;
+  private pageHash(pg: number): number {
+    let r = this.pg.get(pg);
+    if (r && (r.ep === this.epoch || (r.ep !== -2 && r.fr === this.frameNo && r.st >= PG_STABLE))) return r.h;
+    const h = this.x.gfx_hash(pg * HASH_PAGE, HASH_PAGE); this.stats.hashedPages++;
+    if (!r) this.pg.set(pg, r = { h, ep: this.epoch, fr: this.frameNo, st: 0 });
+    else { if (h !== r.h) r.st = 0; else if (r.fr !== this.frameNo) r.st++; r.h = h; r.ep = this.epoch; r.fr = this.frameNo; }
+    return h;
+  }
   private hashOf(addr: number, size: number): number {
     if (size < 2 * HASH_PAGE) return this.x.gfx_hash(addr, size);
-    if (this.pgEpoch !== this.epoch) { this.pgHash.clear(); this.pgEpoch = this.epoch; }
-    const m = this.pgHash, end = addr + size, p0 = Math.ceil(addr / HASH_PAGE), p1 = Math.floor(end / HASH_PAGE);
+    const end = addr + size, p0 = Math.ceil(addr / HASH_PAGE), p1 = Math.floor(end / HASH_PAGE);
     let a = 0x811c9dc5 ^ size, b = 0x9e3779b9, h = 0;
     if (p0 * HASH_PAGE > addr) { h = this.x.gfx_hash(addr, p0 * HASH_PAGE - addr); a = Math.imul(a ^ (h >>> 0), 0x01000193); b = (Math.imul(b, 31) + Math.floor(h / 4294967296)) | 0; }
     for (let pg = p0; pg < p1; pg++) {
-      const c = m.get(pg);
-      if (c === undefined) { h = this.x.gfx_hash(pg * HASH_PAGE, HASH_PAGE); m.set(pg, h); this.stats.hashedPages++; } else h = c;
+      h = this.pageHash(pg);
       a = Math.imul(a ^ (h >>> 0), 0x01000193); a ^= a >>> 15; b = (Math.imul(b, 31) + Math.floor(h / 4294967296)) | 0;
     }
     if (end > p1 * HASH_PAGE) { h = this.x.gfx_hash(p1 * HASH_PAGE, end - p1 * HASH_PAGE); a = Math.imul(a ^ (h >>> 0), 0x01000193); b = (Math.imul(b, 31) + Math.floor(h / 4294967296)) | 0; }
     return (a >>> 0) * 2097152 + ((b >>> 0) & 0x1fffff);
   }
   // Guest memory changed in [addr, addr + size) and nowhere else (H_MEM_DIRTY with its range): only the uploads that overlap it are checked again at their next use
-  private dropRange(addr: number, size: number) {
+  // soft: the guest may have written there without telling (as anywhere between two execs): its pages are looked at again as in a new epoch
+  private dropRange(addr: number, size: number, soft = false) {
     const end = addr + size;
     for (const e of this.ranges.values()) if (e.addr < end && addr < e.addr + e.size) e.checked = -1;
     for (const e of this.vconvBufs.values()) if (e.addr < end && addr < e.addr + e.size) e.checked = -1;
     if (this.gm) for (const r of this.gm.ranges) if (r.start < end && addr < r.end) r.checked = -1;      // the mirror's ranges over it too
-    if (size > 1024 * HASH_PAGE) this.pgHash.clear(); else for (let pg = Math.floor(addr / HASH_PAGE), last = Math.floor((end - 1) / HASH_PAGE); pg <= last; pg++) this.pgHash.delete(pg);
+    // (ep -1: looked at again, a stable page trusted as in any epoch; -2: hashed again at its next look whatever it is)
+    const p0 = Math.floor(addr / HASH_PAGE), p1 = Math.floor((end - 1) / HASH_PAGE), ep = soft ? -1 : -2;
+    if (p1 - p0 > this.pg.size) { for (const [pg, r] of this.pg) if (pg >= p0 && pg <= p1 && r.ep !== -2) r.ep = ep; }
+    else for (let pg = p0; pg <= p1; pg++) { const r = this.pg.get(pg); if (r && r.ep !== -2) r.ep = ep; }
     this.vconvKey = ""; this.bindDirty = true; this.uaEpoch++;
   }
 
@@ -1037,7 +1053,7 @@ export class GfxHost {
       this.dropRange(q.addr, n);      // (only these bytes changed: the uploads elsewhere stay checked)
       r.hash = same ? this.hashOf(r.start, len) : NaN;
       // this runs between two execs, where the guest writes without telling: nothing hashed here may count as looked at in this epoch
-      this.dropRange(r.start, len);
+      this.dropRange(r.start, len, true);
     }, (e: any) => { if (!this.lost && gen === this.gen) this.log(`[RED] read-back from the mirror of global memory failed: ${e?.message ?? e}`); }));
     for (const l of this.gmLogs.splice(0)) this.readbacks.push(l.buf.mapAsync(1).then(() => {
       if (gen !== this.gen) return;
@@ -2449,7 +2465,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   }
   private present(dv: DataView, p: number) {
     const serial = this.u64(dv, p + 8), t = this.texture(serial), win = this.u64(dv, p + 32), index = dv.getUint32(p + 40, true);
-    this.lastPresented = serial; this.stats.presents++;
+    this.lastPresented = serial; this.stats.presents++; this.frameNo++;
     if (t && this.context) {
       const c = [0, 1, 2, 3].map(i => dv.getInt32(p + 16 + i * 4, true)), uv = c[2] > 0 && c[3] > 0 ? [c[0] / t.width, c[1] / t.height, c[2] / t.width, c[3] / t.height] : [0, 0, 1, 1];
       if (dv.getUint32(p + 44, true) & 1) { uv[1] += uv[3]; uv[3] = -uv[3]; }

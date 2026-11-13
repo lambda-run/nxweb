@@ -361,7 +361,16 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
   const xlate = (a: number): number => { const at = a ? pageAt(Math.floor(a / CAP_PAGE)) : 0; return at ? at + a % CAP_PAGE : 0; };
   const h = makeHost(memory, l => log.push(l));
   const x = {
-    gfx_hash: (a: number, n: number) => { let v = 0x811c9dc5; const e = a + n; let i = a; for (; i < e && (i & 3); i++) v = Math.imul(v ^ u8[i], 0x01000193); for (; i + 4 <= e; i += 4) { v = Math.imul(v ^ words[i >> 2], 0x01000193); v ^= v >>> 13; } for (; i < e; i++) v = Math.imul(v ^ u8[i], 0x01000193); return v >>> 0; },
+    gfx_hash: (a: number, n: number) => {      // (four lanes, as the recorder's: a single chain of multiplies held a 3D frame's replay to ~0.6 GB/s)
+      let v0 = 0x811c9dc5 ^ n, v1 = 0x9e3779b9, v2 = 0x85ebca6b, v3 = 0xc2b2ae35, i = a; const e = a + n;
+      for (; i < e && (i & 3); i++) v0 = Math.imul(v0 ^ u8[i], 0x01000193);
+      for (; i + 16 <= e; i += 16) { const w = i >> 2; v0 = Math.imul(v0 ^ words[w], 0x01000193); v1 = Math.imul(v1 ^ words[w + 1], 0x01000193); v2 = Math.imul(v2 ^ words[w + 2], 0x01000193); v3 = Math.imul(v3 ^ words[w + 3], 0x01000193); v0 ^= v0 >>> 13; v1 ^= v1 >>> 13; v2 ^= v2 >>> 13; v3 ^= v3 >>> 13; }
+      for (; i + 4 <= e; i += 4) { v0 = Math.imul(v0 ^ words[i >> 2], 0x01000193); v0 ^= v0 >>> 13; }
+      for (; i < e; i++) v0 = Math.imul(v0 ^ u8[i], 0x01000193);
+      let x = Math.imul(Math.imul(v0 ^ (v2 >>> 7), 0x01000193) ^ v1, 0x85ebca6b), y = Math.imul(Math.imul(v1 ^ (v3 >>> 11), 0x01000193) ^ v2 ^ v3, 0xc2b2ae35);
+      x ^= x >>> 15; y ^= y >>> 13;
+      return (x >>> 0) * 2097152 + ((y >>> 0) & 0x1fffff);
+    },
     gfx_sampler_table: () => xlate(meta.samplerTable) || scratchAt, gfx_scratch: () => scratchAt, gfx_flush: () => {}, gfx_host_caps: () => {}, gfx_pipeline_done: () => {}, gfx_fence_signal: () => {}, gfx_fence_done: () => 1,
     gfx_image_event: () => {}, gfx_report_land: () => {}, gfx_reports_flush: () => {}, gfx_device_lost: () => {}, gfx_device_restored: () => 0, gfx_watch_key: () => {}, gfx_shader_pending: () => 0, gfx_shader_waited: () => 0,
     gfx_shader_register: () => -1, gfx_stat: () => 0,

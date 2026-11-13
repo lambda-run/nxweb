@@ -108,7 +108,20 @@ export function gfx_stat(i: i32): u32 { return i >= 13 ? stat(i) : i >= 8 ? texS
 export function gfx_deswizzle(desc: usize, level: u32, layer: u32, storage: usize, linear: usize, pitch: u32, toLinear: i32): i32 { return deswizzle(desc, level, layer, storage, linear, pitch, toLinear != 0); }
 // The content state of a texture object (gfx_texture: 0 Unknown, 1 Uploaded, 2 GpuOwned), -1 when it is not live
 // A hash of a memory range (53 bits), for the replayer's upload cache
-export function gfx_hash(ptr: usize, len: u32): f64 { return <f64>(hashFull(ptr, len) >> 11); }
+// (four independent lanes: one chain of multiplies took ~1.8 ns per 8 bytes, the replayer hashes tens of MB a frame)
+export function gfx_hash(ptr: usize, len: u32): f64 { return <f64>(hashLanes(ptr, <usize>len) >> 11); }
+function hashLanes(p: usize, n: usize): u64 {
+  const K: u64 = 0x9E3779B97F4A7C15;
+  let a: u64 = K ^ <u64>n, b: u64 = 0xC2B2AE3D27D4EB4F, c: u64 = 0x165667B19E3779F9, d: u64 = 0x27D4EB2F165667C5, i: usize = 0;
+  for (; i + 32 <= n; i += 32) {
+    a = (a ^ load<u64>(p + i)) * K; b = (b ^ load<u64>(p + i + 8)) * K; c = (c ^ load<u64>(p + i + 16)) * K; d = (d ^ load<u64>(p + i + 24)) * K;
+    a ^= a >> 29; b ^= b >> 29; c ^= c >> 29; d ^= d >> 29;
+  }
+  let h: u64 = ((((a * K) ^ b) * K ^ c) * K ^ d) * K;
+  for (; i + 8 <= n; i += 8) { h = (h ^ load<u64>(p + i)) * K; h ^= h >> 29; }
+  for (; i < n; i++) { h = (h ^ <u64>load<u8>(p + i)) * K; h ^= h >> 29; }
+  return h ^ (h >> 31);
+}
 export function gfx_bench_sample(tex: usize, n: u32): u32 { return <u32>benchSample(tex, n); }
 export function gfx_tex_state(tex: usize): i32 { return contentState(load<u64>(tex, 120)); }
 export function gfx_tex_layout(desc: usize, out: usize): void { texLayout(desc, out); }
