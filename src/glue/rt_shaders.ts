@@ -12,10 +12,11 @@
 import type { RtGfx } from "./rt_gfx.ts";
 import { ndveRole } from "./ndve.ts";
 import { ShaderLibrary, unsupportedExtra, type Reflection } from "../shaders/library.ts";
+import { translationCurrent, failureStamp, type FailureStamp } from "../shaders/passes.ts";
 import { vertexInputVariant } from "../shaders/variants.ts";
 
 export interface ShaderBlob { key: string; control: Uint8Array; code: Uint8Array }
-export interface Translated { wgsl: string; reflection: Reflection; failed?: string }   // failed: the chain's refusal of this stage, kept so that a later run does not translate it again (a new chain version asks again)
+export interface Translated { wgsl: string; reflection: Reflection; failed?: string; passes?: FailureStamp }   // failed: the chain's refusal of this stage, kept so that a later run does not translate it again (a new chain version asks again)
 export interface ShaderTranslator { chain: string; translate(blob: ShaderBlob): Promise<Translated>; prioritize?(key: string): void; close?(): void; stats?: ShaderWorkerStats }
 export interface ShaderWorkerStats { workers: number; started: number; batches: number; maxQueued: number }
 // ids(): the ids it holds in the order they were put (when it can say): the order the stages were first needed, which a later run reads ahead in
@@ -32,7 +33,7 @@ export interface ShaderOptions {
 }
 
 export class RtShaders {
-  stats = { readAhead: 0, waits: 0, waitMs: 0, stages: 0, registered: 0, fromLibrary: 0, fromStore: 0, translated: 0, failed: 0, unknown: 0, translateMs: 0, maxMs: 0, prioritized: 0 };
+  stats = { readAhead: 0, stale: 0, waits: 0, waitMs: 0, stages: 0, registered: 0, fromLibrary: 0, fromStore: 0, translated: 0, failed: 0, unknown: 0, translateMs: 0, maxMs: 0, prioritized: 0 };
   readonly library: ShaderLibrary | null;
   private state = new Map<string, "ready" | "pending" | "failed" | "unknown">();
   private waiting: Promise<unknown>[] = [];
@@ -120,7 +121,7 @@ export class RtShaders {
     if (!tr) { this.state.set(key, "unknown"); this.stats.unknown++; return; }   // the recorder reports the key red at the first draw
     // An entry the read-ahead already has is registered here and now: the stage is ready when the call that named it returns, and the game does not wait
     const hit = this.ahead.get(`${key}/${tr.chain}`);
-    if (hit?.done && hit.v) {
+    if (hit?.done && hit.v && translationCurrent(hit.v)) {
       this.ahead.delete(`${key}/${tr.chain}`); this.readAhead(tr.chain);
       if (hit.v.failed) { this.fail(key, `translation failed: ${hit.v.failed}`); return; }
       if (this.register(key, hit.v, "the store of earlier translations")) { this.stats.fromStore++; this.stats.readAhead++; }
@@ -135,6 +136,7 @@ export class RtShaders {
     const job = (async () => {
       let got: Translated | null = null, from = "the store of earlier translations";
       try { got = await this.fromStore(id, tr.chain); } catch { got = null; }
+      if (got && !translationCurrent(got)) { got = null; this.stats.stale++; }   // made by an older version of a rewrite that touched it (src/shaders/passes.ts)
       if (got?.failed) { this.fail(key, `translation failed: ${got.failed}`); return; }
       if (!got) {
         from = "the translator";
@@ -142,7 +144,7 @@ export class RtShaders {
           const why = String(e instanceof Error ? e.message : e);
           try { this.o.onFailed?.(bytes, why); } catch { /* a debugging hook */ }
           // remembered: this chain version refuses the stage every time, and the game waits for the answer
-          if (!/was closed|Worker/.test(why)) { try { await this.o.store?.put(id, { wgsl: "", reflection: null as any, failed: why }); } catch { /* not remembered */ } }
+          if (!/was closed|Worker/.test(why)) { try { await this.o.store?.put(id, { wgsl: "", reflection: null as any, failed: why, passes: failureStamp() }); } catch { /* not remembered */ } }
           this.fail(key, `translation failed: ${why}`); return;
         }
         try { await this.o.store?.put(id, got); } catch (e) { this.log(`shader ${key}: the translation could not be stored (${e instanceof Error ? e.message : e})`); }
@@ -222,7 +224,7 @@ export const SHADER_CHAIN = "nxweb-shaders-15/page";
 export interface WorkerTranslatorOptions { worker: string | URL; framework: string; naga: string; chain?: string; subgroups?: boolean; storageBuffers?: number; samplers?: number; workers?: number; batch?: number }
 export const chainFor = (o: { chain?: string; subgroups?: boolean; storageBuffers?: number; samplers?: number }): string =>
   (o.chain ?? SHADER_CHAIN) + (o.subgroups ? "+subgroups" : "") + (o.storageBuffers && o.storageBuffers !== 10 ? `+sb${o.storageBuffers}` : "") + (o.samplers && o.samplers !== 16 ? `+sm${o.samplers}` : "");
-export const defaultShaderWorkers = (): number => Math.max(1, Math.min(4, Math.floor(((globalThis as any).navigator?.hardwareConcurrency ?? 2) / 2)));
+export const defaultShaderWorkers = (): number => Math.max(1, Math.min(8, Math.floor(((globalThis as any).navigator?.hardwareConcurrency ?? 2) / 2)));
 export function workerTranslator(o: WorkerTranslatorOptions): ShaderTranslator & { prioritize(key: string): void; stats: ShaderWorkerStats } {
   type Call = { id: number; key: string; control: Uint8Array; code: Uint8Array; res: (t: Translated) => void; rej: (e: Error) => void };
   type W = { w: Worker; bc: BroadcastChannel; up: boolean; busy: Map<number, Call> };

@@ -3,6 +3,7 @@
 import { fixForWgsl, type FixOptions, type Binding } from "./spv.ts";
 import type { Reflection } from "./library.ts";
 import { wrapStage, type MeshStage } from "./meshstage.ts";
+import { passStamp } from "./passes.ts";
 
 export interface Converter { spvToWgsl(spv: Uint8Array, flags?: number): string }
 export interface Converted { wgsl: string; reflection: Reflection; bindings: Binding[]; fixedSpv: Uint8Array }
@@ -34,6 +35,7 @@ export function convertStage(naga: Converter, spv: Uint8Array, opts: FixOptions 
     uboSize: Object.fromEntries(cb.map(b => [b.reg, b.size ?? 0])),
     extra: f.bindings.filter(b => !["cbuf", "tex", "samp_tex", "fixup", "storage", "draw", "image"].includes(b.kind)).map(b => ({ kind: b.kind, group: b.group, binding: b.binding, size: b.size, bank: b.bank, ...(b.kind === "c1" ? { data: opts.c1 ?? "" } : {}) })),
     notes: f.notes,
+    passes: passStamp(f.fired),
   };
   if (f.stage === "vertex") { reflection.attributes = f.inputs.map(i => i.location); reflection.attributeTypes = Object.fromEntries(f.inputs.map(i => [i.location, i.type])); }
   if (f.stage === "fragment") { reflection.outputs = f.outputs.map(o => o.location); reflection.outputTypes = Object.fromEntries(f.outputs.map(o => [o.location, o.type])); }

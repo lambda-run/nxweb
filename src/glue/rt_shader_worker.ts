@@ -10,9 +10,7 @@
 // The job is src/shaders/job.ts jobFor (nxnative dmsh_build.py job_for, NVN and NVN2), without a per-game answer table:
 // texture types, attribute and output classes are the translator's defaults.
 import { instantiate, type Naga } from "../../tools/shaders/naga.mts";
-import { convertStage } from "../shaders/convert.ts";
-import { jobFor } from "../shaders/job.ts";
-import type { FixOptions } from "../shaders/spv.ts";
+import { translateBatch as batch, type BatchReq } from "../shaders/batch.ts";
 
 let ready: Promise<{ dotnet: any; naga: Naga; lines: string[] }> | null = null;
 let subgroups: "native" | "single" = "single";   // FixOptions.subgroups for every stage (init)
@@ -27,44 +25,9 @@ async function start(init: { framework: string; naga: string; subgroups?: boolea
   const naga = await instantiate(await (await fetch(init.naga)).arrayBuffer());
   return { dotnet: rt, naga, lines };
 }
-let serial = 0;
-type Req = { id: number; key: string; control: Uint8Array; code: Uint8Array };
-// A batch is one run of the translator's main over all its jobs (the main's own start is paid once a batch), then the
-// pass and naga a stage at a time; each stage is answered on its own, with what its part of the batch cost (timing)
-async function translateBatch(reqs: Req[], post: (m: unknown) => void) {
-  const t0 = performance.now();
-  const { dotnet, naga, lines } = await ready!;
-  const t1 = performance.now(), FS = dotnet.Module.FS, n = ++serial, out = `/w/out${n}`, jobs: unknown[] = [], mesh: Record<string, unknown> = {}, c1: Record<string, unknown> = {}, ok: Req[] = [];
-  for (const r of reqs) {
-    try {
-      const { job, body } = jobFor(r.key, r.control, r.code, `/w/${r.key}.bin`);
-      FS.writeFile(`/w/${r.key}.bin`, body);
-      const { mesh: m, ...xjob } = job;
-      jobs.push(xjob); mesh[r.key] = m; c1[r.key] = job.c1; ok.push(r);
-    } catch (e) { post({ id: r.id, error: e instanceof Error ? e.message : String(e) }); }
-  }
-  if (!ok.length) return;
-  FS.writeFile(`/w/jobs${n}.json`, JSON.stringify(jobs));
-  lines.length = 0;
-  const rc = await dotnet.runMain("xlate_wasm", [`/w/jobs${n}.json`, out]);
-  const t2 = performance.now(), share = (t2 - t1) / ok.length;
-  for (const r of ok) {
-    const key = r.key, t3 = performance.now();
-    try {
-      let spv: Uint8Array;
-      try { spv = FS.readFile(`${out}/${key}.spv`); } catch {
-        const mine = lines.filter(l => l.includes("[RED]") && (ok.length === 1 || l.includes(key)));
-        throw new Error(`the translator wrote no SPIR-V (exit ${rc}): ${mine.join(" | ").replace(/\[RED\] /g, "") || lines.slice(-2).join(" | ")}`);
-      }
-      let res: { sbufs?: FixOptions["sbufs"] } = {};
-      try { res = JSON.parse(FS.readFile(`${out}/${key}.res.json`, { encoding: "utf8" })); } catch { /* not written: no storage buffers to place */ }
-      const c = convertStage(naga, spv, { bindings: "nxweb", sbufs: res.sbufs ?? [], mesh: mesh[key] as any, c1: c1[key] as any, subgroups, storageBuffers, samplers });
-      post({ id: r.id, wgsl: c.wgsl, reflection: c.reflection, timing: { startMs: t1 - t0, xlateMs: share, convertMs: performance.now() - t3, batch: ok.length } });
-    } catch (e) { post({ id: r.id, error: e instanceof Error ? e.message : String(e) }); }
-    for (const f of [`/w/${key}.bin`, `${out}/${key}.spv`, `${out}/${key}.res.json`]) { try { FS.unlink(f); } catch { /* not written */ } }
-  }
-  try { FS.unlink(`/w/jobs${n}.json`); } catch { /* gone */ }
-}
+// One run of the translator over a batch: src/shaders/batch.ts (shared with the offline pack, tools/shaders/pack.mts)
+async function translateBatch(reqs: Req[], post: (m: unknown) => void) { return batch(await ready!, reqs, post, { subgroups, storageBuffers, samplers }); }
+type Req = BatchReq;
 // Requests do not come as messages to the Worker itself: the .NET runtime, started in a Worker, never finishes its
 // start once the Worker's own `message` event has fired (measured in Chromium 153). They come over a
 // BroadcastChannel whose name is the Worker's name; { ready: true } says the channel is listened to.
