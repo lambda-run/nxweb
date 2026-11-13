@@ -74,6 +74,7 @@ function addressFields(op: number, dv: DataView, p: number, fmt: (serial: number
     case H.UBO: case H.SSBO: return [[16, dv.getUint32(p + 24, true)]];
     case H.DRAW_IDX: { const it = dv.getUint32(p + 8, true); return [[32, dv.getUint32(p + 12, true) * (it === 2 ? 4 : it === 1 ? 2 : 1)]]; }
     case H.BUF_READBACK: return [[8, dv.getUint32(p + 16, true)]];
+    case 23 /* MEM_DIRTY with its range */: return dv.getUint32(p + 4, true) >= 24 ? [[8, dv.getUint32(p + 16, true)]] : [];
     case H.MESH_BEGIN: return dv.getUint32(p + 8, true) & 1 ? [[24, 8]] : [];
     case H.PIPELINE_CREATE: return [[12, PK_SIZE, true]];
     case H.COPY_B2T: case H.COPY_T2B: {
@@ -305,6 +306,11 @@ export interface ReplayFrame { n: number; serial: number; width: number; height:
 export interface ReplayResult { host: any; frames: ReplayFrame[]; log: string[]; errors: [string, number][]; notes: string[]; stats: any; ms: number }
 // shader: a shader of the capture is about to be taken: what it returns (when anything) replaces its record (a stage translated again by a newer chain)
 export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | void; onLive?: (n: number, head: any, data: Uint8Array) => Promise<void> | void; keepData?: boolean; shader?: (key: string, info: any) => any;
+  // textures that come with contents and have more than one level are made without their top levels until no side is longer than this (a software
+  // device decodes compressed textures in memory: a gigabyte of ASTC and BC is several there). Their finest detail is lost, nothing else
+  texMax?: number;
+  // textures to read back (level 0, layer 0) after each present: the intermediate targets of the frame, as it left them
+  dump?: number[]; onDump?: (d: ReplayDump) => Promise<void> | void;
   noReadback?: boolean;      // presented images are not read back (and not compared): a profile wants the replayer's work alone
   repeat?: ReplayRepeat }
 // Profiling (web/gfxprof.ts): frame `frame` of the capture, once it has been replayed, is handed to `run`, which may execute it again as often as it likes.
@@ -313,6 +319,7 @@ export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | v
 //                GfxHost.exec. With `hook` the records are executed one by one and each one's op and ms are handed to it.
 //   settle()     the read-backs have landed and the GPU has finished what was submitted
 export interface ReplayRepeat { frame: number; run(r: { host: any; batches: number; records: number; once(hook?: (op: number, ms: number) => void): number; settle(): Promise<void> }): Promise<void> }
+export interface ReplayDump { frame: number; serial: number; width: number; height: number; format: string; data: Uint8Array; nonZero: number; note: string }
 
 // Replays a capture on a GfxHost made by `makeHost(memory, log)` (the caller owns the device and the options; the host must not be attached to a recorder).
 // `payload(i)`: the payload bytes of chunk i. Every presented image is read back (level 0) and compared with the live one in the capture.
@@ -356,6 +363,7 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
   const missing = (meta.features as string[]).filter(f => !h.device.features?.has?.(f));
   if (missing.length) notes.push(`features the capturing device had and this one lacks: ${missing.join(", ")}`);
   h.fix = meta.fix.slice(); h.uniformArena = meta.uniformArena;
+  let shrunk = 0;
   const pendingPipes: { id: number; key: number }[] = [], texFmt = (serial: number): NvnFormat | undefined => h.textures.get(serial)?.fmt, live = new Map<number, { head: any; data: Uint8Array }>();
   const compare = (f: ReplayFrame) => {
     const l = live.get(f.n);
@@ -398,18 +406,30 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
   };
   for (let ci = 0; ci < index.chunks.length; ci++) {
     const c = index.chunks[ci], hd = c.h;
+    if (h.lost) {      // nothing more can be drawn: say where it happened and stop
+      const before = index.chunks.slice(Math.max(0, ci - 3), ci).map(x => x.h.type === "tex" ? `tex#${x.h.serial} ${x.h.gpuFormat} ${x.h.width}x${x.h.height}x${x.h.depth} target ${x.h.target} levels ${x.h.levels}${x.h.content ? "" : " (no contents)"}` : x.h.type === "batch" ? `batch ${x.h.i}` : x.h.type).join("; ");
+      log.push(`[RED] replay: the device was lost by chunk ${ci} of ${index.chunks.length} (frame ${frames.length}); the chunks before it: ${before}. Stopped`);
+      break;
+    }
     if (hd.type === "shader") { const info = JSON.parse(JSON.stringify(hd.info), (_k, v) => v && typeof v === "object" && Array.isArray(v.__u8) ? Uint8Array.from(v.__u8) : v); h.shaders[hd.id] = { key: hd.key, info: opts.shader?.(hd.key, info) ?? info }; }
     else if (hd.type === "pipe") pendingPipes.push({ id: hd.id, key: hd.key });
     else if (hd.type === "tex") {
       const fmt = hostFormat(hd.format, h.caps);
-      h.textures.set(hd.serial, { serial: hd.serial, target: hd.target, format: hd.format, flags: hd.flags, samples: hd.samples, width: hd.width, height: hd.height, depth: hd.depth, levels: hd.levels, swz: hd.swz, views: new Map(), fmt });
+      let cut = 0, tw = hd.width, th = hd.height;
+      if (opts.texMax && hd.content && hd.levels > 1 && hd.target !== 2 && fmt) {
+        while (cut < hd.levels - 1 && cut < hd.content.levels.length - 1 && Math.max(hd.width >> cut, hd.height >> cut) > opts.texMax) cut++;
+        if (cut) { tw = hd.content.levels[cut].w * fmt.bw; th = hd.content.levels[cut].h * fmt.bh; shrunk++; }
+      }
+      h.textures.set(hd.serial, { serial: hd.serial, target: hd.target, format: hd.format, flags: hd.flags, samples: hd.samples, width: tw, height: th, depth: hd.depth, levels: hd.levels - cut, swz: hd.swz, views: new Map(), fmt });
       if (!hd.content) continue;
       if (fmt?.tex !== hd.gpuFormat) { log.push(`[RED] replay: tex#${hd.serial} was ${hd.gpuFormat} on the capturing device and is ${fmt?.tex} here: its contents are not restored`); continue; }
       const t = h.texture(hd.serial), data = await payload(ci);
       if (!t?.gpu) continue;
       const g = t.gpu;
-      hd.content.levels.forEach((L: Level, l: number) => {
-        if (l >= g.mipLevelCount) return;
+      hd.content.levels.forEach((L: Level, cl: number) => {
+        const l = cl - cut;
+        if (l < 0 || l >= g.mipLevelCount) return;
+        if (cut && (Math.ceil(Math.max(1, g.width >> l) / fmt!.bw) !== L.w || Math.ceil(Math.max(1, g.height >> l) / fmt!.bh) !== L.h)) return;      // a level whose size does not come out the same after the cut stays empty
         if (hd.content.depth) {
           // depth goes in as a draw a layer (GfxHost.depthData reads f32 rows from memory)
           for (let z = 0; z < L.d; z++) {
@@ -470,6 +490,13 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
           catch (e: any) { fr.note = `the presented image could not be read: ${e?.message ?? e}`; }
           frames.push(fr);
           await opts.onFrame?.(fr);
+          for (const serial of opts.dump ?? []) {
+            const t = h.textures.get(serial);
+            if (!t?.gpu) continue;
+            try { const r = await h.readTexture(serial); let nz = 0; for (let i = 0; i < r.data.length; i += r.bytesPerPixel) for (let k = 0; k < r.bytesPerPixel; k++) if (r.data[i + k]) { nz++; break; }
+              await opts.onDump?.({ frame: fr.n, serial, width: r.width, height: r.height, format: t.fmt.tex, data: r.data, nonZero: nz, note: "" }); }
+            catch (e: any) { await opts.onDump?.({ frame: fr.n, serial, width: 0, height: 0, format: t.fmt?.tex ?? "", data: new Uint8Array(0), nonZero: 0, note: String(e?.message ?? e) }); }
+          }
           if (rep) {
             const whole = u8.slice(batchAt, batchAt + n);      // the batch as it stands (addresses rewritten up to here): put back after the repeats
             cur.body = whole; repBatches.push({ ...cur }); cur.segs = [];
@@ -484,6 +511,7 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
   await h.landed();
   try { await h.device.queue.onSubmittedWorkDone(); } catch { /* a lost device says so in the log */ }
   await new Promise(r => setTimeout(r, 50));       // pipelines that fail asynchronously say so
+  if (shrunk) notes.push(`${shrunk} textures were made without their top levels (no side over ${opts.texMax})`);
   const counts = new Map<string, number>();
   for (const l of log) if (l.includes("[RED]")) counts.set(l, (counts.get(l) ?? 0) + 1);
   return { host: h, frames, log, errors: [...counts].sort((a, b) => b[1] - a[1]), notes, stats: { ...h.stats }, ms: Math.round(performance.now() - t0) };

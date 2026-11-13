@@ -32,16 +32,19 @@ async function main() {
     return { ...rest, wgsl: a.wgsl, storage: a.refl.storage, ...(a.refl.gmem ? { gmem: a.refl.gmem } : {}), extra: a.refl.extra,
       hostBlocks: (a.refl.extra ?? []).filter((e: any) => blockOf(e) >= 0).map((e: any) => ({ k: blockOf(e), size: e.size ?? 0 })).sort((x: any, y: any) => x.k - y.k) };
   };
-  const flips = new Map<number, boolean>();
+  const flips = new Map<number, boolean>(), dumps: any[] = [], dump = (q.get("dump") ?? "").split(",").filter(Boolean).map(Number);
   const r = await replayCapture(index, payload, (memory, log) => new GfxHost(device, memory as any, { log, capture: false, limits }), {
     shader,
     onLive: async (n, head, data) => { flips.set(n, !!head.flip); const p = image(head.format, head.width, head.height, data, !!head.flip); if (p) await out(`frame-${n}.live.png`, p); },
+    texMax: Number(q.get("texmax") ?? 0) || undefined,
+    dump, onDump: async d => { const p = d.data.length ? image(d.format, d.width, d.height, d.data, false) : null; if (p) await out(`f${d.frame}-tex${d.serial}.png`, p);
+      dumps.push({ frame: d.frame, serial: d.serial, width: d.width, height: d.height, format: d.format, nonZero: d.nonZero, note: d.note || (p ? "" : "no PNG for this format") }); },
     onFrame: async f => { const p = f.data ? image(f.format, f.width, f.height, f.data, f.flip) : null; if (p) await out(`frame-${f.n}.png`, p); },
   });
   const adapterName = adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "";
   await out("replay.log", r.log.join("\n") + "\n");
   await out("errors.txt", r.errors.map(([l, n]) => `${String(n).padStart(6)}  ${l}`).join("\n") + (r.errors.length ? "\n" : ""));
   if (replaced.length) r.notes.push(`${replaced.length} shaders of the capture replaced by ones translated again (--shaders)`);
-  return { adapter: adapterName, notes: r.notes, ms: r.ms, stats: r.stats, errors: r.errors, frames: r.frames.map(f => ({ n: f.n, serial: f.serial, width: f.width, height: f.height, format: f.format, live: f.live, differing: f.differing, note: f.note, line: f.line })) };
+  return { adapter: adapterName, notes: r.notes, ms: r.ms, stats: r.stats, errors: r.errors, dumps, frames: r.frames.map(f => ({ n: f.n, serial: f.serial, width: f.width, height: f.height, format: f.format, live: f.live, differing: f.differing, note: f.note, line: f.line })) };
 }
 (window as any).__replay = main().catch(e => ({ fatal: String(e?.stack ?? e) }));

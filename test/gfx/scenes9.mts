@@ -23,7 +23,20 @@ const CS_NOFORMAT: ShaderInfo = { stage: "compute", images: [{ slot: 0, format: 
   textureStore(back, vec2i(id.xy), vec4f(v.x * 2.0, 0.0, 0.0, 1.0)); }` };
 SHADERS.cs_noformat = CS_NOFORMAT;
 
+// writes one BC4 block as an RGBA16UI texel: both endpoints 200, every index 0
+SHADERS.fs_bc4_block = { stage: "fragment", outputs: [0], wgsl: `@fragment fn main(@location(0) v: vec4f) -> @location(0) vec4u { return vec4u(0xc8c8u, 0u, 0u, 0u); }` };
+
 export const scenes9: Scene[] = [
+  { name: "a render target view of a BC4 texture as RGBA16UI (a block a texel: a GPU compressor): drawn into a texture of the view's format and copied over the level, then sampled as BC4", async run(e, t) {
+    const G = e.G, cmd = G.cmd, comp = await e.program("vs_quad", "fs_bc4_block"), show = await e.program("vs_quad", "fs_tex"), nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST);
+    const bc = G.texture({ w: 8, h: 8, format: 0x49 /* BC4 */ }), i = G.acquire(e.win);
+    G.begin();
+    e.frame(cmd, bc, comp); G.targets(cmd, [bc], 0, [G.view({ format: 0x2c /* RGBA16UI */ })]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 2, 2]); G.c("CommandBufferSetScissor", [cmd, 0, 0, 2, 2]); e.drawQuad(cmd);
+    e.frame(cmd, e.wtex[i], show); G.clear(cmd, [0, 0, 1, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]); G.c("CommandBufferSetScissor", [cmd, 0, 0, 64, 64]); e.bindTexture(cmd, G.texId(bc), nearest); e.drawQuad(cmd);
+    e.finish(i);
+    t.rect(await e.read(), 0, 0, 64, 64, [200, 0, 0, 255], "every texel of the BC4 texture decodes to 200");
+    t.noRed(e); t.eq(e.host.stats.pipelinesFailed, 0, "no pipeline failed");
+  } },
   { name: "a storage image the shader names no format for (declared float) with an unsigned integer texture bound: the dispatch runs on a variant whose stores and loads hand the bits over", async run(e, t) {
     const G = e.G, cmd = G.cmd, prog = await e.computeProgram("cs_noformat"), flat = await uboProgram(e);
     const u = G.texture({ w: 8, h: 8, format: 0x2f /* RGBA32UI */ }), r = G.texture({ w: 8, h: 8, format: 0x0b /* R32UI */ }), f = G.texture({ w: 8, h: 8, format: FMT.RGBA16F }), i = G.acquire(e.win);

@@ -26,6 +26,13 @@ export function fmtTwin(f: u32): u32 {
   return 0;
 }
 
+// A render target view of a block-compressed texture as an integer format whose texel is one block (8 bytes: RGBA16UI / I, RG32UI / I; 16 bytes: RGBA32UI / I):
+// the game writes the compressed blocks themselves (a GPU compressor). f: the texture's canonical format, vf: the view's
+export function fmtBlockView(f: u32, vf: u32): bool {
+  const b8 = f == 0x42 || f == 0x46 || f == 0x49 || f == 0x4a, b16 = f == 0x43 || f == 0x44 || f == 0x47 || f == 0x48 || (f >= 0x4b && f <= 0x50);
+  return (b8 && (vf == 0x2c || vf == 0x2d || vf == 0x17 || vf == 0x18)) || (b16 && (vf == 0x2f || vf == 0x30));
+}
+
 // What the host can take as it is (gfx_host_caps, from the adapter's features): 1 ASTC, 2 16-bit normalized formats
 export let hostCaps: u32 = 0;
 export function setHostCaps(c: u32): void { hostCaps = c; }
