@@ -730,7 +730,7 @@ function draw(r: usize, size: u32, indexed: bool): void {
     }
   }
   if (!instances) instances = 1;
-  if (!count) return;
+  if (!count) { skipRec(H.SKIP_EMPTY, 0, 0); return; }      // (an indirect draw's count is read here, on the CPU, at the submission: a count the GPU writes later is 0 now)
   const vs = progShader(prog, 0), fs = progShader(prog, 1);
   if (vs < 0 || fs < 0) { skipRec(H.SKIP_SHADER, 0, prog); nSkipped++; return; }                        // "[RED] shader <key> is not in the shader map", once a key
   if (vs != curVs || fs != curFs || meshMode) { curVs = vs; curFs = fs; meshMode = false; dirty |= D_PIPE | D_UBO | D_TEX | D_VBUF; }
