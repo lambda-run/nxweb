@@ -73,7 +73,7 @@ export function pipelineGet(): i32 {
       if (instOf(i).state == GfxPipelineS.Failed) {
         // said once a pipeline (+404 becomes 3): each skipped draw leaves a skip record, which the frame ledger counts by cause. (Six failed pipelines
         // used in turn made 15,000 of these lines in one run)
-        if (load<u32>(e, 404) != 3) { store<u32>(e, 3, 404); L.red("pipeline "); L.u(i); L.str(" failed to build: its draws are skipped (said once; the frame ledger counts them)"); L.end(); }
+        if (load<u32>(e, 404) != 3) { store<u32>(e, 3, 404); L.red("pipeline "); L.u(i); L.str(" failed to build: its draws are skipped"); L.end(); }
         return -1;
       }
       return <i32>i;
