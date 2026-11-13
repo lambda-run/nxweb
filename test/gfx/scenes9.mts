@@ -2,14 +2,53 @@
 // as `?gfxcapture=` captures a game's, and the capture is replayed on a second replayer that has no recorder and no guest memory, only the file.
 import { Env } from "./env.mts";
 import { FMT, FILTER, STAGE } from "./nvn.mts";
-import { type Scene, T, REGION, upload, ubo } from "./scenes.mts";
-import { GfxHost } from "../../src/glue/gfx_host.ts";
+import { type Scene, T, REGION, upload, ubo, uboProgram, bindUbos, IDENT } from "./scenes.mts";
+import { GfxHost, type ShaderInfo } from "../../src/glue/gfx_host.ts";
+import { SHADERS } from "./env.mts";
 import { indexCapture, replayCapture, parseCaptureSpec } from "../../src/glue/gfx_stream_capture.ts";
 
 const checker = (w: number, h: number, a: number[], b: number[]) => Array.from({ length: w * h * 4 }, (_, i) => { const p = i >> 2; return (((p % w) >> 2) + (Math.floor(p / w) >> 2)) & 1 ? a[i & 3] : b[i & 3]; });
 function b64(b: Uint8Array): string { let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000)); return btoa(s); }
 
+// a compute stage whose images name no format (the translator declares such an image float, ShaderInfo.images `bound`): it stores four floats into image 0;
+// stores a float into image 1, loads it back and stores what it read, doubled, into image 2
+const CS_NOFORMAT: ShaderInfo = { stage: "compute", images: [{ slot: 0, format: "rgba8unorm", access: "write-only", bound: true, type: "float" }, { slot: 1, format: "r32float", access: "read-write", bound: true, type: "float" },
+  { slot: 2, format: "rgba16float", access: "write-only", bound: true, type: "float" }],
+  wgsl: `@group(1) @binding(272) var img: texture_storage_2d<rgba8unorm, write>; @group(1) @binding(273) var rw: texture_storage_2d<r32float, read_write>;
+@group(1) @binding(274) var back: texture_storage_2d<rgba16float, write>;
+@compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) id: vec3u) {
+  textureStore(img, vec2i(id.xy), vec4f(1.0, 2.0, -1.0, f32(id.x) + 0.5));
+  textureStore(rw, vec2i(id.xy), vec4f(1.5, 0.0, 0.0, 1.0));
+  let v = textureLoad(rw, vec2i(id.xy));
+  textureStore(back, vec2i(id.xy), vec4f(v.x * 2.0, 0.0, 0.0, 1.0)); }` };
+SHADERS.cs_noformat = CS_NOFORMAT;
+
 export const scenes9: Scene[] = [
+  { name: "a storage image the shader names no format for (declared float) with an unsigned integer texture bound: the dispatch runs on a variant whose stores and loads hand the bits over", async run(e, t) {
+    const G = e.G, cmd = G.cmd, prog = await e.computeProgram("cs_noformat"), flat = await uboProgram(e);
+    const u = G.texture({ w: 8, h: 8, format: 0x2f /* RGBA32UI */ }), r = G.texture({ w: 8, h: 8, format: 0x0b /* R32UI */ }), f = G.texture({ w: 8, h: 8, format: FMT.RGBA16F }), i = G.acquire(e.win);
+    G.begin();
+    G.c("CommandBufferBindProgram", [cmd, prog, 0x20]);
+    G.c("CommandBufferBindImages", [cmd, STAGE.COMPUTE, 0, 3, e.g.u64([u, r, f].map(x => G.c("DeviceGetImageHandle", [G.dev, G.texId(x)])))]);
+    G.c("CommandBufferDispatchCompute", [cmd, 1, 1, 1]);
+    e.frame(cmd, e.wtex[i], flat); G.clear(cmd, [0, 0, 0, 1]); e.finish(i);
+    const bits = (v: number[]) => Array.from(new Uint8Array(new Float32Array(v).buffer)), iu = await e.read(e.serial(u)), ir = await e.read(e.serial(r)), ib = await e.read(e.serial(f));
+    t.eq([iu.bytesPerPixel, iu.px(0, 0), iu.px(5, 3)], [16, bits([1, 2, -1, 0.5]), bits([1, 2, -1, 5.5])], "RGBA32UI: the bits of the four floats stored");
+    t.eq([ir.px(2, 2), ib.px(2, 2).slice(0, 2)], [bits([1.5]), [0x00, 0x42]], "R32UI: the bits of 1.5; loaded back as the float 1.5, doubled into the float image (3.0 as a half)");
+    t.noRed(e); t.eq(e.host.stats.dispatches, 1, "the dispatch ran");
+  } },
+  { name: "fragment outputs declared float drawn into an unsigned integer target: the pipeline takes a variant whose outputs hand their bits over (as the console's GPU writes them)", async run(e, t) {
+    const G = e.G, cmd = G.cmd, prog = await uboProgram(e), u = G.texture({ w: 8, h: 8, format: 0x2f /* RGBA32UI */ }), i = G.acquire(e.win);
+    G.begin();
+    e.frame(cmd, u, prog); G.c("CommandBufferSetViewport", [cmd, 0, 0, 8, 8]); bindUbos(e, cmd, ubo(e, IDENT), ubo(e, [1, 2, -1, 0.5])); e.drawQuad(cmd);
+    e.frame(cmd, e.wtex[i], prog); G.clear(cmd, [0, 0, 0, 1]); G.c("CommandBufferSetViewport", [cmd, 0, 0, 64, 64]); bindUbos(e, cmd, ubo(e, IDENT), ubo(e, [0, 1, 0, 1])); e.drawQuad(cmd);     // the same shader into a float target: as it is
+    e.finish(i);
+    const bits = Array.from(new Uint8Array(new Float32Array([1, 2, -1, 0.5]).buffer)), img = await e.read(e.serial(u));
+    t.eq([img.bytesPerPixel, img.px(0, 0), img.px(7, 7), img.px(3, 4)], [16, bits, bits, bits], "the integer target holds the bits of the floats the shader wrote");
+    t.rect(await e.read(), 0, 0, 64, 64, [0, 255, 0, 255], "the float target: the colour");
+    t.noRed(e); t.eq(e.host.stats.pipelinesFailed, 0, "no pipeline failed");
+    t.ok(e.g.logs.some(l => l.includes("hand their bits over")), "the variant is said once in the log");
+  } },
   { name: "stream capture: three frames of a running scene (memory pages, textures and a depth buffer the GPU holds, shaders, pipelines made before and during) replay without the recorder to the same texels", async run(e, t) {
     const G = e.G, cmd = G.cmd, tex = await e.program("vs_quad_ubo", "fs_tex"), flat = await e.program("vs_quad_ubo", "fs_ubo"), inv = await e.program("vs_quad_ubo", "fs_tex_invert");
     const nearest = G.sampId(FILTER.NEAREST, FILTER.NEAREST), depth = G.texture({ w: 64, h: 64, format: FMT.DEPTH32F }), rt = G.texture({ w: 32, h: 32, format: FMT.RGBA8 }), rtId = G.texId(rt);

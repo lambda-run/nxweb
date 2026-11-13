@@ -5,7 +5,7 @@
 // Browser code (WebGPU types are left loose: the tree has no @webgpu/types).
 import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
 import { imageVariant, formatClass } from "../shaders/images.ts";
-import { fragmentInputVariant, missingInputs } from "../shaders/variants.ts";
+import { fragmentInputVariant, fragmentOutputVariant, missingInputs } from "../shaders/variants.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, STORAGE_RW_FORMATS, MAYBE_UNFILTERABLE, VERTEX_CONV, convertVertices, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
 import { FrameLedger } from "./gfx_ledger.ts";
@@ -517,11 +517,24 @@ export class GfxHost {
   private module(id: number): GPU { const s = this.shaders[id]; return (s.module ??= this.device.createShaderModule({ code: s.info.wgsl })); }
   // The fragment module for this vertex shader: its own, or (src/shaders/variants.ts) one whose inputs the vertex stage does not write read a constant instead
   // (NVN leaves such a varying undefined; WebGPU refuses the pipeline)
-  private fragModule(vsId: number, fsId: number): GPU {
-    const f = this.shaders[fsId], vw: string = this.shaders[vsId].info.wgsl ?? "", sig = missingInputs(f.info.wgsl ?? "", vw);
-    if (!sig) return this.module(fsId);
-    let m = (f.variants ??= new Map()).get("in:" + sig);
-    if (m === undefined) { const w = fragmentInputVariant(f.info.wgsl, vw); m = w ? this.device.createShaderModule({ code: w }) : null; f.variants.set("in:" + sig, m); }
+  // and (`out`: colour target index -> the class of its format, for the targets the shader writes) one whose outputs have the classes of the targets: a float
+  // output drawn into an integer target hands over its bits (fragmentOutputVariant). vsId < 0: a mesh draw, whose vertex stage is made from the fragment's inputs
+  private foutShown = 0;
+  private fragModule(vsId: number, fsId: number, out?: Record<number, VinClass>): GPU {
+    const f = this.shaders[fsId], vw: string = vsId < 0 ? "" : this.shaders[vsId].info.wgsl ?? "", sig = vsId < 0 ? "" : missingInputs(f.info.wgsl ?? "", vw);
+    const osig = out ? Object.keys(out).map(Number).sort((a, b) => a - b).map(l => `${l}:${out[l]}`).join(",") : "";
+    if (!sig && !osig) return this.module(fsId);
+    const key = "in:" + sig + (osig ? "|out:" + osig : "");
+    let m = (f.variants ??= new Map()).get(key);
+    if (m === undefined) {
+      let w: string = f.info.wgsl, changed = false;
+      if (sig) { const v = fragmentInputVariant(w, vw); if (v) { w = v; changed = true; } }
+      if (osig) {
+        const v = fragmentOutputVariant(w, out!);
+        if (v) { w = v; changed = true; if (this.foutShown++ < 8) this.log(`fragment shader ${f.key} is drawn into colour targets of another class than its outputs declare (${osig}): its outputs hand their bits over (a variant of its text)`); }
+      }
+      m = changed ? this.device.createShaderModule({ code: w }) : null; f.variants.set(key, m);
+    }
     return m ?? this.module(fsId);
   }
   // WebGPU wants a vertex output and the fragment input at the same location to name the same interpolation; the translator puts flat / linear on
@@ -1187,10 +1200,11 @@ export class GfxHost {
     if (itype) primitive.stripIndexFormat = itype === 3 ? "uint32" : "uint16";
     if (flags & 1) { if (this.device.features?.has?.("depth-clip-control")) primitive.unclippedDepth = true; else this.red("clamp", "depth clamp needs the WebGPU feature depth-clip-control, which this device lacks: depth is clipped"); }
     const ncolor = dv.getUint8(k + PK.ncolor), chmask = dv.getUint32(k + PK.chmask, true), blendEn = dv.getUint8(k + PK.blendEn), written = new Set(fs.outputs ?? []);
-    const targets: any[] = [];
+    const targets: any[] = [], outClasses: Record<number, VinClass> = {};
     for (let i = 0; i < ncolor; i++) {
       const f = hostFormat(dv.getUint8(k + PK.colorFmt + i), this.caps);
       if (!f?.tex) { targets.push(null); continue; }
+      if (written.has(i) && f.kind !== "depth") outClasses[i] = f.kind;
       const nib = (chmask >>> (4 * i)) & 15, t: any = { format: f.tex, writeMask: written.has(i) ? nib : 0 };
       if ((blendEn >> i) & 1) {
         const b = dv.getBigUint64(k + PK.blend + i * 8, true), fld = (s: number, w: number) => Number((b >> BigInt(s)) & ((1n << BigInt(w)) - 1n));
@@ -1214,7 +1228,7 @@ export class GfxHost {
       layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }),
       vertex: { module: vmod, entryPoint: mesh ? "main" : vs.entry, buffers: mesh ? [] : buffers }, primitive,
       multisample: { count: dv.getUint8(k + PK.samples) || 1, alphaToCoverageEnabled: dv.getUint8(k + PK.a2c) !== 0 && (dv.getUint8(k + PK.samples) || 1) > 1 },
-      fragment: { module: mesh ? this.module(fsId) : this.fragModule(vsId, fsId), entryPoint: fs.entry, targets },
+      fragment: { module: this.fragModule(mesh ? -1 : vsId, fsId, outClasses), entryPoint: fs.entry, targets },
     };
     const df = NVN_FORMATS[dv.getUint8(k + PK.depthFmt)];
     if (df?.tex) {
@@ -1446,7 +1460,7 @@ export class GfxHost {
         if (!tx || !direct) { this.red(`noimg${m.slot}${tx?.fmt.tex ?? ""}${whyNot}`, `a dispatch or draw uses image slot ${m.slot}, where ${tx ? `a ${tx.fmt.tex} texture is bound, which WebGPU cannot bind as a ${access} storage image${SRGB_TWIN[tx.fmt.tex!] && STORAGE_FORMATS.has(SRGB_TWIN[tx.fmt.tex!]) ? ` (an sRGB format: the texture would have to be created as ${SRGB_TWIN[tx.fmt.tex!]} and viewed as sRGB everywhere else)` : ""}${whyNot ? ` (no stand-in: ${whyNot})` : ""}` : "no live texture is bound"}: it is skipped`); return false; }
         const f = tx.fmt.tex!;
         if (f !== m.format) {
-          if (formatClass(f) !== (m.type ?? formatClass(m.format))) { this.red(`imgclass${m.slot}${f}`, `a dispatch or draw uses image slot ${m.slot} as a ${m.type ?? formatClass(m.format)} image (the shader ${this.shaders[sid].key} declares ${m.bound ? "no format" : m.format}), and a ${f} texture is bound: the shader would have to be translated again for ${formatClass(f)} texels; it is skipped`); return false; }
+          if (formatClass(f) !== (m.type ?? formatClass(m.format)) && !(m.bound && (c.compute || st === 1))) { this.red(`imgclass${m.slot}${f}`, `a dispatch or draw uses image slot ${m.slot} as a ${m.type ?? formatClass(m.format)} image (the shader ${this.shaders[sid].key} declares ${m.bound ? "no format" : m.format}), and a ${f} texture is bound: the shader would have to be translated again for ${formatClass(f)} texels; it is skipped`); return false; }
           (ivar ??= []).push({ sid, st, slot: m.slot, format: f });
         }
         const iview = this.view(tx, tx.gpu, b!.view, m.dim ?? (tx.gpu.dimension === "3d" ? "3d" : "2d"), true);

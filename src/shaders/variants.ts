@@ -3,6 +3,7 @@
 // so the caller keeps the module by the signature it asked with.
 //   vertexInputVariant    a vertex stage bound with attribute formats of another class (float / sint / uint) than its inputs declare
 //   fragmentInputVariant  a fragment stage drawn with a vertex stage that does not write every varying it reads
+//   fragmentOutputVariant a fragment stage drawn into colour targets of another class (float / sint / uint) than its outputs declare
 //   stageInterface        the locations (and types) a stage's entry point reads and writes
 // The shape relied on is naga's for a module read from SPIR-V: `@vertex fn main(@location(0) a: vec4<f32>, @builtin(vertex_index) b: u32) -> VertexOutput {`,
 // the outputs a struct of `@location(n) [@interpolate(..)] name: type` members or one attributed type; every input a parameter of its own.
@@ -14,9 +15,14 @@ interface Entry { at: number; paramsAt: number; paramsEnd: number; params: Param
 
 const SCALAR: Record<string, VinClass> = { f32: "float", f16: "float", i32: "sint", u32: "uint" };
 const WORD: Record<VinClass, string> = { float: "f32", sint: "i32", uint: "u32" };
-function classOf(type: string): VinClass | undefined { const m = /^(?:vec[234]<\s*(\w+)\s*>|(\w+))$/.exec(type.trim()); return m ? SCALAR[m[1] ?? m[2]] : undefined; }
+const ALIAS: Record<string, VinClass> = { f: "float", h: "float", i: "sint", u: "uint" };      // vec4f, vec3u, vec2i (naga writes vec4<f32>; hand-written text may not)
+function classOf(type: string): VinClass | undefined {
+  const t = type.trim(), a = /^vec[234]([fhiu])$/.exec(t);
+  if (a) return ALIAS[a[1]];
+  const m = /^(?:vec[234]<\s*(\w+)\s*>|(\w+))$/.exec(t); return m ? SCALAR[m[1] ?? m[2]] : undefined;
+}
 // `type` with its scalar replaced (vec3<f32> -> vec3<u32>)
-function retype(type: string, cls: VinClass): string { return type.trim().replace(/\b(f32|f16|i32|u32)\b/, WORD[cls]); }
+function retype(type: string, cls: VinClass): string { const t = type.trim(), a = /^(vec[234])[fhiu]$/.exec(t); return a ? `${a[1]}<${WORD[cls]}>` : t.replace(/\b(f32|f16|i32|u32)\b/, WORD[cls]); }
 
 // The parts of a parameter list or a struct body at its top-level commas (an attribute's or a type's own commas are not)
 function split(list: string): string[] {
@@ -111,4 +117,41 @@ export function missingInputs(wgsl: string, written: Iterable<number> | string):
   if (!e || !v) return "";
   const have = new Set(v);
   return e.params.filter(p => p.location !== undefined && !have.has(p.location!)).map(p => p.location!).sort((a, b) => a - b).join(",");
+}
+
+// A fragment stage for the classes of the colour targets it is drawn into. The translator declares a fragment output float unless told otherwise (Maxwell's
+// registers are untyped; a shader writes an integer as the float with its bits), and WebGPU refuses a pipeline whose float output meets an integer target
+// ("Color format (R8Uint) base type (Uint) doesn't match the fragment module output type (Float)"). The console's GPU writes the register's bits whatever the
+// shader computed (nxnative dmsh_build.py fs_uint: main0_u returns every colour as the integer vector of the same bits, nothing converted): the same here on
+// naga's text. The stage's body becomes a plain function and a new entry point of the same name returns its outputs, those at the locations of `classes`
+// whose class differs as bitcast<the vector of that class>. `classes`: colour target index -> the class of its format (others are left as they are).
+// null: every output named already has its target's class; undefined: the text has no fragment entry point of the known shape
+export function fragmentOutputVariant(wgsl: string, classes: Record<number, VinClass>): string | null | undefined {
+  const e = entry(wgsl, "fragment");
+  if (!e) return undefined;
+  const name = /@fragment\s*fn\s+(\w+)/.exec(wgsl.slice(e.at))?.[1];
+  if (!name) return undefined;
+  const differs = (p: Param | undefined) => { const want = p?.location === undefined ? undefined : classes[p.location], have = p ? classOf(p.type) : undefined; return want !== undefined && have !== undefined && want !== have ? want : undefined; };
+  const inner = `${name}_nx_body`, plain = e.params.map(p => `${p.name}: ${p.type.trim()}`).join(", "), call = `${inner}(${e.params.map(p => p.name).join(", ")})`;
+  const params = wgsl.slice(e.paramsAt, e.paramsEnd);
+  let ret: string, wrapper: string, extra = "";
+  if (/^\w+$/.test(e.ret)) {
+    const st = new RegExp(`struct\\s+${e.ret}\\s*\\{([^}]*)\\}`).exec(wgsl);
+    if (!st) return undefined;
+    const members = split(st[1]).map(member);
+    if (members.some(m => !m)) return undefined;
+    const ms = members as Param[];
+    if (!ms.some(m => differs(m))) return null;
+    ret = e.ret;
+    extra = `struct ${e.ret}_nx {\n${ms.map(m => `    ${m.attrs}${m.name}: ${differs(m) ? retype(m.type, differs(m)!) : m.type.trim()},`).join("\n")}\n}\n`;
+    wrapper = `@fragment\nfn ${name}(${params}) -> ${e.ret}_nx {\n    let nx_r = ${call};\n    return ${e.ret}_nx(${ms.map(m => differs(m) ? `bitcast<${retype(m.type, differs(m)!)}>(nx_r.${m.name})` : `nx_r.${m.name}`).join(", ")});\n}\n`;
+  } else {
+    const one = member(e.ret.replace(/\s*(\S+)$/, " nx_out: $1")), want = differs(one);
+    if (!one) return undefined;
+    if (!want) return null;
+    ret = one.type.trim();
+    wrapper = `@fragment\nfn ${name}(${params}) -> ${one.attrs}${retype(one.type, want)} {\n    return bitcast<${retype(one.type, want)}>(${call});\n}\n`;
+  }
+  // the entry point's own attributes (@fragment, and what stands before it on the same declaration) go to the new entry point
+  return wgsl.slice(0, e.at) + `fn ${inner}(${plain}) -> ${ret} {` + wgsl.slice(e.bodyAt) + "\n" + extra + wrapper;
 }
