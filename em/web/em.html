@@ -146,9 +146,13 @@ function start(file) {
   var KEY_BTN = { KeyZ: BTN.A, KeyX: BTN.B, KeyC: BTN.X, KeyV: BTN.Y, Enter: BTN.Plus, Backspace: BTN.Minus, KeyQ: BTN.L, KeyE: BTN.R };
   var PAD_BTN = [BTN.B, BTN.A, BTN.Y, BTN.X, BTN.L, BTN.R, BTN.ZL, BTN.ZR, BTN.Minus, BTN.Plus, BTN.LS, BTN.RS, BTN.Up, BTN.Down, BTN.Left, BTN.Right];
   var keys = new Set(), sentK = "", sentP = "";
-  addEventListener("keydown", function (e) { if (e.target === $("fileinput")) return; keys.add(e.code); if (KEY_BTN[e.code] || /^Arrow|^Key[WASDIJKL]$/.test(e.code)) e.preventDefault(); });
-  addEventListener("keyup", function (e) { keys.delete(e.code); });
-  addEventListener("blur", function () { keys.clear(); });
+  // A press is latched: a key stays down for at least 150 ms after its keydown even when the keyup came sooner (a tap
+  // that began and ended between two of the game's HID samples was lost: at 20 frames a second most taps were).
+  var downAt = {}, upLater = {}, LATCH_MS = 150;
+  addEventListener("keydown", function (e) { if (e.target === $("fileinput")) return; if (!e.repeat) downAt[e.code] = performance.now(); if (upLater[e.code]) { clearTimeout(upLater[e.code]); upLater[e.code] = 0; } keys.add(e.code); if (KEY_BTN[e.code] || /^Arrow|^Key[WASDIJKL]$/.test(e.code)) e.preventDefault(); });
+  addEventListener("keyup", function (e) { var c = e.code, left = LATCH_MS - (performance.now() - (downAt[c] || 0)); if (left <= 0) { keys.delete(c); return; }
+    if (upLater[c]) clearTimeout(upLater[c]); upLater[c] = setTimeout(function () { upLater[c] = 0; keys.delete(c); }, left); });
+  addEventListener("blur", function () { keys.clear(); for (var c in upLater) if (upLater[c]) { clearTimeout(upLater[c]); upLater[c] = 0; } });
   var pollInput = function () {
     requestAnimationFrame(pollInput);
     var M = window.nxInputSink ? { _nx_input: window.nxInputSink } : window.Module; if (!M || !M._nx_input || (!window.nxInputSink && !globalThis.NXOWNER)) return;

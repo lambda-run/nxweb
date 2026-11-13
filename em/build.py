@@ -180,6 +180,15 @@ def page():
     sh([f"{W}/node_modules/.bin/esbuild", f"{R}/web/audio_page.ts", "--bundle", "--platform=browser", "--format=iife", f"--outfile={B}/audio.js", "--log-level=warning"])
     import json, time
     rev = subprocess.run(["git", "-c", "safe.directory=*", "-C", W, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    # (git does not work on the worktree inside the VM: the branch's head is read from the worktree's git directory, and
+    # NXEM_REV says it outright)
+    if not rev:
+        try:
+            gd = open(f"{W}/.git").read().split("gitdir:")[1].strip(); gd = "/mnt/.git/worktrees/" + os.path.basename(gd) if not os.path.isdir(gd) else gd
+            h = open(f"{gd}/HEAD").read().strip(); common = os.path.normpath(os.path.join(gd, open(f"{gd}/commondir").read().strip()))
+            rev = (open(f"{common}/{h[5:]}").read().strip() if h.startswith("ref: ") else h)[:7]
+        except Exception: rev = ""
+    rev = os.environ.get("NXEM_REV", rev) or "unknown"
     open(f"{B}/build.json", "w").write(json.dumps({"rev": rev, "built": time.strftime("%Y-%m-%d %H:%M")}))
     # the page is served by the nxweb page's server, under /em/ (the one directory of the main checkout's build output this track writes)
     dest = os.environ.get("NXEM_SERVE", "/mnt/build/web/em-next")   # a staging directory: the page at /em/ may be running (its workers load em.js when they start). NXEM_SERVE=/mnt/build/web/em to replace it; os.makedirs(dest, exist_ok=True)
