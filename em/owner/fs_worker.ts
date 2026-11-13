@@ -28,7 +28,7 @@ const say = (line: string) => (self as any).postMessage({ line });
     const t0 = performance.now();
     const prep = new PrepWasm(d.prep, say), sha256 = (b: Uint8Array) => prep.sha256(b);
     const tree = await NupTree.open(blobBytes(d.file, true), d.file.name, { sha256, log: say });
-    const rom = await romDevice(tree, prep);
+    const rom = await romDevice(tree, prep, { skipMovie: d.skipMovie === true });
     if (!rom.dev.readSync) throw new Error("no synchronous reads here (FileReaderSync)");
     // this worker's instance of the fs module (the build for further instances, as a guest thread's)
     const f = NXF / 4, q = NXF / 8, w = NXW / 4, pages = buf.byteLength / 65536;

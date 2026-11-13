@@ -3,7 +3,9 @@
 // nxweb's built modules come from the nxweb page beside this one (../wasm/), the replayer is nxweb's WebGPU replayer
 // on the page's canvas, shaders are translated by nxweb's shader Workers and kept in its store (same origin, so a
 // profile that ran the AssemblyScript page has them already).
-import { MemStorage } from "../../src/glue/fs_host.ts";
+import { MemStorage, FS_KIND, type FsStorage } from "../../src/glue/fs_host.ts";
+import { REAL_AUDIT } from "./lockfree_real.ts";
+import { OpfsStorage } from "../../src/glue/fs_dev_opfs.ts";
 import { GfxHost } from "../../src/glue/gfx_host.ts";
 import { RtShaders, workerTranslator, webShaderStore } from "../../src/glue/rt_shaders.ts";
 import { NupTree, blobBytes } from "../../src/prepare/host/nup.ts";
@@ -22,9 +24,13 @@ export interface PageSide {
   nativeImage: OwnerConfig["nativeImage"];
   fsDirect?: boolean;    // true (?fsdirect=1): guest threads call the fs module in their own instance
   fsWorker?: boolean;    // true (?fsworker=1): fsdirect, and a dedicated worker reads the RomFS for them (fs_worker.ts)
- vdec?: string | null;
+  vdec?: string | null;
+  skipMovie?: boolean;     // ?skipmovie=1 (a test aid): story movies end after their first clusters
+  saves?: string | null;   // ?saves=mem / new
   gfxAsync?: boolean;      // true (?asyncsubmit=1): a submission does not wait for the replayer
   gfxLockFree?: boolean;   // false (?lockfree=0): every direct NVN call takes the recorder's lock
+  gfxRealAudit?: boolean;  // true (?lfaudit=1): the real-call audit of the entry points the dynamic audit left under the lock
+  gfxRealPromote?: boolean; // false (?lfreal=0): what that audit cleared stays under the lock
   gfxDirect?: boolean;   // false (?gfxdirect=0): every NVN call goes to the owner thread, as before
   pace: string | null;                                   // 'timer': never requestAnimationFrame
   ndve: boolean;                                         // nxweb's stand-in for nn::ndve's movie upscaler (GfxHost.ndveBypass): its dispatches cannot run on WebGPU yet
@@ -90,9 +96,25 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
     requestAnimationFrame(() => { if (!done) { done = true; fs.raf++; res(); } }); spinTimer(() => { if (!done) { done = true; fs.timer++; res(); } }, 50);
   });
   log(p.pace === "timer" ? "page: pace=timer: display frames from a 16 ms message timer (not requestAnimationFrame)" : "page: display frames from requestAnimationFrame while the page is visible, from a 16 ms message timer while it is hidden (?pace=timer: always the timer)");
+  // Saves: container files in the origin's private file system (nxem-saves/save.nxsv, device.nxsv), so a save of one
+  // run is there in the next ("Continue"). They need synchronous access handles: a worker (the default; ?owner=page
+  // keeps saves in memory). ?saves=mem: in memory as before; ?saves=new: the stored saves are deleted first.
+  let saves: FsStorage = new MemStorage();
+  if (p.saves === "mem") log("page: saves=mem: saves are kept in memory and end with the page");
+  else if (typeof document !== "undefined" || !(navigator as any).storage?.getDirectory) log("page: saves are kept in memory and end with the page (the owner is on the page, or there is no private file system here: synchronous file handles need a worker)");
+  else {
+    try {
+      const o = new OpfsStorage("nxem-saves");
+      if (p.saves === "new") { await o.remove(FS_KIND.SAVE, 0n); await o.remove(FS_KIND.DEVICE_SAVE, 0n); }
+      if (await o.preopen(FS_KIND.SAVE) && await o.preopen(FS_KIND.DEVICE_SAVE)) {
+        const sz = (k: number) => { const d = o.open(k, 0n) as any; return typeof d?.size === "function" ? d.size() : 0; };
+        saves = o; log(`page: saves are stored in the browser (private file system, nxem-saves): save ${sz(FS_KIND.SAVE)} bytes, device save ${sz(FS_KIND.DEVICE_SAVE)} bytes from earlier runs${p.saves === "new" ? " (saves=new: deleted first)" : ""}`);
+      } else { o.close(); log("[RED] page: the stored saves could not be opened (another tab of this page has them?): saves are kept in memory and end with the page"); }
+    } catch (e) { log(`[RED] page: no stored saves (${(e as Error).message}): saves are kept in memory and end with the page`); }
+  }
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
-    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true }, fsShare: f.share, saves: new MemStorage(), programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
+    tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true, realAudit: p.gfxRealAudit === true, promote: audit && p.gfxRealPromote !== false && REAL_AUDIT.key === sha256(gfxRaw) ? REAL_AUDIT.names : [] }, fsShare: f.share, saves, skipMovie: p.skipMovie === true, programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
     gfx: device ? { ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");
@@ -102,7 +124,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
       const fw = new Worker(new URL("fs_worker.js", location.href).href);
       fw.onmessage = (e: MessageEvent) => { if (e.data && e.data.line) log(e.data.line); };
       fw.onerror = (e: any) => log(`[RED] page: the fs worker failed (${e.message ?? e}): RomFS reads stay with the owner`);
-      fw.postMessage({ start: true, memory, file: p.file, prep: prepModule });
+      fw.postMessage({ start: true, memory, file: p.file, prep: prepModule, skipMovie: p.skipMovie === true });
       log("page: fsworker=1: guest threads call the fs module themselves (fsdirect) and a dedicated worker reads the game file for them");
     } catch (e) { log(`[RED] page: no fs worker (${(e as Error).message}): RomFS reads stay with the owner`); }
   }

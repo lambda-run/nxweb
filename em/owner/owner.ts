@@ -50,7 +50,7 @@ export interface OwnerConfig {
   fsModule: WebAssembly.Module;         // fs64.wasm and gfx64.wasm, rewritten for the shared memory (wasm_shared.ts) and compiled
   gfxModule: WebAssembly.Module;
   fsShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean };    // the same for fsModule
-  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean; tls?: { base: number; span: number; consts: number } | null; lockTable?: Uint8Array; lockLine?: string };   // lockTable: the dynamic audit's verdict by NVN id (lockFreeAudit below); without it nothing is lock-free   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
+  gfxShare?: { globals: { addr: number; init: Uint8Array }[]; secondary: Uint8Array; direct: boolean; plain?: Uint8Array; lockFree?: boolean; asyncSubmit?: boolean; tls?: { base: number; span: number; consts: number } | null; lockTable?: Uint8Array; lockLine?: string; realAudit?: boolean; promote?: string[] };   // realAudit (?lfaudit=1): the first real calls of the entry points the dynamic audit left under the lock are watched; promote: the names that audit cleared (lockfree_real.ts)   // lockTable: the dynamic audit's verdict by NVN id (lockFreeAudit below); without it nothing is lock-free   // plain: the binary before the transform (the audit reads its global.set); lockFree false: every direct call under the lock   // gfxModule is the globals-in-memory build: its initial values, the build for the guest threads' instances, and whether they are to use it
   saves: FsStorage;
   programId: bigint;
   scratch: number;                      // 8 KB of the memory nothing else uses
@@ -59,13 +59,14 @@ export interface OwnerConfig {
   log: (line: string) => void;
   video?: (sink: VideoSink) => VideoBackend;   // the browser's video decoder (src/glue/video_webcodecs.ts); omitted: no pictures
   nativeImage?: (handle: number) => { mem: number; size: number; w: number; h: number; stride: number } | null;   // nn::codec's picture of a native image handle (hle_codec_video.c)
+  skipMovie?: boolean;                  // ?skipmovie=1, a test aid: story movies end after their first clusters (rom.ts)
   gfx?: Record<string, unknown>;        // RtGfx options: device, canvas, nextFrame, requestDevice (the page); omitted: the null replayer
 }
 
 // The game's RomFS out of the container without unpacking it: the tables are built once from the listing
 // (src/prepare/romfs_build.ts, as the prepare step's Index stage does), a read is a read of the container.
 export async function romStorage(c: OwnerConfig): Promise<{ storage: FsStorage; files: number; bytes: number; root: string; ms: number; exefs: string; dev: unknown }> {
-  const r = await romDevice(c.tree, c.prep);
+  const r = await romDevice(c.tree, c.prep, { skipMovie: c.skipMovie, log: c.log });
   return { storage: new PrepStorage(r.dev, new Map(), c.saves), files: r.files, bytes: r.bytes, root: r.root, ms: r.ms, exefs: r.exefs, dev: r.dev };
 }
 
@@ -136,6 +137,7 @@ export class Owner {
   private memory: WebAssembly.Memory;
   private fsIds = new Map<string, number>();
   private fsNames = new Map<number, string>(); private shown = new Map<number, number>();
+  private openIds = new Set<number>(); private t00 = performance.now();   // the ids of nn::fs::OpenFile*: a movie file's opening is logged
   private waiting = new Map<number, number>();   // fs token -> the context block of the thread that waits
   private log: (line: string) => void;
   private cfg!: OwnerConfig;
@@ -176,7 +178,7 @@ export class Owner {
     for (const n of this.fs.names()) {   // every name is looked up as a loader would: the module learns from it what the game imports (src/glue/rt_fs.ts)
       new Uint8Array(memory.buffer, c.scratch + 0x1000, 4096).set(enc.encode(n.name + "\0"));
       if (x.fs_lookup(c.scratch + 0x1000) !== n.id) throw new Error(`owner: fs_lookup(${n.name}) does not give ${n.id}`);
-      this.fsIds.set(n.name, n.id); this.fsNames.set(n.id, n.name);
+      this.fsIds.set(n.name, n.id); this.fsNames.set(n.id, n.name); if (/2fs8OpenFileE/.test(n.name)) this.openIds.add(n.id);
     }
     x.fs_set_account_save(-1);
     if (fsh?.direct) { Atomics.store(this.fl, 7, 1); c.log(`owner: the fs module's ${fsh.globals.length} globals are in the memory at 0x${FS_GLOBALS.toString(16)}: guest threads call it in their own instance under its lock; the owner keeps the storage (the dev_* imports) and the completions`); }
@@ -226,7 +228,7 @@ export class Owner {
   svc(): boolean { const d = this.drainRing(), a = this.gfxSvc(), b = this.fsSvc(); return d || a || b; }
   // The batches guest threads left in the ring (kernel/nx_guest.js gfx_exec), in order. While one runs the replayer may
   // call into the recorder, which takes the lock: lock() says what happens when the holder waits for the owner then.
-  private draining = false; ringStats = { batches: 0, ms: 0, borrowed: 0 };
+  private draining = false; ringStats = { batches: 0, ms: 0, borrowed: 0, keys: 0, keysBad: 0 };
   drainRing(): boolean {
     const R = (globalThis as any).NXGFXRING as number | undefined;
     if (!R || this.draining || !this.gfx) return false;
@@ -237,12 +239,25 @@ export class Owner {
       for (let head = Atomics.load(i32, 0); head !== Atomics.load(i32, 1); ) {
         const len = u32[(R + 16 + head) / 4];
         if (len === 0xFFFFFFFF) { head = 0; Atomics.store(i32, 0, 0); continue; }
+        this.ringKeys(R + 16 + head + 8, len);
         try { this.gfx.env.gfx_exec(R + 16 + head + 8, len); } catch (e) { this.log(`[RED] owner: a batch from the ring failed: ${(e as Error).stack ?? e}`); }
         head += 8 + Math.ceil(len / 8) * 8; Atomics.store(i32, 0, head); n++;
       }
     } finally { this.draining = false; this.secOut(); }
     this.ringStats.batches += n; this.ringStats.ms += performance.now() - t0;
     return n > 0;
+  }
+  // A batch from the ring runs later than it was recorded. Its records are self-contained but for H_PIPELINE_CREATE (7),
+  // which carries the address of its key: that is the pipeline cache's own entry (src/gfx/pipeline.ts: written once when
+  // the pipeline is first asked for, never moved, changed or freed; the replayer keeps the same address for the
+  // pipeline's life). Checked here for every such record: the entry is in use and its key still has the hash stored
+  // beside it when the batch runs (keysBad counts the ones that do not).
+  private ringKeys(p: number, n: number): void {
+    const u32 = new Uint32Array(this.memory.buffer);
+    for (let q = p; q + 8 <= p + n; ) { const op = u32[q / 4], sz = u32[q / 4 + 1]; if (sz < 8) break;
+      if (op === 7) { const k = u32[q / 4 + 3]; let h = 0x811c9dc5; for (let i = 0; i < 384; i += 4) { h ^= u32[(k + i) / 4]; h = Math.imul(h, 0x01000193); h ^= h >>> 15; } h = (h >>> 0) || 1;
+        this.ringStats.keys++; if (u32[(k + 404) / 4] !== 1 || u32[(k + 400) / 4] !== h) { if (this.ringStats.keysBad++ < 4) this.log(`[RED] owner: a pipeline-create record from the ring points at a key record (0x${k.toString(16)}) that is not as it was recorded`); } }
+      q += sz; }
   }
   // ---- the recorder's lock, owner side. The owner cannot block, so it spins, and while it does it serves the request
   // of the thread that holds the lock (that thread is inside the recorder, waiting for gfx_exec). While such a request
@@ -311,6 +326,20 @@ export class Owner {
     const host: any = this.gfx.host, account = host.account.bind(host), exec = host.exec.bind(host);
     host.account = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; return account(p, n); };
     host.exec = (p: number, n: number) => { this.drainRing(); this.hostStream.calls++; this.hostStream.bytes += n; const t0 = performance.now(); try { return exec(p, n); } finally { this.batchDone(p, n, performance.now() - t0); } };   // (the owner's own flushes too come after what is in the ring)
+    // What a present's time on the owner is made of (report().presentSteps): the replayer's present is timed in its
+    // steps from outside (the canvas's next texture, the blit, the flush with of it queue.submit, the image events
+    // into the recorder); the rest of a flush is the encoder's finish and the uniform writes before it.
+    { const ps = this.presentSteps, present0 = host.present.bind(host), now = () => performance.now();
+      const timed = (obj: any, name: string, key: string) => { const f = obj[name]; if (typeof f !== "function") return; obj[name] = function (this: any, ...a: any[]) { if (!ps.inside) return f.apply(this, a); const t = now(); try { return f.apply(this, a); } finally { ps.cur[key] = (ps.cur[key] ?? 0) + now() - t; } }; };
+      timed(host, "blit", "blit"); timed(host, "flush", "flush"); timed(host, "imageEvent", "imageEvent"); timed(host, "captureEnd", "captureEnd");
+      host.present = (dv: DataView, p: number) => {
+        const ctx = host.context, q = host.device?.queue;
+        try { if (ctx && !ctx.__nxTimed) { timed(ctx, "getCurrentTexture", "getCurrentTexture"); ctx.__nxTimed = true; } if (q && !q.__nxTimed) { timed(q, "submit", "queueSubmit"); q.__nxTimed = true; } } catch { /* not wrappable here */ }
+        ps.inside = true; ps.cur = {}; const t = now();
+        try { present0(dv, p); } finally { ps.inside = false; const ms = now() - t; ps.n++; ps.ms += ms; if (ms > ps.max) ps.max = ms;
+          for (const k of Object.keys(ps.cur)) { const o = ps.steps[k] ??= { ms: 0, max: 0 }; o.ms += ps.cur[k]; if (ps.cur[k] > o.max) o.max = ps.cur[k]; }
+          if (ms > 8) { ps.over8++; if (ps.slow.length < 8) ps.slow.push(`${ms.toFixed(1)} ms: ` + Object.entries(ps.cur).map(([k, v]) => `${k} ${(v as number).toFixed(1)}`).join(", ")); } }
+      }; }
     // Without the lock: what the static audit AND the dynamic audit both let through (lockFreeAudit below, made by the
     // platform before the module was built: the static scratch it found is per instance in this build)
     if (sh?.direct && sh.lockFree !== false) {
@@ -321,6 +350,22 @@ export class Owner {
         if (!x.kit_trace_enable) throw new Error("the recorder has no kit_trace_enable (its state machines' trace ring is written on every record)");
         x.kit_trace_enable(0);   // the one write to shared state on a record's fast path
         this.lockFree = sh.lockTable;
+        // the real-call audit: its candidates are what the static audit lets through and the dynamic audit did not
+        if (sh.plain && (sh.realAudit || sh.promote?.length)) {
+          const names = this.nvnNames(), st = lockFreeTable(sh.plain, (id: number) => names[id], names.length), tab = sh.lockTable;
+          if (sh.promote?.length) { const want = new Set(sh.promote); let n = 0; for (let id = 0; id < names.length; id++) if (!tab[id] && st.table[id] && want.has(names[id])) { tab[id] = st.table[id]; n++; }
+            this.log(`owner: ${n} more entry points go without the recorder's lock: the real-call audit of this recorder build cleared them (owner/lockfree_real.ts; ?lfreal=0: under the lock)`); }
+          if (sh.realAudit) {
+            const N = 12, blk = c.malloc(64 + 32 * names.length), f = new Float64Array(this.memory.buffer, blk, 8), u32 = new Uint32Array(this.memory.buffer, blk + 64, 8 * names.length), stat = range("gfx static"), arena = range("gfx arena");
+            new Uint8Array(this.memory.buffer, blk, 64 + 32 * names.length).fill(0);
+            let sHi = stat.lo; { const a64 = new BigUint64Array(this.memory.buffer, stat.lo, (stat.hi - stat.lo) / 8); for (let i = a64.length - 1; i >= 0; i--) if (a64[i]) { sHi = stat.lo + 8 * i; break; } }
+            f[0] = stat.lo; f[1] = Math.min(stat.hi, (sHi + 0x20000) & ~0xFFFF); f[2] = GFX_GLOBALS; f[3] = GFX_GLOBALS + Math.max(16, sh.globals.length * 16); f[4] = arena.lo; f[5] = Math.min(arena.hi, arena.lo + x.gfx_arena_bytes()); f[6] = names.length; f[7] = N;
+            let n = 0; for (let id = 0; id < names.length; id++) if (!tab[id] && st.table[id]) { u32[8 * id] = N; n++; }
+            this.lfa = { blk, names, n };
+            new Float64Array(this.memory.buffer, NXG + 56, 1)[0] = blk;
+            this.log(`owner: lfaudit=1: the first ${N} real calls of each of ${n} entry points (let through by the static audit, left under the lock by the dynamic one) are watched: static data 0x${f[0].toString(16)}-0x${f[1].toString(16)}, the globals block, the arena's ${((f[5] - f[4]) / 1048576).toFixed(0)} MB`);
+          }
+        }
         this.log(`owner: ${sh.lockLine ?? "recorder audit"}; guest threads call those without the recorder's lock${sh.tls ? `; ${sh.tls.consts} address constants of the module now go through the instance's scratch block (${sh.tls.span} bytes)` : ""}`);
       } catch (e) { this.log(`[RED] owner: recorder audit failed, every direct call stays under the lock: ${(e as Error).message}`); }
     }
@@ -328,6 +373,21 @@ export class Owner {
     if (sh?.direct) { Atomics.store(this.gl, 11, 1); this.log(`owner: the recorder's ${sh.globals.length} globals are in the memory at 0x${GFX_GLOBALS.toString(16)}: every guest thread calls it in its own instance under one lock; the owner keeps the replayer (gfx_exec) and the calls that wait or pace`); }
     this.log(`owner: nxweb's NVN recorder is up (${this.gfx.x.nvn_count()} entry points, ${o.device ? "WebGPU replayer" : "null replayer: the host stream is counted"}); it answers ${rt.byName.size} names and hands out the rest by address`);
   }
+  private lfa: { blk: number; names: string[]; n: number } | null = null; private nvnNameList: string[] | null = null;
+  nvnNames(): string[] { if (!this.nvnNameList) { const x: any = this.gfx!.x, u8 = new Uint8Array(this.memory.buffer), out: string[] = []; for (let id = 0, n = x.nvn_count(); id < n; id++) { const p = Number(x.nvn_name(id)); let e = p; while (u8[e]) e++; out.push(String.fromCharCode(...u8.subarray(p, e))); } this.nvnNameList = out; } return this.nvnNameList; }
+  // the real-call audit so far: per candidate that was called, its audited calls and the words they changed
+  lfAudit(): any { const a = this.lfa; if (!a) return null; const u32 = new Uint32Array(this.memory.buffer, a.blk + 64, 8 * a.names.length), f = new Float64Array(this.memory.buffer, a.blk + 64, 4 * a.names.length), out: any = { candidates: a.n, called: 0, clean: [] as string[], dirty: [] as string[] };
+    for (let id = 0; id < a.names.length; id++) { const q = 8 * id, calls = u32[q + 1]; if (!calls) continue; out.called++;
+      if (!u32[q + 2] && !u32[q + 3] && !u32[q + 4]) out.clean.push(`${a.names[id]}:${calls}${u32[q + 5] ? "r" + u32[q + 5] : ""}`); else out.dirty.push(`${a.names[id]}:${calls} s${u32[q + 2]} g${u32[q + 3]} a${u32[q + 4]} @0x${f[4 * id + 3].toString(16)}`); }
+    return out; }
+  // NVN calls by entry point since the start: on the calling thread (kernel/nx_gfx.c counts by id) without or under the lock, and on the owner
+  private ownerNvn = new Map<string, number>();
+  nvnCalls(): any { const M: any = (globalThis as any).Module, g = this.gfx; if (!g || !M?._nx_gfx_id_calls) return null;
+    const names = this.nvnNames(), c = new Uint32Array(this.memory.buffer, Number(M._nx_gfx_id_calls()), 1024), rows: [string, number, string][] = []; let free = 0, lock = 0, owner = 0;
+    for (let id = 0; id < names.length && id < 1024; id++) { const n = Atomics.load(c, id); if (!n) continue; const lf = this.lockFree ? this.lockFree[id] : 0; if (lf) free += n; else lock += n; rows.push([names[id], n, lf === 1 ? "free" : lf === 3 ? "free with room" : "lock"]); }
+    for (const [nm, n] of this.ownerNvn) { owner += n; rows.push([nm, n, "owner"]); }
+    rows.sort((a, b) => b[1] - a[1]);
+    return { onThreadWithoutLockTable: free, onThreadUnderLock: lock, onOwner: owner, top: rows.slice(0, 40) }; }
   names(): string[] { return [...this.fsIds.keys(), ...(this.rt ? this.rt.byName.keys() : [])]; }
   // ---- video: one request of mav1_* (kernel/nx_video.c). A decode waits for the completion of its packet number.
   private uvTmp: Uint16Array | null = null;
@@ -337,20 +397,22 @@ export class Owner {
     const op = n(0), dec = n(1), set0 = (v: number) => new DataView(this.memory.buffer).setBigUint64(ctx, BigInt(v), true);
     if (!this.videoBack) {
       if (!this.cfg.video) { if (op === 1) this.log("[RED] nn::codec: no video decoder in this environment: movies give no pictures"); set0(0); return DONE; }
-      this.videoBack = this.cfg.video({ log: l => this.log(l), picture: (d, _gen, seq, pic) => this.videoDone(d, seq, pic) });
+      // (a picture of before the decoder's last reset is not the game's any more: the generation says so)
+      this.videoBack = this.cfg.video({ log: l => this.log(l), picture: (d, gen, seq, pic) => { if (gen === (this.vgen.get(d) ?? 0)) this.videoDone(d, seq, pic); else this.vpStats.stale++; } });
     }
     const b = this.videoBack;
-    if (op === 1) { const name = b.open(dec, VCODEC.AV1, 0, 0); if (!name) this.log("[RED] nn::codec: the browser has no AV1 decoder (WebCodecs)"); set0(name ? 1 : 0); return DONE; }
-    if (op === 3) { b.reset(dec, 0); for (const [k, c] of [...this.videoWait]) if (k.startsWith(dec + ":")) { this.videoWait.delete(k); new DataView(this.memory.buffer).setBigUint64(c, 0n, true); this.wake(c); } set0(0); return DONE; }
-    if (op === 4) { b.close(dec); set0(0); return DONE; }
+    const gen = this.vgen.get(dec) ?? 0;
+    if (op === 1) { this.vgen.set(dec, 0); this.vpDrop(dec, true); const name = b.open(dec, VCODEC.AV1, 0, 0); if (!name) this.log("[RED] nn::codec: the browser has no AV1 decoder (WebCodecs)"); set0(name ? 1 : 0); return DONE; }
+    if (op === 3) { this.vgen.set(dec, gen + 1); b.reset(dec, gen + 1); this.vpDrop(dec, false); for (const [k, c] of [...this.videoWait]) if (k.startsWith(dec + ":")) { this.videoWait.delete(k); new DataView(this.memory.buffer).setBigUint64(c, 0n, true); this.wake(c); } set0(0); return DONE; }
+    if (op === 4) { b.close(dec); this.vpDrop(dec, true); this.vgen.delete(dec); set0(0); return DONE; }
     const seq = dv.getBigUint64(ctx + 48, true);
     // ops 5 and 6, the pipeline (kernel/nx_video.c NX_VPIPE): a packet goes to the decoder and the call answers with the
     // oldest finished picture, or with none while fewer than 4 packets are inside; 6 (end of stream) asks for what is left
     if (op === 5 || op === 6) {
       const v = this.vpOf(dec);
       new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0;
-      if (op === 5) { this.videoStats.packets++; this.acct.video.packets++; if (b.decode(dec, 0, seq, new Uint8Array(this.memory.buffer, n(2), n(3)), false) === 1) v.pending++; }
-      else if (v.pending > 0 && !v.flushing) { v.flushing = true; b.decode(dec, 0, seq, null, true); }
+      if (op === 5) { this.videoStats.packets++; this.acct.video.packets++; if (b.decode(dec, gen, seq, new Uint8Array(this.memory.buffer, n(2), n(3)), false) === 1) { v.pending++; if (v.pending + v.done.length > this.vpStats.maxInside) this.vpStats.maxInside = v.pending + v.done.length; } }
+      else if (v.pending > 0 && !v.flushing) { v.flushing = true; b.decode(dec, gen, seq, null, true); }
       if (v.done.length) { this.vpAnswer(dec, ctx); return DONE; }
       if (op === 5 ? v.pending >= 4 : v.pending > 0) { v.waiter = ctx; return PENDING; }
       set0(0); return DONE;
@@ -358,17 +420,30 @@ export class Owner {
     this.videoStats.packets++; this.acct.video.packets++;
     new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0;
     this.videoWait.set(dec + ":" + seq, ctx);
-    const r = b.decode(dec, 0, seq, new Uint8Array(this.memory.buffer, n(2), n(3)), false);
+    const r = b.decode(dec, gen, seq, new Uint8Array(this.memory.buffer, n(2), n(3)), false);
     if (r === 1) return PENDING;
     this.videoWait.delete(dec + ":" + seq); set0(0);
     return DONE;
   }
-  private vp = new Map<number, { done: { seq: bigint; pic: VideoPicture }[]; pending: number; waiter: number; flushing: boolean }>();
-  private vpOf(dec: number) { let v = this.vp.get(dec); if (!v) this.vp.set(dec, v = { done: [], pending: 0, waiter: 0, flushing: false }); return v; }
+  private vp = new Map<number, { done: { seq: bigint; pic: VideoPicture }[]; pending: number; waiter: number; flushing: boolean; last: bigint }>();
+  private vgen = new Map<number, number>();   // a decoder's generation: one more at each reset
+  vpStats = { answered: 0, outOfOrder: 0, stale: 0, dropped: 0, resets: 0, maxInside: 0 };   // the pipeline's pictures: handed over, of those not after the one before (by packet number), of an earlier generation, thrown away at a reset
+  private vpOf(dec: number) { let v = this.vp.get(dec); if (!v) this.vp.set(dec, v = { done: [], pending: 0, waiter: 0, flushing: false, last: -1n }); return v; }
+  // a reset or the end of a decoder: what its pipeline holds is not wanted any more, and a call that waits there ends with no picture
+  private vpDrop(dec: number, gone: boolean): void {
+    const v = this.vp.get(dec); if (!v) return;
+    this.vpStats.resets++; this.vpStats.dropped += v.done.length;
+    v.done = []; v.pending = 0; v.flushing = false; v.last = -1n;
+    if (v.waiter) { const c = v.waiter; v.waiter = 0; new DataView(this.memory.buffer).setBigUint64(c, 0n, true); this.wake(c); }
+    if (gone) this.vp.delete(dec);
+  }
   // the oldest finished picture into the caller's buffer (x0 = 1, its packet's number at +40), or x0 = 0
   private vpAnswer(dec: number, ctx: number): void {
     const v = this.vpOf(dec), e = v.done.shift();
     if (!e) { new DataView(this.memory.buffer).setBigUint64(ctx, 0n, true); return; }
+    this.vpStats.answered++;
+    if (e.seq <= v.last) { if (this.vpStats.outOfOrder++ < 4) this.log(`[RED] nn::codec: decoder ${dec}'s pipeline hands over the picture of packet ${e.seq} after that of packet ${v.last}`); }
+    v.last = e.seq;
     this.videoDone1(dec, e.seq, e.pic, ctx);
     new DataView(this.memory.buffer).setBigUint64(ctx + 40, e.seq, true);
   }
@@ -517,14 +592,17 @@ export class Owner {
     const g: any = this.gfx, decs: any[] = []; try { for (const [id, st] of (this.videoBack as any)?.decs ?? []) decs.push({ id, queue: st.d?.decodeQueueSize, state: st.d?.state }); } catch { /* not the WebCodecs back end */ }
     const out = { wallMs: r1(wall), ownerBusyPct: r1(100 * covered / wall), outsideOrIdleMs: r1(wall - covered), sections, replayerExecMs: g ? r1(g.times.execMs - ((this as any).execSeen0 ?? 0)) : 0, synchronousStretchesOver8ms: long, requests,
       eventLoopLag: { probes: a.lag.n, meanMs: a.lag.n ? r1(a.lag.sum / a.lag.n) : 0, maxMs: r1(a.lag.max) },
-      video: { packetsIn: a.video.packets, picturesOut: a.video.pictures, perSecondIn: r1(a.video.packets * 1000 / wall), perSecondOut: r1(a.video.pictures * 1000 / wall), decoders: decs, hardwareAcceleration: (globalThis as any).NXVDEC ?? "prefer-software" },
+      video: { packetsIn: a.video.packets, picturesOut: a.video.pictures, perSecondIn: r1(a.video.packets * 1000 / wall), perSecondOut: r1(a.video.pictures * 1000 / wall), decoders: decs, hardwareAcceleration: (globalThis as any).NXVDEC ?? "prefer-software", pipeline: { ...this.vpStats }, handed: this.videoStats.pictures },
       replayerBatches: Object.fromEntries([...this.rep.kinds].map(([k, v]) => [k, { n: v.n, ms: r1(v.ms), maxMs: r1(v.max) }])), replayerSlowBatches: this.rep.slow.slice(),
+      presentSteps: { n: this.presentSteps.n, ms: r1(this.presentSteps.ms), maxMs: r1(this.presentSteps.max), over8ms: this.presentSteps.over8, steps: Object.fromEntries(Object.entries(this.presentSteps.steps).map(([k, v]) => [k, { ms: r1(v.ms), maxMs: r1(v.max) }])), slow: this.presentSteps.slow.slice() },
+      nvnCalls: this.nvnCalls(), lfAudit: this.lfAudit(),
       ring: this.ringStats, presents: this.presents };
-    if (reset) { this.rep.kinds.clear(); this.rep.slow = []; a.t0 = now; a.sec.clear(); a.long.clear(); a.req.clear(); a.lag = { n: 0, sum: 0, max: 0 }; a.video = { packets: 0, pictures: 0 }; (this as any).execSeen0 = g ? g.times.execMs : 0; }
+    if (reset) { const ps = this.presentSteps; ps.n = 0; ps.ms = 0; ps.max = 0; ps.over8 = 0; ps.steps = {}; ps.slow = []; this.rep.kinds.clear(); this.rep.slow = []; a.t0 = now; a.sec.clear(); a.long.clear(); a.req.clear(); a.lag = { n: 0, sum: 0, max: 0 }; a.video = { packets: 0, pictures: 0 }; (this as any).execSeen0 = g ? g.times.execMs : 0; }
     return out;
   }
   call(code: number, ctx: number, treq = 0): number {
     const nm = this.nameOfCode(code), q = this.reqOf(nm), top = this.secIn(nm), w0 = performance.now(); q.n++;
+    if (nm.charCodeAt(0) === 110 && nm.startsWith("nvn")) this.ownerNvn.set(nm, (this.ownerNvn.get(nm) ?? 0) + 1);
     if (treq > 0) { const queued = performance.timeOrigin + w0 - treq; if (queued > 0 && queued < 60000) q.queued += queued; }
     try { const r = this.call1(code, ctx); if (r === PENDING) { q.parks++; this.parkAt.set(ctx, { nm, at: performance.now() }); } return r; }
     finally { q.work += performance.now() - w0; this.secOut(); }
@@ -534,6 +612,7 @@ export class Owner {
   // (the host stream's record types, nxweb src/gfx/hostops.ts): a present, texels uploaded, textures or pipelines made,
   // copies; the slow ones (over 8 ms) are kept with their record counts.
   private rep = { kinds: new Map<string, { n: number; ms: number; max: number }>(), slow: [] as { ms: number; bytes: number; records: string }[] };
+  private presentSteps: { inside: boolean; cur: Record<string, number>; n: number; ms: number; max: number; over8: number; steps: Record<string, { ms: number; max: number }>; slow: string[] } = { inside: false, cur: {}, n: 0, ms: 0, max: 0, over8: 0, steps: {}, slow: [] };
   private batchDone(p: number, n: number, ms: number): void {
     const u32 = new Uint32Array(this.memory.buffer), ops = new Map<number, number>(); let texels = 0;
     for (let q = p; q + 8 <= p + n; ) { const op = u32[q / 4], sz = u32[q / 4 + 1]; if (sz < 8) break; ops.set(op, (ops.get(op) ?? 0) + 1); if (op === 24) texels += sz; q += sz; }
@@ -553,6 +632,7 @@ export class Owner {
       this.stats.fsCalls++;
       const id = code & 0xFFFFFF, dv = new DataView(this.memory.buffer), shown = this.shown.get(id) ?? 0, name = shown < 6 ? this.fsNames.get(id) ?? "" : "";
       const a1 = Number(dv.getBigUint64(ctx + 8, true)), a3 = Number(dv.getBigUint64(ctx + 24, true)), a4 = Number(dv.getBigUint64(ctx + 32, true)), a0 = Number(dv.getBigUint64(ctx, true));
+      if (this.openIds.has(id)) { const u8 = new Uint8Array(this.memory.buffer); let e = a1; while (u8[e] && e < a1 + 200) e++; if (e - a1 > 5 && u8[e - 1] === 0x6D && u8[e - 2] === 0x62 && u8[e - 5] === 0x2E) this.log(`fs: movie file ${new TextDecoder().decode(u8.slice(a1, e))} opened, ${((performance.now() - this.t00) / 1000).toFixed(0)} s after the owner started`); }
       const r: bigint = this.fs.x.fs_call(id, ctx);
       if (name && /OpenFile|ReadFile|MountRom/.test(name)) {   // the first calls, for the log: that real data comes back
         this.shown.set(id, shown + 1);

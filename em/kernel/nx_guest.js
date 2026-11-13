@@ -225,6 +225,20 @@ addToLibrary({
   nx_js_gfx_call__sig: 'vid',
   nx_js_gfx_call: function(id, args) {
     const x = NX.gfx || nxGfx();
+    // ?lfaudit=1 (owner/owner.ts: the block's address at NXG + 56): the first calls of a candidate entry point, made here
+    // under the recorder's lock, with the recorder's static data, globals block and arena compared before and after
+    const AB = NX.lfa === undefined ? (NX.lfa = HEAPF64[(0x1FF1F000 + 56) / 8]) : NX.lfa;
+    if (AB && HEAPU32[(AB + 64 + 32 * id) / 4] > 0) {
+      const r = (AB + 64 + 32 * id) / 4, H = AB / 8, reg = [0, 2, 4].map(i => [HEAPF64[H + i], HEAPF64[H + i + 1]]), before = reg.map(([lo, hi]) => new BigUint64Array(HEAPU8.slice(lo, hi).buffer));
+      const cb = Number(HEAPU64[args / 8]), isC = cb > 0x10000 && cb < HEAPU8.length - 64 && HEAPU32[cb / 4] === 0x42444d43, p0 = isC ? HEAPU64[cb / 8 + 1] : 0n;
+      try { HEAPU64[args / 8 + 16] = BigInt.asUintN(64, x.nvn_call(id, BigInt(args))); }
+      catch (e) { if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e; HEAPU64[args / 8 + 16] = 0n; err('[RED] nvn_call(' + id + ') failed in a guest thread: ' + String(e && e.stack || e).split('\n').slice(0, 5).join(' | ')); }
+      HEAPU32[r]--; HEAPU32[r + 1]++;
+      if (isC && HEAPU64[cb / 8 + 1] !== p0) HEAPU32[r + 5]++;
+      reg.forEach(([lo, hi], k) => { const now = new BigUint64Array(HEAPU8.buffer, lo, (hi - lo) / 8), was = before[k]; let n = 0, first = 0; for (let i = 0; i < now.length; i++) if (now[i] !== was[i]) { if (!n) first = lo + 8 * i; n++; }
+        if (n) { HEAPU32[r + 2 + k] += n; if (!HEAPF64[r / 2 + 3]) HEAPF64[r / 2 + 3] = first; } });
+      return;
+    }
     try { HEAPU64[args / 8 + 16] = BigInt.asUintN(64, x.nvn_call(id, BigInt(args))); }
     catch (e) { if (e === 'unwind' || (e && e.name === 'ExitStatus')) throw e; HEAPU64[args / 8 + 16] = 0n; err('[RED] nvn_call(' + id + ') failed in a guest thread: ' + String(e && e.stack || e).split('\n').slice(0, 5).join(' | ')); }
   },

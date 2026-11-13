@@ -7,6 +7,8 @@
 #include "nx_guest.h"
 #include "hle_movie_av1.h"
 #include "vpx/vpx_image.h"
+#include <stdatomic.h>
+#include <stdio.h>
 
 // ---- libvpx's image container (I420 only: what hle_codec_video.c keeps)
 vpx_image_t *vpx_img_alloc(vpx_image_t *img, vpx_img_fmt_t fmt, unsigned int d_w, unsigned int d_h, unsigned int align) {
@@ -65,7 +67,7 @@ void md_rgba(const vpx_image_t *im, uint8_t *dst, int w, int h) {
 // x0 op (1 open, 2 decode, 3 reset, 4 close), x1 decoder, x2 packet, x3 length, x4 picture buffer, x5 its size, x6 packet number;
 // back: x0 = 1 a picture (x1 w, x2 h, x3 matrix, x4 full range; NV12 in the buffer, rows of w), 0 none
 enum { OWNER_VIDEO = 3 << 24, PIC_MAX = 4096 * 2304 * 3 / 2 };
-struct mav1 { int id; uint8_t *buf; uint64_t seq, out_seq; int64_t ts[64]; };
+struct mav1 { int id; uint8_t *buf; uint64_t seq, out_seq; int64_t ts[64]; int64_t last_pts; int have_last; };
 // NX_VPIPE=1 (the page: ?vpipe=1): packets are queued to the decoder and mav1_decode answers with the OLDEST finished
 // picture, or none while the pipeline fills (owner/owner.ts ops 5 and 6), instead of waiting for the picture of the
 // packet it was given. The picture keeps the timestamp of its own packet: hle_codec_video.c (hle/port edits) tells the
@@ -79,7 +81,7 @@ static uint64_t video(mav1 *a, int op, const uint8_t *data, size_t n, uint64_t *
     return blk[0];
 }
 mav1 *mav1_new(void) { mav1 *a = calloc(1, sizeof *a); if (!a) return NULL; a->id = ++g_av1_ids; _Alignas(16) uint64_t blk[0x80]; video(a, 1, NULL, 0, blk); return a; }
-void mav1_reset(mav1 *a) { _Alignas(16) uint64_t blk[0x80]; video(a, 3, NULL, 0, blk); }
+void mav1_reset(mav1 *a) { _Alignas(16) uint64_t blk[0x80]; video(a, 3, NULL, 0, blk); a->have_last = 0; }
 void mav1_free(mav1 *a) { if (!a) return; _Alignas(16) uint64_t blk[0x80]; video(a, 4, NULL, 0, blk); free(a->buf); free(a); }
 const char *mav1_backend(const mav1 *a) { (void)a; return "WebCodecs (the browser's decoder, on the owner thread)"; }
 int mav1_decode(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) {
@@ -94,7 +96,16 @@ int mav1_decode(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) {
 }
 
 void nx_mav1_ts(mav1 *a, int64_t ts) { if (a) a->ts[(a->seq + 1) & 63] = ts; }
-int64_t nx_mav1_pts(mav1 *a, int64_t dflt) { return a ? a->ts[a->out_seq & 63] : dflt; }
+// (the check: the pictures of one stream reach the game's side in the order of their timestamps, with or without the pipeline)
+_Atomic uint32_t nx_mav1_pictures, nx_mav1_unordered;
+int64_t nx_mav1_pts(mav1 *a, int64_t dflt) {
+    if (!a) return dflt;
+    int64_t t = a->ts[a->out_seq & 63];
+    atomic_fetch_add(&nx_mav1_pictures, 1);
+    if (a->have_last && t <= a->last_pts && atomic_fetch_add(&nx_mav1_unordered, 1) < 4) fprintf(stderr, "[RED] nn::codec: decoder %d: a picture with timestamp %lld comes after one with %lld (packet %llu)\n", a->id, (long long)t, (long long)a->last_pts, (unsigned long long)a->out_seq);
+    a->last_pts = t; a->have_last = 1;
+    return t;
+}
 // end of stream: the next picture still in the pipeline, 0 when there is none left (always 0 without NX_VPIPE)
 int nx_mav1_drain(mav1 *a, mav1_picture *out) {
     if (!vpipe() || !a || !a->buf) return 0;

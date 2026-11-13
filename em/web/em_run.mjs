@@ -60,11 +60,18 @@ await cdp.send("DOM.setFileInputFiles", { files: [game], objectId: result.object
 console.log(`em_run: ${url} with ${game}`);
 const t0 = Date.now(); let how = "time", last = null;
 // KEYS="60:KeyZ,65:Enter,70-200/10:KeyZ": key presses for the page (em.html: Z/X/C/V = A/B/X/Y, Enter = +, Backspace = -),
-// at a second after the file was given, or from-to/every; each is held 250 ms
-for (const item of (process.env.KEYS ?? "").split(",").filter(x => x)) { const [when, code] = item.split(":"), m = /^(\d+)-(\d+)\/(\d+)$/.exec(when), ts = [];
+// at a second after the file was given, or from-to/every; each is held 250 ms, or KeyZ*2000: for 2 s (a game at 1 frame a second misses a short press)
+// SHOTS="100,150": the canvas as a PNG (logs/<name>.p<N>.png) when the present count first reaches N (looked at 4 times a second)
+for (const item of (process.env.KEYS ?? "").split(",").filter(x => x)) { const [when, code0] = item.split(":"), [code, holdMs] = code0.split("*"), hold = Number(holdMs ?? 250), m = /^(\d+)-(\d+)\/(\d+)$/.exec(when), ts = [];
   if (m) for (let t = Number(m[1]); t <= Number(m[2]); t += Number(m[3])) ts.push(t); else ts.push(Number(when));
   const key = code === "Enter" ? "Enter" : code === "Backspace" ? "Backspace" : code.replace(/^Key/, "").toLowerCase(), vk = code === "Enter" ? 13 : code === "Backspace" ? 8 : code.charCodeAt(code.length - 1);
-  for (const t of ts) setTimeout(async () => { try { await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", code, key, windowsVirtualKeyCode: vk }, sessionId); await new Promise(r => setTimeout(r, 250)); await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", code, key, windowsVirtualKeyCode: vk }, sessionId); appendFileSync(con, `[em_run] key ${code} at ${t} s\n`); } catch (e) { appendFileSync(con, `[em_run] key ${code}: ${e.message}\n`); } }, t * 1000); }
+  for (const t of ts) setTimeout(async () => { try { await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", code, key, windowsVirtualKeyCode: vk }, sessionId); await new Promise(r => setTimeout(r, hold)); await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", code, key, windowsVirtualKeyCode: vk }, sessionId); appendFileSync(con, `[em_run] key ${code} at ${t} s\n`); } catch (e) { appendFileSync(con, `[em_run] key ${code}: ${e.message}\n`); } }, t * 1000); }
+const shots = (process.env.SHOTS ?? "").split(",").filter(x => x).map(Number).sort((a, b) => a - b); let shotBusy = false;
+const shotTimer = shots.length ? setInterval(async () => { if (shotBusy || !shots.length) return; shotBusy = true;
+  try { const n = Number(await evaluate(cdp, sessionId, `nxem.presents`)); if (n >= shots[0]) { const want = shots.shift();
+      const d = await evaluate(cdp, sessionId, `new Promise(res => requestAnimationFrame(() => { try { res(nxem.presents + "|" + document.getElementById("screen").toDataURL("image/png")); } catch (e) { res("0|error " + e.message); } }))`);
+      const i = d.indexOf("|"), b = d.slice(i + 1); if (b.startsWith("data:image/png;base64,")) { writeFileSync(`${L}/${name}.p${want}.png`, Buffer.from(b.slice(22), "base64")); appendFileSync(con, `[em_run] shot for present ${want} taken at present ${d.slice(0, i)}, ${Math.round((Date.now() - t0) / 1000)} s\n`); } else appendFileSync(con, `[em_run] shot ${want}: ${b.slice(0, 80)}\n`); } } catch { /* busy */ }
+  shotBusy = false; }, 250) : null;
 while (Date.now() - t0 < secs * 1000) {
   await new Promise(r => setTimeout(r, 10000));
   if (crashed) { how = "the tab crashed"; break; }

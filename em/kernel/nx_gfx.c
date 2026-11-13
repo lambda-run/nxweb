@@ -20,6 +20,8 @@
 #define GL_ON ((_Atomic uint32_t *)(uintptr_t)(NXG + 44))
 static uint32_t g_depth;   // the holder's
 static _Atomic uint64_t g_calls, g_ns, g_contended, g_lock_ns, g_lf_calls;
+static _Atomic uint32_t g_id_calls[1024];   // calls answered on the calling thread, by NVN id (owner/owner.ts nvnCalls)
+EMSCRIPTEN_KEEPALIVE double nx_gfx_id_calls(void) { return (double)(uintptr_t)g_id_calls; }
 static __thread uint32_t t_me; static __thread uint64_t t_flush_ns;
 EMSCRIPTEN_KEEPALIVE void nx_gfx_flush_ns(double ns) { t_flush_ns += (uint64_t)ns; }   // kernel/nx_guest.js: the time a flush waited for the owner
 uint64_t nx_now_ns(void);
@@ -58,6 +60,7 @@ void nx_gfx_reacquire(int depth) { if (depth) { nx_gfx_lock(); g_depth = (uint32
 // code: (NVN function id + 1) | abi << 16 (abi: bits 0..3 how many of d0..d7 it reads, bit 4 a float result)
 uint64_t nx_gfx_direct(int code, uint64_t *regs) {   // returns how long the lock was held, ns
     int id = (code & 0xFFFF) - 1, abi = code >> 16 & 0xFF, lf = code >> 24 & 3;
+    if ((unsigned)id < 1024) atomic_fetch_add_explicit(&g_id_calls[id], 1, memory_order_relaxed);
     uint64_t *a = regs + 0x340 / 8, t0 = nx_now_ns();   // the argument block: x0..x7, d0..d7, then the result
     memcpy(a, regs, 64);
     if (abi & 15) for (int i = 0; i < 8; i++) a[8 + i] = regs[38 + 2 * i];

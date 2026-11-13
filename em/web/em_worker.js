@@ -40,6 +40,6 @@ function boot(d) {
     var copy = {}; for (var k in nxem) if (typeof nxem[k] !== "function" && k !== "lines") copy[k] = nxem[k];
     try { postMessage({ status: { nxem: copy, texts: texts } }); } catch (e) { say("[RED] worker: status: " + e.message); }
   };
-  nxStartStatus(el, say, function (threads) { return "rt C/C++ (nxnative) → Emscripten · " + (navigator.gpu ? "WebGPU" : "no WebGPU") + " · " + threads + " real threads"; });
+  nxStartStatus(el, say, function (threads) { return "rt C/C++ (nxnative) → Emscripten · " + (navigator.gpu ? "WebGPU" : "no WebGPU") + " · " + threads + " real threads" + (q.get("skipmovie") === "1" ? " · TEST AID skipmovie=1: story movies are cut short" : ""); });
 }
 })();
