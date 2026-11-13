@@ -61,7 +61,9 @@ and prints the same as text.
 Mac's headless Chrome; take `/ctl/host.lock` first) instead of launching one. The page's origin (`http://localhost:8099`, never listened on) is answered
 over the DevTools connection from the harness's own server; the capture's bytes come from the web server the browser reaches itself
 (`--capurl`, default `http://localhost:8080`: `web/serve.mts`, for a capture in its reports directory). `--dump <serial>,...` writes those textures as
-they are at each present (`f<frame>-tex<serial>.png`, with the number of texels that are not zero). `area2.gfxcap`: 175 s on apple metal-3, the three
+they are at each present (`f<frame>-tex<serial>.png`, with the number of texels that are not zero). `--raw` adds each dumped texture's texel bytes (`.raw`, for `vm/ctl/tools/rawstat.py`: NaN, infinity, range); `--dumpat a-b` dumps the same textures
+also at the end of every render pass numbered a to b (the numbers `vm/ctl/tools/capwalk.py -a` prints), to find the pass where a target turns wrong.
+`area2.gfxcap`: 175 s on apple metal-3, the three
 frames identical to the live ones. A frame "identical" to the live image means the replay reproduces the live replayer
 exactly (same device class); on another GPU (the Mac's Metal against SwiftShader) some texels differ by rounding.
 

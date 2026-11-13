@@ -18,6 +18,7 @@
 // rewritten to that layout. What the recorder decided when the frames were captured (which draws it skipped, which
 // pipeline keys it asked for) is part of the capture: a replay tests the replayer (gfx_host.ts and the WGSL it is
 // given), not the recorder.
+import { supportLayout } from "../shaders/images.ts";
 import { hostFormat, type NvnFormat } from "./gfx_formats.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -311,6 +312,10 @@ export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | v
   texMax?: number;
   // textures to read back (level 0, layer 0) after each present: the intermediate targets of the frame, as it left them
   dump?: number[]; onDump?: (d: ReplayDump) => Promise<void> | void;
+  // the same textures also when a render pass ends whose number (every render and compute pass, copy, upload and clear of the capture counts one, from 0:
+  // vm/ctl/tools/caprec.py prints them) lies in [from, to]: where in a frame a target's contents turn wrong (ReplayDump.pass)
+  dumpPasses?: [number, number];
+  noNaN?: boolean;
   noReadback?: boolean;      // presented images are not read back (and not compared): a profile wants the replayer's work alone
   repeat?: ReplayRepeat }
 // Profiling (web/gfxprof.ts): frame `frame` of the capture, once it has been replayed, is handed to `run`, which may execute it again as often as it likes.
@@ -319,12 +324,13 @@ export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | v
 //                GfxHost.exec. With `hook` the records are executed one by one and each one's op and ms are handed to it.
 //   settle()     the read-backs have landed and the GPU has finished what was submitted
 export interface ReplayRepeat { frame: number; run(r: { host: any; batches: number; records: number; once(hook?: (op: number, ms: number) => void): number; settle(): Promise<void> }): Promise<void> }
-export interface ReplayDump { frame: number; serial: number; width: number; height: number; format: string; data: Uint8Array; nonZero: number; note: string }
+export interface ReplayDump { pass?: number; frame: number; serial: number; width: number; height: number; format: string; data: Uint8Array; nonZero: number; note: string }
 
 // Replays a capture on a GfxHost made by `makeHost(memory, log)` (the caller owns the device and the options; the host must not be attached to a recorder).
 // `payload(i)`: the payload bytes of chunk i. Every presented image is read back (level 0) and compared with the live one in the capture.
 export async function replayCapture(index: CaptureIndex, payload: (i: number) => Promise<Uint8Array> | Uint8Array, makeHost: (memory: { buffer: ArrayBuffer }, log: (l: string) => void) => any, opts: ReplayOptions = {}): Promise<ReplayResult> {
   const t0 = performance.now(), notes: string[] = [], log: string[] = [], frames: ReplayFrame[] = [];
+  let passNo = 0, inRender = false;
   const meta = index.chunks.find(c => c.h.type === "meta")?.h;
   if (!meta) throw new Error("the capture has no meta chunk");
   if (!index.complete) notes.push("the capture file is incomplete (no end chunk): it is replayed as far as it goes");
@@ -413,7 +419,7 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
       log.push(`[RED] replay: the device was lost by chunk ${ci} of ${index.chunks.length} (frame ${frames.length}); the chunks before it: ${before}. Stopped`);
       break;
     }
-    if (hd.type === "shader") { const info = JSON.parse(JSON.stringify(hd.info), (_k, v) => v && typeof v === "object" && Array.isArray(v.__u8) ? Uint8Array.from(v.__u8) : v); h.shaders[hd.id] = { key: hd.key, info: opts.shader?.(hd.key, info) ?? info }; }
+    if (hd.type === "shader") { const info = JSON.parse(JSON.stringify(hd.info), (_k, v) => v && typeof v === "object" && Array.isArray(v.__u8) ? Uint8Array.from(v.__u8) : v); const inf = opts.shader?.(hd.key, info) ?? info; h.shaders[hd.id] = { key: hd.key, info: inf.wgsl ? { ...inf, wgsl: supportLayout(inf.wgsl) } : inf }; }
     else if (hd.type === "pipe") pendingPipes.push({ id: hd.id, key: hd.key });
     else if (hd.type === "tex") {
       const fmt = hostFormat(hd.format, h.caps);
@@ -426,6 +432,14 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
       if (!hd.content) continue;
       if (fmt?.tex !== hd.gpuFormat) { log.push(`[RED] replay: tex#${hd.serial} was ${hd.gpuFormat} on the capturing device and is ${fmt?.tex} here: its contents are not restored`); continue; }
       const t = h.texture(hd.serial), data = await payload(ci);
+      // noNaN: texels that are NaN or infinite in a captured float texture become 0 (a capture taken while a shader made NaN holds them in every
+      // texture that feeds on its own last frame: after the fix the replay would show them for ever, the game with fresh textures would not)
+      if (opts.noNaN) {
+        const f = hd.gpuFormat, al = (data.byteOffset & 3) === 0 && (data.byteLength & 3) === 0;
+        if (/16float$/.test(f) && (data.byteOffset & 1) === 0) { const w = new Uint16Array(data.buffer, data.byteOffset, data.byteLength >> 1); for (let i = 0; i < w.length; i++) if ((w[i] & 0x7c00) === 0x7c00) w[i] = 0; }
+        else if (/32float$/.test(f) && f !== "depth32float" && al) { const w = new Uint32Array(data.buffer, data.byteOffset, data.byteLength >> 2); for (let i = 0; i < w.length; i++) if ((w[i] & 0x7f800000) === 0x7f800000) w[i] = 0; }
+        else if (f === "rg11b10ufloat" && al) { const w = new Uint32Array(data.buffer, data.byteOffset, data.byteLength >> 2); for (let i = 0; i < w.length; i++) { const v = w[i]; if ((v & 0x7c0) === 0x7c0 || (v & 0x3e0000) === 0x3e0000 || (v & 0xf8000000) === 0xf8000000) w[i] = 0; } }
+      }
       if (!t?.gpu) continue;
       const g = t.gpu;
       hd.content.levels.forEach((L: Level, cl: number) => {
@@ -477,6 +491,18 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
         }
         const flip = op === H.PRESENT && (dv.getUint32(p + 44, true) & 1) !== 0;
         p += size;
+        if (op === 3) inRender = true; else if (op === 30 || op === 35) inRender = false;
+        if (op === 3 || op === 30 || op === 35 || op === 18 || op === 17 || op === 24 || op === 39) passNo++;
+        if (op === 4 && inRender && opts.dumpPasses && passNo - 1 >= opts.dumpPasses[0] && passNo - 1 <= opts.dumpPasses[1]) {
+          h.exec(from, p - from); from = p;
+          for (const serial of opts.dump ?? []) {
+            const t = h.textures.get(serial);
+            if (!t?.gpu) continue;
+            try { const r = await h.readTexture(serial); let nz = 0; for (let i = 0; i < r.data.length; i += r.bytesPerPixel) for (let k = 0; k < r.bytesPerPixel; k++) if (r.data[i + k]) { nz++; break; }
+              await opts.onDump?.({ pass: passNo - 1, frame: frames.length, serial, width: r.width, height: r.height, format: t.fmt.tex, data: r.data, nonZero: nz, note: "" }); } catch { /* not readable here */ }
+          }
+          if (p >= end) continue;
+        }
         if (op === H.PRESENT || p >= end) {
           const rep = !!rp && frames.length === rp.frame;
           if (rep) {      // (the pipeline creations of the frame are not repeated)

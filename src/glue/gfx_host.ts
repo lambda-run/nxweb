@@ -4,7 +4,7 @@
 // Record layouts: src/gfx/hostops.ts. Pipeline key: src/gfx/pipeline.ts. Texture description: nvn_texdesc (obj.ts).
 // Browser code (WebGPU types are left loose: the tree has no @webgpu/types).
 import { slotWords, taskStride, pullVertexShader, fragmentInputs, TOPOLOGY_OF, CTL_WORDS, type MeshStage } from "../shaders/meshstage.ts";
-import { imageVariant, formatClass } from "../shaders/images.ts";
+import { imageVariant, formatClass, supportLayout } from "../shaders/images.ts";
 import { fragmentInputVariant, fragmentOutputVariant, missingInputs } from "../shaders/variants.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, STORAGE_RW_FORMATS, MAYBE_UNFILTERABLE, VERTEX_CONV, convertVertices, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
@@ -139,7 +139,7 @@ interface Pipe { id: number; compute: boolean; desc: any; gpu?: GPU; stages: num
   // vconv, attributes of a format WebGPU has no vertex format for, converted on the CPU into a buffer of their own at `slot` (vertexConverted)
   constSlot?: number; vconv?: { loc: number; stream: number; offset: number; stride: number; fmt: number; slot: number }[] }
 interface TexVar { sid: number; st: number; slot: number }   // texture slot `slot` of shader `sid` has a texture bound that a `float` binding cannot take (depth, or a format the device does not filter)
-interface StandIn { t: Tex; sc: GPU; lv: number; ly: number; cls: "float" | "sint" | "uint" }   // the pipeline for storage images of other formats than declared (imagePipe); imgOn: one is set on the pass
+interface StandIn { t: Tex; sc: GPU; lv: number; ly: number; cls: "float" | "sint" | "uint"; bits?: boolean }   // the pipeline for storage images of other formats than declared (imagePipe); imgOn: one is set on the pass
 interface ImageFormatVar { sid: number; st: number; slot: number; format: string }   // image slot `slot` of shader `sid` (stage index st) has a texture of `format` bound
 interface Chunk { buf: GPU; staging: Uint8Array; used: number }
 interface UaSlot { c: Chunk; off: number; size: number; n?: number; ep?: number }      // n: the guest bytes it took; ep: the uaEpoch they were last known equal in
@@ -477,6 +477,7 @@ export class GfxHost {
   // keyHex: the 16 hex digits of a stage's key, sha256(control section + code)[0..8] (src/gfx/shader.ts). info: the
   // shader chain's reflection record with the WGSL. -1 (with a red line) when it needs a binding the replayer lacks
   registerShader(keyHex: string, info: ShaderInfo): number {
+    if (info.wgsl) info = { ...info, wgsl: supportLayout(info.wgsl) };   // the support buffer as the recorder fills it (std140), whatever chain or store the text is from
     const dv = this.dv, r = Number(this.x.gfx_scratch()), bit = (a?: number[]) => (a ?? []).reduce((m, i) => m | (1 << i), 0) >>> 0;
     const unknown = (info.extra ?? []).filter(e => e.kind !== "support" && HOST_BLOCK(e) < 0);
     if (unknown.length) { this.log(`[RED] shader ${keyHex} needs bindings the replayer does not provide (${unknown.map(e => e.kind).join(", ")}): not registered`); return -1; }
@@ -661,7 +662,7 @@ export class GfxHost {
     s.variants ??= new Map();
     let m = s.variants.get(sig);
     if (m === undefined) {
-      const wgsl = s.info.variants?.[sig] ?? s.info.variant?.(classes) ?? this.onShaderVariant?.(s.key, classes);
+      const made = s.info.variants?.[sig] ?? s.info.variant?.(classes) ?? this.onShaderVariant?.(s.key, classes), wgsl = made ? supportLayout(made) : made;   // (a variant is made from the chain's text: its support block too)
       m = wgsl ? this.device.createShaderModule({ code: wgsl }) : null;
       if (wgsl && !s.info.variants?.[sig]) s.info.variants = { ...s.info.variants, [sig]: wgsl };   // kept as text too: a stream capture carries it
       s.variants.set(sig, m);
@@ -1761,7 +1762,11 @@ export class GfxHost {
         const direct = !!tx && !!(tx.gpu.usage & 0x08) && (access !== "read-write" || this.storeRW.has(tx.fmt.tex!));
         let whyNot = "";
         if (tx && !direct) {
-          const sf = cls === "float" ? "rgba16float" : cls === "uint" ? "rgba16uint" : "rgba16sint";
+          // A shader that names no format for an image it only stores to hands over one 32-bit word a texel (src/shaders/spv.ts placeImage). Into an RGB9E5 texture
+          // that word IS the texel: the game's shader packs the shared-exponent format itself (area3.gfxcap: the pass before the upscaler; taken as a float colour
+          // the word packed to 0 and the frame stayed black). Its stand-in is r32uint, whose words are copied into the texture as they are
+          const bits = !!m.bound && tx.fmt.tex === "rgb9e5ufloat" && access === "write-only" && (c.compute || st === 1);
+          const sf = bits ? "r32uint" : cls === "float" ? "rgba16float" : cls === "uint" ? "rgba16uint" : "rgba16sint";
           const lv = b!.view && (b!.view[0] & 1) ? b!.view[2] : 0, ly = b!.view && (b!.view[0] & 2) ? b!.view[6] | b!.view[7] << 8 : 0;
           whyNot = !this.computePass ? "a draw, where the replayer has no stand-in" : tx.fmt.kind === "depth" || tx.fmt.stencil || (!(tx.gpu.usage & 0x10) && tx.fmt.tex !== "rgb9e5ufloat") ? "the format cannot be drawn into either, so a stand-in could not be copied back"
             : formatClass(tx.fmt.tex!) !== cls ? `the shader stores ${cls} texels` : tx.gpu.dimension === "3d" || (m.dim ?? "2d") !== "2d" ? "a 3D or array image has no stand-in" : tx.gpu.sampleCount > 1 ? "multisampled"
@@ -1769,10 +1774,10 @@ export class GfxHost {
           if (!whyNot) {
             const key = `${lv}/${ly}/${sf}`;
             let sc = (tx.imgScratch ??= new Map()).get(key);
-            if (!sc) tx.imgScratch.set(key, sc = this.newTexture({ size: { width: Math.max(1, tx.gpu.width >> lv), height: Math.max(1, tx.gpu.height >> lv) }, format: sf, usage: 0x08 | 0x04 | 0x10 }, "a storage image stand-in"));
+            if (!sc) tx.imgScratch.set(key, sc = this.newTexture({ size: { width: Math.max(1, tx.gpu.width >> lv), height: Math.max(1, tx.gpu.height >> lv) }, format: sf, usage: 0x08 | 0x04 | 0x10 | (bits ? 0x01 : 0) }, "a storage image stand-in"));
             if (m.format !== sf) (ivar ??= []).push({ sid, st, slot: m.slot, format: sf });
             g1.push({ binding: 256 + st * 8 + m.slot, resource: sc.createView() });
-            if (!standIns.some(x => x.sc === sc)) standIns.push({ t: tx, sc, lv, ly, cls });
+            if (!standIns.some(x => x.sc === sc)) standIns.push({ t: tx, sc, lv, ly, cls, bits });
             continue;
           }
         }
@@ -1792,7 +1797,7 @@ export class GfxHost {
     if (standIns.length) {
       // the stand-ins take what their textures hold (the dispatch may read it, or write only part of it); no pass may be open for that
       this.pass.end();
-      for (const x of standIns) this.copyTexels(this.attachView(x.t, x.lv, x.ly), x.sc.createView(), x.sc.format, x.cls);
+      for (const x of standIns) if (!x.bits) this.copyTexels(this.attachView(x.t, x.lv, x.ly), x.sc.createView(), x.sc.format, x.cls);   // (words: write-only, the dispatch writes them all or the rest reads 0)
       this.pass = this.encoder().beginComputePass(); this.computePass = true;
       this.imgBlits.push(...standIns);
     }
@@ -2181,6 +2186,13 @@ fn draw(n: u32) { c[9] = n; c[12] = n * c[20]; c[13] = 1u; c[14] = 0u; c[15] = 0
   // the stand-in's floats into the format's words (shared exponent, 9 bits a channel, as the GL / Vulkan specifications round them), one row every `pitch` words
   private packRgb9e5(x: StandIn) {
     const w = x.sc.width, h = x.sc.height, pitch = Math.ceil(w * 4 / 256) * 256, size = pitch * h;
+    if (x.bits) {      // an r32uint stand-in holds the format's words already: through a buffer into the texture (no texture-to-texture copy between the two formats)
+      const raw = this.alloc(Math.max(256, 2 ** Math.ceil(Math.log2(size))));
+      this.inUse.push(raw);
+      this.encoder().copyTextureToBuffer({ texture: x.sc }, { buffer: raw, bytesPerRow: pitch, rowsPerImage: h }, { width: w, height: h });
+      this.encoder().copyBufferToTexture({ buffer: raw, bytesPerRow: pitch, rowsPerImage: h }, { texture: x.t.gpu, mipLevel: x.lv, origin: { x: 0, y: 0, z: x.ly } }, { width: w, height: h });
+      return;
+    }
     let pl = this.helpers.get("rgb9e5");
     if (!pl) {
       const m = this.device.createShaderModule({ code: `struct P { pitch: u32 } @group(0) @binding(0) var t: texture_2d<f32>; @group(0) @binding(1) var<storage, read_write> o: array<u32>; @group(0) @binding(2) var<uniform> p: P;
