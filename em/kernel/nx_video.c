@@ -65,7 +65,12 @@ void md_rgba(const vpx_image_t *im, uint8_t *dst, int w, int h) {
 // x0 op (1 open, 2 decode, 3 reset, 4 close), x1 decoder, x2 packet, x3 length, x4 picture buffer, x5 its size, x6 packet number;
 // back: x0 = 1 a picture (x1 w, x2 h, x3 matrix, x4 full range; NV12 in the buffer, rows of w), 0 none
 enum { OWNER_VIDEO = 3 << 24, PIC_MAX = 4096 * 2304 * 3 / 2 };
-struct mav1 { int id; uint8_t *buf; uint64_t seq; };
+struct mav1 { int id; uint8_t *buf; uint64_t seq, out_seq; int64_t ts[64]; };
+// NX_VPIPE=1 (the page: ?vpipe=1): packets are queued to the decoder and mav1_decode answers with the OLDEST finished
+// picture, or none while the pipeline fills (owner/owner.ts ops 5 and 6), instead of waiting for the picture of the
+// packet it was given. The picture keeps the timestamp of its own packet: hle_codec_video.c (hle/port edits) tells the
+// timestamp before each packet (nx_mav1_ts) and asks for the returned picture's (nx_mav1_pts).
+static int vpipe(void) { static int v = -1; if (v < 0) { const char *e = getenv("NX_VPIPE"); v = e && *e == '1'; } return v; }
 static _Atomic int g_av1_ids;
 static uint64_t video(mav1 *a, int op, const uint8_t *data, size_t n, uint64_t *blk) {
     memset(blk, 0, 0x400);
@@ -81,7 +86,21 @@ int mav1_decode(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) {
     if (!a->buf && !(a->buf = malloc(PIC_MAX))) return 0;
     _Alignas(16) uint64_t blk[0x80];
     a->seq++;
-    if (video(a, 2, data, n, blk) != 1) return 0;
+    if (video(a, vpipe() ? 5 : 2, data, n, blk) != 1) return 0;
+    a->out_seq = vpipe() ? blk[5] : a->seq;
+    out->w = (int)blk[1]; out->h = (int)blk[2]; out->matrix = (int)blk[3]; out->full_range = (int)blk[4];
+    out->y = a->buf; out->uv = a->buf + (size_t)out->w * out->h; out->ystride = out->uvstride = (size_t)out->w;
+    return 1;
+}
+
+void nx_mav1_ts(mav1 *a, int64_t ts) { if (a) a->ts[(a->seq + 1) & 63] = ts; }
+int64_t nx_mav1_pts(mav1 *a, int64_t dflt) { return a ? a->ts[a->out_seq & 63] : dflt; }
+// end of stream: the next picture still in the pipeline, 0 when there is none left (always 0 without NX_VPIPE)
+int nx_mav1_drain(mav1 *a, mav1_picture *out) {
+    if (!vpipe() || !a || !a->buf) return 0;
+    _Alignas(16) uint64_t blk[0x80];
+    if (video(a, 6, NULL, 0, blk) != 1) return 0;
+    a->out_seq = blk[5];
     out->w = (int)blk[1]; out->h = (int)blk[2]; out->matrix = (int)blk[3]; out->full_range = (int)blk[4];
     out->y = a->buf; out->uv = a->buf + (size_t)out->w * out->h; out->ystride = out->uvstride = (size_t)out->w;
     return 1;

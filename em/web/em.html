@@ -25,6 +25,8 @@
 // WebGPU replayer. ?ndve=off: without nxweb's stand-in for the movie upscaler (on by default: ?ndve=bypass is accepted too).
 // ?fsdirect=1: guest threads call the fs module in their own instance and the owner is asked only for the storage itself
 //   (off by default until it has run at game scale once; then the default and ?fsdirect=0 the way back).
+// ?vpipe=1: AV1 packets are queued to the decoder and pictures come back in order as they finish (a call does not wait
+//   for the picture of its own packet); the decoder is configured without optimizeForLatency.
 // ?vdec=hardware: ask WebCodecs for the hardware AV1 decoder (nxweb's glue asks for software).
 // ?asyncsubmit=1: a guest thread's nvnQueueSubmitCommands leaves its batch in a ring for the replayer and returns: the
 //   recorder's lock is not held while the owner works (off by default until a ride has compared frames).
@@ -102,12 +104,12 @@ function start(file) {
   window.nxem.state = "starting";
   window.Module = {
     arguments: ["/exefs", "/rt/translator64.shared.wasm", "/rt/helpers64.shared.wasm", "/rt/loader64.wasm", q.get("secs") || "86400"],
-    nxEnv: Object.assign({ NX_CORES: q.get("cores") === "1" ? "1" : "0", NX_COREEXCL: q.get("coreexcl") === "1" ? "1" : "0", NX_WAKE_HANDOFF: q.get("handoff") === "1" ? "1" : "0" }, q.get("pollpark") !== null ? { NX_POLL_PARK_US: q.get("pollpark") } : {}, q.get("yieldpark") !== null ? { NX_YIELD_PARK_US: q.get("yieldpark") } : {}),
+    nxEnv: Object.assign({ NX_CORES: q.get("cores") === "1" ? "1" : "0", NX_COREEXCL: q.get("coreexcl") === "1" ? "1" : "0", NX_WAKE_HANDOFF: q.get("handoff") === "1" ? "1" : "0", NX_VPIPE: q.get("vpipe") === "1" ? "1" : "0" }, q.get("pollpark") !== null ? { NX_POLL_PARK_US: q.get("pollpark") } : {}, q.get("yieldpark") !== null ? { NX_YIELD_PARK_US: q.get("yieldpark") } : {}),
     print: say, printErr: say,
     onAbort: function (w) { say("[RED] abort: " + w); window.nxem.state = "aborted"; if (!window.nxem.reason) Module.nxStopped("abort() in host code: " + w); },
     nxStopped: function (why) { if (window.nxem.reason) return; window.nxem.reason = why; $("stage").textContent = "stopped: " + why; $("stage").style.color = "#f66"; },
     onExit: function (c) { say("EXIT " + c); window.nxem.state = "exited"; },
-    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") === "1", gfxAsync: q.get("asyncsubmit") === "1", vdec: q.get("vdec"), fsDirect: q.get("fsdirect") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
+    nxPage: { file: file, canvas: $("screen"), root: "../", modulesList: ["main", "subsdk0", "sdk"], ndve: q.get("ndve") !== "off", gfxDirect: q.get("gfxdirect") !== "0", gfxLockFree: q.get("lockfree") === "1", gfxAsync: q.get("asyncsubmit") === "1", vdec: q.get("vdec"), vpipe: q.get("vpipe") === "1", fsDirect: q.get("fsdirect") === "1", pace: q.get("pace"), stage: function (t) { if (window.nxem.reason) return; $("stage").textContent = t; window.nxem.state = t; } },
   };
   // The runtime (and the owner thread with it) runs in a dedicated worker, em_worker.js; the page keeps the DOM, the
   // input and the audio device. ?owner=page: as it was until 78bdc16, the runtime's main thread is this page's (the

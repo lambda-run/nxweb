@@ -34,6 +34,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   const bytes = async (u: string) => { const r = await fetch(abs(u)); if (!r.ok) throw new Error(`owner: ${u}: HTTP ${r.status}`); return new Uint8Array(await r.arrayBuffer()); };
   // (prefer-hardware gave no decoder at all on a Mac without AV1 hardware: no-preference lets the browser fall back)
   if (p.vdec === "hardware") { (globalThis as any).NXVDEC = "no-preference"; log("page: vdec=hardware: the AV1 decoder is asked for with hardwareAcceleration no-preference (hardware where there is one, else software)"); }
+  if ((p as any).vpipe) (globalThis as any).NXVLATENCY = false;
   p.stage("runtime modules");
   const prep = new PrepWasm(await WebAssembly.compile(await bytes("wasm/prepare.wasm") as unknown as BufferSource), log);
   const sha256 = (b: Uint8Array) => prep.sha256(b);

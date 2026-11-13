@@ -93,6 +93,8 @@ static inline void nx_ret_f64(uint64_t *ctx, double d) { uint8_t *v = (uint8_t *
 extern "C" {
 #endif
 uint64_t nx_guest_calln(uint64_t pc, int n, ...);
+struct mav1; struct mav1_picture_fwd;   // kernel/nx_video.c: the AV1 pipeline's timestamps (declared loosely: hle_movie_av1.h has the types)
+void nx_mav1_ts(void *a, int64_t ts); int64_t nx_mav1_pts(void *a, int64_t dflt); int nx_mav1_drain(void *a, void *out);
 // Waits inside host code are counted as waits (kernel/nx_proc.c nx_w_*: the per-thread time accounting). The system
 // headers come first, so that only the HLE file's own calls take the other names.
 #include <unistd.h>

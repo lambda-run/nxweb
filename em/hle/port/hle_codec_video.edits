@@ -8,4 +8,8 @@
   "    memcpy(ydst, tmp, (size_t)w * h); memcpy(uvdst, tmp + (size_t)w * h, (size_t)w * h / 2); free(tmp);\n    nx_guest_wrote(ydst, (size_t)w * h); nx_guest_wrote(uvdst, (size_t)w * h / 2);"),
  ("    for (uint32_t y = 0; y < p->h; y++) memcpy(dst + (size_t)y * stride, tmp + (size_t)y * p->w * 4, (size_t)p->w * 4);",
   "    for (uint32_t y = 0; y < p->h; y++) memcpy(dst + (size_t)y * stride, tmp + (size_t)y * p->w * 4, (size_t)p->w * 4);\n    nx_guest_wrote(dst, (size_t)stride * p->h);"),
+ # the AV1 decoder with a pipeline (kernel/nx_video.c NX_VPIPE): a picture carries the timestamp of its own packet, and
+ # what is still in the decoder comes out at the end of the stream
+ ("            if (mav1_decode(d->av1, data, (size_t)size, &pic) == 1) { vpx_image_t *c = av1_to_i420(&pic); if (c) got += cv_hold(d, c, ts); }\n        }",
+  "            nx_mav1_ts(d->av1, ts);\n            if (mav1_decode(d->av1, data, (size_t)size, &pic) == 1) { vpx_image_t *c = av1_to_i420(&pic); if (c) got += cv_hold(d, c, nx_mav1_pts(d->av1, ts)); }\n        }\n        if (eos) { mav1_picture pic; while (d->nheld < CV_HOLD && nx_mav1_drain(d->av1, &pic) == 1) { vpx_image_t *c = av1_to_i420(&pic); if (c) got += cv_hold(d, c, nx_mav1_pts(d->av1, ts)); } }"),
 ]

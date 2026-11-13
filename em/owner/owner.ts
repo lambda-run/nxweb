@@ -344,6 +344,17 @@ export class Owner {
     if (op === 3) { b.reset(dec, 0); for (const [k, c] of [...this.videoWait]) if (k.startsWith(dec + ":")) { this.videoWait.delete(k); new DataView(this.memory.buffer).setBigUint64(c, 0n, true); this.wake(c); } set0(0); return DONE; }
     if (op === 4) { b.close(dec); set0(0); return DONE; }
     const seq = dv.getBigUint64(ctx + 48, true);
+    // ops 5 and 6, the pipeline (kernel/nx_video.c NX_VPIPE): a packet goes to the decoder and the call answers with the
+    // oldest finished picture, or with none while fewer than 4 packets are inside; 6 (end of stream) asks for what is left
+    if (op === 5 || op === 6) {
+      const v = this.vpOf(dec);
+      new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0;
+      if (op === 5) { this.videoStats.packets++; this.acct.video.packets++; if (b.decode(dec, 0, seq, new Uint8Array(this.memory.buffer, n(2), n(3)), false) === 1) v.pending++; }
+      else if (v.pending > 0 && !v.flushing) { v.flushing = true; b.decode(dec, 0, seq, null, true); }
+      if (v.done.length) { this.vpAnswer(dec, ctx); return DONE; }
+      if (op === 5 ? v.pending >= 4 : v.pending > 0) { v.waiter = ctx; return PENDING; }
+      set0(0); return DONE;
+    }
     this.videoStats.packets++; this.acct.video.packets++;
     new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0;
     this.videoWait.set(dec + ":" + seq, ctx);
@@ -352,7 +363,23 @@ export class Owner {
     this.videoWait.delete(dec + ":" + seq); set0(0);
     return DONE;
   }
+  private vp = new Map<number, { done: { seq: bigint; pic: VideoPicture }[]; pending: number; waiter: number; flushing: boolean }>();
+  private vpOf(dec: number) { let v = this.vp.get(dec); if (!v) this.vp.set(dec, v = { done: [], pending: 0, waiter: 0, flushing: false }); return v; }
+  // the oldest finished picture into the caller's buffer (x0 = 1, its packet's number at +40), or x0 = 0
+  private vpAnswer(dec: number, ctx: number): void {
+    const v = this.vpOf(dec), e = v.done.shift();
+    if (!e) { new DataView(this.memory.buffer).setBigUint64(ctx, 0n, true); return; }
+    this.videoDone1(dec, e.seq, e.pic, ctx);
+    new DataView(this.memory.buffer).setBigUint64(ctx + 40, e.seq, true);
+  }
   private videoDone(dec: number, seq: bigint, pic: VideoPicture | null): void {
+    const v = this.vp.get(dec);
+    if (v) {   // the pipeline: every packet's outcome arrives here in order, a picture or none
+      v.pending = Math.max(0, v.pending - 1); if (v.pending === 0) v.flushing = false;
+      if (pic) { this.acct.video.pictures++; v.done.push({ seq, pic }); }
+      if (v.waiter && (v.done.length || v.pending === 0)) { const c = v.waiter; v.waiter = 0; this.vpAnswer(dec, c); this.wake(c); }
+      return;
+    }
     const ctx = this.videoWait.get(dec + ":" + seq);
     if (pic) this.acct.video.pictures++;
     if (ctx === undefined) return;
