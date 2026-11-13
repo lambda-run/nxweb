@@ -119,12 +119,33 @@ render pass), and writable storage in a vertex stage.
 - Indirect sources are never the mirror itself: mesh draws copy the record into the ring that `drawIndirect` /
   `dispatchWorkgroupsIndirect` read.
 
+## Verified, and how
+
+- Translator: the 3,924 dumped stages (`vm/ctl/reports/sh-*.bin`) through the translator, the pass and naga: 3,916
+  converted before (the 8 failures were all "written through an address the shader loaded"), 3,924 after; 136 of them
+  use the mirror (60 + 8 compute, 17 vertex, 12 fragment, 34 mesh, 5 task), every address followed (`untraced` 0).
+  Chromium's WGSL compiler (Tint, SwiftShader device) takes 130 of those 136; the other 6 are movie-network stages that
+  now get past this pass and fail on something else: `workgroupBarrier` in the HMMA helper is called from non-uniform
+  control flow, which WGSL forbids (open; not a global memory matter).
+- `test/gfx/i_gmem.test.mts` (Node): placement, merging, freeing, limits, and the table searched as the helper does.
+- `test/gfx/scenes10.mts` (browser, SwiftShader): the translator's real load and store helpers (taken from the chain's
+  output, `gmem_helpers.mts`) against the replayer's table and mirror: a compute shader stores an indirect record
+  through a loaded address and the mesh draw after it draws from it; read-back into guest memory; 14 followed addresses
+  and 17 ranges in one stage with 3 storage bindings; the write log's late read-back; a miss; the hint; growth; a
+  fragment stage reading the mirror in a render pass.
+
 ## Known gaps
 
 - Pointer words are read on the CPU at record time: when a compute pass of the same submission wrote them, they are
   stale (as before).
 - Ordinary indirect draws and multi-draw counts are still read on the CPU at record time (`lower.ts draw`); a record or
-  count the GPU wrote in the same submission is not seen (nxnative's `mdx_run` masking compute is not ported).
+  count the GPU wrote in the same submission is not seen (they see the previous read-back: one frame late, and a count
+  of 0 skips the draw). nxnative's `mdx_run` masking compute is not ported. Plan: the recorder sends indirect draws as
+  such (record address, count address, draw number) without deciding on CPU-visible numbers; the replayer, when
+  `gmSource` finds the record in a range the GPU holds, runs a small compute before the pass that copies record `i` into
+  the indirect ring, zeroed when `i >= count` read from the mirror, and draws with `drawIndirect` /
+  `drawIndexedIndirect`; converted primitives and 8-bit indices stay on the CPU path. Batch the copies up to the next
+  GPU write (nxnative `g_wr_epoch` / `g_mdx_epoch`), or every draw splits the render pass.
 - Vertex / fragment writers (above); no read log / learning (above).
 - Merging two placed ranges into a larger one (a new buffer overlapping both) moves GPU-held bytes through a temporary
   buffer; read-backs still in flight for the old ranges land in guest memory but do not clear the new range's GPU flag.

@@ -303,7 +303,8 @@ export async function indexCapture(read: (off: number, len: number) => Promise<U
 export interface ReplayFrame { n: number; serial: number; width: number; height: number; bytesPerPixel: number; format: string; flip: boolean; data: Uint8Array | null; line: string;
   live: "same" | "differs" | "none"; differing: number; note: string }
 export interface ReplayResult { host: any; frames: ReplayFrame[]; log: string[]; errors: [string, number][]; notes: string[]; stats: any; ms: number }
-export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | void; onLive?: (n: number, head: any, data: Uint8Array) => Promise<void> | void; keepData?: boolean }
+// shader: a shader of the capture is about to be taken: what it returns (when anything) replaces its record (a stage translated again by a newer chain)
+export interface ReplayOptions { onFrame?: (f: ReplayFrame) => Promise<void> | void; onLive?: (n: number, head: any, data: Uint8Array) => Promise<void> | void; keepData?: boolean; shader?: (key: string, info: any) => any }
 
 // Replays a capture on a GfxHost made by `makeHost(memory, log)` (the caller owns the device and the options; the host must not be attached to a recorder).
 // `payload(i)`: the payload bytes of chunk i. Every presented image is read back (level 0) and compared with the live one in the capture.
@@ -359,7 +360,7 @@ export async function replayCapture(index: CaptureIndex, payload: (i: number) =>
   };
   for (let ci = 0; ci < index.chunks.length; ci++) {
     const c = index.chunks[ci], hd = c.h;
-    if (hd.type === "shader") h.shaders[hd.id] = { key: hd.key, info: JSON.parse(JSON.stringify(hd.info), (_k, v) => v && typeof v === "object" && Array.isArray(v.__u8) ? Uint8Array.from(v.__u8) : v) };
+    if (hd.type === "shader") { const info = JSON.parse(JSON.stringify(hd.info), (_k, v) => v && typeof v === "object" && Array.isArray(v.__u8) ? Uint8Array.from(v.__u8) : v); h.shaders[hd.id] = { key: hd.key, info: opts.shader?.(hd.key, info) ?? info }; }
     else if (hd.type === "pipe") pendingPipes.push({ id: hd.id, key: hd.key });
     else if (hd.type === "tex") {
       const fmt = hostFormat(hd.format, h.caps);

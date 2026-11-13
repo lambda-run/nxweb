@@ -21,14 +21,27 @@ async function main() {
   const payload = async (i: number) => { const c = index.chunks[i]; if (!c.len) return new Uint8Array(0); return new Uint8Array(await (await fetch("/__cap", { headers: { Range: `bytes=${c.off}-${c.off + c.len - 1}` } })).arrayBuffer()); };
   const limits: Record<string, number> = {};
   for (const kv of (q.get("limits") ?? "").split(",")) { const [k, v] = kv.split(":"); if (k && v) limits[k] = +v; }
+  // stages translated again (--shaders): the new WGSL and the bindings that changed with it; what the stream binds (textures, uniform slots) is the capture's
+  const again: Record<string, { wgsl: string; refl: any }> = await (await fetch("/__shaders")).json(), replaced: string[] = [];
+  const blockOf = (e: any) => e.kind === "c1" ? 0 : e.kind === "drvcb" ? (e.bank === 0 ? 1 : e.bank === 2 ? 2 : -1) : e.kind === "push" ? 3 : e.kind === "gmem" ? 4 : -1;
+  const shader = (key: string, info: any) => {
+    const a = again[key];
+    if (!a) return undefined;
+    replaced.push(key);
+    const { variants: _v, variant: _f, gmem: _g, ...rest } = info;
+    return { ...rest, wgsl: a.wgsl, storage: a.refl.storage, ...(a.refl.gmem ? { gmem: a.refl.gmem } : {}), extra: a.refl.extra,
+      hostBlocks: (a.refl.extra ?? []).filter((e: any) => blockOf(e) >= 0).map((e: any) => ({ k: blockOf(e), size: e.size ?? 0 })).sort((x: any, y: any) => x.k - y.k) };
+  };
   const flips = new Map<number, boolean>();
   const r = await replayCapture(index, payload, (memory, log) => new GfxHost(device, memory as any, { log, capture: false, limits }), {
+    shader,
     onLive: async (n, head, data) => { flips.set(n, !!head.flip); const p = image(head.format, head.width, head.height, data, !!head.flip); if (p) await out(`frame-${n}.live.png`, p); },
     onFrame: async f => { const p = f.data ? image(f.format, f.width, f.height, f.data, f.flip) : null; if (p) await out(`frame-${f.n}.png`, p); },
   });
   const adapterName = adapter.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description}`.trim() : "";
   await out("replay.log", r.log.join("\n") + "\n");
   await out("errors.txt", r.errors.map(([l, n]) => `${String(n).padStart(6)}  ${l}`).join("\n") + (r.errors.length ? "\n" : ""));
+  if (replaced.length) r.notes.push(`${replaced.length} shaders of the capture replaced by ones translated again (--shaders)`);
   return { adapter: adapterName, notes: r.notes, ms: r.ms, stats: r.stats, errors: r.errors, frames: r.frames.map(f => ({ n: f.n, serial: f.serial, width: f.width, height: f.height, format: f.format, live: f.live, differing: f.differing, note: f.note, line: f.line })) };
 }
 (window as any).__replay = main().catch(e => ({ fatal: String(e?.stack ?? e) }));
