@@ -221,3 +221,46 @@ when the tab runs out of memory. Logs under `em/logs/` (k2, s1, s2, s3).
 5. `?fsworker=1` with saves: not looked at.
 Also: `local/zelda-loop` is merged (stream capture `?gfxcapture=`; the page's query is handed to the replayer:
 `owner_web.ts` `capture: p.search`); the capture has not been seen working on this page yet.
+
+## Later the same session: results and handover (staged `/em-next/` 504b604; `/em/` is 30cf000)
+
+Verified headless (title, 240 s each, build 30cf000):
+- default path (logs/t1, t2): 651 / 473 presents, 13 red lines, none new -> promoted to `/em/` as 30cf000.
+- `?asyncsubmit=1` (logs/a1): 634 presents, 13 red lines, 3,781 ring batches, the one pipeline-create key checked was
+  intact; the Presentation Thread holds the recorder's lock 18.5-19.2 ms a frame (plain: 45-78), of it waiting for the
+  owner at a flush 12.8-14.0 (plain: 35-67). Screenshots at presents 150/180/220/300 against plain: equal, but black
+  or nearly (brightness 0-1.7): NOT a lit-frame comparison. Off by default until one passes (SHOTS=450,600 at the title).
+- `?vpipe=1` (logs/v1): the dropped picture is found: the owner woke the caller before it wrote the picture's packet
+  number into the request block (wrong timestamps, or the caller's next request got the number as its buffer size:
+  "does not fit the buffer"). Fixed (the number is written before the wake); the fix has not been re-run. Pictures
+  left the pipeline in packet order (361 answered, 0 out of order, at most 4 inside). Picture rate headless 2.3-2.7 a
+  second, plain 2.1-2.8: no gain there. Not default.
+- NVN calls at the title (logs/t1, presents 194-659): 1,318 a present; 39.8 % to lock-free entry points, 59.7 % under
+  the lock on the calling thread, 0.6 % on the owner. Top: BindTexture 15.2 % (free), nvnEventGetValue 14.5 % (lock),
+  BindUniformBuffer 6.4 % (free), nvnDeviceGetTextureHandle 5.1 % (lock), BindStorageBuffer 3.8 % (free), the blend /
+  channel-mask state setters ~3 % each (lock). The hot locked ones are entry points the STATIC audit rejects, not the
+  104 candidates of the real-call audit: the next gain is in tools/gfx_audit.mjs (why EventGetValue,
+  DeviceGetTextureHandle, MemoryPoolGetFlags and the state-object setters are rejected), not in ?lfaudit=1.
+- slow presents, headless: 5 of 26 over 8 ms (max 15.6); the time is the present's blit (8-12 ms) or
+  getCurrentTexture (up to 13 ms); queue.submit and the image events are small. In Chrome: `nxem.owner.presentSteps`.
+
+In 504b604 and NOT yet run on the game by this session (the heavy lane was taken; the coordinator rides it in Chrome):
+the game profile's graphics switches to the recorder (`?gfxprofile=0` off), shader wait on (`?shaderwait=0` off),
+count-sized recording commands under the lock, the vpipe fix, `frameWork` (draws / submits / command buffers / passes
+per present, the submit's lowering ms per present and us per draw, the recorder's time by entry point; in the status
+line too), the merges of local/zelda-loop up to 0d40db1 with the main checkout's modules rebuilt (`nx rt`); the proof
+test passes on that gfx64.wasm and the dynamic audit says 58 + 66, scratch 0x1838d40+16.
+
+Open, in order:
+1. Headless default-path check of 504b604 (or later): `SHOTS=300,450 LIMIT_MB=7500 URL="http://localhost:8080/em-next/index.html?secs=1500" sh run_page.sh 260 t4`,
+   then `RUNS=t4 sh build/tmp/ab.sh` (not in git: grep the console for RED lines new against the 13, `FIRST PRESENT`,
+   `"frameWork"`); with shader wait on and SHADER_CHAIN 12 the first boot translates every shader again. Promote by
+   copying index.html em.js em.wasm build.json audio.js em_worker.js em_status.js fs_worker.js from em-next to em.
+2. Lit-frame A/B for asyncsubmit (same command with `&asyncsubmit=1`, SHOTS=450,600, `node tools/png_diff.mjs`); a
+   plain-against-plain pair as the control; default it if the frames match.
+3. `?vpipe=1` again (no `[RED] nn::codec` line may appear); `?asyncsubmit=1&lfaudit=1` then `node tools/lf_real.mjs`.
+4. Continue from the stored save (needs a save from inside the area: a Chrome ride on /em-next/ leaves one).
+5. Profiling push: (a) lowering by record type inside the recorder needs counters in src/gfx (AssemblyScript, built in
+   the main checkout): not started; from outside there is `frameWork.loweringMsPerPresent`; (b) CDP `Profiler.start`
+   per worker target (em_run.mjs already auto-attaches workers: `Target.attachedToTarget`): not tried; (c) done
+   (status line). 6. `?fsworker=1` with saves: not looked at.
