@@ -250,7 +250,7 @@ export class Owner {
   // of the thread that holds the lock (that thread is inside the recorder, waiting for gfx_exec). While such a request
   // is served the recorder is the holder's: what the replayer calls of it then needs no lock (`lent`).
   private gl!: Int32Array; private glf!: Float64Array; private glDepth = 0; private glHeld = false; private lent = false;
-  glStats = { locks: 0, spins: 0, served: 0, execMs: 0, heldMs: 0 }; private glAt = 0;   // heldMs: the owner's own holds of the recorder's lock (its handlers, the replayer's calls into the recorder)
+  glStats: any = { locks: 0, spins: 0, served: 0, execMs: 0, heldMs: 0, busyRetries: 0 }; private glAt = 0; private busyTries = 0;   // heldMs: the owner's own holds of the recorder's lock (its handlers, the replayer's calls into the recorder)
   lock(): void {
     if (this.glDepth++ || this.lent) return;
     const g = this.gl; this.glStats.locks++;
@@ -330,6 +330,7 @@ export class Owner {
   }
   names(): string[] { return [...this.fsIds.keys(), ...(this.rt ? this.rt.byName.keys() : [])]; }
   // ---- video: one request of mav1_* (kernel/nx_video.c). A decode waits for the completion of its packet number.
+  private uvTmp: Uint16Array | null = null;
   private videoBack: VideoBackend | null = null; private videoWait = new Map<string, number>(); videoStats = { packets: 0, pictures: 0 };
   private videoCall(ctx: number): number {
     const dv = new DataView(this.memory.buffer), n = (i: number) => Number(dv.getBigUint64(ctx + 8 * i, true));
@@ -363,8 +364,15 @@ export class Owner {
     let ok = 0;
     if (pic && pic.w * pic.h * 3 / 2 <= cap) {
       const { w, h } = pic, cw = (w + 1) >> 1, ch = (h + 1) >> 1;
-      for (let y = 0; y < h; y++) u8.set(pic.y.subarray(y * pic.yStride, y * pic.yStride + w), buf + y * w);
-      for (let y = 0; y < ch && y < h >> 1; y++) { const o = buf + w * h + y * w, pu = y * pic.uvStride; for (let x = 0; x < cw && 2 * x + 1 < w; x++) { u8[o + 2 * x] = pic.u[pu + x]; u8[o + 2 * x + 1] = pic.v[pu + x]; } }
+      // luma: one copy when the rows are packed, else a copy per row. Chroma: U and V are interleaved into a buffer of
+      // this realm first (16 bits per pair, one store each) and copied in one piece: the loop that wrote the shared
+      // memory byte by byte took 46 ms a picture on the owner thread (measured 2026-11-13), most of the movie's stutter
+      if (pic.yStride === w) u8.set(pic.y.subarray(0, w * h), buf); else for (let y = 0; y < h; y++) u8.set(pic.y.subarray(y * pic.yStride, y * pic.yStride + w), buf + y * w);
+      const rows = Math.min(ch, h >> 1), pairs = Math.min(cw, w >> 1), need = rows * (w >> 1);
+      if (!this.uvTmp || this.uvTmp.length < need) this.uvTmp = new Uint16Array(need);
+      const t16 = this.uvTmp, U = pic.u, V = pic.v, half = w >> 1;
+      for (let y = 0; y < rows; y++) { const pu = y * pic.uvStride, o = y * half; for (let x = 0; x < pairs; x++) t16[o + x] = U[pu + x] | V[pu + x] << 8; }
+      u8.set(new Uint8Array(t16.buffer, 0, need * 2), buf + w * h);
       dv.setBigUint64(ctx + 8, BigInt(w), true); dv.setBigUint64(ctx + 16, BigInt(h), true); dv.setBigUint64(ctx + 24, BigInt(pic.matrix), true); dv.setBigUint64(ctx + 32, BigInt(pic.fullRange ? 1 : 0), true);
       ok = 1; if (!this.videoStats.pictures++) this.log(`[codec] first AV1 picture ${w}x${h} handed to the game`);
     } else if (pic) this.log(`[RED] nn::codec: a ${pic.w}x${pic.h} picture does not fit the buffer`);
@@ -429,6 +437,10 @@ export class Owner {
     const cpu = this.fast ?? (this.fast = this.cpu(ctx)); cpu.q = ctx / 8;
     let r: any;
     this.drainRing();
+    // The recorder's lock is a guest thread's for now: the owner does not wait for it (it spun here for up to 65 ms with
+    // every other request behind it): the caller makes the call again in a moment. After 20 refusals in a row it waits.
+    if (this.glDepth === 0 && !this.lent && Atomics.load(this.gl, 0) !== 0 && Atomics.load(this.gl, 2) !== 1 && this.busyTries < 20) { this.busyTries++; this.glStats.busyRetries = (this.glStats.busyRetries ?? 0) + 1; return RETRY; }
+    this.busyTries = 0;
     this.lock();   // a handler is one step of the recorder for the other threads, as it was when every call came here
     try { r = this.rt.handlers[h](cpu); } finally { this.unlock(); }
     if (r && r.__wait) { this.hostPending++; new Int32Array(this.memory.buffer, ctx + CELL, 1)[0] = 0; this.arm(ctx, this.cpu(ctx), r); return PENDING; }
