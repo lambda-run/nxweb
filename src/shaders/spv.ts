@@ -256,6 +256,32 @@ function mulExtended(c: Ctx) {
   c.m.insts = out;
 }
 
+// 1c'. OpShiftRightLogical of a signed operand and OpShiftRightArithmetic of an unsigned one: naga reads both as WGSL's `>>` on the operand's own type
+// (front/spv: "TODO: convert input and result to unsigned"), so a logical shift of an i32 is arithmetic and fills with the sign. The translator keeps integers
+// as i32 (Maxwell SHR.U32, the SHF funnel shifts, BFE), so every logical shift of a word with bit 31 set came out wrong: bit-packed data (meshlet vertex
+// streams, quantized positions) decoded to garbage. The operand is bitcast to the shift's signedness, and the result back to the instruction's type
+function shiftSigns(c: Ctx) {
+  const intOf = (t: number): [Inst, Inst | undefined] | null => { const d = c.def.get(t); if (!d) return null; if (d.op === Op.TypeInt) return [d, undefined]; if (d.op === 23) { const e = c.def.get(d.w[1]); return e && e.op === Op.TypeInt ? [e, d] : null; } return null; };
+  const typeOf = (id: number) => { const d = c.def.get(id); return d ? d.w[0] : -1; };
+  const bad = c.m.insts.filter(i => { if (i.op !== 194 && i.op !== 195) return false; const t = intOf(typeOf(i.w[2])); return !!t && t[0].w[2] === (i.op === 194 ? 1 : 0); });
+  if (!bad.length) return;
+  let at = c.firstFunction(), r;
+  const add = (op: number, ops: number[], hasType: boolean) => { r = c.intern(op, ops, at, hasType); at += r.added; return r.id; };
+  const want = new Map<string, number>();
+  const typeFor = (signed: number, vec: Inst | undefined) => { const k = `${signed}:${vec ? vec.w[2] : 0}`; let t = want.get(k); if (t === undefined) { t = add(Op.TypeInt, [32, signed], false); if (vec) t = add(23, [t, vec.w[2]], false); want.set(k, t); } return t; };
+  const plan = new Map<Inst, number>();
+  for (const i of bad) { const [, vec] = intOf(typeOf(i.w[2]))!; plan.set(i, typeFor(i.op === 194 ? 0 : 1, vec)); }
+  const out: Inst[] = [];
+  for (const i of c.m.insts) {
+    const T = plan.get(i);
+    if (T === undefined) { out.push(i); continue; }
+    const base = c.id(); out.push({ op: 124 /* Bitcast */, w: [T, base, i.w[2]] });
+    if (i.w[0] === T) { out.push({ op: i.op, w: [T, i.w[1], base, i.w[3]] }); continue; }
+    const res = c.id(); out.push({ op: i.op, w: [T, res, base, i.w[3]] }); out.push({ op: 124, w: [i.w[0], i.w[1], res] });
+  }
+  c.m.insts = out;
+}
+
 // The word positions of an instruction in a function body that hold ids other than its result: everything after the type and result, but for the literals the
 // translator writes there (indices, swizzles, the extended instruction number, memory and image operand masks, switch cases, branch weights)
 function idOperands(i: Inst): number[] {
@@ -1275,6 +1301,7 @@ export function fixForWgsl(bytes: Uint8Array, opts: FixOptions = {}): FixResult 
   nanTests(c); c.index();
   nonFiniteConstants(c); c.index();
   mulExtended(c); c.index();
+  shiftSigns(c); c.index();
   dropUnreferenced(c); c.index();
   privatizeBoundSizes(c); c.index();
   helperInvocation(c); c.index();
