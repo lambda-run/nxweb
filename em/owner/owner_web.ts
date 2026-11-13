@@ -26,6 +26,7 @@ export interface PageSide {
   fsWorker?: boolean;    // true (?fsworker=1): fsdirect, and a dedicated worker reads the RomFS for them (fs_worker.ts)
   vdec?: string | null;
   skipMovie?: boolean;     // ?skipmovie=1 (a test aid): story movies end after their first clusters
+  search?: string;         // the page's location.search: the replayer reads ?gfxcapture= (and gfxcapto / logto, gfxcapname) from it; the worker has no query of its own
   saves?: string | null;   // ?saves=mem / new
   gfxAsync?: boolean;      // true (?asyncsubmit=1): a submission does not wait for the replayer
   gfxLockFree?: boolean;   // false (?lockfree=0): every direct NVN call takes the recorder's lock
@@ -115,7 +116,7 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   const c: OwnerConfig = {
     video: WebCodecsVideo.available() ? sink => new WebCodecsVideo(sink) : undefined, nativeImage: p.nativeImage,
     tree, prep, fsModule, gfxModule, gfxShare: { ...g.share, lockFree: !!audit, lockTable: audit?.table, lockLine: audit?.line, asyncSubmit: p.gfxAsync === true, realAudit: p.gfxRealAudit === true, promote: audit && p.gfxRealPromote !== false && REAL_AUDIT.key === sha256(gfxRaw) ? REAL_AUDIT.names : [] }, fsShare: f.share, saves, skipMovie: p.skipMovie === true, programId: 0x0400486024DEC000n, scratch: 0x1FF00000, malloc, modules, log,
-    gfx: device ? { ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
+    gfx: device ? { capture: p.search || false, ndve: p.ndve ? "bypass" : undefined, device, canvas: p.canvas, nextFrame, requestDevice: async () => { device = await requestDevice(); return device; } } : undefined,
   };
   p.stage("RomFS index");
   const { owner, exefs } = await startOwner(memory, c);

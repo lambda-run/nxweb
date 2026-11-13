@@ -100,7 +100,10 @@ if (process.env.MEMINFRA && !crashed) { try {
   if (best) console.log(`  pid ${best.pid}, allocators over 8 MB (MB, xN = entries summed): ` + [...best.m].filter(([, v]) => v.mb >= 8).sort((a, b) => b[1].mb - a[1].mb).slice(0, 40).map(([k, v]) => `${k} ${Math.round(v.mb)}${v.n > 1 ? " x" + v.n : ""}`).join("; "));
 } catch (e) { console.log("em_run: memory-infra: " + String(e.message).slice(0, 200)); } }
 // the picture itself, two ways: the canvas as the page sees it, and the replayer's own frame capture (its last pass's target)
-try {
+if (shotTimer) clearInterval(shotTimer);
+// (after a crash the page answers nothing: the pictures are not asked for, and nothing below may wait for ever)
+setTimeout(() => { console.log(`em_run: ended (${how}; the pictures at the end did not come back within 90 s)`); try { child.kill("SIGKILL"); } catch { /* gone */ } process.exit(0); }, 90000).unref();
+if (!crashed) try {
   const d = await evaluate(cdp, sessionId, `new Promise(res => requestAnimationFrame(() => { try { res(document.getElementById("screen").toDataURL("image/png")); } catch (e) { res("error " + e.message); } }))`);
   if (d.startsWith("data:image/png;base64,")) writeFileSync(`${L}/${name}.canvas.png`, Buffer.from(d.slice(22), "base64")); else console.log("em_run: canvas: " + d.slice(0, 80));
   const c = await evaluate(cdp, sessionId, `(async () => { const g = globalThis.NXOWNER && NXOWNER.gfx; if (!g || !g.live) return JSON.stringify({ none: true });
@@ -111,7 +114,7 @@ try {
   if (j.b64) writeFileSync(`${L}/${name}.frame.png`, Buffer.from(j.b64, "base64"));
   console.log(`em_run: frame capture: ${JSON.stringify({ ...j, b64: j.b64 ? j.b64.length + " chars" : "" }).slice(0, 400)}`);
 } catch (e) { console.log("em_run: no capture: " + String(e.message).slice(0, 200)); }
-try { const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, sessionId); writeFileSync(`${L}/${name}.png`, Buffer.from(shot.data, "base64")); } catch (e) { console.log("em_run: no screenshot: " + e.message); }
+if (!crashed) try { const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, sessionId); writeFileSync(`${L}/${name}.png`, Buffer.from(shot.data, "base64")); } catch (e) { console.log("em_run: no screenshot: " + e.message); }
 console.log(`em_run: ended (${how}); last ${last}; console in ${con}, screenshot ${L}/${name}.png`);
 if (!process.env.KEEP) { cdp.close(); child.kill("SIGKILL"); }
 process.exit(0);
