@@ -9,6 +9,7 @@ import { fragmentInputVariant, missingInputs } from "../shaders/variants.ts";
 import { NVN_FORMATS, COMPARE, STENCIL_OP, BLEND_EQ, BLEND_FUNC, TOPOLOGY, WRAP, STORAGE_FORMATS, STORAGE_RW_FORMATS, MAYBE_UNFILTERABLE, VERTEX_CONV, convertVertices, hostFormat, type NvnFormat } from "./gfx_formats.ts";
 import { describeRecord, png, toRgba8, type Capture, type CaptureImage } from "./gfx_capture.ts";
 import { FrameLedger } from "./gfx_ledger.ts";
+import { StreamCapture, parseCaptureSpec, httpSink, type CaptureSpec, type CaptureSink, type CaptureSummary } from "./gfx_stream_capture.ts";
 import { NdveBypass, NDVE_KEYS, NDVE_OUTPUT_IMAGE, NDVE_FLIP_ON, NDVE_FLIP_BASE } from "./ndve.ts";
 export type { Capture, CaptureImage } from "./gfx_capture.ts";
 
@@ -110,6 +111,9 @@ export interface GfxHostOptions {
   // false: do not use WebGPU timestamp queries even when the device has them (counter reports then take times estimated
   // on the CPU from when a segment was handed to the GPU and when the GPU reported it done)
   timestampQuery?: boolean;
+  // A stream capture to arm (gfx_stream_capture.ts parseCaptureSpec: a location.search with gfxcapture=, or its bare value). Omitted: globalThis.NX_GFXCAPTURE,
+  // else the location.search of the page or worker the replayer runs in; false: none
+  capture?: string | false;
 }
 
 const H = { TEX_CREATE: 1, TEX_DESTROY: 2, BEGIN_PASS: 3, END_PASS: 4, VIEWPORT: 5, SCISSOR: 6, PIPELINE_CREATE: 7, PIPELINE: 8, VBUF: 9, UBO: 10, TEX: 11,
@@ -233,6 +237,30 @@ export class GfxHost {
     this.log = opts.log ?? (l => console.log(l));
     this.uniformArena = opts.uniformArena ?? true;
     this.adopt(device);
+    const g = globalThis as any, spec = opts.capture === false ? null : parseCaptureSpec(opts.capture ?? g.NX_GFXCAPTURE ?? g.location?.search);
+    if (spec) void this.streamCapture(spec);
+  }
+  // ---- stream capture (gfx_stream_capture.ts; test/gfx/REPLAY.md): N frames of the host stream with everything a replay needs, written to `sink`
+  // (default: the log receiver the spec names). Starts after the present the spec names; resolves with the summary when the file is written
+  private sc: StreamCapture | null = null;
+  private scArm: { spec: CaptureSpec; sink: CaptureSink; go: (s: CaptureSummary) => void; draws0: number } | null = null;
+  streamCapture(spec: CaptureSpec | string, sink?: CaptureSink): Promise<CaptureSummary> {
+    const s = typeof spec === "string" ? parseCaptureSpec(spec) : spec;
+    if (!s) return Promise.reject(new Error(`not a capture spec: ${spec}`));
+    if (this.sc || this.scArm) return Promise.reject(new Error("a stream capture is already armed or running"));
+    this.log(`gfxcapture: armed for ${s.frames} frame${s.frames === 1 ? "" : "s"} ${s.present !== undefined ? `after present ${s.present}` : s.draws !== undefined ? `from the first frame of at least ${s.draws} draws` : "from the next present"}${sink ? "" : `, to ${s.to}/${s.name}`}`);
+    return new Promise<CaptureSummary>(go => { this.scArm = { spec: s, sink: sink ?? httpSink(s.to, s.name, l => this.log(l)), go, draws0: this.stats.draws }; });
+  }
+  // After a present was executed (nothing is encoded and not submitted, no pass is open): the armed capture begins when its condition holds
+  private scBegin(): StreamCapture | null {
+    const a = this.scArm!, draws = this.stats.draws - a.draws0;
+    a.draws0 = this.stats.draws;
+    if (this.pass || this.enc || this.lost || (a.spec.present !== undefined ? this.stats.presents < a.spec.present : a.spec.draws !== undefined ? draws < a.spec.draws : false)) return null;
+    this.scArm = null;
+    this.log(`gfxcapture: begins after present ${this.stats.presents} (${draws} draws in its frame)`);
+    const c = this.sc = new StreamCapture(this, a.spec, a.sink);
+    void c.done.then(a.go);
+    return c;
   }
   // What to ask an adapter for: every feature the replayer can use that it has, and the per-stage limits raised to
   // what it offers (WebGPU's defaults are 12 uniform buffers, 16 sampled textures and 16 samplers a stage; a game's
@@ -591,6 +619,7 @@ export class GfxHost {
     if (m === undefined) {
       const wgsl = s.info.variants?.[sig] ?? s.info.variant?.(classes) ?? this.onShaderVariant?.(s.key, classes);
       m = wgsl ? this.device.createShaderModule({ code: wgsl }) : null;
+      if (wgsl && !s.info.variants?.[sig]) s.info.variants = { ...s.info.variants, [sig]: wgsl };   // kept as text too: a stream capture carries it
       s.variants.set(sig, m);
       if (!m) this.log(`[RED] vertex shader ${s.key} is bound with attribute classes ${sig}, but declares ${(s.info.attributes ?? []).map(l => `${l}:${s.info.attributeTypes?.[l] ?? "float"}`).join(",")}: WebGPU needs a variant of its text from the shader chain (ShaderInfo.variants / onShaderVariant); its draws are skipped`);
     }
@@ -2043,6 +2072,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     this.imageEvent(win, index, 0);
     const gen = this.gen;
     this.device.queue.onSubmittedWorkDone().then(() => { if (gen === this.gen) this.imageEvent(win, index, 1); }, () => {});
+    if (this.sc) { this.sc.presented(serial, dv.getUint32(p + 44, true)); if (!this.sc.active) this.sc = null; }
     if (this.cap) this.captureEnd();
   }
 
@@ -2051,6 +2081,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
   account(ptr: number, len: number) { if (!this.disposed) this.ledger.walk(this.dv, ptr < 0 ? ptr + 4294967296 : ptr, len); }
   exec(ptr: number, len: number) {
     if (this.disposed) return;
+    if (this.sc) this.sc.batch(ptr, len);
     let dv = this.dv;
     for (let p = ptr, end = ptr + len; p < end;) {
       const op = dv.getUint32(p, true), size = dv.getUint32(p + 4, true);
@@ -2113,7 +2144,7 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
         case H.COPY_T2T: this.copyT2T(dv, p); break;
         case H.CLEAR_TEX: this.clearTex(dv, p); break;
         case H.SNAPSHOT: this.snapshot(this.u64(dv, p + 8)); break;
-        case H.PRESENT: this.present(dv, p); break;
+        case H.PRESENT: this.present(dv, p); if (this.scArm) this.scBegin()?.batch(p + size, end - p - size); break;
         case H.FENCE: {
           // Done when the GPU has finished what was submitted before it and the read-backs issued before it have landed
           const n = this.u64(dv, p + 8); this.flush(); this.fencesPending.add(n);
