@@ -34,7 +34,7 @@ import { profileHas, P_TEX_FLUSH } from "./profile";
 const SCRATCH_BYTES: usize = 4 << 20;
 const OUT_BYTES: usize = 6 << 20;        // converted rows (depth as floats, decoded ASTC, unpacked 16-bit texels)
 let SCRATCH: usize = 0, OUT: usize = 0;
-export function texContentInit(): void { SCRATCH = arenaAlloc(SCRATCH_BYTES); OUT = arenaAlloc(OUT_BYTES); }
+export function texContentInit(): void { SCRATCH = arenaAlloc(SCRATCH_BYTES); OUT = arenaAlloc(OUT_BYTES); FRESH = arenaAlloc(8192 + 128); memory.fill(FRESH, 0, 8192 + 128); ZH = FRESH + 8192; }
 const SCRUB_PERIOD: u32 = 60;
 const SCRUB_BUDGET: u64 = 1 << 20;
 
@@ -123,7 +123,34 @@ function hashSample(p: usize, n: usize): u64 {
 // memory), +48 u32 bytes per row, +52 u32 x, +56 u32 what the rows are: 0 texels of the
 // host texture's format, 1 depth as f32, 2 stencil as u8 (WebGPU takes depth only through a draw, stencil as its own aspect), +60 u32 the bytes
 // the rows span from +40 (pitch x rows x slices; a guest thread may copy them next to the batch and point +40 there: em/kernel/nx_guest.js)
+// Textures the replayer has had nothing for since they were made (contentInit; texels, a GPU write and a clear take the
+// bit): their GPU texture is all zeros, so storage that is all zeros need not go up (upload: FRESH)
+let FRESH: usize = 0;      // (8 KB from the arena: texContentInit)
+// @ts-ignore: decorator
+@inline function freshGet(serial: u64): bool { const s = <usize>(serial & 0xffff); return ((load<u8>(FRESH + (s >> 3)) >> <u8>(s & 7)) & 1) != 0; }
+function freshSet(serial: u64, on: bool): void { const s = <usize>(serial & 0xffff), a = FRESH + (s >> 3), m = <u8>(1 << <u8>(s & 7)); store<u8>(a, on ? load<u8>(a) | m : load<u8>(a) & ~m); }
+let nZeroSkips: u32 = 0, nZeroSkipKB: u64 = 0;
+// 0 uploads of an all-zero storage left out (the texture was still blank), 1 their KB
+export function zeroSkipStat(i: i32): u32 { return i == 0 ? nZeroSkips : <u32>nZeroSkipKB; }
+function allZero(p: usize, n: usize): bool {
+  let i: usize = 0;
+  for (; i + 64 <= n; i += 64) if ((load<u64>(p + i) | load<u64>(p + i, 8) | load<u64>(p + i, 16) | load<u64>(p + i, 24) | load<u64>(p + i, 32) | load<u64>(p + i, 40) | load<u64>(p + i, 48) | load<u64>(p + i, 56)) != 0) return false;
+  for (; i < n; i++) if (load<u8>(p + i)) return false;
+  return true;
+}
+// hashFull of n zero bytes, remembered for the last few sizes (a texture remade every frame over zeros is hashed once)
+let ZH: usize = 0, zhNext: u32 = 0;
+function zeroHash(n: usize): u64 {
+  for (let k: usize = 0; k < 8; k++) if (load<u64>(ZH + (k << 4)) == <u64>n && n) return load<u64>(ZH + (k << 4), 8);
+  let h: u64 = 0x9E3779B97F4A7C15 ^ <u64>n, i: usize = 0;
+  for (; i + 8 <= n; i += 8) { h = h * 0x9E3779B97F4A7C15; h ^= h >> 29; }
+  for (; i < n; i++) { h = h * 0x9E3779B97F4A7C15; h ^= h >> 29; }
+  const q = ZH + (<usize>(zhNext++ & 7) << 4); store<u64>(q, <u64>n); store<u64>(q, h, 8);
+  return h;
+}
+let lastZero = false;
 function emitData(serial: u64, level: u32, z: u32, x: u32, y: u32, w: u32, h: u32, slices: u32, ptr: usize, pitch: usize, what: u32, nrows: u32): void {
+  freshSet(serial, false);
   const r = H.hostRec(H.H_TEX_DATA, 64);
   store<u64>(r, serial, 8); store<u32>(r, level, 16); store<u32>(r, z, 20); store<u32>(r, y, 24); store<u32>(r, w, 28); store<u32>(r, h, 32); store<u32>(r, slices, 36);
   store<u64>(r, ptr, 40); store<u32>(r, <u32>pitch, 48); store<u32>(r, x, 52); store<u32>(r, what, 56); store<u32>(r, <u32>min<u64>(<u64>pitch * nrows * max<u32>(slices, 1), 0xffffffff), 60);
@@ -197,6 +224,11 @@ function upload(e: usize): bool {
   if (!fmtOf(load<i32>(d, O.TD_format))) { if (!redFmt) { redFmt = true; L.red("texture format 0x"); L.hex(<u32>load<i32>(d, O.TD_format)); L.str(" is unknown: its content is not uploaded"); L.end(); } return false; }
   if (<u64>mem + load<u64>(e, TE_size) > <u64>memory.size() << 16) { if (!redRange) { redRange = true; L.redLine("texture storage reaches outside guest memory: not uploaded"); } return false; }
   if (target == 10 || load<i32>(d, O.TD_samples) > 1) return false;
+  lastZero = false;
+  // A texture the replayer still has as zeros, over storage that is all zeros: nothing to send (the formats whose zero
+  // bytes go up as zeros: as stored, depth and stencil, 16-bit norms; not ASTC nor the unpacked 16-bit ones)
+  { const k = fmtXform(<u32>load<i32>(d, O.TD_format)), size = <usize>load<u64>(e, TE_size);
+    if (freshGet(serial) && k != X_ASTC && k != X_PACKED && allZero(mem, size)) { lastZero = true; nZeroSkips++; nZeroSkipKB += <u64>size >> 10; return true; } }
   nUploads++;
   if (flags & 0x50) {       // linear: rows as they are, the stride from the builder
     const w = load<u32>(d, O.TD_width), h = load<u32>(d, O.TD_height), bw = (w + fBw - 1) / fBw;
@@ -233,6 +265,7 @@ export function contentInit(serial: u64, tex: usize): void {
   inst(e).init(GFX_TEXTURE, <u32>(serial & 0xffff));
   store<u64>(e, load<u64>(tex, O.TEX_mem), TE_mem); store<u64>(e, load<u64>(tex, O.TEX_L + O.TL_size), TE_size);
   memory.copy(e + TE_desc, tex + O.TEX_d, O.TD_SIZE);
+  freshSet(serial, true);
   W.watchRegister(serial, tex);
 }
 // A submission is about to read the texture (sample it, copy from it, present it)
@@ -263,7 +296,7 @@ export function contentNeed(serial: u64): void {
   }
   W.watchForget(serial);
   if (!upload(e)) return;
-  store<u64>(e, hashFull(mem, size), TE_full); store<u32>(e, submitNo, TE_last_full);
+  store<u64>(e, lastZero ? zeroHash(size) : hashFull(mem, size), TE_full); store<u32>(e, submitNo, TE_last_full);
   m.step(GfxTextureE.Upload, hashSample(mem, size));
 }
 // The GPU writes the texture (attachment of a pass, destination of a copy, an image a compute shader stores to).
@@ -273,6 +306,7 @@ export function contentGpuWrite(serial: u64): void {
   if (!e) return;
   if (profileHas(P_TEX_FLUSH) && W.watchRegistered(serial)) gpuTakesOver(e, serial);
   if (inst(e).state == GfxTextureS.Staged) upload(e);
+  freshSet(serial, false);
   inst(e).step(GfxTextureE.GpuWrite);
 }
 // tex_flush_upload, a registered texture the GPU is about to write (texwatch.ts).

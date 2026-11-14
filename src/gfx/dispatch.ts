@@ -14,7 +14,7 @@ import { syncInitialize, syncFinalize, syncWait } from "./sync";
 import { fenceNew } from "./tables";
 import { windowInitialize, windowAcquire, windowPresent, windowGetCrop, windowInterval } from "./window";
 import { submit, emitFence, passBreak, blendDefault, dsDefault } from "./lower";
-import { hostRec, hostFlush, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY, H_FENCE } from "./hostops";
+import { hostRec, hostFlush, hostPending, H_TEX_CREATE, H_TEX_DESTROY, H_FLUSH, H_MEM_DIRTY, H_FENCE } from "./hostops";
 import { contentInit, noteFlush, regionCopy, writeTexels } from "./texcontent";
 import { profileHas, P_RENDER_COND } from "./profile";
 import { nsFromTicks } from "./report";
@@ -537,7 +537,9 @@ export function call(fn: i32, a: usize): u64 {
     case F.nvnQueueSetDebugLabel: return 0;
     case F.nvnQueueGetError: return 0;                     // GPU_NO_ERROR
     case F.nvnQueueSubmitCommands: { const q = P(a, 0); store<u64>(q, load<u64>(q, O.QUEUE_submits) + 1, O.QUEUE_submits); submit(I(a, 1), P(a, 2)); texDoomedRelease(); return 0; }
-    case F.nvnQueueFlush: hostFlush(); return 0;           // everything submitted so far is with the replayer
+    // everything submitted so far is with the replayer. What is pending (the textures a submission let go of: dispatch's
+    // texDoomedRelease) ends with H_FLUSH, so that the embedder hands it over like a submission's end without waiting
+    case F.nvnQueueFlush: if (hostPending()) { passBreak(); hostRec(H_FLUSH, 8); } hostFlush(); return 0;
     // DEPARTS: nxnative's Finish blocks until the GPU is done. A browser turn cannot block: the work is flushed with a
     // fence behind it (fences also wait for texture and buffer read-backs to land in guest memory), and the embedder
     // parks the thread until gfx_finish_fence() is done

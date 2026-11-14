@@ -20,7 +20,7 @@ import { syncFenceOf, syncWaitFence } from "./sync";
 import { hostFlush, hostExecs, hostInit } from "./hostops";
 import { hostSegsLent, cmdInit } from "./cmd";
 import { texLayout, texLevelOffset } from "./texlayout";
-import { texContentInit, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull, setGobSwitch2, noteFlush } from "./texcontent";
+import { texContentInit, zeroSkipStat, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull, setGobSwitch2, noteFlush } from "./texcontent";
 import { watchInit } from "./texwatch";
 export * from "../kit/exports";
 
@@ -157,5 +157,7 @@ export function gfx_tex_level_offset(desc: usize, level: u32): u32 { return <u32
 export function gfx_gmem_find(p: u64): usize { return gmemFind(p, 0); }
 export function gfx_gmem_live(): i32 { return gmemLive(); }
 export function gfx_gmem_walked(): i32 { return gmemWalked(); }
-// 1: UpdateUniformBuffer and CopyBufferToBuffer do not flush; their bytes go into the stream as H_MEM_WRITE and the replayer writes guest memory (lower.ts memWrite)
+// 1: UpdateUniformBuffer, CopyBufferToBuffer and ClearBuffer (up to 1 MB) do not flush; their bytes go into the stream as H_MEM_WRITE and the replayer writes guest memory (lower.ts memWrite)
 export function gfx_stream_writes(on: u32): void { setStreamWrites(on != 0); }
+// 0: uploads of a blank texture over all-zero storage left out, 1: their KB (texcontent.ts upload)
+export function gfx_zero_skips(i: i32): u32 { return zeroSkipStat(i); }
