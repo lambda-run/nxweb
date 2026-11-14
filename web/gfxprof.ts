@@ -135,6 +135,14 @@ async function main() {
         const exec: number[] = [], done: number[] = [];
         let st: any = {};
         for (let i = 0; i < n; i++) { const s0 = statsOf(), ms = r.once(), t = performance.now(); await r.settle(); exec.push(ms); done.push(ms + performance.now() - t); st = delta(s0, statsOf()); }
+        // back to back (as live, where the GPU process is still busy with the last frame): frames executed with only a task between them, and the wall time
+        // for all of them (the browser's WebGPU client blocks in writeBuffer / encoding when its transfer and command buffers are full)
+        if (q.get("pipe") === "1") {
+          const t0 = performance.now(), ex: number[] = [];
+          for (let i = 0; i < n; i++) { ex.push(r.once()); await new Promise(res => setTimeout(res, 0)); }
+          await r.settle(); result.pipeExecMs = summary(ex); result.pipeWallMs = round((performance.now() - t0) / n, 2);
+          say(`back to back: exec ms per frame ${JSON.stringify(result.pipeExecMs)}, wall ms per frame ${result.pipeWallMs}`);
+        }
         result.execMs = summary(exec); result.doneMs = summary(done); result.execMsAll = exec.map(v => round(v, 2)); result.stats = st; result.ledger = host.ledger.lastLine ?? result.ledger;
         say(`exec (CPU until submit) ms per frame: ${JSON.stringify(result.execMs)}\nuntil the GPU is done:            ${JSON.stringify(result.doneMs)}\nper frame: ${JSON.stringify(st)}`);
         return result.execMs;
