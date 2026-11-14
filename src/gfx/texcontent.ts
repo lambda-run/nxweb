@@ -149,6 +149,40 @@ function zeroHash(n: usize): u64 {
   return h;
 }
 let lastZero = false;
+// A texture made anew over the storage of a live one the GPU wrote, with the same shape (the game remakes its shadow
+// map's texture object every frame over the same memory: 1600x1600x3 D16, 30 MB of f32 texels a frame from storage that
+// does not hold what the GPU drew there): its content is the GPU's, so the twin is copied on the GPU (H_COPY_T2T with
+// COPY_NOW: its own encoder, submitted at once, as an upload would land) and the new texture is the GPU's
+const ALIAS_MIN: usize = 256 << 10;
+let aliasOn = true, nAliases: u32 = 0, nAliasKB: u64 = 0;
+export function setTexAlias(on: bool): void { aliasOn = on; }
+export function aliasStat(i: i32): u32 { return i == 0 ? nAliases : <u32>nAliasKB; }
+function fromTwin(e: usize, serial: u64, mem: usize, size: usize): bool {
+  const d = e + TE_desc, target = load<i32>(d, O.TD_target);
+  if ((target != 1 && target != 4) || load<i32>(d, O.TD_samples) > 1) return false;     // 2D and 2D arrays, one sample
+  let best: usize = 0, bestSerial: u64 = 0;
+  for (let s: u32 = 1; s < TEX_SLOTS; s++) {
+    const t = texSlot(s), ts = load<u64>(t);
+    if (!ts || ts == serial || <usize>load<u64>(t, TE_mem) != mem || <usize>load<u64>(t, TE_size) != size) continue;
+    if (Inst.at(t + TE_inst).state != GfxTextureS.GpuOwned) continue;
+    let same = true;
+    for (let o: usize = 0; o < 32; o += 8) if (load<u64>(t + TE_desc + o) != load<u64>(d + o)) { same = false; break; }
+    if (same && ts > bestSerial) { best = t; bestSerial = ts; }
+  }
+  if (!best) return false;
+  const w = load<u32>(d, O.TD_width), h = load<u32>(d, O.TD_height), levels = max<u32>(load<u32>(d, O.TD_levels), 1), layers = max<u32>(texLayers(d), 1);
+  for (let l: u32 = 0; l < levels; l++) {
+    const o = H.hostRec(H.H_COPY_T2T, 96), lw = max<u32>(w >> l, 1), lh = max<u32>(h >> l, 1);
+    store<u64>(o, bestSerial, 8); store<u64>(o, serial, 16); store<u32>(o, l, 24); store<u32>(o, l, 32);
+    store<i32>(o, <i32>lw, 52); store<i32>(o, <i32>lh, 56); store<i32>(o, <i32>layers, 60);
+    store<i32>(o, <i32>lw, 76); store<i32>(o, <i32>lh, 80); store<i32>(o, <i32>layers, 84);
+    store<u32>(o, H.COPY_NOW, 88);
+  }
+  nAliases++; nAliasKB += <u64>size >> 10;
+  freshSet(serial, false);
+  inst(e).step(GfxTextureE.GpuWrite);
+  return true;
+}
 function emitData(serial: u64, level: u32, z: u32, x: u32, y: u32, w: u32, h: u32, slices: u32, ptr: usize, pitch: usize, what: u32, nrows: u32): void {
   freshSet(serial, false);
   const r = H.hostRec(H.H_TEX_DATA, 64);
@@ -295,6 +329,7 @@ export function contentNeed(serial: u64): void {
     m.step(GfxTextureE.Stale);
   }
   W.watchForget(serial);
+  if (m.state == GfxTextureS.Unknown && freshGet(serial) && aliasOn && size >= ALIAS_MIN && fromTwin(e, serial, mem, size)) return;
   if (!upload(e)) return;
   store<u64>(e, lastZero ? zeroHash(size) : hashFull(mem, size), TE_full); store<u32>(e, submitNo, TE_last_full);
   m.step(GfxTextureE.Upload, hashSample(mem, size));

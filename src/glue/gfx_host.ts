@@ -2393,6 +2393,14 @@ struct U { r: vec4f } @group(0) @binding(0) var<uniform> u: U; @group(0) @bindin
     const s = this.texture(this.u64(dv, p + 8)), d = this.texture(this.u64(dv, p + 16));
     if (!s || !d) return;
     const [sl, sy, dl, dy] = [24, 28, 32, 36].map(o => dv.getUint32(p + o, true)), sr = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 40 + i * 4, true)), dr = [0, 1, 2, 3, 4, 5].map(i => dv.getInt32(p + 64 + i * 4, true));
+    // COPY_NOW (src/gfx texcontent.ts fromTwin: a texture made anew over a GPU-written twin's storage takes its content; it may come inside a
+    // pass): an encoder of its own, submitted now, as an upload lands
+    if (dv.getUint32(p + 88, true) & 0x20000000) {
+      if (s.gpu.format !== d.gpu.format || s.gpu.sampleCount !== d.gpu.sampleCount || s.gpu.width !== d.gpu.width || s.gpu.height !== d.gpu.height) return;
+      const e = this.device.createCommandEncoder(), lw = Math.max(1, s.gpu.width >> sl), lh = Math.max(1, s.gpu.height >> sl);
+      e.copyTextureToTexture({ texture: s.gpu, mipLevel: sl }, { texture: d.gpu, mipLevel: dl }, { width: lw, height: lh, depthOrArrayLayers: Math.min(s.gpu.depthOrArrayLayers, d.gpu.depthOrArrayLayers) });
+      this.device.queue.submit([e.finish()]); (this.stats as any).twinCopies = ((this.stats as any).twinCopies ?? 0) + 1; return;
+    }
     this.endPass();
     if ((dv.getUint32(p + 88, true) & 0x40000000) && s.gpu.sampleCount > 1 && d.gpu.sampleCount === 1) { this.resolve(s, sl, sy, d, dl, dy); return; }
     if (sr[3] === dr[3] && sr[4] === dr[4] && s.gpu.format === d.gpu.format && s.gpu.sampleCount === d.gpu.sampleCount) {
