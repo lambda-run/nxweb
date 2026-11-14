@@ -347,7 +347,16 @@ export class GfxHost {
   }
   // Every texture and buffer the replayer makes, until it destroys it: what dispose() releases
   private live = new Set<GPU>();
-  private newBuffer(desc: any): GPU { const o = this.device.createBuffer(desc); this.live.add(o); return o; }
+  // Read-back buffers (MAP_READ | COPY_DST) are kept by size once unmapped and given out again: ~90 a present were made and destroyed live, Buffer.destroy
+  // alone 33 ms a present (ownerprof-area2)
+  private rbPool = new Map<number, GPU[]>(); private rbDev: GPU = null;
+  private newBuffer(desc: any): GPU {
+    if (desc.usage === (0x01 | 0x08) && !desc.mappedAtCreation) {
+      if (this.rbDev !== this.device) { this.rbPool.clear(); this.rbDev = this.device; }
+      const o = this.rbPool.get(desc.size)?.pop(); if (o) { this.live.add(o); return o; }
+    }
+    const o = this.device.createBuffer(desc); this.live.add(o); return o;
+  }
   // No texture is asked of the device with an empty extent or no level (the device answers with an invalid texture, and every view, bind group and
   // command buffer that touches it is then invalid too): such a request is made 1 texel large and said once, with who asked
   private newTexture(desc: any, who = "a helper"): GPU {
@@ -359,7 +368,12 @@ export class GfxHost {
     }
     const o = this.device.createTexture(desc); this.live.add(o); return o;
   }
-  private kill(o: GPU): void { if (o) { this.live.delete(o); o.destroy(); } }
+  private kill(o: GPU): void {
+    if (!o) return;
+    this.live.delete(o);
+    if (o.usage === (0x01 | 0x08) && o.mapState === "unmapped" && this.rbDev === this.device && !this.lost) { let l = this.rbPool.get(o.size); if (!l) this.rbPool.set(o.size, l = []); if (l.length < 8) { l.push(o); return; } }
+    o.destroy();
+  }
   get liveObjects(): number { return this.live.size; }
   disposed = false;
   // The process that used this replayer is gone: every texture and buffer it made is destroyed (pipelines, bind
@@ -856,9 +870,9 @@ export class GfxHost {
     k.h[i] = h; k.ep[i] = this.epoch; k.fr[i] = this.frameNo;
     return h;
   }
-  // A page still at PG_STILL looks (PG_STEADY) is looked at again one frame in 4 (16), pages spread over the frames by number: a 3D frame of the
+  // A page still at PG_STILL looks (PG_STEADY) is looked at again one frame in 8 (32; frame rate first: live, 9,000 pages a present were still 113 ms), pages spread over the frames by number: a 3D frame of the
   // first area binds ~240 MB of guest memory (the mirror's ranges), a few dozen pages of which change a frame
-  private pageDue(pg: number, st: number, fr: number): boolean { const P = st >= PG_STEADY ? 16 : 4, d = this.frameNo - fr; return d >= P || (d > 0 && (pg + this.frameNo) % P === 0); }
+  private pageDue(pg: number, st: number, fr: number): boolean { const P = st >= PG_STEADY ? 32 : 8, d = this.frameNo - fr; return d >= P || (d > 0 && (pg + this.frameNo) % P === 0); }
   private hashOf(addr: number, size: number): number {
     if (size < 2 * HASH_PAGE) return this.x.gfx_hash(addr, size);
     const end = addr + size, p0 = Math.ceil(addr / HASH_PAGE), p1 = Math.floor(end / HASH_PAGE);
