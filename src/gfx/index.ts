@@ -20,7 +20,7 @@ import { syncFenceOf, syncWaitFence } from "./sync";
 import { hostFlush, hostExecs, hostInit } from "./hostops";
 import { hostSegsLent, cmdInit } from "./cmd";
 import { texLayout, texLevelOffset } from "./texlayout";
-import { texContentInit, zeroSkipStat, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull, setGobSwitch2, noteFlush } from "./texcontent";
+import { texContentInit, zeroSkipStat, setTexAlias, aliasStat, texStat, texWatchStat, deswizzle, contentState, benchSample, hashFull, setGobSwitch2, noteFlush } from "./texcontent";
 import { watchInit } from "./texwatch";
 export * from "../kit/exports";
 
@@ -161,3 +161,6 @@ export function gfx_gmem_walked(): i32 { return gmemWalked(); }
 export function gfx_stream_writes(on: u32): void { setStreamWrites(on != 0); }
 // 0: uploads of a blank texture over all-zero storage left out, 1: their KB (texcontent.ts upload)
 export function gfx_zero_skips(i: i32): u32 { return zeroSkipStat(i); }
+// A new texture over a live GPU-written twin's storage is copied from it on the GPU instead of uploaded (texcontent.ts fromTwin): 0 off; stats 0 copies, 1 KB
+export function gfx_tex_alias(on: u32): void { setTexAlias(on != 0); }
+export function gfx_tex_alias_stat(i: i32): u32 { return aliasStat(i); }

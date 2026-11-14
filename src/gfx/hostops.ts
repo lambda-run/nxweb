@@ -58,6 +58,7 @@ export const H_SKIP: u32 = 41;             // a draw or dispatch the recorder sk
                                            // stages that are not in the library. Nothing to run: the replayer only counts it (gfx_ledger.ts)
 export const H_SKIP_SIZE: usize = 40;
 export const SKIP_SHADER: u32 = 0, SKIP_NO_STAGE: u32 = 1, SKIP_PIPELINE: u32 = 2, SKIP_STATE: u32 = 3, SKIP_RENDER_COND: u32 = 4, SKIP_DISCARD: u32 = 5, SKIP_EMPTY: u32 = 6;
+export const COPY_NOW: u32 = 0x20000000;   // H_COPY_T2T flags: copied in an encoder of its own, submitted at once (texcontent.ts fromTwin: it may come inside a pass)
 export const H_MEM_WRITE: u32 = 42;        // +8 u64 address, +16 u32 bytes, +24 the bytes: guest memory takes them HERE in the stream (lower.ts memWrite with
                                            // stream writes on: UpdateUniformBuffer, CopyBufferToBuffer), then as H_MEM_DIRTY with that range
 const CAP: usize = 1 << 20;
