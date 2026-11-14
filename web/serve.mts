@@ -47,7 +47,7 @@ export function serve(port: number): Promise<{ server: Server; url: string }> {
     const file = join(WEB, path === "/" || path === "\\" ? "index.html" : path);
     if (!file.startsWith(WEB) || !existsSync(file) || !statSync(file).isFile()) { res.writeHead(404, head); res.end("not found"); return; }
     // gfxprof.html samples itself with the JS Self-Profiling API, which a document may use only when it is served with this policy
-    res.writeHead(200, { ...head, ...(file.endsWith("gfxprof.html") ? { "Document-Policy": "js-profiling" } : {}), "Content-Type": MIME[extname(file)] ?? "application/octet-stream" });
+    res.writeHead(200, { ...head, ...(/gfxprof[^/]*\.html$/.test(file) || /[\\/]em-next[\\/][^/\\]*\.(html|js)$/.test(file) ? { "Document-Policy": "js-profiling" } : {}), "Content-Type": MIME[extname(file)] ?? "application/octet-stream" });
     res.end(readFileSync(file));
   });
   return new Promise(r => server.listen(port, "127.0.0.1", () => r({ server, url: `http://localhost:${(server.address() as any).port}/` })));
