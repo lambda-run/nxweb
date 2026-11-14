@@ -32,7 +32,8 @@ export function ownerProf(search: string, owner: any, log: (l: string) => void):
     try { prof = typeof G.Profiler === "function" ? new G.Profiler({ sampleInterval: 1, maxBufferSize: 1 << 20 }) : null; } catch (e) { log(`[RED] ownerprof: the Profiler did not start: ${(e as Error).message}`); }
     // the records one by one, timed by type (the owner's exec wrapper calls execInner instead of the replayer's own exec while this is set)
     const raw = owner.rawExec, byOp = new Map<number, C>();
-    if (raw) owner.execInner = (p: number, n: number) => {
+    // (only with &ownerprofrec=1: an exec call per record costs the call's own setup each time, ~15 us live, which swamped the first profile)
+    if (raw && q.get("ownerprofrec") === "1") owner.execInner = (p: number, n: number) => {
       const dv = new DataView(host.memory.buffer);
       for (let q2 = p, end = p + n; q2 < end;) {
         const op = dv.getUint32(q2, true), sz = dv.getUint32(q2 + 4, true);
@@ -42,7 +43,7 @@ export function ownerProf(search: string, owner: any, log: (l: string) => void):
       }
     };
     const gpu = new Map<string, C>(), undo: (() => void)[] = [];
-    for (const iface of IFACES) {
+    if (q.get("ownerprofgpu") !== "0") for (const iface of IFACES) {
       const proto = G[iface]?.prototype; if (!proto) continue;
       for (const k of Object.getOwnPropertyNames(proto)) {
         const d = Object.getOwnPropertyDescriptor(proto, k)!; if (k === "constructor" || typeof d.value !== "function") continue;

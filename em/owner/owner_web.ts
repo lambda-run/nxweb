@@ -145,7 +145,8 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   if (device && owner.gfx) {
     owner.gfx.host.fitCanvas = true;
     ownerProf(p.search ?? "", owner, log);
-    if (new URLSearchParams(p.search ?? "").get("pipeskip") === "1") { (owner.gfx.host as any).pipeSkip = true; log("page: pipeskip=1: a draw whose pipeline is still being built in the background is skipped (no pipeline is built on the spot)"); }
+    // (default on: frame rate first; a draw whose pipeline is new is missing for a frame or two. ?pipeskip=0: it is built on the spot, as before)
+    if (new URLSearchParams(p.search ?? "").get("pipeskip") !== "0") { (owner.gfx.host as any).pipeSkip = true; log("page: pipeskip: a draw whose pipeline is still being built in the background is skipped (no pipeline is built on the spot; ?pipeskip=0 builds it)"); }
     let translator: any;
     try {
       if ((await fetch(abs("shaders/xlate_wasm/_framework/dotnet.js"), { method: "HEAD" })).ok && (await fetch(abs("shaders/nx_naga.wasm"), { method: "HEAD" })).ok)
