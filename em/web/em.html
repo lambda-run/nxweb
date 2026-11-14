@@ -126,7 +126,9 @@ function start(file) {
   // ?fsworker=1: the fs worker (owner/fs_worker.ts) reads the game file for the guest threads. NOT the default: with it
   // as the default the headless default-path run did not start a thread in 195 s (logs/t7, 2026-11-13; not understood,
   // the VM was swapping), although saves work through it (logs/hC, hD) and it booted before (REPORT.md, part 3).
-  var fsw = q.get("fsworker") === "1";
+  // Now the default (2026-11-13: the Mac's headless Chrome booted to the area with it; with the owner serving every read the
+  // requests queued behind shader registration and the story movie ran at 1 fps): ?fsworker=0 for the owner's own reads
+  var fsw = q.get("fsworker") !== "0";
   window.Module = {
     arguments: ["/exefs", "/rt/translator64.shared.wasm", "/rt/helpers64.shared.wasm", "/rt/loader64.wasm", q.get("secs") || "86400"],
     nxEnv: Object.assign({ NX_CORES: q.get("cores") === "1" ? "1" : "0", NX_COREEXCL: q.get("coreexcl") === "1" ? "1" : "0", NX_WAKE_HANDOFF: q.get("handoff") === "1" ? "1" : "0", NX_VPIPE: q.get("vpipe") === "1" ? "1" : "0" }, q.get("pollpark") !== null ? { NX_POLL_PARK_US: q.get("pollpark") } : {}, q.get("yieldpark") !== null ? { NX_YIELD_PARK_US: q.get("yieldpark") } : {}),
