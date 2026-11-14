@@ -10,6 +10,7 @@ import gameProfile from "../../src/prepare/profiles/0400486024DEC000.json";
 import { REAL_AUDIT } from "./lockfree_real.ts";
 import { OpfsStorage } from "../../src/glue/fs_dev_opfs.ts";
 import { GfxHost } from "../../src/glue/gfx_host.ts";
+import { ownerProf } from "./ownerprof.ts";
 import { RtShaders, workerTranslator, webShaderStore } from "../../src/glue/rt_shaders.ts";
 import { translationCurrent, packDir } from "../../src/shaders/passes.ts";
 import { NupTree } from "../../src/prepare/host/nup.ts";
@@ -143,6 +144,8 @@ export async function start(memory: WebAssembly.Memory, malloc: (n: number) => n
   }
   if (device && owner.gfx) {
     owner.gfx.host.fitCanvas = true;
+    ownerProf(p.search ?? "", owner, log);
+    if (new URLSearchParams(p.search ?? "").get("pipeskip") === "1") { (owner.gfx.host as any).pipeSkip = true; log("page: pipeskip=1: a draw whose pipeline is still being built in the background is skipped (no pipeline is built on the spot)"); }
     let translator: any;
     try {
       if ((await fetch(abs("shaders/xlate_wasm/_framework/dotnet.js"), { method: "HEAD" })).ok && (await fetch(abs("shaders/nx_naga.wasm"), { method: "HEAD" })).ok)
