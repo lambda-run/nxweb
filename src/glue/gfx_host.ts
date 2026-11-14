@@ -198,7 +198,7 @@ export class GfxHost {
   canvasFormat = "bgra8unorm";
   lastPresented = 0;
   ledger = new FrameLedger();           // per frame: draws issued and skipped, the presented image's first writer; the keys that skipped work (gfx_ledger.ts)
-  stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, uploads: 0, uploadBytes: 0, hashes: 0, hashedPages: 0, changedPages: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
+  stats = { passes: 0, computePasses: 0, draws: 0, dispatches: 0, pipelinesAsync: 0, pipelinesSync: 0, pipelinesFailed: 0, pipelinesSkipped: 0, uploads: 0, uploadBytes: 0, hashes: 0, hashedPages: 0, changedPages: 0, bindGroups: 0, submits: 0, presents: 0, snapshots: 0,
     clearRects: 0, errors: 0, uniformSlots: 0, uniformBytes: 0, uniformWrites: 0, resolves: 0, bufferReadbacks: 0, deviceLosses: 0, gmemRanges: 0, gmemBytes: 0, gmemUploads: 0, gmemUploadBytes: 0, gmemReadbacks: 0, gmemGrows: 0, gmemLogged: 0, gmemLearned: 0,
     meshDraws: 0, meshIndirect: 0, meshWithTask: 0, meshFailed: 0, ndveSkipped: 0, ndveStandIns: 0, ssboCopies: 0, imageStandIns: 0, passReopens: 0, zeroUploads: 0 };
   // What the device takes as it is, told to the recorder at attach (gfx_host_caps): 1 ASTC, 2 16-bit normalized formats
@@ -801,6 +801,7 @@ export class GfxHost {
   // another buffer. Ranges unused for 240 submissions give their buffer back. cacheUploads = false: every range is
   // written every submission.
   cacheUploads = true;
+  pipeSkip = false;           // usePipeline
   private ranges = new Map<string, { buf: GPU; hash: number; checked: number; used: number; addr: number; size: number }>();
   private epoch = 1;          // changes whenever guest memory may have
   private flushNo = 1;
@@ -1604,6 +1605,8 @@ export class GfxHost {
     if (!pipe) { this.red(`nopipe${id}`, `host stream binds pipeline ${id}, which was never created`); this.cur = null; return false; }
     if (!pipe.gpu) {
       if (!pipe.desc) { this.cur = null; return false; }      // it cannot be built (over a limit, no shader variant): its draws are skipped
+      // pipeSkip (?pipeskip=1): its asynchronous build (asked for at H_PIPELINE_CREATE) is not waited for; the draw is skipped, as one whose shader is pending
+      if (this.pipeSkip) { this.stats.pipelinesSkipped++; this.cur = null; return false; }
       // Built now, for this draw. Whether WebGPU takes it is known only later (an error scope answers asynchronously), and an invalid pipeline makes the
       // command buffer it is set in invalid: what was encoded before goes out on its own first, so a refusal costs the rest of this submission and not
       // all of it; when the answer is a refusal the pipeline is dropped, said in red with the reason and reported to the recorder, which stops sending its draws
