@@ -68,6 +68,7 @@ let execs: u32 = 0;
 
 export function hostFlush(): void { if (len) { const n = len; len = 0; execs++; hostExec(BUF, <u32>n); } }
 export function hostExecs(): u32 { return execs; }
+export function hostPending(): bool { return len != 0; }
 // Room for one record of `size` bytes (a multiple of 8), zeroed, its header written
 export function hostRec(op: u32, size: usize): usize {
   if (len + size > CAP) hostFlush();

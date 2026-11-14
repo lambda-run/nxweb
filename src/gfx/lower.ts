@@ -891,6 +891,7 @@ function copyT2B(r: usize, size: u32): void {
 function memDirty(dst: usize, n: usize): void { const r = H.hostRec(H.H_MEM_DIRTY, 24); store<u64>(r, <u64>dst, 8); store<u32>(r, n > 0xffffffff ? 0 : <u32>n, 16); }
 function memFill(dst: usize, n: usize, v: u32): void {
   if (!dst || !n) return;
+  if (streamWrites && n <= STREAM_MAX) { R.reportOverwrite(dst, n); streamBytes(dst, 0, n, v); dirty |= D_VBUF | D_UBO; return; }
   H.hostFlush();
   R.reportOverwrite(dst, n);
   if (!v) memory.fill(dst, 0, n);
@@ -906,11 +907,20 @@ function memFill(dst: usize, n: usize, v: u32): void {
 // the range as it was until the replayer has passed the record.
 let streamWrites = false;
 export function setStreamWrites(on: bool): void { streamWrites = on; }
+// The bytes as H_MEM_WRITE records of at most 64 KB each: from src, or (src 0) the 32-bit value v repeated (ClearBuffer)
+const STREAM_MAX: usize = 1 << 20, STREAM_PIECE: usize = 65536;
+function streamBytes(dst: usize, src: usize, n: usize, v: u32): void {
+  for (let o: usize = 0; o < n; o += STREAM_PIECE) {
+    const k = min<usize>(STREAM_PIECE, n - o), r = H.hostRec(H.H_MEM_WRITE, (24 + k + 7) & ~7);
+    store<u64>(r, <u64>(dst + o), 8); store<u32>(r, <u32>k, 16);
+    if (src) memory.copy(r + 24, src + o, k);
+    else if (v) { for (let i: usize = 0; i < k; i++) store<u8>(r + 24 + i, <u8>(v >> (<u32>((o + i) & 3) * 8))); }   // (the record is zeroed: a zero fill needs nothing)
+  }
+}
 function memWrite(dst: usize, src: usize, n: usize): void {
-  if (streamWrites && dst && n && n <= 65536) {
+  if (streamWrites && dst && n && n <= STREAM_MAX) {
     R.reportOverwrite(dst, n);
-    const r = H.hostRec(H.H_MEM_WRITE, (24 + n + 7) & ~7);
-    store<u64>(r, <u64>dst, 8); store<u32>(r, <u32>n, 16); memory.copy(r + 24, src, n);
+    streamBytes(dst, src, n, 0);
     dirty |= D_VBUF | D_UBO;
     return;
   }
