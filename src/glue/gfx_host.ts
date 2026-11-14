@@ -1162,7 +1162,12 @@ export class GfxHost {
     let u = this.ubo.get(key);
     if (b.i === 16) { const d = b.info?.c1Data ?? new Uint8Array(0); if (u?.data !== d) { u = { addr: 0, size: 0, need: 0, data: d }; this.ubo.set(key, u); } }   // c1 is the bound shader's own
     if (!u) { this.red("hostblock", "a shader reads a driver segment or push constants the recorder did not send: a zeroed block is bound"); u = { addr: 0, size: 0, need: 0, data: new Uint8Array(0) }; this.ubo.set(key, u); }
-    if (u.data && u.data.length < want) { const d = new Uint8Array(want); d.set(u.data); u.data = d; if (b.i === 16 && b.info) b.info.c1Data = d; }
+    // shorter than the shader's block: the uniform arena binds `need` bytes and zeroes past the data (uboSlot); a copy padded to the block (up to 64 KB,
+    // for every draw's fresh UBO_DATA) was 6% of the owner's time live
+    if (u.data && u.data.length < want) {
+      if (this.uniformArena && b.i !== 16) { if (u.need < want) u.need = want; }
+      else { const d = new Uint8Array(want); d.set(u.data); u.data = d; if (b.i === 16 && b.info) b.info.c1Data = d; }
+    }
   }
   private uboSlot(st: number, i: number): { buf: GPU; off: number; size: number } {
     const u = this.ubo.get(uboKey(st, i)), max = this.limit("maxUniformBufferBindingSize", 65536);
