@@ -8,6 +8,7 @@
 // The words at NXG are laid out in owner/owner.ts.
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <emscripten.h>
@@ -100,9 +101,21 @@ EMSCRIPTEN_KEEPALIVE void nx_gfx_stats(double out_) { double *o = (double *)(uin
 // ---- batches handed to the owner without waiting (kernel/nx_guest.js gfx_exec, owner/owner.ts drainRing; NX_GFX_ASYNC=1)
 // The ring: int32 [0] where the owner reads, [1] where the lock holder writes, [2] a counter the owner sleeps on, [3] 1 = on;
 // from +16 the entries { u32 bytes (0xFFFFFFFF: go to the start), u32 0, the batch, padded to 8 }.
-#define RING_BYTES (16u << 20)
-static _Alignas(16) uint8_t g_gfx_ring[16 + RING_BYTES];
-EMSCRIPTEN_KEEPALIVE double nx_gfx_ring(void) { return (double)(uintptr_t)g_gfx_ring; }
+// (64 MB from the heap, made at the first ask (the owner's, at start): batches now carry their texels, and 16 MB left
+// about one flush a present waiting for room in the first 3D area)
+#define RING_BYTES (64u << 20)
+static _Atomic(uintptr_t) g_gfx_ring;
+EMSCRIPTEN_KEEPALIVE double nx_gfx_ring(void) {
+  uintptr_t r = atomic_load(&g_gfx_ring);
+  if (!r) {
+    uint8_t *m = (uint8_t *)aligned_alloc(16, 16 + RING_BYTES);
+    if (!m) return 0;
+    memset(m, 0, 16 + RING_BYTES);
+    uintptr_t want = 0;
+    if (atomic_compare_exchange_strong(&g_gfx_ring, &want, (uintptr_t)m)) r = (uintptr_t)m; else { free(m); r = want; }
+  }
+  return (double)r;
+}
 EMSCRIPTEN_KEEPALIVE double nx_gfx_ring_bytes(void) { return (double)RING_BYTES; }
 // What a guest thread's instance of the recorder handed to the replayer, by cause (kernel/nx_guest.js gfx_exec counts,
 // owner/owner.ts flushCauses names them): u32 count and u32 microseconds waited for the owner, 16 causes
